@@ -430,6 +430,7 @@ static int attach_dll(NroModule *m) {
     while (n && path[n - 1] != '\\' && path[n - 1] != '/') n--;
     const char *bin = getenv("SSBU_NRO_BIN");               /* folder of the module DLLs next to the exe (default nro_bin) */
     if (m->plugin) bin = sky_bin_dir();                     /* skyline.c: plugin_bin (SSBU_PLUGIN_BIN) */
+    if (!(bin && bin[0]) && GetModuleHandleA("ssbu_game_r1.dll")) bin = "nro_bin_eh_o2r1";     /* (Arena) the one build: the game with the rollback marks, its marked modules */
     snprintf(path + n, sizeof path - n, "%s\\%s.dll", bin && bin[0] ? bin : "nro_bin_eh_o2", m->info->name);      /* P3 (2026-10-09): the optimised modules are the default; SSBU_NRO_BIN=nro_bin_eh = the -O0 ones */
     HMODULE dll = NULL;
     if (!m->plugin && sky_registry() > 0) {                 /* skyline.c: a module re-lifted with the plugins' sites (relift_sites.py --module) */

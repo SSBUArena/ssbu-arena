@@ -42,7 +42,7 @@ $DefaultServer = 'eu-germany.ssbuarena.com:39010'                    # our lobby
 # the rollback build: the game DLL and script modules with dirty-page marks (setup.py --rollback of upstream's recipe);
 # without it the normal build runs rollback too (upstream's learned-set save)
 $RbExe = Join-Path $Work 'ssbu_native_rb.exe'
-$RbPair = (Test-Path $RbExe) -and (Test-Path (Join-Path $Work 'ssbu_game_r1.dll')) -and (Test-Path (Join-Path $Work 'nro_bin_eh_o2r1\lua2cpp_common.dll'))
+$RbPair = (Test-Path (Join-Path $Work 'ssbu_game_r1.dll')) -and (Test-Path (Join-Path $Work 'nro_bin_eh_o2r1\lua2cpp_common.dll'))
 
 # the account id from the name: the same name always gives the same id (two players must use two names)
 function Get-UidFromName([string]$name) {
@@ -320,9 +320,9 @@ if (-not $name.Text -and $L['nickname']) { $name.Text = $L['nickname'] }
 
 function Test-All([switch]$Quiet) {
     $status.Clear(); $bad = 0
-    $files = @(@($Exe, 'eseguibile'), @((Join-Path $Work 'ssbu_game_eh_o1.dll'), 'codice del gioco'), @($MainElf, 'main.elf'))
+    $files = @(@($Exe, 'eseguibile'), @((Join-Path $Work 'ssbu_game_r1.dll'), 'codice del gioco'), @($MainElf, 'main.elf'))
     foreach ($x in $files) { if (-not (Test-Path $x[0])) { Say ('[NO] manca ' + $x[1] + ': ' + $x[0]); $bad++ } }
-    $mods = @(Get-ChildItem (Join-Path $Work 'nro_bin_eh_o2') -Filter *.dll -ErrorAction SilentlyContinue).Count
+    $mods = @(Get-ChildItem (Join-Path $Work 'nro_bin_eh_o2r1') -Filter *.dll -ErrorAction SilentlyContinue).Count
     if ($mods -lt 98) { Say "[NO] moduli dei personaggi: $mods su 98"; $bad++ }
     if (-not $RomFS -or -not ((Test-Path (Join-Path $RomFS 'data.arc')) -or (Test-Path (Join-Path $RomFS 'data.arcp')))) { Say '[NO] data.arc non trovato (RomFS del dump)'; $bad++ }
     if (-not (Test-Path "$env:WINDIR\System32\vulkan-1.dll")) { Say '[NO] Vulkan non trovato: aggiorna il driver della scheda video'; $bad++ }
@@ -341,7 +341,7 @@ function Test-All([switch]$Quiet) {
         if ($server.Text.Trim() -notmatch '^[^\s:]+:\d+$') { Say '[NO] online: server nel formato ip:porta'; $bad++ }
         if ($room.Text.Trim() -match '\s') { Say '[NO] online: il codice amici non puo'' avere spazi'; $bad++ }
         elseif ([System.Text.Encoding]::UTF8.GetByteCount($room.Text.Trim()) -gt 31) { Say '[NO] online: codice amici troppo lungo (max 31)'; $bad++ }
-        if ($rbOn.Checked) { Say $(if ($RbPair) { '[OK] rollback: build rollback (ssbu_native_rb.exe)' } else { '[--] rollback: manca la build rollback, si gioca col netcode del gioco' }) }
+        if ($rbOn.Checked) { Say $(if ($RbPair) { '[OK] rollback: build rollback' } else { '[--] rollback: manca la build rollback, si gioca col netcode del gioco' }) }
     }
     if (Get-Process ssbu_native, ssbu_native_rb -ErrorAction SilentlyContinue) { Say '[NO] il gioco e'' gia'' aperto'; $bad++ }
     if ($bad -eq 0) { Say ('[OK] tutto pronto' + $(if ($onlineOn.Checked) { ' (online come "' + $name.Text.Trim() + '", codice ' + $(if ($room.Text.Trim()) { '"' + $room.Text.Trim() + '"' } else { 'pubblico' }) + $(if ($rbOn.Checked) { ', rollback' } else { '' }) + ')' } else { ' (online spento)' })) }
@@ -381,7 +381,7 @@ $play = Add-Button $f 'GIOCA' 392 746 140 {
         $env:SSBU_NET_PING = $(if ($pingOn.Checked) { '1' } else { '0' })      # each player's ping to the server, next to the player (nvn_vk_draw.c)
         if ($rbOn.Checked -and $RbPair) {      # only with the marked pair (the normal build's rollback drifts apart)
             $env:SSBU_RB_NET = 'net'
-            $runExe = $RbExe; $env:SSBU_R1_GAMEDLL = 'ssbu_game_r1.dll'; $env:SSBU_NRO_BIN = 'nro_bin_eh_o2r1'
+            $env:SSBU_R1_GAMEDLL = 'ssbu_game_r1.dll'; $env:SSBU_NRO_BIN = 'nro_bin_eh_o2r1'
         }
     } else { $env:SSBU_ONLINE = 'off' }
     # no console window: the game's output goes to game.log through a hidden cmd.exe (its exit code is the game's)

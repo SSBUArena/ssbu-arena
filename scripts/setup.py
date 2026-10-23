@@ -76,7 +76,12 @@ def lib_ext(cx):
 
 
 def game_lib(cx):
-    return 'ssbu_game_eh_o1' + lib_ext(cx)
+    # (Arena) Windows builds one game only: the one with the rollback page marks (R1_MARK), for offline and online play
+    return 'ssbu_game_eh_o1' + lib_ext(cx) if cx.posix else 'ssbu_game_r1.dll'
+
+
+def nro_dir(cx):
+    return 'nro_bin_eh_o2' if cx.posix else 'nro_bin_eh_o2r1'
 
 
 # ---------------------------------------------------------------------------------------------- helpers
@@ -1028,8 +1033,11 @@ def build_env(cx):
         return cx.env(RECOMP_GEN='gen_eh_o2', RECOMP_OBJ='obj_eh_o1', RECOMP_DLL=game_lib(cx), RECOMP_NRO_SUFFIX='_eh_o2', RECOMP_TARGET='macos', RECOMP_INLINE=inline_flag(cx),
                       RECOMP_LIFT_JOBS=str(cx.lift_jobs))
     # FFMPEG_ROOT: build.py compiles the movie fallback (mf_ffmpeg.c) with the headers install.py put in deps\ffmpeg
-    return cx.env(RECOMP_GEN='gen_eh_o2', RECOMP_OBJ='obj_eh_o1', RECOMP_DLL='ssbu_game_eh_o1.dll', RECOMP_NRO_SUFFIX='_eh_o2',
-                  RECOMP_INLINE=inline_flag(cx),
+    # (Arena) one build: the game DLL and the script modules with the rollback page marks (R1_MARK), the exe with the
+    # marked C++ runtime (RECOMP_R1); the generated sources are the same (gen_eh_o2, gen_nro_eh_o2)
+    return cx.env(RECOMP_GEN='gen_eh_o2', RECOMP_OBJ='obj_r1', RECOMP_DLL='ssbu_game_r1.dll', RECOMP_NRO_SUFFIX='_eh_o2r1',
+                  RECOMP_NRO_GEN_SUFFIX='_eh_o2', RECOMP_SHIM='game_shim_r1.c', RECOMP_CFLAGS='-DR1_MARK', RECOMP_DATA_CFLAGS='-DR1_MARK',
+                  RECOMP_R1='1', RECOMP_INLINE=inline_flag(cx),
                   FFMPEG_ROOT=os.environ.get('FFMPEG_ROOT') or os.path.join(REPO, 'deps', 'ffmpeg'))
 
 
@@ -1086,15 +1094,15 @@ def step_compile(cx):
         say('  up to %d compilers at once, sharing the RAM (logs/compile.log shows the progress)' % cx.jobs)
     cx.run('compile', [sys.executable, 'build_opt.py', 'main', str(cx.jobs)], env=build_env(cx))
     dll = os.path.join(cx.work, game_lib(cx))
-    say('  %s %.0f MB; objects %.0f MB' % (game_lib(cx), os.path.getsize(dll) / 1048576.0, disk_mb(os.path.join(cx.work, 'obj_eh_o1'))))
+    say('  %s %.0f MB; objects %.0f MB' % (game_lib(cx), os.path.getsize(dll) / 1048576.0, disk_mb(os.path.join(cx.work, 'obj_eh_o1' if cx.posix else 'obj_r1'))))
 
 
 def step_nro(cx):
     mods = [m for m in (cx.a.modules or 'all').split(',') if m]
     argv = [sys.executable, 'build_opt.py', 'nro', str(cx.jobs)] + ([] if mods == ['all'] else mods)
     cx.run('nro', argv, env=build_env(cx))
-    d = os.path.join(cx.work, 'nro_bin_eh_o2')
-    say('  %d module libraries in nro_bin_eh_o2 (%.0f MB)' % (len([f for f in os.listdir(d) if f.endswith(lib_ext(cx))]), disk_mb(d)))
+    d = os.path.join(cx.work, nro_dir(cx))
+    say('  %d module libraries in %s (%.0f MB)' % (len([f for f in os.listdir(d) if f.endswith(lib_ext(cx))]), nro_dir(cx), disk_mb(d)))
 
 
 def step_link(cx):
@@ -1111,7 +1119,7 @@ def step_link(cx):
                 shutil.copy2(os.path.join(cx.runtime_dir, name), os.path.join(cx.work, name))
                 if sha256_file(os.path.join(cx.work, name)) != files[name]['sha256']:
                     raise Fail('%s does not match the runtime package after copying' % name)
-        for f in (EXE, 'SDL3.dll', 'ssbu_glslang.dll', 'ssbu_game_eh_o1.dll'):
+        for f in (EXE, 'SDL3.dll', 'ssbu_glslang.dll', game_lib(cx)):
             if not os.path.exists(os.path.join(cx.work, f)):
                 raise Fail('%s was not produced' % f)
         opus = [n for n in files if n.lower() in ('opus.dll', 'libopus-0.dll')]
@@ -1119,8 +1127,8 @@ def step_link(cx):
         if not opus and src:
             opus = [os.path.basename(src) if os.path.basename(src).lower() in ('opus.dll', 'libopus-0.dll') else 'opus.dll']
             shutil.copy2(src, os.path.join(cx.work, opus[0]))
-        say('  %s, SDL3.dll, ssbu_glslang.dll from the runtime package%s; ssbu_game_eh_o1.dll %.0f MB linked here' % (
-            EXE, ', ' + opus[0] + ' (music)' if opus else '', os.path.getsize(os.path.join(cx.work, 'ssbu_game_eh_o1.dll')) / 1048576.0))
+        say('  %s, SDL3.dll, ssbu_glslang.dll from the runtime package%s; %s %.0f MB linked here' % (
+            EXE, ', ' + opus[0] + ' (music)' if opus else '', game_lib(cx), os.path.getsize(os.path.join(cx.work, game_lib(cx))) / 1048576.0))
         if not opus:
             say('  WARNING: no libopus (neither in the runtime package nor in deps\\opus): music and the other Opus sounds will be silent')
         copy_ffmpeg(cx)
@@ -1131,14 +1139,14 @@ def step_link(cx):
     cx.run('link', [sys.executable, 'build.py', 'link'], env=cx.env(**{k: v for k, v in build_env(cx).items() if k != 'RECOMP_NRO_SUFFIX'}, RECOMP_EXE=EXE,
                                                                    RECOMP_LDN_ONLINE=ldn))
     exe = os.path.join(cx.work, EXE)
-    for f in (EXE, 'SDL3.dll', 'ssbu_glslang.dll', 'ssbu_game_eh_o1.dll'):
+    for f in (EXE, 'SDL3.dll', 'ssbu_glslang.dll', game_lib(cx)):
         if not os.path.exists(os.path.join(cx.work, f)):
             raise Fail('%s was not produced' % f)
     opus = cx.tools.get('opus')
     if opus:                                            # under a name nnaudio.c looks for (opus.dll or libopus-0.dll)
         name = os.path.basename(opus) if os.path.basename(opus).lower() in ('opus.dll', 'libopus-0.dll') else 'opus.dll'
         shutil.copy2(opus, os.path.join(cx.work, name))
-    say('  %s %.1f MB, SDL3.dll, ssbu_glslang.dll, ssbu_game_eh_o1.dll%s beside it' % (EXE, os.path.getsize(exe) / 1048576.0,
+    say('  %s %.1f MB, SDL3.dll, ssbu_glslang.dll, %s%s beside it' % (EXE, os.path.getsize(exe) / 1048576.0, game_lib(cx),
                                                                                          ', ' + name if opus else ''))
     install_launcher(cx)
     say('  local wireless over the internet (--ldn-online): %s' % (r'built in (config\online.ini, BUILDING.md)' if ldn == '1' else 'not built in'))
@@ -1188,33 +1196,26 @@ def game_env(cx, **extra):
 
 
 def step_rollback(cx):
-    """(Arena) the online rollback pair: the game DLL again with the page marks (ssbu_game_r1.dll, objects in obj_r1), the
-    script modules with the marks (nro_bin_eh_o2r1) and ssbu_native_rb.exe (from the runtime package, or linked here).
-    The normal build's state is not complete enough for rollback (the two games drift apart), so online matches use
-    this pair; the launcher runs it when all three are there. A second compile of the game: about as long as compile +
-    nro the first time, then only what changed."""
+    """(Arena) the old two-build layout is cleared: since 0.2.8 the game is built once, with the rollback page marks
+    (build_env); the normal game DLL, its objects and script modules and the old second exes are deleted (about 2 GB)."""
     if cx.posix:
-        say('  (Windows only for now: online rollback is not built on this system)')
         return
-    base = {k: v for k, v in build_env(cx).items() if k != 'RECOMP_NRO_SUFFIX'}
-    cx.run('rollback', [sys.executable, 'build_opt.py', 'main', str(cx.jobs)],
-           env=cx.env(**dict(base, RECOMP_OBJ='obj_r1', RECOMP_DLL='ssbu_game_r1.dll', RECOMP_NRO_SUFFIX='_eh_o2',
-                             RECOMP_SHIM='game_shim_r1.c', RECOMP_CFLAGS='-DR1_MARK', RECOMP_DATA_CFLAGS='-DR1_MARK')))
-    mods = [m for m in (cx.a.modules or 'all').split(',') if m]
-    cx.run('rollback', [sys.executable, 'build_opt.py', 'nro', str(cx.jobs)] + ([] if mods == ['all'] else mods),
-           env=cx.env(**dict(base, RECOMP_NRO_SUFFIX='_eh_o2r1', RECOMP_NRO_GEN_SUFFIX='_eh_o2', RECOMP_CFLAGS='-DR1_MARK')))
-    rb = os.path.join(cx.work, 'ssbu_native_rb.exe')
-    if not cx.runtime_dir:                                # the runtime package brings it (step link copies every exe of it)
-        ldn = '1' if cx.state.get('ldn_online') else '0'
-        cx.run('rollback', [sys.executable, 'build.py', 'host'], env=cx.env(**dict(base, RECOMP_EXE='ssbu_native_rb.exe', RECOMP_R1='1',
-                                                                                   RECOMP_DLL='ssbu_game_r1.dll', RECOMP_LDN_ONLINE=ldn)))
-    for f in ('ssbu_game_r1.dll', os.path.join('nro_bin_eh_o2r1', 'lua2cpp_common.dll')):
-        if not os.path.exists(os.path.join(cx.work, f)):
-            raise Fail('%s was not produced' % f)
-    if not os.path.exists(rb):
-        say('  WARNING: no ssbu_native_rb.exe (a runtime package older than 0.2.6): online matches stay without rollback until the next update')
-    say('  ssbu_game_r1.dll %.0f MB, nro_bin_eh_o2r1 %.0f MB%s' % (os.path.getsize(os.path.join(cx.work, 'ssbu_game_r1.dll')) / 1048576.0,
-                                                                  disk_mb(os.path.join(cx.work, 'nro_bin_eh_o2r1')), ', ssbu_native_rb.exe' if os.path.exists(rb) else ''))
+    gone = 0
+    for f in ('ssbu_game_eh_o1.dll', 'ssbu_game_eh_o1.lib', 'ssbu_game_eh_o1.exp', 'ssbu_game_eh_o1.pdb', 'ssbu_native_rb.exe', 'ssbu_native_rb.map',
+              'ssbu_native_rb.lib', 'ssbu_native_rb.exp', 'ssbu_ui_native.exe'):
+        p = os.path.join(cx.work, f)
+        if os.path.isfile(p):
+            gone += os.path.getsize(p)
+            try:
+                os.remove(p)
+            except OSError as e:
+                say('  could not remove %s (%s): left as it is' % (f, e))
+    for d in ('obj_eh_o1', 'nro_bin_eh_o2', 'obj_nro_eh_o2'):
+        p = os.path.join(cx.work, d)
+        if os.path.isdir(p):
+            gone += int(disk_mb(p) * 1048576)
+            shutil.rmtree(p, ignore_errors=True)
+    say('  one build (the game with the rollback marks); old normal build removed: %.0f MB freed' % (gone / 1048576.0))
 
 
 def step_check(cx):
@@ -1391,7 +1392,7 @@ def main():
     # a finished build whose game files have gone since (an antivirus quarantines the 500 MB unsigned game DLL, or a
     # copy was interrupted): compile (the objects are kept, so only the DLL is linked again) and link run again
     if 'link' in done and not a.dry_run:
-        gone = [f for f in ((EXE, 'ssbu_game_eh_o1.dll', 'SDL3.dll') if not cx.posix else (LINUX_EXE, game_lib(cx), 'ssbu_glslang' + lib_ext(cx)))
+        gone = [f for f in ((EXE, game_lib(cx), 'SDL3.dll') if not cx.posix else (LINUX_EXE, game_lib(cx), 'ssbu_glslang' + lib_ext(cx)))
                 if not os.path.exists(os.path.join(cx.work, f))]
         if gone:
             say('%s missing from %s although the build was finished (an antivirus may have removed it: Windows Security > '

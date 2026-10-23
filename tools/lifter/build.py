@@ -384,7 +384,8 @@ def cmd_link(host_only=False):
         return 1
     exe = os.environ.get('RECOMP_EXE', 'ssbu_native.exe')      # parallel work: one exe name per worker
     out = os.path.join(HERE, exe)
-    objdir = os.path.join(HERE, 'obj_host', os.path.splitext(exe)[0] + ('_ldn' if LDN_ONLINE else ''))
+    # (Arena) the R1 exe has its own objects (r1src/nncxxrt.c): one folder per exe name and kind, never a stale mix
+    objdir = os.path.join(HERE, 'obj_host', os.path.splitext(exe)[0] + ('_ldn' if LDN_ONLINE else '') + ('_r1' if os.environ.get('RECOMP_R1') == '1' else ''))
     os.makedirs(objdir, exist_ok=True)
     t0 = time.time()
     newest_dep = max([os.path.getmtime(os.path.join(HERE, h)) for h in os.listdir(HERE) if h.endswith(('.h', '.inc'))] + [os.path.getmtime(os.path.join(HERE, 'build.py'))])

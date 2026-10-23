@@ -13,7 +13,7 @@ Lines starting with "#" are comments. The launcher (tools/launcher/arena/FileChe
 files itself (a portable copy has no Python); repairing needs this script and the setup.
 
 What each group of files is remade by (setup.py steps, install.py's menu step):
-    work\\ssbu_native.exe, ssbu_game_eh_o1.dll, SDL3.dll, ssbu_glslang.dll   compile + link (setup.py makes them again
+    work\\ssbu_native.exe, ssbu_game_r1.dll, SDL3.dll, ssbu_glslang.dll      compile + link (setup.py makes them again
                                                                             when they are gone; objects are kept)
     work\\nro_bin_eh_o2\\*.dll                                               nro (only the missing modules are compiled)
     work\\ (opus, FFmpeg, loading animation, icon, arena_fonts)             link (copied again)
@@ -35,11 +35,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 LIST = 'files.sha256'
 
-WORK_FILES = ('ssbu_native.exe', 'ssbu_game_eh_o1.dll', 'SDL3.dll', 'ssbu_glslang.dll', 'opus.dll', 'libopus-0.dll',
-              'loading_kirby.png', 'arena.ico', 'ssbu_native_rb.exe', 'ssbu_game_r1.dll', 'ssbu_ui_native.exe')
-TREES = ('work/nro_bin_eh_o2', 'work/nro_bin_eh_o2r1', 'work/arena_fonts', 'binaries', 'sysdata',
+WORK_FILES = ('ssbu_native.exe', 'ssbu_game_r1.dll', 'SDL3.dll', 'ssbu_glslang.dll', 'opus.dll', 'libopus-0.dll',
+              'loading_kirby.png', 'arena.ico')      # (0.2.8: one build, the game with the rollback marks)
+TREES = ('work/nro_bin_eh_o2r1', 'work/arena_fonts', 'binaries', 'sysdata',
          'characters/arena_menu', 'characters/competitive')
-LINK_MADE = ('ssbu_native.exe', 'ssbu_game_eh_o1.dll', 'SDL3.dll', 'ssbu_glslang.dll')
+LINK_MADE = ('ssbu_native.exe', 'ssbu_game_r1.dll', 'SDL3.dll', 'ssbu_glslang.dll')
 
 
 def say(s=''):
@@ -139,10 +139,9 @@ def check(build, quick):
 
 def remade_by(rel):
     """the setup step that makes this file again, or None (reported only)"""
-    if rel.startswith('romfs:') or rel.startswith('characters/competitive/') or 'nro_bin_eh_o2r1/' in rel or \
-            rel in ('work/ssbu_native_rb.exe', 'work/ssbu_game_r1.dll', 'work/ssbu_ui_native.exe'):
+    if rel.startswith('romfs:') or rel.startswith('characters/competitive/'):
         return None
-    if rel.startswith('work/nro_bin_eh_o2/'):
+    if rel.startswith('work/nro_bin_eh_o2r1/'):
         return 'nro'
     if rel.startswith('work/'):
         return 'compile' if rel[5:] in LINK_MADE else 'link'
