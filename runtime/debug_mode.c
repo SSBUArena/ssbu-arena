@@ -541,6 +541,7 @@ static void match_player_hook(Ctx *c, void *user) {
     if (g_hs_wanted) hs_apply(st, idx, type_was);       /* R3: the match both online games agreed (rb_net.c handshake) */
     if (idx == 1) g_dm_state1_ok = safe_read(st, g_dm_state1, sizeof g_dm_state1);
     g_orig_player_record(c);
+    {   void hs_show_agreed(int idx); if (g_hs_wanted && g_hs_ok && !g_hs_local && !g_hs_lwr) hs_show_agreed(idx); }      /* (Arena) the screens before the fight show the agreed players */
     if (idx == 1 && g_hs_lwr && g_lwr_ctl_ok) for (int i = 0; i < 2; i++) wr8(MI_PLAYER(i) - 8 + 0x48, g_lwr_ctl[i][LWR_CTL]);      /* (R3 lwr) each player's own option byte (record + 0x48, see lwr_own_controls) */
     if (idx == 1 && rd32(st + 0x78) == 0) { void input_mark(const char *what); input_mark("setup-2p"); }      /* (R3 pub2, test aid) a match set up with a human player 2 (SSBU_SEQ @untilmark:setup-2p) */
     if (getenv("SSBU_DEBUG_P1PROFILE") && idx == 0) {     /* (R3 lwr, research) player 1's name-tag profile index forced (=<n>), or (=c<n>) profile n's
@@ -703,6 +704,21 @@ static DWORD WINAPI panel_thread(LPVOID arg) {
         }
     }
     return 0;
+}
+/* (Arena, online match) the screens before the fight (the versus splash: fighters, colours, "CPU" / "P2" labels) are the
+ * agreed players, not this game's select screen (player 2 = the CPU panel put there for the online match, or the save's).
+ * Written into the select screens' table entries 0 / 1 right after the game built player 2's record from them (the match
+ * block itself is the handshake's, untouched by this). */
+void hs_show_agreed(int idx) {
+    if (idx != 1) return;
+    for (int i = 0; i < 2; i++) {
+        uint64_t e = PANEL(i);
+        uint32_t t = rd32(e + 0x30);
+        printf("[rbnet] select table entry %d: type %u ui_chara %016llx / %016llx colour %u -> human, %016llx colour %u (shown before the fight)\n", i, t,
+               (unsigned long long)rd64(e + 0x38), (unsigned long long)rd64(e + 0x40), rd8(e + 0x48), (unsigned long long)g_hs_m.chara[i], g_hs_m.colour[i]);
+        wr64(e + 0x38, g_hs_m.chara[i]); wr64(e + 0x40, g_hs_m.chara[i]); wr8(e + 0x48, g_hs_m.colour[i]); wr32(e + 0x30, 0);
+    }
+    fflush(stdout);
 }
 void debug_mode_init(void) {
     if (getenv("SSBU_DEBUG_PANELS")) CreateThread(NULL, 0, panel_thread, NULL, 0, NULL);

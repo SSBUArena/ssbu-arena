@@ -792,3 +792,50 @@ int nnapplet_selftest(Ctx *c) {
     free(buf); free(buf2);
     return bad;
 }
+
+/* ================================================================ no amiibo player panels (SSBU Arena)
+ * The fighter select screen's player-type button cycles a panel human (0) -> CPU (1) -> amiibo (2) -> none (3) (panel
+ * type, the panel object + 0x1f8; the screens' table entry + 0x30, runtime/debug_mode.c). Here no amiibo is ever held to
+ * the NFC reader (nn::nfp above), so an amiibo panel only waits for one ("touch the amiibo"); in a room (owner's report)
+ * the selection then got stuck and the lobby had to be closed (there the type change also goes through the room: the
+ * request below). Amiibo is taken out of the cycle in every mode: CPU -> none. Read off the 13.0.4 binary and a run with a
+ * write watch on + 0x1f8 (rollback/lwr_am3):
+ *   0x7101a1dbf0 (screen, panel, new type)   the select screen's type change (from the button at 0x7101a165d4 and from
+ *                                            0x7101845c50, 0x7101a168ec, 0x7101a16d78): it ends in the setter below and
+ *                                            does the amiibo-specific work for type 2 (the button's own code before it
+ *                                            handles 2 and 3 alike, 0x7101a164b8)
+ *   0x7101a1fa30 (mode, panel, new type)     the network check / request made first when the screen's mode (+ 0x170) is 1
+ *   0x7101a028b0 (panel object, type)        the setter (stores + 0x1f8; type 3 also clears the fighter): the last stop
+ * Each gets type 3 where 2 was asked, so the game itself makes the panel "none" (layout, fighter, controller) and an amiibo
+ * panel is never made. 13.0.4 only (the Arena build); SSBU_AMIIBO_PANEL=1 leaves the game's cycle as it is (tests). */
+#include "hostrt.h"
+int hook_install(uint64_t addr, void (*repl)(Ctx *, void *), void *user, ImportFn *orig);
+static ImportFn g_na_change_orig, g_na_request_orig, g_na_set_orig;
+static volatile LONG g_na_count;
+static void na_log(const char *where) {
+    if (InterlockedIncrement(&g_na_count) <= 20) { printf("amiibo panel: %s asked for an amiibo panel: none instead\n", where); fflush(stdout); }
+}
+static void na_change(Ctx *c, void *user) { (void)user; if ((uint32_t)c->x[2] == 2) { na_log("the type change"); c->x[2] = 3; } g_na_change_orig(c); }
+static void na_request(Ctx *c, void *user) { (void)user; if ((uint32_t)c->x[2] == 2) { na_log("the room request"); c->x[2] = 3; } g_na_request_orig(c); }
+static void na_set(Ctx *c, void *user) { (void)user; if ((uint32_t)c->x[1] == 2) { na_log("the type setter"); c->x[1] = 3; } g_na_set_orig(c); }
+static DWORD WINAPI na_thread(LPVOID arg) {
+    (void)arg;
+    for (int i = 0; i < 6000 && g_game_build < 0; i++) Sleep(10);
+    if (g_game_build != GAME_13_0_4) { printf("amiibo panel: not 13.0.4: the game's own player-type cycle (with amiibo)\n"); fflush(stdout); return 0; }
+    for (int i = 0; i < 6000; i++) {                       /* the hook table answers once the game's function table is set up */
+        int a = hook_install(0x7101a1dbf0ull, na_change, NULL, &g_na_change_orig);
+        if (!a) { Sleep(10); continue; }
+        int b = hook_install(0x7101a1fa30ull, na_request, NULL, &g_na_request_orig);
+        int s = hook_install(0x7101a028b0ull, na_set, NULL, &g_na_set_orig);
+        printf("amiibo panel: amiibo taken out of the fighter select's player types (hooks %d %d %d)\n", a, b, s); fflush(stdout);
+        return 0;
+    }
+    printf("amiibo panel: the hooks could not be installed\n"); fflush(stdout);
+    return 0;
+}
+__attribute__((constructor)) static void na_start(void) {
+    const char *e = getenv("SSBU_AMIIBO_PANEL");
+    if (e && e[0] == '1') return;
+    HANDLE h = CreateThread(NULL, 0, na_thread, NULL, 0, NULL);
+    if (h) CloseHandle(h);
+}
