@@ -3,7 +3,8 @@
 Each main-menu button is a table {parts = <pane>, state = STATE_<X>_IN} or {parts, func_decide = callback}. Here:
     Smash   (melee)       unchanged
     Arena   (spirits)     func_decide = callback, func_arg = 0: nothing yet (Battle Arena, later)
-    Ranked  (online)      func_decide = callback, func_arg = 0: nothing yet
+    Ranked  (online)      sequence = SEQUENCE_ONLINE_MELEE_ANYONE: runtime/competitive.c turns it into online matchmaking
+                          (a Smash versus whose fight searches an opponent through the lobby; no rating yet)
     LDN     (other)       func_decide = callback, func_arg = 3: the side bar's Local Wireless command (the big tile, at
                           the top right, made taller over the Vault's place: prepare_menu_classic.py)
     Settings (colle)      func_decide = callback, func_arg = 5: the side bar's Options command, the game's own options
@@ -18,8 +19,8 @@ import menu_actions
 
 # func_arg of the shared callback: 0 nothing (yet), else the side bar (pallet) command to run: 3 Local Wireless,
 # 5 Options (the native one-based button ids; runtime/competitive.c reads it and confirms that command)
-PLACEHOLDER = {'set_parts_btn_spirits': 0, 'set_parts_btn_online': 0, 'set_parts_btn_other': 3, 'set_parts_btn_colle': 5}
-SEQUENCE = {'set_parts_btn_eshop': 'SEQUENCE_OTHER_AMIIBO'}
+PLACEHOLDER = {'set_parts_btn_spirits': 0, 'set_parts_btn_other': 3, 'set_parts_btn_colle': 5}
+SEQUENCE = {'set_parts_btn_eshop': 'SEQUENCE_OTHER_AMIIBO', 'set_parts_btn_online': 'SEQUENCE_ONLINE_MELEE_ANYONE'}
 # the selector's cone for the d-pad (60 in the game): wide enough that up from Exit reaches the small Settings tile
 DIRECTIONAL_DEGREE = 90
 

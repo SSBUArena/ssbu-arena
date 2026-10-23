@@ -279,6 +279,14 @@ static uint64_t hash40(const char *s) {
  * Both games force + 0x454 = 1 with the agreed layout of each player, so a player's own controls are the same on both PCs. */
 #include "rb_hs.h"
 static int g_hs_wanted, g_hs_ok, g_hs_local, g_hs_lwr;      /* (R3 lwr) g_hs_lwr: a Local Wireless room's match played with rollback */
+/* (Arena, online matchmaking) a quick match from the Arena menu's Online Ranked tile (competitive.c comp_quickplay): both games
+ * play the same locked rules whatever the player's own ruleset: stock (rule kind 1), 3 stocks, no items, no hazards (the
+ * competitive mode keeps the FS meter, the item switch, hazards and stage morph off already). Written into this game's
+ * choice before the handshake and into BOTH players' panel states, so the two games' states and match blocks agree (no
+ * "rule kind here differs"). The time limit comes from the rule struct copies competitive.c forces while the flag is on. */
+static int g_hs_quick;
+#define QUICK_RULE_KIND 1
+#define QUICK_STOCKS 3
 static RbhMatch g_hs_m;
 /* (hs12) player 1's panel state as the game's function got it (before any change here): the template of player 2's state
  * when the select screen had NO panel for player 2 (each player picks only his own fighter; the other game's player is
@@ -367,6 +375,12 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
         me.chara[0] = rd64(st + 0x88); me.colour[0] = rd8(st + 0x90); me.has_layout[0] = (uint8_t)hs_layout(st, me.layout[0]);
         safe_read(sel, me.stage, sizeof me.stage);
         me.hazards = rd8(GA(0x7105309985ULL)); me.items = rd32(MELEE_INFO + 0x54); me.rule_kind = rd8(st + 5); me.stock = rd8(st + 0xa);
+        {   int comp_quickplay(void); g_hs_quick = comp_quickplay(); }
+        if (g_hs_quick) {
+            printf("[rbnet] quick match (Online Ranked): rules locked: rule kind %d -> %d, stocks %d -> %d, items %u -> 0, hazards %d -> 0\n", me.rule_kind, QUICK_RULE_KIND, me.stock, QUICK_STOCKS, me.items, me.hazards);
+            fflush(stdout);
+            me.rule_kind = QUICK_RULE_KIND; me.stock = QUICK_STOCKS; me.items = 0; me.hazards = 0;
+        }
         me.ctx_seed = rd32(GA(0x710530d380ULL)); safe_read(GA(0x71050c5ad0ULL), me.ctx_hist, sizeof me.ctx_hist); safe_read(MELEE_INFO + 0x420, me.ctx_stage, sizeof me.ctx_stage);   /* (hs12) the stage set-up's inputs (rb_hs.h) */
         if (getenv("SSBU_RB_NET_WATCH")) { uint64_t off = strtoull(getenv("SSBU_RB_NET_WATCH"), NULL, 16); if (off <= 1) off = 0x98;      /* (hs12: =<hex offset in the match block>) */
             uint64_t w[1] = {MELEE_INFO + (off & ~7ull)}; printf("[rbnet] research: match block + 0x%llx at the handshake = %016llx\n", (unsigned long long)(off & ~7ull), (unsigned long long)rd64(w[0])); debug_watch(w, 1); }
@@ -380,6 +394,7 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
             wr64(sel, 0x6900000000000000ull | hash40("ui_stage_end")); wr32(sel + 8, 0);
             if (g_hs_m.rule_kind == 1) g_hs_m.stock = 1;
         }
+        if (g_hs_ok && !g_hs_local && g_hs_quick && !g_hs_lwr) { g_hs_m.rule_kind = QUICK_RULE_KIND; g_hs_m.stock = QUICK_STOCKS; g_hs_m.items = 0; g_hs_m.hazards = 0; }
         if (g_hs_ok && !g_hs_local) {
             if (!g_hs_lwr) {                              /* (R3 lwr: a room's match: the stage, hazards and items are the room's, the same on both PCs) */
             for (int k = 0; k < 0x20; k++) wr8(sel + (uint64_t)k, g_hs_m.stage[k]);
@@ -463,6 +478,7 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
     wr64(st + 0x88, g_hs_m.chara[idx]); wr8(st + 0x90, g_hs_m.colour[idx]); wr32(st + 0x78, 0);
     if (g_hs_m.has_layout[idx]) { wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, g_hs_m.layout[idx][k]); }
     else { wr8(st + 0x454, 0); wr8(st + 0x455, 0); wr32(st + 0x214, 0xffffffffu); }
+    if (g_hs_quick && !g_hs_local) { wr8(st + 5, QUICK_RULE_KIND); wr8(st + 0xa, QUICK_STOCKS); }      /* (Arena quick match) the locked rules in both players' states */
     if (rd8(st + 5) == g_hs_m.rule_kind) { if (g_hs_m.rule_kind == 1) wr8(st + 0xa, g_hs_m.stock); }
     else { printf("[rbnet] handshake: player %d: rule kind %d here, %d agreed (not changed: set the same rules on both)\n", idx + 1, rd8(st + 5), g_hs_m.rule_kind); fflush(stdout); }
 }

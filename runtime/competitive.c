@@ -149,15 +149,94 @@ int comp_in_options(void) {           /* menu.cpp: the game's own options screen
     return ui && comp_mapped(CURRENT_SEQUENCE) && ((*(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE) >> 24) == 0x06;
 }
 static int comp_seq_allowed(uint32_t s) { return (s >> 24) == 0x01 || s == 0x02010000u || (s >> 24) == 0x06 || s == 0; }
+
+/* ---- Online matchmaking (no rating yet), the Arena menu's "Online Ranked" tile. The tile asks for SEQUENCE_ONLINE_MELEE_ANYONE
+ * (tools/ui/menu_actions_classic.py). The SEQUENCE_* values are the lua constants the game registers at 0x7101bf18xx (x1 = the
+ * name, w3 = the value, read off the binary): SEQUENCE_MELEE_NORMAL 0x02010000 (Smash), SEQUENCE_ONLINE_MELEE_ANYONE
+ * 0x07010100. The light archive has no online mode, so the scene dispatcher turns that sequence into the Smash versus one
+ * (character select, stage select, fight) with the quick-match flag set: rb_net.c then takes the lobby's opponent search
+ * (MATCH op 2) for that fight, as SSBU_RB_NET_FIND=1 does, and debug_mode.c locks the rules both games use (1 on 1, stock,
+ * 3 stocks, 7 minutes, no items, no hazards). Back at the main menu (0x01xxxxxx) the flag is cleared. Without a lobby
+ * connection (online off / not signed in / rollback off / not joined yet) a popup says why and the game stays in the menu.
+ * The rule kind / time / stock fields of the rule struct, read off its loader 0x7103295b30 (ui_rule_db field -> offset):
+ * "rule" -> + 0x51 (rule_time 0, rule_stock 1, rule_hp 2), "time" -> + 0x54 (u16, SECONDS: the prc's MMSS-like value is
+ * turned into minutes * 60 (+ 30); 0 = no limit), "stock" -> + 0x56. Forced in the three copies while the flag is on (the
+ * select screens and the match set-up read them; a ruleset picked on the Rulesets screen is overwritten within 2 ms), the
+ * player's own values put back at the menu. SSBU_QUICK_RULE_KIND / SSBU_QUICK_RULE_TIME (seconds) change them (tests). */
+#define SEQ_MELEE_NORMAL  0x02010000u
+#define SEQ_ONLINE_ANYONE 0x07010100u
+#define RULE_KIND  0x51
+#define RULE_TIME  0x54
+#define RULE_STOCK 0x56
+static volatile LONG g_quick;
+static uint8_t g_quick_saved[3][8]; static int g_quick_have;
+static int g_quick_kind = -1, g_quick_time = -1;            /* the values written (-1 = not written) */
+int comp_quickplay(void) { return g_quick != 0; }
+static void comp_rule_dump(const char *why) {
+    for (int i = 0; i < 3; i++) {
+        volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)k_rules[i];
+        printf("competitive: rule copy %d (%s): + 0x50: %02x %02x %02x %02x %02x %02x %02x %02x\n", i, why, r[0x50], r[0x51], r[0x52], r[0x53], r[0x54], r[0x55], r[0x56], r[0x57]);
+    }
+    fflush(stdout);
+}
+static void comp_quick_rules(void) {          /* (comp_keep, every 2 ms while the flag is on) */
+    for (int i = 0; i < 3; i++) {
+        volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)k_rules[i];
+        if (g_quick_kind >= 0 && r[RULE_KIND] != (uint8_t)g_quick_kind) r[RULE_KIND] = (uint8_t)g_quick_kind;
+        if (g_quick_time >= 0 && *(volatile uint16_t *)(r + RULE_TIME) != (uint16_t)g_quick_time) *(volatile uint16_t *)(r + RULE_TIME) = (uint16_t)g_quick_time;
+        if (r[RULE_STOCK] != 3) r[RULE_STOCK] = 3;
+    }
+}
+static void comp_quick_end(const char *why) {
+    if (!InterlockedExchange(&g_quick, 0)) return;
+    if (g_quick_have) for (int k = 0; k < 2; k++) {             /* (twice: comp_keep may have been inside comp_quick_rules) */
+        if (k) Sleep(5);
+        for (int i = 0; i < 3; i++) memcpy((void *)(uintptr_t)(k_rules[i] + 0x50), g_quick_saved[i], 8);
+    }
+    g_quick_have = 0;
+    printf("competitive UI: online matchmaking off (%s); the player's own rules are back\n", why); fflush(stdout);
+}
+static int comp_quick_begin(void) {           /* 1 = the quick match starts (the Smash versus sequence follows) */
+    int net_online(void), net_mode(void), net_rb_ready(void), rbn_on(void), rbn_handshake_wanted(void);
+    void menu_popup(const char *title, const char *text);
+    const char *why = NULL; int mode = net_online() > 0 ? net_mode() : -1;
+    if (net_online() <= 0) why = "Online play is off. Sign in to your SSBU Arena account in the launcher (Online on), then start the game again.";
+    else if (!rbn_handshake_wanted() || rbn_on() <= 0) why = "Online matches need the rollback netcode: turn Rollback on in the launcher's Online settings, then start the game again.";
+    else if (mode != 0 /* NET_MODE_LOBBY */ && mode != 1 /* NET_MODE_LAN */) why = "Matchmaking works through the online lobby, not in this online mode (a room you host or join).";
+    else if (!net_rb_ready()) why = "Not connected to the online lobby (yet). Check your internet connection and try again in a few seconds.";
+    if (why) {
+        printf("competitive UI: Online Ranked: no online matchmaking: %s\n", why); fflush(stdout);
+        menu_popup("Online matchmaking", why);
+        return 0;
+    }
+    {   const char *e = getenv("SSBU_QUICK_RULE_KIND"); g_quick_kind = e && *e ? atoi(e) : 1; }
+    {   const char *e = getenv("SSBU_QUICK_RULE_TIME"); g_quick_time = e && *e ? atoi(e) : 420; }
+    for (int i = 0; i < 3; i++) memcpy(g_quick_saved[i], (const void *)(uintptr_t)(k_rules[i] + 0x50), 8);
+    g_quick_have = 1;
+    comp_rule_dump("the player's own");
+    InterlockedExchange(&g_quick, 1);
+    comp_quick_rules();
+    printf("competitive UI: Online Ranked -> online matchmaking (no rating yet): the Smash versus select screens; the fight searches an opponent through the lobby\n"); fflush(stdout);
+    menu_popup("Online matchmaking", "Choose your fighter and a stage, then start: the game finds an opponent in the online lobby (no rating yet). Rules: 1 on 1, 3 stocks, 7 minutes, no items, no hazards.");
+    return 1;
+}
 static void comp_scene(Ctx *c, void *user) {
     (void)user;
     volatile uint32_t *seq = (volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE;
     uint32_t s = *seq;
     if (getenv("SSBU_UI_TRACE")) {              /* every mode change the scene dispatcher sees (menu route mapping) */
         static uint32_t last = 0xffffffffu;
-        if (s != last) { printf("UI trace: sequence %08x\n", s); fflush(stdout); last = s; }
+        if (s != last) { printf("UI trace: sequence %08x\n", s); fflush(stdout); last = s; if (s == SEQ_MELEE_NORMAL) comp_rule_dump("Smash versus"); }
     }
     const char *ui = getenv("SSBU_COMPETITIVE_UI");
+    if (ui && ui[0] == '1') {
+        if ((s >> 24) == 0x01 && g_quick) comp_quick_end("back at the main menu");
+        if (s == SEQ_ONLINE_ANYONE) {
+            if (comp_quick_begin()) *seq = SEQ_MELEE_NORMAL;
+            else *seq = 0x01000000u;
+            s = *seq;
+        }
+    }
     /* the Arena main menu (tools/ui/prepare_menu_classic.py): Settings is the game's own options (0x06, + there opens the
      * Arena settings: menu.cpp); Exit is the Games & More button, whose modes the competitive build does not have: its
      * sequence (0x04..) asks to exit the game instead (the settings open on the question) */
@@ -212,7 +291,7 @@ static DWORD WINAPI comp_keep(LPVOID arg) {
         if (ok) break;
         Sleep(20);
     }
-    for (;;) { comp_clear(); Sleep(2); }
+    for (;;) { comp_clear(); if (g_quick) comp_quick_rules(); Sleep(2); }
     return 0;
 }
 static DWORD WINAPI comp_wait(LPVOID arg) {
