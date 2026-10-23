@@ -98,7 +98,7 @@ def main():
             if not (os.path.isfile(os.path.join(a.build, 'work', 'ssbu_native.exe')) and os.path.isfile(os.path.join(a.build, 'state.json'))):
                 print('The game is not built yet (looked in %s): double-click "Install SSBU.bat" first.' % a.build)
                 return 1
-            gone = [f for f in ('ssbu_game_eh_o1.dll', 'SDL3.dll', 'ssbu_glslang.dll') if not os.path.isfile(os.path.join(a.build, 'work', f))]
+            gone = [f for f in ('ssbu_game_r1.dll', 'SDL3.dll', 'ssbu_glslang.dll') if not os.path.isfile(os.path.join(a.build, 'work', f))]
             if gone:
                 print('The game files are incomplete: %s missing in %s.\n'
                       'Usually an antivirus removed it (Windows Security > Virus & threat protection > Protection history: restore it\n'

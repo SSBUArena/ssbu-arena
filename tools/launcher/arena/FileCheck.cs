@@ -25,9 +25,9 @@ namespace Arena
         public static bool HasList => File.Exists(ListPath);
         public static bool CanRepair => Core.Repo != null && File.Exists(Path.Combine(Core.Repo, @"scripts\verify.py"));
 
-        static readonly string[] WorkFiles = { "ssbu_native.exe", "ssbu_game_eh_o1.dll", "SDL3.dll", "ssbu_glslang.dll", "opus.dll", "libopus-0.dll",
-                                               "loading_kirby.png", "arena.ico", "ssbu_native_rb.exe", "ssbu_game_r1.dll", "ssbu_ui_native.exe" };
-        static readonly string[] Trees = { "work/nro_bin_eh_o2", "work/nro_bin_eh_o2r1", "work/arena_fonts", "binaries", "sysdata",
+        static readonly string[] WorkFiles = { "ssbu_native.exe", "ssbu_game_r1.dll", "SDL3.dll", "ssbu_glslang.dll", "opus.dll", "libopus-0.dll",
+                                               "loading_kirby.png", "arena.ico" };      // (0.2.8: one build, the game with the rollback marks)
+        static readonly string[] Trees = { "work/nro_bin_eh_o2r1", "work/arena_fonts", "binaries", "sysdata",
                                            "characters/arena_menu", "characters/competitive" };
 
         static string Full(string rel)

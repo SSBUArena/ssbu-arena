@@ -113,12 +113,12 @@ SETUP_STEPS = ['deps', 'stage', 'convert', 'modules', 'tables', 'lift', 'sdk', '
 # expected seconds, measured 2026-10-19 on a PC with 12 jobs and 32 threads (compile and nro scale with 12 / jobs)
 EST = {'update': 10, 'precheck': 10, 'packages': 30, 'inputs': 10, 'dump': 600, 'tools': 30, 'media': 20, 'dlc': 1,
        'deps': 5, 'stage': 3, 'convert': 3, 'modules': 4, 'tables': 1, 'lift': 20, 'sdk': 2, 'compile': 2217, 'nro': 880,
-       'link': 60, 'rollback': 3100, 'check': 30, 'menu': 40, 'files': 60, 'shortcuts': 3, 'unblock': 5}
+       'link': 60, 'rollback': 10, 'check': 30, 'menu': 40, 'files': 60, 'shortcuts': 3, 'unblock': 5}
 TITLES = {'update': 'Update this program', 'precheck': 'Check this PC', 'packages': 'Python packages',
           'inputs': 'Find your game files', 'dump': 'Prepare the game files', 'dlc': 'Add-on contents (DLC)', 'tools': 'Build tools', 'media': 'Music and movies',
           'deps': 'Check tools and game files', 'stage': 'Lay out the sources', 'convert': 'Convert the game code',
           'modules': 'Script modules', 'tables': 'Tables', 'lift': 'Translate the game code', 'sdk': 'System library',
-          'compile': 'Compile the game', 'nro': 'Compile the script modules', 'link': 'Link the game', 'rollback': 'Build online rollback', 'check': 'Self-tests',
+          'compile': 'Compile the game', 'nro': 'Compile the script modules', 'link': 'Link the game', 'rollback': 'Remove the old build', 'check': 'Self-tests',
           'menu': 'SSBU Arena menu', 'files': 'Record the files (for Check and repair)',
           'shortcuts': 'Shortcuts', 'unblock': 'Unblock files'}
 
@@ -911,7 +911,7 @@ def step_build(cx, P):
     scale = 12.0 / cx.jobs
 
     def est(s):
-        return int(EST[s] * scale) if s in ('compile', 'nro', 'rollback') else EST[s]
+        return int(EST[s] * scale) if s in ('compile', 'nro') else EST[s]
 
     def on_line(line):
         m = re.match(r'\[(\d+)/(\d+)\] (\w+)(.*)$', line)
@@ -960,7 +960,7 @@ def step_build(cx, P):
 
     def hb():
         s = cur['id']
-        if s not in ('compile', 'nro', 'lift', 'link', 'rollback'):
+        if s not in ('compile', 'nro', 'lift', 'link'):
             return None
         c = compiled(s)
         if c:
@@ -1069,7 +1069,7 @@ def make_plan(cx):
     plan = []
     for s in ids:
         e = EST[s]
-        if s in ('compile', 'nro', 'rollback'):
+        if s in ('compile', 'nro'):
             e = int(e * 12.0 / cx.jobs)
         if s == 'dump' and (a.dump or dump_ok(os.path.join(BUILD, 'dump'))):
             e = 5

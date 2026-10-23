@@ -41,8 +41,7 @@ setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
 
 EXE = 'ssbu_native.exe'
-RB_EXE = 'ssbu_native_rb.exe'      # (Arena) the rollback exe of the marked pair: same runtime sources, RECOMP_R1=1, imports ssbu_game_r1.dll
-PACKAGE_FILES = [EXE, RB_EXE, 'SDL3.dll', 'ssbu_glslang.dll']
+PACKAGE_FILES = [EXE, 'SDL3.dll', 'ssbu_glslang.dll']      # (Arena 0.2.8) one exe: the one with the rollback marks (RECOMP_R1)
 OPTIONAL_FILES = ['opus.dll']
 # what may be in the zip besides PACKAGE_FILES / OPTIONAL_FILES
 PACKAGE_EXTRA = re.compile(r'^(manifest\.json|README\.txt|LICENSE-[A-Za-z0-9_.-]+\.txt)$')
@@ -259,7 +258,8 @@ def main():
     setup.step_stage(cx)
     env = {k: v for k, v in os.environ.items() if not k.startswith(('RECOMP_', 'SSBU_'))}
     env.update(PYTHONIOENCODING='utf-8', RECOMP_CLANG=clang, SDL3_ROOT=tools['sdl3'], VULKAN_HEADERS=tools['vulkan'],
-               GLSLANG_ROOT=tools['glslang'], SUYU_ROOT=tools['suyu'], RECOMP_EXE=EXE)
+               GLSLANG_ROOT=tools['glslang'], SUYU_ROOT=tools['suyu'], RECOMP_EXE=EXE,
+               RECOMP_R1='1', RECOMP_DLL='ssbu_game_r1.dll')      # (Arena) the one build: the exe imports the game DLL with the rollback marks
     env['IMGUI_ROOT'] = imgui or os.path.join(build, 'no-imgui')     # build.py would otherwise look beside the study tree
     os.environ['IMGUI_ROOT'] = env['IMGUI_ROOT']                     # the audit imports the staged build.py in this process
     # the movie fallback (mf_ffmpeg.c) is compiled with FFmpeg's headers; a package exe without it would leave players whose
@@ -293,15 +293,6 @@ def main():
     say('building %s from the runtime sources ...' % EXE)
     out = run([sys.executable, 'build.py', 'host'], 'build.py host')
     say('  ' + (out.strip().splitlines() or [''])[-1])
-    # (Arena) the rollback exe: an install that has the marked pair (ssbu_game_r1.dll, nro_bin_eh_o2r1) runs it, so every
-    # runtime fix must reach it too (setup.py --runtime copies every exe of the package)
-    say('building %s (RECOMP_R1=1) ...' % RB_EXE)
-    env.update(RECOMP_EXE=RB_EXE, RECOMP_R1='1', RECOMP_DLL='ssbu_game_r1.dll')
-    out = run([sys.executable, 'build.py', 'host'], 'build.py host (rollback exe)')
-    say('  ' + (out.strip().splitlines() or [''])[-1])
-    for k in ('RECOMP_R1', 'RECOMP_DLL'):
-        env.pop(k)
-    env['RECOMP_EXE'] = EXE
     run([os.environ.get('COMSPEC', 'cmd.exe'), '/c', os.path.join(work, 'build_glslang.bat')], 'build_glslang.bat')
     for f in PACKAGE_FILES:
         if not os.path.exists(os.path.join(work, f)):
@@ -349,7 +340,7 @@ def main():
         # since 2026-10-20 also file by file: setup.py then names what differs and accepts files that were only added
         'tree_files': setup.tree_files(),
         'game_data_version': setup.game_data_version(),
-        'game_dll': 'ssbu_game_eh_o1.dll',
+        'game_dll': 'ssbu_game_r1.dll',
         'game_builds': sorted(setup.GAME_BUILDS.values()),
         'built': time.strftime('%Y-%m-%d %H:%M'),
         'toolchain': {'clang': clang_ver, 'linker': 'MSVC link.exe (through clang)'},
@@ -363,8 +354,6 @@ def main():
     # 5. audit
     bad = audit_package(pkg, files + [n for n in os.listdir(pkg) if PACKAGE_EXTRA.match(n)])
     more, imports = audit_exe_build(work, EXE, llvm)
-    bad += more
-    more, _ = audit_exe_build(work, RB_EXE, llvm)
     bad += more
     if a.against:
         more, n = audit_against(pkg, a.against)

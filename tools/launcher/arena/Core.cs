@@ -113,7 +113,7 @@ namespace Arena
             HasOnline = File.Exists(Exe) && File.ReadAllText(Exe, Encoding.ASCII).Contains("SSBU_ONLINE");
             // the rollback build: game DLL and script modules with dirty-page marks (setup.py step rollback); online rollback
             // runs only with it (the normal build's save is not complete enough: the two games drift apart)
-            RbPair = File.Exists(RbExe) && File.Exists(Path.Combine(Work, "ssbu_game_r1.dll")) && File.Exists(Path.Combine(Work, @"nro_bin_eh_o2r1\lua2cpp_common.dll"));
+            RbPair = File.Exists(Path.Combine(Work, "ssbu_game_r1.dll")) && File.Exists(Path.Combine(Work, @"nro_bin_eh_o2r1\lua2cpp_common.dll"));      // (0.2.8: ssbu_native.exe itself is the rollback build)
             HasCompetitive = Directory.Exists(CompDir);
             LightArc = RomFS != null && File.Exists(Path.Combine(RomFS, "data.arcp")) && !File.Exists(Path.Combine(RomFS, "data.arc"));
 
@@ -259,9 +259,9 @@ namespace Arena
         {
             var r = new List<Check>();
             missingCodecs = new List<string>();
-            foreach (var x in new[] { new[] { Exe, "Game executable" }, new[] { Path.Combine(Work, "ssbu_game_eh_o1.dll"), "Game code" }, new[] { MainElf, "main.elf" } })
+            foreach (var x in new[] { new[] { Exe, "Game executable" }, new[] { Path.Combine(Work, "ssbu_game_r1.dll"), "Game code" }, new[] { MainElf, "main.elf" } })
                 r.Add(File.Exists(x[0]) ? new Check(true, x[1]) : new Check(false, x[1] + " missing: " + x[0]));
-            int mods = Directory.Exists(Path.Combine(Work, "nro_bin_eh_o2")) ? Directory.GetFiles(Path.Combine(Work, "nro_bin_eh_o2"), "*.dll").Length : 0;
+            int mods = Directory.Exists(Path.Combine(Work, "nro_bin_eh_o2r1")) ? Directory.GetFiles(Path.Combine(Work, "nro_bin_eh_o2r1"), "*.dll").Length : 0;
             r.Add(new Check(mods >= 98, "Fighter modules: " + mods + " of 98"));
             bool arc = RomFS != null && (File.Exists(Path.Combine(RomFS, "data.arc")) || File.Exists(Path.Combine(RomFS, "data.arcp")));
             r.Add(new Check(arc, arc ? "Game data (" + (LightArc ? "light archive" : "data.arc") + ")" : "data.arc not found (RomFS of the dump)"));
@@ -547,7 +547,7 @@ namespace Arena
                 if (Rollback && RbPair)      // only with the marked pair: the normal build's rollback drifts apart (the game's own netcode then)
                 {
                     env["SSBU_RB_NET"] = "net";
-                    run = RbExe; env["SSBU_R1_GAMEDLL"] = "ssbu_game_r1.dll"; env["SSBU_NRO_BIN"] = "nro_bin_eh_o2r1";
+                    env["SSBU_R1_GAMEDLL"] = "ssbu_game_r1.dll"; env["SSBU_NRO_BIN"] = "nro_bin_eh_o2r1";
                 }
             }
             else env["SSBU_ONLINE"] = "off";
@@ -555,7 +555,6 @@ namespace Arena
             // Keep the original hosts available when the optional menu override has not been prepared.
             if (Competitive && Directory.Exists(Path.Combine(Build, @"characters\arena_menu")))
             {
-                if (run == Exe && File.Exists(UiExe)) run = UiExe;      // (the same exe: an older install's copy; the game exe otherwise)
                 env["SSBU_COMPETITIVE_UI"] = "1";
                 env["SSBU_MENU"] = "1"; // the Settings tile opens the existing PC settings overlay
             }
