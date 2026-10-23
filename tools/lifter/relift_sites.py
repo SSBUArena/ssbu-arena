@@ -897,6 +897,10 @@ def main():
     mine = set(n[:-2] + '.obj' for n in names) | {'table.obj'}       # only this site list's files (not those of an earlier list)
     base = sorted(n for n in os.listdir(base_obj) if n.endswith('.obj'))
     objs = [os.path.join(obj if n in mine else base_obj, n) for n in base]
+    # the base set's -O0 units (build_opt.py split, <base obj>_big\<name>_b.obj) of the files this list does not re-lift
+    # (a re-lifted file is compiled whole here, so its base part would define its functions twice)
+    big = base_obj + '_big'
+    big_objs = [os.path.join(big, n) for n in sorted(os.listdir(big)) if n.endswith('_b.obj') and n[:-6] + '.obj' not in mine] if os.path.isdir(big) else []
     mapfile = dll[:-4] + '.map'
     if rl.module:
         # a module DLL: its own shim (nro_shim.c with the site callouts, -DNRO_MODULE) and the site table as objects
@@ -914,6 +918,7 @@ def main():
     else:
         shim = os.path.join(HERE, os.environ.get('RECOMP_SHIM', 'game_shim_eh.c'))
         cmd_head, cmd_tail = [comp.clang, '-shared', '-O1', '-w', '-I', HERE, '-I', gen, shim, os.path.join(gen, 'sky_sites.c')], []
+    objs += big_objs
     rsp = dll + '.rsp'
     with open(rsp, 'w') as f:
         f.write('\n'.join('"%s"' % o.replace('\\', '/') for o in objs))

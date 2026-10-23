@@ -20,6 +20,12 @@ here, automatic and bounded in time:
   3. if that still exceeds the time limit, the whole file is compiled at -O0.
 Every fallback is printed and written to <obj dir>\\_opt_report.txt.
 
+Since 2026-10-23 (scenario D of speedtest\\speed_report.md, tu_prepare.py) each generated file is compiled as up to two
+units: the functions over RECOMP_SPLIT_LINES statements (20000) and, for the game, the functions the coverage campaign
+never saw executed in competitive play (coverage\\<game build>.txt, see COVERAGE below) go to <name>_b.c, compiled once
+at -O0 into <obj dir>_big\\<name>_b.obj; the rest goes through the rule above as before. The game's units also read only
+the declarations of funcs.h they use. The ladder above stays as the safety net of the optimised unit.
+
 Flags: -fno-strict-aliasing as in the -O0 build; -ffp-contract=off (no fused multiply-add can be formed: the -O0 build
 never formed one either; fused operations the game asks for are explicit fma() calls); no fast-math; the default x86-64
 target (SSE2), so no FMA / AVX instructions are selected.
@@ -42,6 +48,7 @@ os.environ.setdefault('RECOMP_NRO_SUFFIX', '_eh_o2')
 
 import build          # noqa: E402  (reads the environment at import)
 import build_nro      # noqa: E402
+import tu_prepare     # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLANG = os.environ.get('RECOMP_CLANG', r'C:\llvm-9.0.0\bin\clang.exe')
@@ -56,6 +63,19 @@ INLINE = os.environ.get('RECOMP_INLINE', '0') not in ('', '0')      # the game c
 INLINE_LIMIT = float(os.environ.get('RECOMP_INLINE_LIMIT', '20'))   # seconds an inlined compile may take; longer: the file is compiled without
 OPTNONE_LINES = int(os.environ.get('RECOMP_OPTNONE_LINES', '20000'))
 TIME_LIMIT = float(os.environ.get('RECOMP_TIME_LIMIT', '180'))
+# Scenario D (speedtest 2026-10-23, tu_prepare.py). RECOMP_SPLIT_LINES: functions longer than this go to a unit of their own
+# compiled at -O0 (0: one unit per file, as before). Measured: the 22 slowest files of a real build 8417 -> 1837 s; the
+# code of those functions is what optnone gave before, the rest of their files now keeps -O1 (no WHOLE FILE -O0 any more).
+SPLIT_LINES = int(os.environ.get('RECOMP_SPLIT_LINES', '20000'))
+# RECOMP_OWN_DECLS=0: the game's units include the whole funcs.h again (default: only the declarations each one uses,
+# ~0.6 s less per unit, identical objects)
+OWN_DECLS = os.environ.get('RECOMP_OWN_DECLS', '1') not in ('', '0')
+# RECOMP_COVERAGE: the list of the game functions executed in competitive play (guest addresses, one hex number per line;
+# no game content): every other function of the game goes to the -O0 unit, executed ones keep today's compile. Default
+# coverage\\<game build>.txt beside this script, the game build being the folder name of RECOMP_BIN (setup.py:
+# binaries\\13.0.4); 'off' or no list for this build (13.0.5, another dump): only the long-function split. A list whose
+# addresses are not functions of this lift (another game build) is not used. Measured on a 48-file sample: 1613 -> 658 s.
+COVERAGE = os.environ.get('RECOMP_COVERAGE', '')
 # Linux build: address-space limit per compiler, bytes (0: none). Set by limit_memory(): the most one compiler may get.
 MEM_LIMIT = 0
 # Linux and macOS builds (RECOMP_TARGET linux / macos): the RAM all compilers share, bytes (0: no sharing, as on Windows).
@@ -262,9 +282,11 @@ def hints(objdir):
         return _hints[objdir]
 
 
-def hint_key(src):
+def hint_key(src, split=''):
+    """split: split_signature() when src is a generated file compiled as parts (the parts follow from it and the split);
+    no absolute paths, so the keys of build_hints.json match on every PC (13.0.4 lift, same flags)."""
     with open(src, 'rb') as f:
-        return hashlib.sha1(f.read() + repr((OPT, EXTRA, INLINE)).encode()).hexdigest()
+        return hashlib.sha1(f.read() + repr((OPT, EXTRA, INLINE)).encode() + split.encode()).hexdigest()
 
 
 def hint_save(objdir, name, key, secs, inlined):
@@ -348,21 +370,22 @@ _tries_lock = threading.Lock()
 _jobs = [0]
 
 
-def compile_file_inline(src, obj, base_flags, time_limit=None):
+def compile_file_inline(src, obj, base_flags, time_limit=None, key=None):
     """With RECOMP_INLINE: ONE inlined compile with a short time limit (RECOMP_INLINE_LIMIT, 20 s); a file that takes longer
     (the biggest generated files: inlining made the whole game compile 2-4x slower, testers 2026-10-21 "40 min -> over an
     hour") or fails is compiled the normal way (compile_file, its own ladder), so the slowdown per file is bounded. The
-    files that compile fast, most of them, keep the faster code. Without RECOMP_INLINE: compile_file."""
+    files that compile fast, most of them, keep the faster code. Without RECOMP_INLINE: compile_file.
+    key: the hint key (compile_one_main: of the generated file and the split, src being its optimised part)."""
     if not INLINE:
         r = compile_file(src, obj, base_flags, time_limit)
         if r[0] == 0:
-            hint_save(os.path.dirname(obj), os.path.basename(obj), hint_key(src), r[2], 0)
+            hint_save(os.path.dirname(obj), os.path.basename(obj), key or hint_key(src), r[2], 0)
         return r
     with _tries_lock:
         _tries[obj] += 1
         n = _tries[obj]
     objdir, name = os.path.dirname(obj), os.path.basename(obj)
-    key = hint_key(src)
+    key = key or hint_key(src)
     known = hints(objdir).get(name)
     if n == 1 and known and known[0] == key and known[2] == 0:
         code, out, secs, note = compile_file(src, obj, base_flags, time_limit)
@@ -405,12 +428,130 @@ def report(objdir):
     del _report[:]
 
 
+# ---- scenario D: the -O0 unit (tu_prepare.py) -------------------------------------------------------------------
+_cov = []
+_split_stats = {}
+_split_lock = threading.Lock()
+
+
+def coverage():
+    """(set of executed guest addresses, sha1 of the list) for this game build, or None (see COVERAGE). Read once."""
+    if _cov:
+        return _cov[0]
+    path = COVERAGE
+    if not path:
+        ver = os.path.basename(os.path.normpath(os.environ.get('RECOMP_BIN', ''))) if os.environ.get('RECOMP_BIN') else ''
+        path = os.path.join(HERE, 'coverage', ver + '.txt') if ver else ''
+    res = None
+    if path and path != 'off' and os.path.isfile(path):
+        with open(path, 'rb') as f:
+            data = f.read()
+        lines = (l.strip() for l in data.decode('ascii', 'replace').splitlines())
+        addrs = set(int(l, 16) for l in lines if l and not l.startswith('#'))
+        have = set(int(n[2:], 16) for n in tu_prepare.decls(build.GEN) if n and n[:2] in ('f_', 'u_'))
+        hit = len(addrs & have) / float(max(1, len(addrs)))
+        if hit < 0.98:                   # another game build's list (addresses moved): not this lift's functions
+            print('coverage list %s: only %.1f%% of its %d addresses are functions of this lift: not used (only the split of '
+                  'functions over %d statements)' % (path, 100 * hit, len(addrs), SPLIT_LINES), flush=True)
+        else:
+            # the digest is of the addresses, not of the file's bytes: a checkout with CRLF line ends is the same list
+            # (it is part of the hint keys of build_hints.json)
+            res = (addrs, hashlib.sha1(' '.join('%x' % a for a in sorted(addrs)).encode()).hexdigest())
+            print('coverage list %s: %d executed functions; the %d never executed in competitive play are compiled at -O0 '
+                  '(nothing is removed)' % (path, len(addrs & have), len(have - addrs)), flush=True)
+    elif path != 'off':
+        print('no coverage list for this game build (%s): only the functions over %d statements get the -O0 unit'
+              % (path or 'RECOMP_BIN not set', SPLIT_LINES), flush=True)
+    _cov.append(res)
+    return res
+
+
+def cold(name):
+    """True for a game function (f_ / u_<guest address>) the coverage list does not hold."""
+    cov = coverage()
+    if cov is None or name[:2] not in ('f_', 'u_'):
+        return False
+    try:
+        return int(name[2:], 16) not in cov[0]
+    except ValueError:
+        return False
+
+
+def split_signature():
+    """What decides the parts of a game file besides its text: part of its hint key and of obj dir\\_split.txt."""
+    cov = coverage()
+    return repr((tu_prepare.VERSION, SPLIT_LINES, OWN_DECLS, cov[1] if cov else None))
+
+
+def split_on():
+    return bool(SPLIT_LINES or OWN_DECLS or coverage())
+
+
+def compile_big(src, obj, base_flags, extra=None):
+    """The -O0 unit: one compile, no time limit (the largest, 215,493 statements, takes well under a minute at -O0).
+    WITHOUT the inlined helpers (RECOMP_INLINE): forced inlining at -O0 copies every guest load / store / flag helper
+    unoptimised into its caller - the first full build with them made a 1766 MB game DLL instead of 675 MB (2026-10-23).
+    Without them the code is what optnone / the WHOLE FILE -O0 fallback gave before (that path never inlined either)."""
+    os.makedirs(os.path.dirname(obj), exist_ok=True)
+    cmd = [CLANG, '-c', '-O0'] + (EXTRA if extra is None else extra) + base_flags + [src, '-o', obj]
+    want = mem_estimate(src, function_sizes(src)) if MEM_BUDGET else 0
+    if want:
+        mem_acquire(want)
+    try:
+        return run_limited(cmd, None, want)
+    finally:
+        if want:
+            mem_release(want)
+
+
+def compile_split(src, obj, base_flags, opt_compile, cold_fn, own_decls, key=None):
+    """src compiled as its parts (tu_prepare.prepare): the optimised one by opt_compile(part, obj) -> (code, out, secs,
+    note), the -O0 one into <obj dir>_big\\<name>_b.obj (build.py / build_nro.py link it beside obj and delete it whenever
+    the file is compiled again or is gone). If the -O0 unit does not compile, the file is compiled whole the old way."""
+    objdir, name = os.path.dirname(obj), os.path.basename(obj)[:-4]
+    bobj = os.path.join(objdir + '_big', name + '_b.obj')
+    stats = {}
+    parts = tu_prepare.prepare(src, objdir + '_tu', SPLIT_LINES, cold_fn, own_decls, stats)
+    big = next((p for p, k in parts if k == 'big'), None)
+    code, out, secs, note = opt_compile(parts[0][0], obj)
+    if code != 0 or not big:
+        if os.path.exists(bobj):
+            os.remove(bobj)
+        return code, out, secs, note
+    bcode, bout, bsecs = compile_big(big, bobj, base_flags)
+    if key:
+        hint_save(objdir, name + '_b.obj', key, bsecs, 0)
+    with _split_lock:
+        for why, (n, st) in stats.items():
+            s = _split_stats.setdefault(why, [0, 0, 0])
+            s[0] += n
+            s[1] += st
+        _split_stats.setdefault('files', [0, 0, 0])[0] += 1
+        _split_stats['files'][2] += bsecs
+    what = ', '.join('%d %s (%d statements)' % (n, {'long': 'long', 'cold': 'never executed'}[w], st) for w, (n, st) in sorted(stats.items()))
+    note = (note + '; ' if note else '') + '-O0 unit %.0fs: %s' % (bsecs, what)
+    if bcode == 0:
+        return code, out, secs + bsecs, note
+    if os.path.exists(bobj):
+        os.remove(bobj)
+    print('  %s: the -O0 unit did not compile (%s): the file is compiled whole' % (os.path.basename(src), (bout or '').strip()[-300:]), flush=True)
+    code, out, secs2, note2 = compile_file(src, obj, base_flags)
+    return code, out, secs + bsecs + secs2, 'split failed, whole file' + ('; ' + note2 if note2 else '')
+
+
 # ---- main: build.compile_one replaced -------------------------------------------------------------------------
 def compile_one_main(name):
     src = os.path.join(build.GEN, name)
     obj = os.path.join(build.OBJ, name[:-2] + '.obj')
-    code, out, secs, note = compile_file_inline(src, obj, ['-w', '-fno-strict-aliasing', '-I', HERE, '-I', build.GEN] + build.NOCRT_FLAGS + build.PLAT_FLAGS)
-    if note or secs > 60:
+    base = ['-w', '-fno-strict-aliasing', '-I', HERE, '-I', build.GEN] + build.NOCRT_FLAGS + build.PLAT_FLAGS
+    if split_on():
+        key = hint_key(src, split_signature())
+        code, out, secs, note = compile_split(src, obj, base, lambda part, o: compile_file_inline(part, o, base, key=key),
+                                              cold, OWN_DECLS, key)
+    else:
+        code, out, secs, note = compile_file_inline(src, obj, base)
+    # (the -O0 unit alone is not worth a line: most files have one with the coverage list)
+    if (note and not note.startswith('-O0 unit')) or secs > 60:
         line = '%-12s %6.0fs  %s' % (name, secs, note)
         _report.append(line)
         print('  ' + line, flush=True)
@@ -422,6 +563,7 @@ def cmd_main(jobs):
     _jobs[0] = jobs
     limit_memory(jobs)
     t0 = time.time()
+    big_dir = build.OBJ + '_big'
     # objects compiled with the other RECOMP_INLINE setting are compiled again (the compile skips an object newer than its
     # source, whatever flags made it): a build from before inlining existed gets the faster code on its next update
     stamp, want = os.path.join(build.OBJ, '_inline.txt'), '1' if INLINE else '0'
@@ -430,15 +572,33 @@ def cmd_main(jobs):
     except OSError:
         have = None                          # no stamp: objects from before the stamp existed were compiled without inlining
     old = [n for n in os.listdir(build.OBJ) if n.endswith('.obj')] if os.path.isdir(build.OBJ) else []
+    # the same for another split (another coverage list, limit or tu_prepare.VERSION): every file is compiled again, so no
+    # file keeps parts of the old split. Objects from before the split existed (no stamp) are kept: each file's objects
+    # are consistent (a whole file, or both parts of one split), and a file compiled again gets the split
+    sstamp, swant = os.path.join(build.OBJ, '_split.txt'), split_signature() if split_on() else 'off'
+    try:
+        shave = open(sstamp).read().strip()
+    except OSError:
+        shave = None
+    redo = None
     if old and have != want and (have is not None or want == '1'):
-        print('the game objects were compiled %s the inlined helpers: all %d are compiled again (once)' % ('with' if have == '1' else 'without', len(old)), flush=True)
+        redo = 'the game objects were compiled %s the inlined helpers' % ('with' if have == '1' else 'without')
+    elif old and shave is not None and shave != swant:
+        redo = 'the game objects were split another way (coverage list or RECOMP_SPLIT_LINES changed)'
+    if redo:
+        print('%s: all %d are compiled again (once)' % (redo, len(old)), flush=True)
         for n in old:
             os.remove(os.path.join(build.OBJ, n))
+        for n in os.listdir(big_dir) if os.path.isdir(big_dir) else []:
+            os.remove(os.path.join(big_dir, n))
+    sig = split_signature() if split_on() else ''
+
     def order_key(n):                    # slowest first by the time it took before (same source and flags), else by size
         h = hints(build.OBJ).get(n[:-2] + '.obj')
+        hb = hints(build.OBJ).get(n[:-2] + '_b.obj')
         size = os.path.getsize(os.path.join(build.GEN, n))
-        if h and h[0] == hint_key(os.path.join(build.GEN, n)):
-            return -h[1]
+        if h and h[0] == hint_key(os.path.join(build.GEN, n), sig):
+            return -h[1] - (hb[1] if hb and hb[0] == h[0] else 0)
         return -size * 3e-6                # ~1 MB of source ~ 3 s: unmeasured files sit among the measured ones
     build.order_key = order_key
     try:
@@ -446,10 +606,17 @@ def cmd_main(jobs):
     finally:
         hints_write(build.OBJ)
     report(build.OBJ)
+    if _split_stats:
+        s = _split_stats
+        print('-O0 units: %d files, %.0fs of compiler time; functions over %d statements: %d (%d statements); never executed '
+              'in competitive play: %d (%d statements)' % (s['files'][0], s['files'][2], SPLIT_LINES, s.get('long', [0, 0])[0],
+                                                          s.get('long', [0, 0])[1], s.get('cold', [0, 0])[0], s.get('cold', [0, 0])[1]), flush=True)
     if rc:
         return rc
     with open(stamp, 'w') as f:
         f.write(want + chr(10))
+    with open(sstamp, 'w') as f:
+        f.write(swant + chr(10))
     rc = build.build_game_dll()
     print('main: compile + link %.0fs' % (time.time() - t0))
     return rc
@@ -460,7 +627,13 @@ def run_clang_nro(job):
     args, label = job
     src, obj = args[-3], args[-1]
     base = [a for a in args[:-3] if a not in ('-c', '-O0', '-O1', '-O2')]
-    code, out, secs, note = compile_file(src, obj, base)
+    if SPLIT_LINES and os.path.basename(src).startswith('c_'):
+        # scenario D: the long functions of a module (item: 230k statements in one file) in an -O0 unit of their own, the
+        # rest -O1 as before (154 -> 22 s for item\c_0000.c). No coverage per function for the modules: only the long ones
+        # move; the modules keep their small funcs.h (it also declares the module's struct)
+        code, out, secs, note = compile_split(src, obj, base, lambda part, o: compile_file(part, o, base), None, False)
+    else:
+        code, out, secs, note = compile_file(src, obj, base)
     if note or secs > 60:
         line = '%-40s %6.0fs  %s' % (os.path.basename(os.path.dirname(src)) + '/' + label, secs, note)
         _report.append(line)

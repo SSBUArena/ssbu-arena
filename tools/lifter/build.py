@@ -18,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 #     RECOMP_GEN=gen_eh RECOMP_OBJ=obj_eh RECOMP_DLL=ssbu_game_eh.dll python build.py compile --opt=-O0   (and: ... python build.py link)
 GEN = os.path.join(HERE, os.environ.get('RECOMP_GEN', 'gen_eh_o2'))      # side-by-side builds: RECOMP_GEN / RECOMP_OBJ / RECOMP_DLL / RECOMP_SHIM
 OBJ = os.path.join(HERE, os.environ.get('RECOMP_OBJ', 'obj_eh_o1'))
+OBJ_BIG = OBJ + '_big'          # build_opt.py: the -O0 unit of each split file, beside OBJ (cmd_compile prunes OBJ itself)
 CLANG = os.environ.get('RECOMP_CLANG', r'C:\llvm-8.0.0\bin\clang.exe')      # scripts\setup.py sets RECOMP_CLANG (LLVM/clang 9.0.0)
 # RECOMP_TARGET=linux: a native Linux build (ELF objects, the game and the modules as .so files, the exe linked with the
 # system's SDL3 / FreeType / OpenSSL). The Win32 calls of the host sources come from plat/windows.h + plat_posix.c.
@@ -116,6 +117,13 @@ def cmd_compile(jobs, force):
     for n in os.listdir(OBJ):
         if n.endswith('.obj') and n not in wanted:
             os.remove(os.path.join(OBJ, n))
+    # OBJ_big: the -O0 units of split files (build_opt.py, tu_prepare.py), <name>_b.obj. A file compiled again makes its
+    # own again (or none), and one whose source is gone loses it: a part of an old split never links beside a new object
+    if os.path.isdir(OBJ_BIG):
+        again = set(n[:-2] + '_b.obj' for n in todo)
+        for n in os.listdir(OBJ_BIG):
+            if n.endswith('_b.obj') and (n in again or n[:-6] + '.obj' not in wanted):
+                os.remove(os.path.join(OBJ_BIG, n))
     # longest first (source size: the compile time follows it): the biggest files no longer start last and hold up the end
     # (build_opt.py sets order_key: by the seconds each file took before, see build_opt.hints)
     todo.sort(key=order_key or (lambda n: -os.path.getsize(os.path.join(GEN, n))))
@@ -250,8 +258,14 @@ def link_dll(objs, dll, rsp, implib=True, fltused=False):
     if NOCRT and fltused:
         os.makedirs(libdir, exist_ok=True)
         objs = list(objs) + [nocrt_fltused(libdir)]
+    def short(o):            # relative to the build folder: clang hands MSVC link.exe ONE line of objects, at most 131071 characters
+        try:                 # (the split's -O0 units, build_opt.py, made ~2000 absolute paths pass that: LNK1170)
+            r = os.path.relpath(o)
+            return r if len(r) < len(o) else o
+        except ValueError:   # another drive
+            return o
     with open(rsp, 'w') as f:
-        f.write('\n'.join('"%s"' % o.replace('\\', '/') for o in objs))
+        f.write('\n'.join('"%s"' % short(o).replace('\\', '/') for o in objs))
     if TARGET_MACOS:          # a .dylib found through the exe's rpath; undefined names resolve at load, as on Linux
         return subprocess.run([CLANG, '-dynamiclib', '@' + rsp, '-o', dll] + PLAT_FLAGS + ['-lm', '-Wl,-install_name,@rpath/' + os.path.basename(dll), '-Wl,-undefined,dynamic_lookup'], capture_output=True, text=True, errors='replace')
     if TARGET_LINUX:          # a .so: -z now resolves everything at load, as a DLL is
@@ -299,6 +313,8 @@ def build_game_dll():
     if data_objs is None:
         return 1
     objs = sorted(os.path.join(OBJ, n) for n in os.listdir(OBJ) if n.endswith('.obj')) + data_objs
+    if os.path.isdir(OBJ_BIG):               # the -O0 units of the split files (build_opt.py)
+        objs += sorted(os.path.join(OBJ_BIG, n) for n in os.listdir(OBJ_BIG) if n.endswith('_b.obj'))
     newest = max(os.path.getmtime(o) for o in objs)
     if os.path.exists(dll) and os.path.exists(lib) and os.path.getmtime(dll) >= newest:
         return 0

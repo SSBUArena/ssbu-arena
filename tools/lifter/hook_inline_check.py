@@ -384,11 +384,23 @@ def check(targets, gen, objdir, base=BASE):
     for b, ts in sorted(by_bucket.items()):
         src = os.path.join(gen, 'c_%04x.c' % b)
         obj = os.path.join(objdir, 'c_%04x.obj' % b)
+        # build_opt.py's split: the file's -O0 unit (long or never-executed functions) is <obj dir>_big\c_XXXX_b.obj
+        bobj = os.path.join(objdir + '_big', 'c_%04x_b.obj' % b)
+        objs = [obj] + ([bobj] if os.path.exists(bobj) else [])
         calls, src_const = c_calls(src, ts)
         refs, marks = disasm_refs(obj, ts)
-        data, syms, names = coff_functions(obj)
+        for o in objs[1:]:                          # call sites in both units count
+            r2, m2 = disasm_refs(o, ts)
+            for t in ts:
+                for g, k in r2[t].items():
+                    refs[t][g] = refs[t].get(g, 0) + k
+                for g, k in m2[t].items():
+                    marks[t][g] = marks[t].get(g, 0) + k
+        units = [coff_functions(o) for o in objs]
+        names = [n for u in units for n in u[2]]
         for t in ts:
             fn = 'f_%x' % t
+            data, syms, _ = next((u for u in units if fn in u[1]), units[0])
             rows, verdict = [], 'OK'
             for g, (s, dead) in sorted(calls[t].items()):
                 d = refs[t].get(g, 0)
@@ -416,10 +428,13 @@ def census_all(objdir):
     total = bad = 0
     why = collections.Counter()
     first = []
-    for n in sorted(os.listdir(objdir)):
+    big = objdir + '_big'                       # build_opt.py's -O0 units, beside the objects
+    paths = [os.path.join(objdir, n) for n in sorted(os.listdir(objdir))] + ([os.path.join(big, n) for n in sorted(os.listdir(big))] if os.path.isdir(big) else [])
+    for p in paths:
+        n = os.path.basename(p)
         if not (n.startswith('c_') and n.endswith('.obj')):
             continue
-        data, syms, _ = coff_functions(os.path.join(objdir, n))
+        data, syms, _ = coff_functions(p)
         for name, (at, _) in syms.items():
             if not name.startswith('f_'):
                 continue
