@@ -110,9 +110,11 @@ TOOLS = {   # checked 2026-10-19: SDL3 and glslang equal GitHub's own asset dige
 RUNTIME_RELEASE = ('https://github.com/Acid236/ssbu-arena/releases/download/v0.2.7/ssbu-runtime-614e837c73.zip', '4a2a423bb9af1b5360fc83606300eb390787da8fd9e15aba862970100a5e3129')
 
 SETUP_STEPS = ['deps', 'stage', 'convert', 'modules', 'tables', 'lift', 'sdk', 'compile', 'nro', 'link', 'rollback', 'check']
-# expected seconds, measured 2026-10-19 on a PC with 12 jobs and 32 threads (compile and nro scale with 12 / jobs)
+# expected seconds, measured 2026-10-19 on a PC with 12 jobs and 32 threads (compile and nro scale with 12 / jobs);
+# compile and nro scaled 2026-10-23 by the split of build_opt.py / tu_prepare.py (scenario D: from-scratch builds on one
+# 12-thread PC, compile 3841 -> 1641 s, nro 857 -> 761 s)
 EST = {'update': 10, 'precheck': 10, 'packages': 30, 'inputs': 10, 'dump': 600, 'tools': 30, 'media': 20, 'dlc': 1,
-       'deps': 5, 'stage': 3, 'convert': 3, 'modules': 4, 'tables': 1, 'lift': 20, 'sdk': 2, 'compile': 2217, 'nro': 880,
+       'deps': 5, 'stage': 3, 'convert': 3, 'modules': 4, 'tables': 1, 'lift': 20, 'sdk': 2, 'compile': 950, 'nro': 780,
        'link': 60, 'rollback': 10, 'check': 30, 'menu': 40, 'files': 60, 'shortcuts': 3, 'unblock': 5}
 TITLES = {'update': 'Update this program', 'precheck': 'Check this PC', 'packages': 'Python packages',
           'inputs': 'Find your game files', 'dump': 'Prepare the game files', 'dlc': 'Add-on contents (DLC)', 'tools': 'Build tools', 'media': 'Music and movies',

@@ -121,6 +121,14 @@ def build_module(e, jobs, relift, opt):
     for n in os.listdir(obj):
         if n.endswith('.obj') and n not in wanted:
             os.remove(os.path.join(obj, n))
+    # <obj>_big: the -O0 units of split files (build_opt.py run_clang_nro, tu_prepare.py). A file compiled again makes its
+    # own again (or none), one whose source is gone loses it: a part of an old split never links beside a new object
+    big = obj + '_big'
+    if os.path.isdir(big):
+        again = set(os.path.basename(j[0][-1])[:-4] + '_b.obj' for j in todo)
+        for n in os.listdir(big):
+            if n.endswith('_b.obj') and (n in again or n[:-6] + '.obj' not in wanted):
+                os.remove(os.path.join(big, n))
     failed = 0
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
         todo.sort(key=lambda j: -os.path.getsize(j[0][-3]))       # longest first
@@ -136,6 +144,8 @@ def build_module(e, jobs, relift, opt):
     t0 = time.time()
     dll = os.path.join(bindir, name + LIB_EXT)
     objs = sorted(os.path.join(obj, n) for n in os.listdir(obj) if n.endswith('.obj'))
+    if os.path.isdir(big):
+        objs += sorted(os.path.join(big, n) for n in os.listdir(big) if n.endswith('_b.obj'))
     linked = False
     if not os.path.exists(dll) or os.path.getmtime(dll) < max(os.path.getmtime(o) for o in objs):
         r = build.link_dll(objs, dll, os.path.join(obj, 'link.rsp'), implib=False, fltused=True)
