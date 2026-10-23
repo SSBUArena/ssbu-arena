@@ -168,8 +168,8 @@ static int comp_seq_allowed(uint32_t s) { return (s >> 24) == 0x01 || s == 0x020
 #define RULE_KIND  0x51
 #define RULE_TIME  0x54
 #define RULE_STOCK 0x56
-static volatile LONG g_quick;
-static uint8_t g_quick_saved[3][8]; static int g_quick_have;
+static volatile LONG g_quick, g_quick_skip_rules;
+static uint8_t g_quick_saved[3][8], g_quick_saved_4b; static int g_quick_have;      /* (+ 0x4b of copy 1: comp_stage_state) */
 static int g_quick_kind = -1, g_quick_time = -1;            /* the values written (-1 = not written) */
 int comp_quickplay(void) { return g_quick != 0; }
 static void comp_rule_dump(const char *why) {
@@ -192,7 +192,9 @@ static void comp_quick_end(const char *why) {
     if (g_quick_have) for (int k = 0; k < 2; k++) {             /* (twice: comp_keep may have been inside comp_quick_rules) */
         if (k) Sleep(5);
         for (int i = 0; i < 3; i++) memcpy((void *)(uintptr_t)(k_rules[i] + 0x50), g_quick_saved[i], 8);
+        *(volatile uint8_t *)(uintptr_t)(k_rules[1] + 0x4b) = g_quick_saved_4b;
     }
+    if (g_quick_have) comp_rule_dump("put back");
     g_quick_have = 0;
     printf("competitive UI: online matchmaking off (%s); the player's own rules are back\n", why); fflush(stdout);
 }
@@ -212,12 +214,14 @@ static int comp_quick_begin(void) {           /* 1 = the quick match starts (the
     {   const char *e = getenv("SSBU_QUICK_RULE_KIND"); g_quick_kind = e && *e ? atoi(e) : 1; }
     {   const char *e = getenv("SSBU_QUICK_RULE_TIME"); g_quick_time = e && *e ? atoi(e) : 420; }
     for (int i = 0; i < 3; i++) memcpy(g_quick_saved[i], (const void *)(uintptr_t)(k_rules[i] + 0x50), 8);
+    g_quick_saved_4b = *(volatile uint8_t *)(uintptr_t)(k_rules[1] + 0x4b);
     g_quick_have = 1;
     comp_rule_dump("the player's own");
     InterlockedExchange(&g_quick, 1);
+    InterlockedExchange(&g_quick_skip_rules, 1);       /* (comp_rule_state) */
     comp_quick_rules();
     printf("competitive UI: Online Ranked -> online matchmaking (no rating yet): the Smash versus select screens; the fight searches an opponent through the lobby\n"); fflush(stdout);
-    menu_popup("Online matchmaking", "Choose your fighter and a stage, then start: the game finds an opponent in the online lobby (no rating yet). Rules: 1 on 1, 3 stocks, 7 minutes, no items, no hazards.");
+    menu_popup("Online matchmaking", "Choose your fighter, then start: the game finds an opponent in the online lobby (no rating yet). Player 2 (shown as a CPU on the select screen) is only a placeholder: your online opponent takes that place. Rules: 1 on 1, 3 stocks, 7 minutes, no items, no hazards.");
     return 1;
 }
 static void comp_scene(Ctx *c, void *user) {
@@ -291,8 +295,53 @@ static DWORD WINAPI comp_keep(LPVOID arg) {
         if (ok) break;
         Sleep(20);
     }
-    for (;;) { comp_clear(); if (g_quick) comp_quick_rules(); Sleep(2); }
+    for (;;) {
+        comp_clear();
+        if (g_quick) {          /* (the main menu's own scene is not made by the scene dispatcher comp_scene hooks: the flag ends here) */
+            if ((*(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE >> 24) == 0x01) comp_quick_end("back at the main menu");
+            else comp_quick_rules();
+        }
+        Sleep(2);
+    }
     return 0;
+}
+/* (online matchmaking) the Smash versus sequence (MeleeNormalSequenceScene, made at 0x7102336a00..) is a state machine:
+ * this + 0x30 + 0x10 * state = the state's handler (2 Rulesets 0x71023343e0, 4 stage 0x71023353d0, 5 character select
+ * 0x7102334f50, 7 after the fight 0x7102335ef0 -> 4), this + 0x11c the current step, + 0x120 the state, + 0x128 the one
+ * before, this + 0xd0 + 4 * step the next one; a handler is called every frame while its state is on, with this + 0x124 = 0
+ * the first time (it then asks for its scene, scene change 0x7103726120) and afterwards it waits for the scene's result
+ * ([this] + 0x40; Rulesets: 1 decided -> next 4). A quick match does not show the Rulesets screen (its ruleset would not be
+ * the one played, comp_quick_rules): the first time the Rulesets state starts after the Online Ranked tile, its handler is
+ * not run and the next state is 4, as if a ruleset had been decided. Back from the character select (hold B), the Rulesets
+ * screen is shown as usual; B there goes back to the main menu.
+ * The stage state (4) shows the stage select only when rule copy 1 + 0x4b is 0, 1 or 2 (0x7102335464..); with a decided
+ * ruleset the byte is not (run ui3: 4 after "3S Comp"; 0x64 in the game's own rules at boot), so the Arena flow never shows
+ * that screen (the light archive's list has no stage pictures). Without the Rulesets screen the byte became 0 after the fight
+ * (run ui2/ui3: the stage select came after the results, before the character select): in a quick match it is kept out of
+ * 0..2 at that state's start (the game's own path then: next state 5, the character select). Put back at the main menu. */
+#define RULE1_STAGE_SELECT 0x710530996full       /* (k_rules[1] + 0x4b) */
+static ImportFn g_rule_state_orig, g_stage_state_orig;
+static void comp_rule_state(Ctx *c, void *user) {
+    (void)user;
+    uint64_t self = c->x[0];
+    if (g_quick && self && *(volatile uint32_t *)(uintptr_t)(self + 0x124) == 0 && InterlockedExchange(&g_quick_skip_rules, 0)) {
+        int32_t step = *(volatile int32_t *)(uintptr_t)(self + 0x11c);
+        if (step >= 0 && step < 0x13) {
+            *(volatile uint32_t *)(uintptr_t)(self + 0xd0 + 4ull * (uint64_t)step) = 4;
+            printf("competitive UI: online matchmaking: the Rulesets screen skipped (step %d: next state 4, then the character select)\n", step); fflush(stdout);
+            return;
+        }
+    }
+    g_rule_state_orig(c);
+}
+static void comp_stage_state(Ctx *c, void *user) {
+    (void)user;
+    uint64_t self = c->x[0];
+    if (g_quick && self && *(volatile uint32_t *)(uintptr_t)(self + 0x124) == 0 && *(volatile uint8_t *)(uintptr_t)RULE1_STAGE_SELECT <= 2) {
+        printf("competitive UI: online matchmaking: no stage select (rule copy 1 + 0x4b %u -> 0x64)\n", *(volatile uint8_t *)(uintptr_t)RULE1_STAGE_SELECT); fflush(stdout);
+        *(volatile uint8_t *)(uintptr_t)RULE1_STAGE_SELECT = 0x64;
+    }
+    g_stage_state_orig(c);
 }
 static DWORD WINAPI comp_wait(LPVOID arg) {
     (void)arg;
@@ -304,6 +353,8 @@ static DWORD WINAPI comp_wait(LPVOID arg) {
                 int menu_hook = hook_install(0x710232ce40ull, comp_menu, NULL, &g_menu_orig);
                 int local_hook = hook_install(0x7101bef020ull, comp_open_local, NULL, &g_pallet_orig);
                 int ready_hook = hook_install(0x7101af97f0ull, comp_pallet_ready, NULL, &g_pallet_ready_orig);
+                if (!hook_install(0x71023343e0ull, comp_rule_state, NULL, &g_rule_state_orig) || !hook_install(0x71023353d0ull, comp_stage_state, NULL, &g_stage_state_orig))
+                    printf("competitive UI: Smash versus state hooks FAILED (a quick match shows the Rulesets screen)\n");
                 printf("competitive UI: menu hook %d; trace %s\n", menu_hook, getenv("SSBU_UI_TRACE") ? getenv("SSBU_UI_TRACE") : "off");
                 if (!local_hook || !ready_hook) printf("competitive UI: Local Wireless action hook FAILED\n");
             }
