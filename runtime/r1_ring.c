@@ -30,6 +30,13 @@
  * kick-skip mask in re-run passes except the last one (experiment). SSBU_RB_PARK_MS (default 30): hold limit. */
 
 #define RG_MAXSLOT 16
+/* (Arena perf, TEST ONLY) SSBU_RB_AB=<mask>: A/B of the rollback-tick features in ONE run: rb_rollback.c sets the side per
+ * rollback (blocks of 8 rollbacks on, 8 off) and its report gives both groups. Bits: 1 re-run passes do not wait in
+ * nvnSyncWait (nvn_gl.c), 2 NT stores in captures, 8 the sound threads held through the re-run passes, 16 the extras through
+ * write watch. Without SSBU_RB_AB every feature has its normal setting. */
+static int g_rbab = -1, g_rbab_side;
+static int rb_feat(int bit, int dflt) { if (g_rbab < 0) { const char *e = getenv("SSBU_RB_AB"); g_rbab = e ? atoi(e) : 0; } return (g_rbab & bit) ? g_rbab_side : dflt; }
+int r1_rb_feat(int bit, int dflt) { return rb_feat(bit, dflt); }
 extern volatile int g_rgp_seg;                            /* (R2 round 3, profile 3: which part of a pass main is in) */
 #define RG_FLAT 0u
 #define RG_DECOM 1u
@@ -331,6 +338,69 @@ static void rg_meta_prof_report(void) {
     LOG("r1: META PROF captures %lld: fibers %.4f (fiber pool %.0f KB), command buffers %.4f (%.0f KB), threads %.4f, let go %.4f ms; loads %lld: thread registers %.4f, fibers %.4f, catch table %.4f, command buffers %.4f, let go %.4f ms\n",
         g_mp_n[0], g_mp[0] / a, g_mp_b[0] / a / 1024, g_mp[1] / a, g_mp_b[1] / a / 1024, g_mp[2] / a, g_mp[3] / a, g_mp_n[1], g_mp[4] / b, g_mp[5] / b, g_mp[6] / b, g_mp[7] / b, g_mp[8] / b);
 }
+/* (Arena perf) EXTRAS THROUGH WRITE WATCH (see the allocations in os_threads.c, boot.c, r1_state.c): rgx_each calls fn(e)
+ * for every extras page written since the last capture / load (the OS's write watch, reset by the call; the threads are
+ * held, so nothing writes in between), and for every page of a range the OS does not watch. Correct also before the
+ * first reset (the OS then lists every page written since the allocation: more pages, never fewer). SSBU_RB_XWW=0: off. */
+static int g_rgx_ww = -1; static void **g_rgx_addr; static size_t g_rgx_cap, g_rgx_nq, g_rgx_qcap; static uint32_t *g_rgx_q; static uint8_t *g_rgx_res;
+static double g_rgx_ms[2]; static long long g_rgx_n[2], g_rgx_pages[2], g_rgx_fallback[2];
+static int rgx_on(void) { if (g_rgx_ww < 0) { const char *e = getenv("SSBU_RB_XWW"); g_rgx_ww = !(e && e[0] == '0'); } return g_rgx_ww > 0 && rb_feat(16, 1); }      /* (bit 16 of the A/B test) */
+/* an extras range can span several allocations (64 KB TLS blocks and stacks side by side are one run of pages): it is split
+ * at the allocations (VirtualQuery, once per set of ranges); each piece is asked on its own (ww: -1 not asked yet, 0 the OS
+ * does not watch it: compared / copied whole from then on, 1 watched) */
+typedef struct { uint8_t *a; size_t n, e0; int ww; } RgxSub;
+static RgxSub *g_rgx_sub; static int g_rgx_nsub, g_rgx_subcap; static uint64_t g_rgx_sig; static int g_rgx_nww;
+static void rgx_build(void) {
+    uint64_t sig = (uint64_t)g_nx; for (int i = 0; i < g_nx; i++) sig = sig * 131 + (uint64_t)(uintptr_t)g_x[i].a + g_x[i].n;
+    if (g_rgx_sub && sig == g_rgx_sig) return;
+    g_rgx_sig = sig; g_rgx_nsub = 0; size_t e0 = 0;
+    for (int i = 0; i < g_nx; i++) {
+        uint8_t *p = g_x[i].a, *end = g_x[i].a + g_x[i].n;
+        while (p < end) {
+            MEMORY_BASIC_INFORMATION m; uint8_t *q = end;
+            if (VirtualQuery(p, &m, sizeof m)) {
+                void *ab = m.AllocationBase; q = (uint8_t *)m.BaseAddress + m.RegionSize;
+                while (q < end && VirtualQuery(q, &m, sizeof m) && m.AllocationBase == ab) q = (uint8_t *)m.BaseAddress + m.RegionSize;
+                if (q > end || q <= p) q = end;
+            }
+            if (g_rgx_nsub >= g_rgx_subcap) { int nc = g_rgx_subcap ? g_rgx_subcap * 2 : 64; RgxSub *ns = realloc(g_rgx_sub, (size_t)nc * sizeof *ns); if (!ns) { g_rgx_ww = 0; return; } g_rgx_sub = ns; g_rgx_subcap = nc; }
+            RgxSub *s = &g_rgx_sub[g_rgx_nsub++]; s->a = p; s->n = (size_t)(q - p); s->e0 = e0 + (size_t)(p - g_x[i].a) / PG; s->ww = -1;
+            p = q;
+        }
+        e0 += g_x[i].n / PG;
+    }
+}
+static void rgx_each(int kind, void (*fn)(size_t e)) {
+    double t = now_ms();
+    int on = rgx_on(); if (on) rgx_build(); on = on && g_rgx_ww > 0;
+    if (!on) {                                         /* every extras page */
+        for (size_t e = 0; e < g_rg_nx; e++) fn(e);
+        g_rgx_pages[kind] += (long long)g_rg_nx; g_rgx_ms[kind] += now_ms() - t; g_rgx_n[kind]++; return;
+    }
+    g_rgx_nww = 0;
+    for (int i = 0; i < g_rgx_nsub; i++) {
+        RgxSub *s = &g_rgx_sub[i]; size_t np = s->n / PG;
+        if (s->ww != 0) {
+            if (g_rgx_cap < np) { free(g_rgx_addr); g_rgx_cap = np + 256; g_rgx_addr = malloc(g_rgx_cap * sizeof *g_rgx_addr); if (!g_rgx_addr) g_rgx_cap = 0; }
+            ULONG_PTR cnt = np; ULONG gran = 0;
+            if (g_rgx_addr && GetWriteWatch(WRITE_WATCH_FLAG_RESET, s->a, s->n, g_rgx_addr, &cnt, &gran) == 0 && gran == PG && cnt <= np) {
+                s->ww = 1; g_rgx_nww++;
+                for (ULONG_PTR k = 0; k < cnt; k++) { size_t off = (size_t)((uint8_t *)g_rgx_addr[k] - s->a) / PG; if (off < np) fn(s->e0 + off); }
+                g_rgx_pages[kind] += (long long)cnt; continue;
+            }
+            s->ww = 0;                                    /* (not watched: never asked again) */
+        }
+        g_rgx_fallback[kind]++;
+        for (size_t p = 0; p < np; p++) fn(s->e0 + p);
+        g_rgx_pages[kind] += (long long)np;
+    }
+    g_rgx_ms[kind] += now_ms() - t; g_rgx_n[kind]++;
+}
+static void rgx_queue(size_t e) {                       /* capture: compare page e with its newest value */
+    if (g_rgx_nq >= g_rgx_qcap) return;
+    cp_add(g_rg_xa[e], rg_src((uint32_t)(g_rg_n1 + g_rg_n2 + e))); g_rgx_q[g_rgx_nq++] = (uint32_t)e;
+}
+static void rgx_touch(size_t e) { rg_touch((uint32_t)(g_rg_n1 + g_rg_n2 + e)); }      /* load: page e copied back */
 int r1_ring_capture(long long frame, Ctx *c) {
     R1_CTR("capture (frame)", frame, 0);
     double t0 = now_ms(); int seg_was = g_rgp_seg; g_rgp_seg = 4;
@@ -367,8 +437,19 @@ int r1_ring_capture(long long frame, Ctx *c) {
     s->frame = frame; s->nent = 0; s->pages = 0; s->xpages = 0;
     g_rg_cur = s; g_rg_fail_now = 0;
     static uint8_t *xdiff; static size_t xdn; if (xdn < g_rg_nx + 1) { free(xdiff); xdn = g_rg_nx + 1; xdiff = calloc(xdn, 1); }   /* (hs12: the extras can change at a rebase) */
-    for (size_t e = 0; e < g_rg_nx; e++) cp_add(g_rg_xa[e], rg_src((uint32_t)(g_rg_n1 + g_rg_n2 + e)));      /* (round 3) extras compared by main + the copy threads */
-    g_cp_cmp = xdiff; cp_run(); g_cp_cmp = NULL;
+    {   /* (round 3) extras compared by main + the copy threads; (Arena perf) only those written since the last capture / load */
+        if (g_rgx_qcap < g_rg_nx + 1) { free(g_rgx_q); free(g_rgx_res); g_rgx_qcap = g_rg_nx + 1; g_rgx_q = malloc(g_rgx_qcap * 4); g_rgx_res = malloc(g_rgx_qcap); if (!g_rgx_q || !g_rgx_res) { free(g_rgx_q); free(g_rgx_res); g_rgx_q = NULL; g_rgx_res = NULL; g_rgx_qcap = 0; } }
+        if (g_rgx_q && rgx_on()) {
+            g_rgx_nq = 0; rgx_each(0, rgx_queue);
+            memset(xdiff, 0, g_rg_nx + 1);
+            g_cp_cmp = g_rgx_res; cp_run(); g_cp_cmp = NULL;
+            for (size_t j = 0; j < g_rgx_nq; j++) xdiff[g_rgx_q[j]] = g_rgx_res[j];
+        } else {                                          /* (the old way: every extras page) */
+            double t = now_ms();
+            for (size_t e = 0; e < g_rg_nx; e++) cp_add(g_rg_xa[e], rg_src((uint32_t)(g_rg_n1 + g_rg_n2 + e)));
+            g_cp_cmp = xdiff; cp_run(); g_cp_cmp = NULL;
+            g_rgx_ms[0] += now_ms() - t; g_rgx_n[0]++; g_rgx_pages[0] += (long long)g_rg_nx;
+        } }
     if (g_rgpg_on < 0) g_rgpg_on = getenv("SSBU_RB_SIM_PAGES") != NULL;
     g_rgpg_kind = g_ra_phase != 2 ? 0 : g_rgs_left > 1 ? 1 : 2; g_rgpg_caps[g_rgpg_kind]++;
     if (g_ls_active) ls_capture(rg_cap_page); else rg_sweep(rg_cap_page);      /* R4: the learned set (rb_learned.c) instead of the marks */
@@ -380,7 +461,8 @@ int r1_ring_capture(long long frame, Ctx *c) {
         cp_add(rg_pool_ptr(nb), g_rg_xa[e]); g_rg_idx[id] = nb; s->xpages++;
     }
     double t2 = now_ms();
-    cp_run();
+    {   static int nt = -1; if (nt < 0) { const char *e = getenv("SSBU_RB_NT"); nt = !e || atoi(e) != 0; }      /* (Arena perf) non-temporal stores into the pool (r1_state.c cp_page_nt) */
+        g_cp_nt = rb_feat(2, nt); cp_run(); g_cp_nt = 0; }
     if (g_rg_fail_now && g_rg_poolfix) {                    /* (hs14) given up: this capture's pages back to their previous values, marked again */
         size_t undone = s->nent;
         for (size_t n = s->nent; n-- > 0;) { uint32_t id = s->ent[2 * n], old = s->ent[2 * n + 1]; rg_pool_put(g_rg_idx[id]); g_rg_idx[id] = old; rg_remark(id); }
@@ -623,7 +705,7 @@ int r1_ring_load(long long frame, Ctx *c) {
     }
     g_rg_count = si + 1;
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */
-    for (size_t e = 0; e < g_rg_nx; e++) rg_touch((uint32_t)(g_rg_n1 + g_rg_n2 + e));
+    rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
     size_t pages = g_rg_ntl; g_rg_ldpg += (long long)pages;
     for (size_t n = 0; n < g_rg_ntl; n++) {               /* each page once, from its value at `frame` */
         uint32_t id = g_rg_tl[n]; g_rg_touch[id] = 0;
@@ -690,7 +772,7 @@ static void rgs_step(Ctx *c) {
     }
     if (g_rgs_polls_cur > 1) g_rgs_multi++;
     g_rgs_polls_cur = 0;
-    if (g_ra_off || !ra_fight_on()) { ls_fight_off(); if (g_ra_phase) g_ra_after_quiet = 1; g_ra_phase = 0; g_rgs_left = 0; g_rgs_pass_t0 = 0; if (rbg_on()) rbg_fight_off(); return; }   /* (R3: the report once at the end of each match; hs12: the session reset for the next match) */
+    if (g_ra_off || !ra_fight_on()) { snd_let_go(); ls_fight_off(); if (g_ra_phase) g_ra_after_quiet = 1; g_ra_phase = 0; g_rgs_left = 0; g_rgs_pass_t0 = 0; if (rbg_on()) rbg_fight_off(); return; }   /* (R3: the report once at the end of each match; hs12: the session reset for the next match) */
     if (rbg_on()) { rbg_step(c); g_rgs_pass_t0 = now_ms(); g_rgs_cyc0 = rgs_cyc_now(); g_ra_t_mark = g_rgs_pass_t0; return; }      /* R3: online rollback */
     long long i = g_rgs_next;                             /* the pass that ended here */
     if (g_rg_keep_on < 0) { const char *e = getenv("SSBU_RB_KEEP"); g_rg_keep_on = !e || atoi(e) != 0; }
@@ -1028,6 +1110,9 @@ static void rgs_report(void) {
     LOG("r1: RING loads right after a capture with the threads kept held: %lld (threads kept at the same wait: %lld); fibers %d (last); stale fiber-block notes refused %lld\n", g_rg_kept_n, g_rg_kept_same, g_nfib, g_r1_fls_stale);
     LOG("r1: RING capture: median %.3f mean %.3f p99 %.3f ms; parts (means): hold %.3f, sweep + undo log %.3f, page copy (parallel) %.3f, fibers + threads + command buffers + let go %.3f; pages %.0f + extras %.0f mean (%.1f MB)\n",
         rg_pct(g_rgc[0], n, 50), rg_mean(g_rgc[0], n), rg_pct(g_rgc[0], n, 99), rg_mean(g_rgc[1], n), rg_mean(g_rgc[2], n), rg_mean(g_rgc[3], n), rg_mean(g_rgc[4], n), n ? pg / n : 0, n ? xp / n : 0, n ? (pg + xp) / n * PG / 1048576.0 : 0);
+    LOG("r1: RING extras (write watch %s): %zu pages in %d ranges (%d pieces, %d watched); captures %lld: %.3f ms, %.1f pages to compare each, ranges not watched %lld; loads %lld: %.3f ms, %.1f pages to copy each, ranges not watched %lld\n",
+        g_rgx_ww > 0 ? "on" : "OFF", g_rg_nx, g_nx, g_rgx_nsub, g_rgx_nww, g_rgx_n[0], g_rgx_n[0] ? g_rgx_ms[0] / g_rgx_n[0] : 0.0, g_rgx_n[0] ? (double)g_rgx_pages[0] / g_rgx_n[0] : 0.0, g_rgx_fallback[0],
+        g_rgx_n[1], g_rgx_n[1] ? g_rgx_ms[1] / g_rgx_n[1] : 0.0, g_rgx_n[1] ? (double)g_rgx_pages[1] / g_rgx_n[1] : 0.0, g_rgx_fallback[1]);
     {   long long w = 0; for (int q = 0; q < 9; q++) w += g_cp_wrote[q];
         LOG("r1: RING loads (net3, SSBU_RB_LOADCMP): pages to load %lld, of them written (they differed) %lld (%.1f%%)\n", g_rg_ldpg, w, g_rg_ldpg ? 100.0 * (double)w / (double)g_rg_ldpg : 0.0); }
     LOG("r1: RING loads: pages committed again (freed by the game after the loaded frame) %lld; task worker wake-ups given again %lld\n", g_rg_recommit, g_rg_rewake);
@@ -1058,7 +1143,7 @@ static void rgs_report(void) {
         LOG("r1: RB SIM main-thread CPU per pass (safe point to safe point, without the capture / load; QueryThreadCycleTime): real %.3f, re-run %.3f million cycles\n",
             g_rgs_npass[0] ? g_rgs_cyc[0] / g_rgs_npass[0] / 1e6 : 0, g_rgs_npass[1] ? g_rgs_cyc[1] / g_rgs_npass[1] / 1e6 : 0);
         LOG("r1: RB SIM re-run passes but the last (the replayed frames a rollback pays for): %lld mean %.3f median %.3f ms; last re-run passes %lld mean %.3f median %.3f ms\n", g_rgs_npl[0], g_rgs_npl[0] ? g_rgs_pl[0] / g_rgs_npl[0] : 0, rg_pct(g_rgs_plv[0], g_rgs_nplv[0], 50), g_rgs_npl[1], g_rgs_npl[1] ? g_rgs_pl[1] / g_rgs_npl[1] : 0, rg_pct(g_rgs_plv[1], g_rgs_nplv[1], 50));
-        for (int k = 0; k < 3; k += 2) if (g_rapn[k]) LOG("r1: RB SIM %s passes (%lld), means ms: pass start -> poll %.3f, poll -> frame end %.3f, frame end call %.3f, frame end -> safe point %.3f\n",
-            k == 0 ? "real" : "re-run", g_rapn[k], g_rap[k][0] / g_rapn[k], g_rap[k][1] / g_rapn[k], g_rap[k][2] / g_rapn[k], g_rap[k][3] / g_rapn[k]);
+        for (int k = 0; k < 3; k++) if (g_rapn[k]) LOG("r1: RB SIM %s passes (%lld), means ms: pass start -> poll %.3f, poll -> frame end %.3f, frame end call %.3f, frame end -> safe point %.3f\n",
+            k == 0 ? "real" : k == 1 ? "re-run (not the last)" : "re-run (the last)", g_rapn[k], g_rap[k][0] / g_rapn[k], g_rap[k][1] / g_rapn[k], g_rap[k][2] / g_rapn[k], g_rap[k][3] / g_rapn[k]);
     }
 }

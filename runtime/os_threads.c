@@ -224,11 +224,18 @@ uint64_t os_main_thread_type(void) { return (uint64_t)(uintptr_t)g_main_thread; 
 uint64_t g_main_stack_base, g_main_stack_size;        /* set by boot.c */
 static volatile LONG g_thread_count;
 
+/* (Arena perf) guest stacks and TLS blocks made here are write-watched on Windows: they are extras of the rollback ring
+ * (r1_ring.c rgx_each: only the pages written since the last capture are compared) */
+#ifdef _WIN32
+#define OS_WW MEM_WRITE_WATCH
+#else
+#define OS_WW 0
+#endif
 static Ctx *new_ctx(uint64_t stack_top) {
     Ctx *c = _aligned_malloc(sizeof *c, 16);
     memset(c, 0, sizeof *c);
     c->x[31] = stack_top & ~15ull;
-    c->tpidr = (uint64_t)VirtualAlloc(NULL, 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    c->tpidr = (uint64_t)VirtualAlloc(NULL, 0x10000, MEM_RESERVE | MEM_COMMIT | OS_WW, PAGE_READWRITE);      /* (Arena perf) OS_WW: the rollback ring asks which pages were written */
     return c;
 }
 
@@ -957,7 +964,7 @@ static void pt_create(Ctx *c) {
     if (size < (256u << 10)) size = 256u << 10;
     size = (size + 0xffff) & ~0xffffull;
     uint8_t *tt = calloc(1, 0x400);                   /* the thread's ThreadType: never freed (pthread_t values stay unique) */
-    void *stack = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    void *stack = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_COMMIT | OS_WW, PAGE_READWRITE);
     if (!tt || !stack) { free(tt); if (stack) VirtualFree(stack, 0, MEM_RELEASE); RET(P_EAGAIN); return; }
     Obj *o = obj((uint64_t)(uintptr_t)tt);
     o->fn = A2; o->arg = A3; o->stack = (uint64_t)(uintptr_t)stack; o->stack_size = size;

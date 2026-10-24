@@ -243,10 +243,19 @@ static DWORD WINAPI guest_main(LPVOID arg) {
      * moves the guest SP exactly as the ARM code does); the host's own frames live on the host stack and are not
      * guest-visible. SSBU_MAIN_STACK=<bytes> overrides (diagnosis only). */
     size_t stack_size = main_stack_size_from_npdm();
+#ifdef _WIN32
+    uint8_t *stack_res = VirtualAlloc(NULL, stack_size + 0x20000, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS);      /* (Arena perf) write watch: an extra of the rollback ring (r1_ring.c rgx_each) */
+    if (!stack_res) stack_res = VirtualAlloc(NULL, stack_size + 0x20000, MEM_RESERVE, PAGE_NOACCESS);
+#else
     uint8_t *stack_res = VirtualAlloc(NULL, stack_size + 0x20000, MEM_RESERVE, PAGE_NOACCESS);
+#endif
     uint8_t *stack = stack_res ? VirtualAlloc(stack_res + 0x10000, stack_size, MEM_COMMIT, PAGE_READWRITE) : NULL;
     if (!stack) { fprintf(stderr, "cannot allocate the main thread's stack (0x%llx bytes)\n", (unsigned long long)stack_size); exit(1); }
+#ifdef _WIN32
+    uint8_t *tls = VirtualAlloc(NULL, 0x10000, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+#else
     uint8_t *tls = VirtualAlloc(NULL, 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#endif
     c.x[31] = (uint64_t)(stack + stack_size);          /* the initial SP is the top of the stack (16-byte aligned: the size is whole pages) */
     c.tpidr = (uint64_t)tls;
     { uint64_t os_main_thread_type(void); memcpy(tls + 0x1f8, &(uint64_t){os_main_thread_type()}, 8); }   /* [sdk 0x3349dc..e0] nn::os::detail::ThreadManager(): the main thread's ThreadType pointer */
