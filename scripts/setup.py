@@ -1111,9 +1111,18 @@ def copy_ffmpeg(cx):
 def step_compile(cx):
     if cx.posix:
         say('  up to %d compilers at once, sharing the RAM (logs/compile.log shows the progress)' % cx.jobs)
-    cx.run('compile', [sys.executable, 'build_opt.py', 'main', str(cx.jobs)], env=build_env(cx))
+    # the script modules are built in the same queue (tools/lifter/build_opt.py RECOMP_WITH_NRO): no core waits for the
+    # last big files of one step before the other starts; the nro step then only checks they are up to date (and builds
+    # again what failed here). RECOMP_WITH_NRO=0 in the environment: the two steps one after the other, as before
+    mods = [m for m in (cx.a.modules or 'all').split(',') if m]
+    with_nro = os.environ.get('RECOMP_WITH_NRO', '1') not in ('', '0')
+    cx.run('compile', [sys.executable, 'build_opt.py', 'main', str(cx.jobs)],
+           env=dict(build_env(cx), RECOMP_WITH_NRO='1' if with_nro else '0', RECOMP_NRO_MODULES=','.join(mods)))
     dll = os.path.join(cx.work, game_lib(cx))
     say('  %s %.0f MB; objects %.0f MB' % (game_lib(cx), os.path.getsize(dll) / 1048576.0, disk_mb(os.path.join(cx.work, 'obj_eh_o1' if cx.posix else 'obj_r1'))))
+    if with_nro:
+        d = os.path.join(cx.work, nro_dir(cx))
+        say('  script modules built in the same queue: %d libraries in %s (the nro step checks them)' % (len([f for f in os.listdir(d) if f.endswith(lib_ext(cx))]) if os.path.isdir(d) else 0, nro_dir(cx)))
 
 
 def step_nro(cx):

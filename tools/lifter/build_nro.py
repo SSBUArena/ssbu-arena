@@ -7,10 +7,23 @@ For each module (name with or without the lua2cpp_ prefix):
     ro_study\\nro\\<module>.nro  --recomp_nro.py-->  gen_nro\\<module>\\*.c      (only when the lifter or the NRO changed)
     gen_nro\\<module>\\*.c       --clang -O0----->  obj_nro\\<module>\\*.obj    (only what changed, in parallel)
     obj_nro\\<module>\\*.obj + nro_shim.c  ----->  nro_bin\\<module>.dll       (only when an object changed)
+Under build_opt.py (the installed build) a unit is `unity` consecutive c_*.c files (g_<first>.obj, see `unity` below),
+each compiled as an optimised part and an -O0 part (tu_prepare.py), table.c and imports.c on their own.
 nnro.c loads nro_bin\\<module>.dll when the game calls nn::ro::LoadModule for that module, so neither
 `build.py link` nor the exe depends on which modules have been built.
+
+Scheduling (2026-10-24, RECOMP_NRO_SCHED, default 'global'): ONE pool of lifter processes for all modules (recomp_nro.py
+lift service: one pass, no process pool per module) and ONE queue of compile units for all modules, largest first, served
+by `jobs` compilers; a module is linked as soon as its last unit is compiled. Before ('modules'): each module lifted by a
+pool of its own (4 at a time) and compiled by a queue of its own (6 modules at a time), which left the CPU idle while
+modules waited for their lift or the last big file of each module (measured: 623 s at 12 jobs for ~5000 s of work).
+
+RECOMP_NRO_COVERAGE=1 (TEST ONLY, a coverage build: tools/competitive/nro_coverage.sh): the lifted code is compiled with
+-finstrument-functions-after-inlining and nro_cov.c is linked into every module DLL; the game then writes the executed
+functions of each module to SSBU_COVERAGE_NRO\\<module>.txt. Use another RECOMP_NRO_SUFFIX for it.
 """
 import concurrent.futures
+import heapq
 import json
 import os
 import subprocess
@@ -28,6 +41,23 @@ PLAT_FLAGS = (['-fPIC', '-fvisibility=hidden', '-include', os.path.join(HERE, 'p
 LIB_EXT = '.dylib' if TARGET_MACOS else '.so' if TARGET_LINUX else '.dll'     # nnro.c asks for <name>.dll; plat_posix.c maps it
 GEN_HEADERS = ['runtime.h', 'neon.h', 'fpexact.h']
 LIFTER = os.path.join(RO, 'recomp_nro.py')
+SCHED = os.environ.get('RECOMP_NRO_SCHED', 'global')
+COVERAGE_BUILD = os.environ.get('RECOMP_NRO_COVERAGE', '') not in ('', '0')
+COV_FLAGS = ['-finstrument-functions-after-inlining'] if COVERAGE_BUILD else []
+# build_opt.py sets it: name of a module -> a text that changes when the way its files are split changes (the coverage
+# list of the modules); a module whose objects were split another way is compiled again
+split_signature = None
+# build_opt.py sets it (RECOMP_NRO_UNITY, default 4): a compile unit is made of this many consecutive generated files of a
+# module (by name: g_<first file>.obj, the parts of its files #included; tu_prepare.py / build_opt.compile_unity). Each
+# unit reads runtime.h and the module's funcs.h once instead of once per file and carries one copy of the helpers its
+# files share: measured 2026-10-24 on 10 fighter modules, 12 at once, 4 files per unit: compiler time -24 %, wall -22 %.
+# The groups are fixed (sorted names), so the objects are the same on every PC. 1: one unit per file, as before.
+unity = 1
+
+
+def job_size(job):
+    """Bytes of generated code a compile job holds (its order in the queue, its estimate in a shared queue)."""
+    return sum(os.path.getsize(s) for s in (job[2] if len(job) > 2 else [job[0][-3]]))
 
 
 def load_map():
@@ -52,13 +82,11 @@ def write_registry(entries):
         print('wrote nro_registry.c (%d modules)' % len(entries))
 
 
-# Several modules are built at once (main: --modules-at-once, default RECOMP_NRO_AT_ONCE or jobs // 4, at most 6), largest
-# first; the compilers of all of them share `jobs` slots, the lifters (each a pool of its own) two. One module at a time
-# left most of the CPU idle while a module waited for its largest file or ran its lifter (2026-10-19: 98 modules,
-# 937 s at 12 jobs, of which 226 s lifting and the rest mostly the tail of each module).
+# 'modules' scheduling: several modules are built at once (main: --modules-at-once, default RECOMP_NRO_AT_ONCE or
+# jobs // 2, at most 6), largest first; the compilers of all of them share `jobs` slots, the lifters (each a pool of its
+# own) RECOMP_NRO_LIFTS (4).
 _cc_slots = None
-# RECOMP_NRO_LIFTS: how many modules are lifted at once (default 4; was 2). With the reduced compile pipeline (build_opt.py
-# RECOMP_PIPE) lifting became the larger part of the step (2026-10-24: 729 s of lifting in 12m58s)
+slot_runner = None        # build_opt.py: job -> result, run in the compile slots it shares with the game's compile
 _lift_slots = threading.BoundedSemaphore(int(os.environ.get('RECOMP_NRO_LIFTS') or 4))
 # Linux / macOS (scripts/setup.py sets it): the lifters' worker processes, which hold memory the compilers' sharing
 # (build_opt.py MEM_BUDGET) does not count, follow the RAM rule rather than the compiler job count
@@ -66,6 +94,8 @@ LIFT_JOBS = int(os.environ.get('RECOMP_LIFT_JOBS') or 0) if (TARGET_LINUX or TAR
 
 
 def _in_slot(job):
+    if slot_runner is not None:                       # build_opt.py main + modules in one queue (RECOMP_WITH_NRO)
+        return slot_runner(job)
     if _cc_slots is None:
         return run_clang(job)
     with _cc_slots:
@@ -73,77 +103,142 @@ def _in_slot(job):
 
 
 def run_clang(job):
-    args, label = job
+    """clang alone (build_opt.py replaces it): a unit of several files is compiled as a file that #includes them."""
+    args, label = job[0], job[1]
+    srcs = job[2] if len(job) > 2 else [args[-3]]
+    if len(srcs) > 1:
+        unit = os.path.join(os.path.dirname(args[-1]) + '_tu', label)
+        os.makedirs(os.path.dirname(unit), exist_ok=True)
+        with open(unit, 'w') as f:
+            f.write(unity_text(srcs))
+        args = args[:-3] + [unit] + args[-2:]
     t = time.time()
     r = subprocess.run([CLANG] + args, capture_output=True, text=True)
     return label, r.returncode, (r.stdout + r.stderr)[-3000:], time.time() - t
 
 
-def build_module(e, jobs, relift, opt):
+def unity_text(srcs):
+    """The text of a unit that #includes srcs (absolute paths; runtime.h / funcs.h are read once, they have guards)."""
+    return '/* a compile unit of %d generated files (build_nro.py unity) */\n' % len(srcs) + ''.join(
+        '#include "%s"\n' % os.path.abspath(s).replace('\\', '/') for s in srcs)
+
+
+def module_dirs(e):
     name = e['name']
-    nro = os.path.join(RO, 'nro', e['file'])
     suffix = os.environ.get('RECOMP_NRO_SUFFIX', '_eh')     # e.g. _eh: gen_nro_eh, obj_nro_eh, nro_bin_eh (run with SSBU_NRO_BIN=nro_bin_eh)
     gen = os.path.join(HERE, 'gen_nro' + os.environ.get('RECOMP_NRO_GEN_SUFFIX', suffix), name)   # RECOMP_NRO_GEN_SUFFIX: another build's lifted code (setup.py --rollback: _eh_o2 compiled again with marks)
     obj = os.path.join(HERE, 'obj_nro' + suffix, name)
     bindir = os.path.join(HERE, 'nro_bin' + suffix)
     for d in (gen, obj, bindir):
         os.makedirs(d, exist_ok=True)
-    times = {}
+    return gen, obj, bindir
 
-    # 1. lift
-    t0 = time.time()
+
+def needs_lift(e, gen, relift):
+    nro = os.path.join(RO, 'nro', e['file'])
     stamp = os.path.join(gen, 'table.c')
     extra = os.path.join(RO, 'nro_entries.json')            # entry points found at run time (see recomp_nro.py)
     deps = [nro, LIFTER, os.path.join(RO, 'nro_eh.py')] + ([extra] if os.path.exists(extra) else [])
-    if relift or not os.path.exists(stamp) or os.path.getmtime(stamp) < max(os.path.getmtime(p) for p in deps):
-        with _lift_slots:
-            r = subprocess.run([sys.executable, LIFTER, 'full', nro, gen, str(min(LIFT_JOBS or jobs, 16)), e['base']], capture_output=True, text=True)
-        tail = [l for l in r.stdout.splitlines() if l.startswith('functions:')]
-        if r.returncode or not tail:
-            print('%s: LIFT FAILED\n%s\n%s' % (name, r.stdout[-3000:], r.stderr[-3000:]))
-            return 1
-        print('%s: lifted  %s' % (name, tail[-1]))
-    times['lift'] = time.time() - t0
+    return relift or not os.path.exists(stamp) or os.path.getmtime(stamp) < max(os.path.getmtime(p) for p in deps)
 
-    # 2. compile what changed
-    t0 = time.time()
+
+def lift_subprocess(e, gen, jobs):
+    """The lifter as a process with a pool of its own ('modules' scheduling). Returns its summary line or None."""
+    nro = os.path.join(RO, 'nro', e['file'])
+    with _lift_slots:
+        r = subprocess.run([sys.executable, LIFTER, 'full', nro, gen, str(min(LIFT_JOBS or jobs, 16)), e['base']], capture_output=True, text=True)
+    tail = [l for l in r.stdout.splitlines() if l.startswith('functions:')]
+    if r.returncode or not tail:
+        print('%s: LIFT FAILED\n%s\n%s' % (e['name'], r.stdout[-3000:], r.stderr[-3000:]))
+        return None
+    return tail[-1]
+
+
+def compile_jobs(e, gen, obj, opt):
+    """(sources, the compile jobs of what changed). Removes the objects of sources that are gone and the -O0 parts of
+    the files compiled again."""
+    name = e['name']
     newest_header = max(os.path.getmtime(os.path.join(HERE, h)) for h in GEN_HEADERS)
     sources = sorted(n for n in os.listdir(gen) if n.endswith('.c'))
     import build                                            # NOCRT_FLAGS / link_dll: RECOMP_NOCRT (build.py)
     flags = ['-c', opt, '-w', '-fno-strict-aliasing', '-I', HERE, '-I', gen] + build.NOCRT_FLAGS + PLAT_FLAGS
+    big = obj + '_big'
+    # objects split another way (the coverage list of the modules changed): the whole module is compiled again, so no
+    # file keeps parts of the old split. Objects from before the stamp existed are kept (as build_opt.py does for the
+    # game): each file's objects are consistent, and a file compiled again gets the split
+    sig = ((split_signature(name) if split_signature else '') + (' coverage-build' if COVERAGE_BUILD else '')).strip()
+    sstamp = os.path.join(obj, '_split.txt')
+    try:
+        have = open(sstamp).read().strip()
+    except OSError:
+        have = None
+    if have is not None and have != sig:
+        print('%s: the objects were split another way (coverage list of the modules changed): all compiled again' % name, flush=True)
+        for d in (obj, big):
+            for n in os.listdir(d) if os.path.isdir(d) else []:
+                if n.endswith('.obj'):
+                    os.remove(os.path.join(d, n))
+    if have != sig:
+        with open(sstamp, 'w') as f:
+            f.write(sig + '\n')
     todo = []
-    for n in sources:
-        src, o = os.path.join(gen, n), os.path.join(obj, n[:-2] + '.obj')
-        if not os.path.exists(o) or os.path.getmtime(o) < max(os.path.getmtime(src), newest_header):
-            todo.append((flags + [src, '-o', o], n))
+    wanted = set()
+    # the units: `unity` consecutive c_*.c files each (g_<first>.obj, its files listed in g_<first>.mem; one file: <name>.obj
+    # as before), table.c and imports.c alone. A job is (compiler arguments ending in <first source> -o <object>, label,
+    # [its sources])
+    lifted = [n for n in sources if n.startswith('c_')]
+    groups = [lifted[i:i + unity] for i in range(0, len(lifted), max(1, unity))] + [[n] for n in sources if not n.startswith('c_')]
+
+    def fresh(o, srcs):
+        return os.path.exists(o) and os.path.getmtime(o) >= max([os.path.getmtime(s) for s in srcs] + [newest_header])
+    for grp in groups:
+        unit = ('g_' + grp[0][:-2]) if len(grp) > 1 else grp[0][:-2]
+        srcs, o = [os.path.join(gen, n) for n in grp], os.path.join(obj, unit + '.obj')
+        if len(grp) > 1:
+            singles = [os.path.join(obj, n[:-2] + '.obj') for n in grp]
+            if all(fresh(so, [s]) for so, s in zip(singles, srcs)) and not os.path.exists(o):
+                # the files' own objects, from a build before the units (an update): kept while they are up to date
+                wanted.update(n[:-2] + '.obj' for n in grp)
+                continue
+            mem, members = os.path.join(obj, unit + '.mem'), ''.join(n + chr(10) for n in grp)
+            try:
+                same = open(mem).read() == members
+            except OSError:
+                same = False
+            if not same:                      # another set of files than the object holds (unity changed, a file gone)
+                with open(mem, 'w') as f:
+                    f.write(members)
+        wanted.add(unit + '.obj')
+        if not fresh(o, srcs) or (len(grp) > 1 and not same):
+            todo.append((flags + COV_FLAGS + [srcs[0], '-o', o], unit + '.c' if len(grp) > 1 else grp[0], srcs))
     shim, shim_obj = os.path.join(HERE, 'nro_shim.c'), os.path.join(obj, '_shim.obj')
     if not os.path.exists(shim_obj) or os.path.getmtime(shim_obj) < max(os.path.getmtime(shim), newest_header):
         todo.append((flags + ['-DNRO_MODULE=' + name, shim, '-o', shim_obj], 'nro_shim.c'))
-    wanted = set(n[:-2] + '.obj' for n in sources) | {'_shim.obj'}
+    wanted.add('_shim.obj')
+    if COVERAGE_BUILD:
+        cov, cov_obj = os.path.join(HERE, 'nro_cov.c'), os.path.join(obj, '_cov.obj')
+        wanted.add('_cov.obj')
+        if not os.path.exists(cov_obj) or os.path.getmtime(cov_obj) < max(os.path.getmtime(cov), newest_header):
+            todo.append((flags + ['-DNRO_MODULE=' + name, cov, '-o', cov_obj], 'nro_cov.c'))
     for n in os.listdir(obj):
-        if n.endswith('.obj') and n not in wanted:
+        if (n.endswith('.obj') and n not in wanted) or (n.endswith('.mem') and n[:-4] + '.obj' not in wanted):
             os.remove(os.path.join(obj, n))
     # <obj>_big: the -O0 units of split files (build_opt.py run_clang_nro, tu_prepare.py). A file compiled again makes its
     # own again (or none), one whose source is gone loses it: a part of an old split never links beside a new object
-    big = obj + '_big'
     if os.path.isdir(big):
         again = set(os.path.basename(j[0][-1])[:-4] + '_b.obj' for j in todo)
         for n in os.listdir(big):
             if n.endswith('_b.obj') and (n in again or n[:-6] + '.obj' not in wanted):
                 os.remove(os.path.join(big, n))
-    failed = 0
-    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-        todo.sort(key=lambda j: -os.path.getsize(j[0][-3]))       # longest first
-        for label, code, err, secs in pool.map(_in_slot, todo):
-            if code:
-                failed += 1
-                print('FAILED %s %s\n%s' % (name, label, err), flush=True)
-    if failed:
-        return 1
-    times['compile'] = time.time() - t0
+    return sources, todo
 
-    # 3. link the DLL
+
+def link_module(e, gen, obj, bindir, sources, compiled, times):
+    """Link the module's DLL when an object is newer; prints the module's line. Returns 0 or 1."""
+    import build
+    name = e['name']
     t0 = time.time()
+    big = obj + '_big'
     dll = os.path.join(bindir, name + LIB_EXT)
     objs = sorted(os.path.join(obj, n) for n in os.listdir(obj) if n.endswith('.obj'))
     if os.path.isdir(big):
@@ -164,9 +259,204 @@ def build_module(e, jobs, relift, opt):
     c_bytes = sum(os.path.getsize(os.path.join(gen, n)) for n in sources)
     o_bytes = sum(os.path.getsize(o) for o in objs)
     print('%s: %d C files (%.0f MB), %d compiled, objects %.0f MB, %s %.1f MB%s   lift %.1fs  compile %.1fs  link %.1fs'
-          % (name, len(sources), c_bytes / 1048576.0, len(todo), o_bytes / 1048576.0, os.path.basename(dll), os.path.getsize(dll) / 1048576.0,
-             '' if linked else ' (up to date)', times['lift'], times['compile'], times['link']), flush=True)
+          % (name, len(sources), c_bytes / 1048576.0, compiled, o_bytes / 1048576.0, os.path.basename(dll), os.path.getsize(dll) / 1048576.0,
+             '' if linked else ' (up to date)', times.get('lift', 0), times.get('compile', 0), times['link']), flush=True)
     return 0
+
+
+def build_module(e, jobs, relift, opt):
+    """'modules' scheduling: lift, compile and link one module."""
+    name = e['name']
+    gen, obj, bindir = module_dirs(e)
+    times = {}
+    t0 = time.time()
+    if needs_lift(e, gen, relift):
+        line = lift_subprocess(e, gen, jobs)
+        if line is None:
+            return 1
+        print('%s: lifted  %s' % (name, line))
+    times['lift'] = time.time() - t0
+    t0 = time.time()
+    sources, todo = compile_jobs(e, gen, obj, opt)
+    failed = 0
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+        todo.sort(key=lambda j: -job_size(j))                     # longest first
+        for label, code, err, secs in pool.map(_in_slot, todo):
+            if code:
+                failed += 1
+                print('FAILED %s %s\n%s' % (name, label, err), flush=True)
+    if failed:
+        return 1
+    times['compile'] = time.time() - t0
+    return link_module(e, gen, obj, bindir, sources, len(todo), times)
+
+
+# ---- 'global' scheduling --------------------------------------------------------------------------------------
+def _svc_init(ro):
+    if ro not in sys.path:
+        sys.path.insert(0, ro)
+    import recomp_nro                                       # noqa: F401  (no module selected: RECOMP_NRO is not set here)
+
+
+def _svc(task):
+    import recomp_nro
+    return getattr(recomp_nro, task[0])(*task[1:])
+
+
+class LiftService:
+    """One pool of lifter processes (recomp_nro.py svc_*) shared by every module being lifted."""
+
+    def __init__(self, procs):
+        import multiprocessing
+        env_had = os.environ.pop('RECOMP_NRO', None)       # the workers select their module per task
+        try:
+            self.pool = multiprocessing.get_context('spawn').Pool(procs, _svc_init, (RO,))
+        finally:
+            if env_had is not None:
+                os.environ['RECOMP_NRO'] = env_had
+        self.procs = procs
+
+    def lift(self, e, gen):
+        """Lift module e into gen (byte-identical to `recomp_nro.py full`). Returns the summary line."""
+        if RO not in sys.path:
+            sys.path.insert(0, RO)
+        import recomp_nro as R
+        t0 = time.time()
+        nro = os.path.join(RO, 'nro', e['file'])
+        base = int(e['base'], 16)
+        starts, text_size = self.pool.apply(_svc, (('svc_starts', nro, base),))
+
+        def run(parts):
+            return zip(parts, self.pool.imap(_svc, [('svc_lift', nro, base, starts, p) for p in parts]))
+        all_funcs, texts, total, bad, real_bad, resume = R.discover(starts, run, base, text_size, log=lambda s: None)
+        files, changed = [], 0
+        for name, content in R.bucket_files(all_funcs, texts, base):
+            files.append(name)
+            changed += R.write_if_changed(os.path.join(gen, name), content)
+        del texts
+        self.pool.apply(_svc, (('svc_tables', nro, base, gen, all_funcs, resume),))
+        R.remove_stale(gen, files)
+        return ('functions: %d   files: %d (%d rewritten)   instructions: %d   not translated: %d   of which real code: %d   (%.0fs)'
+                % (len(all_funcs), len(files), changed, total, bad, len(real_bad), time.time() - t0))
+
+    def close(self):
+        self.pool.close()
+        self.pool.join()
+
+
+def build_global(todo_modules, jobs, relift, opt):
+    """Every module through one lift service and one compile queue (largest unit first); each module linked when its
+    last unit is done. Returns 0 or 1."""
+    t_start = time.time()
+    lock = threading.Lock()
+    cv = threading.Condition(lock)
+    heap = []                      # (-size, seq, module index, job)
+    state = {}                     # module index -> dict(left, failed, sources, todo count, times, dirs, t0)
+    seq = [0]
+    lifting = [0]
+    rc = [0]
+    stats = {'units': 0, 'done': 0, 'cpu': 0.0}
+
+    def enqueue(i, e):
+        gen, obj, bindir = state[i]['dirs']
+        sources, todo = compile_jobs(e, gen, obj, opt)
+        st = state[i]
+        st['sources'], st['count'], st['left'], st['t0'] = sources, len(todo), len(todo), time.time()
+        if not todo:
+            st['times']['compile'] = 0.0
+            r = link_module(e, gen, obj, bindir, sources, 0, st['times'])
+            with lock:
+                rc[0] |= r
+            return
+        with cv:
+            for job in todo:
+                seq[0] += 1
+                heapq.heappush(heap, (-job_size(job), seq[0], i, job))
+            stats['units'] += len(todo)
+            cv.notify_all()
+
+    need = []
+    for i, e in enumerate(todo_modules):
+        dirs = module_dirs(e)
+        state[i] = {'dirs': dirs, 'times': {}, 'failed': 0}
+        if needs_lift(e, dirs[0], relift):
+            need.append(i)
+    lifting[0] = len(need)
+    # beside the game's compile (slot_runner: RECOMP_WITH_NRO) the lifters get half the job count: the compilers already
+    # fill the cores, and the lifter processes hold memory the compilers do not share (a 16 GB PC with 12 jobs)
+    procs = max(1, min(LIFT_JOBS or jobs, 16)) if slot_runner is None else max(2, min(LIFT_JOBS or jobs, 16) // 2)
+    service = LiftService(procs) if need else None
+
+    def lift_one(i):
+        e = todo_modules[i]
+        t0 = time.time()
+        try:
+            line = service.lift(e, state[i]['dirs'][0])
+            print('%s: lifted  %s' % (e['name'], line), flush=True)
+            state[i]['times']['lift'] = time.time() - t0
+            ok = True
+        except Exception as ex:                             # noqa: BLE001  (reported, the module fails)
+            import traceback
+            print('%s: LIFT FAILED\n%s' % (e['name'], traceback.format_exc()[-3000:]), flush=True)
+            ok = False
+        if ok:
+            enqueue(i, e)
+        with cv:
+            if not ok:
+                rc[0] = 1
+            lifting[0] -= 1
+            cv.notify_all()
+
+    def worker():
+        while True:
+            with cv:
+                while not heap and lifting[0] > 0:
+                    cv.wait()
+                if not heap:
+                    return
+                _, _, i, job = heapq.heappop(heap)
+            label, code, err, secs = _in_slot(job)
+            e = todo_modules[i]
+            link = False
+            with cv:
+                st = state[i]
+                stats['done'] += 1
+                stats['cpu'] += secs
+                if code:
+                    st['failed'] += 1
+                    print('FAILED %s %s\n%s' % (e['name'], label, err), flush=True)
+                st['left'] -= 1
+                if st['left'] == 0:
+                    st['times']['compile'] = time.time() - st['t0']
+                    link = not st['failed']
+                    if st['failed']:
+                        rc[0] = 1
+                if stats['done'] % 200 == 0:
+                    print('  %d/%d units   %.0fs elapsed   %.0fs compiler time%s' % (stats['done'], stats['units'], time.time() - t_start, stats['cpu'],
+                          ('   %d module(s) still lifting' % lifting[0]) if lifting[0] else ''), flush=True)
+            if link:
+                gen, obj, bindir = st['dirs']
+                r = link_module(e, gen, obj, bindir, st['sources'], st['count'], st['times'])
+                with cv:
+                    rc[0] |= r
+
+    for i, e in enumerate(todo_modules):              # up to date: their compile units now
+        if i not in need:
+            state[i]['times']['lift'] = 0.0
+            enqueue(i, e)
+    workers = [threading.Thread(target=worker, daemon=True) for _ in range(jobs)]
+    for w in workers:
+        w.start()
+    if need:
+        # several modules lifted at once, largest first: a module's discovery rounds wait for each other, so one
+        # module alone does not keep all the lifter processes busy
+        with concurrent.futures.ThreadPoolExecutor(min(len(need), 8)) as lifters:
+            list(lifters.map(lift_one, need))
+        service.close()
+    for w in workers:
+        w.join()
+    print('nro compile: %d units, %.0fs of compiler time' % (stats['done'], stats['cpu']), flush=True)
+    return rc[0]
 
 
 def main(argv):
@@ -186,14 +476,18 @@ def main(argv):
             rc = 1
             continue
         todo.append(e)
-    at_once = int(next((a.split('=', 1)[1] for a in argv if a.startswith('--modules-at-once=')), os.environ.get('RECOMP_NRO_AT_ONCE') or max(1, min(6, jobs // 2))))
     global _cc_slots
-    _cc_slots = threading.BoundedSemaphore(jobs) if at_once > 1 else None
     size = lambda e: os.path.getsize(os.path.join(RO, 'nro', e['file'])) if os.path.exists(os.path.join(RO, 'nro', e['file'])) else 0
     todo.sort(key=lambda e: -size(e))
-    with concurrent.futures.ThreadPoolExecutor(at_once) as pool:
-        for code in pool.map(lambda e: build_module(e, jobs, '--relift' in argv, opt), todo):
-            rc |= code
+    if SCHED == 'global' and todo:
+        _cc_slots = None                                   # the queue's workers are the slots
+        rc |= build_global(todo, jobs, '--relift' in argv, opt)
+    else:
+        at_once = int(next((a.split('=', 1)[1] for a in argv if a.startswith('--modules-at-once=')), os.environ.get('RECOMP_NRO_AT_ONCE') or max(1, min(6, jobs // 2))))
+        _cc_slots = threading.BoundedSemaphore(jobs) if at_once > 1 else None
+        with concurrent.futures.ThreadPoolExecutor(at_once) as pool:
+            for code in pool.map(lambda e: build_module(e, jobs, '--relift' in argv, opt), todo):
+                rc |= code
     if names:
         print('nro build: %d module(s) in %.1fs' % (len(names), time.time() - t0))
     return rc

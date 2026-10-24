@@ -117,17 +117,19 @@ TOOLS = {   # checked 2026-10-19: SDL3 and glslang equal GitHub's own asset dige
 RUNTIME_RELEASE = ('https://github.com/Acid236/ssbu-arena/releases/download/v0.2.7/ssbu-runtime-614e837c73.zip', '4a2a423bb9af1b5360fc83606300eb390787da8fd9e15aba862970100a5e3129')
 
 SETUP_STEPS = ['deps', 'stage', 'convert', 'modules', 'tables', 'lift', 'sdk', 'compile', 'nro', 'link', 'rollback', 'check']
-# expected seconds, measured 2026-10-19 on a PC with 12 jobs and 32 threads (compile and nro scale with 12 / jobs);
-# compile and nro scaled 2026-10-23 by the split of build_opt.py / tu_prepare.py (scenario D: from-scratch builds on one
-# 12-thread PC, compile 3841 -> 1641 s, nro 857 -> 761 s)
+# expected seconds with 12 jobs (compile and nro scale with 12 / jobs), measured 2026-10-24 on a Ryzen 5 3600 (6 cores,
+# 12 threads) from scratch: the compile step builds the game AND the script modules in one queue (setup.py
+# RECOMP_WITH_NRO: tools/lifter/build_opt.py, reduced LLVM 19 pipeline, split -O1 / -O0 units, units of several files);
+# the nro step after it only finds the modules up to date (and builds again what failed). The dump is 2-10 min
+# depending on the disk (16 GB written).
 EST = {'update': 10, 'precheck': 10, 'packages': 30, 'inputs': 10, 'dump': 600, 'tools': 30, 'media': 20, 'dlc': 1,
-       'deps': 5, 'stage': 3, 'convert': 3, 'modules': 4, 'tables': 1, 'lift': 20, 'sdk': 2, 'compile': 950, 'nro': 780,
+       'deps': 5, 'stage': 3, 'convert': 3, 'modules': 4, 'tables': 1, 'lift': 30, 'sdk': 2, 'compile': 930, 'nro': 5,
        'link': 60, 'rollback': 10, 'check': 30, 'menu': 40, 'files': 60, 'shortcuts': 3, 'unblock': 5}
 TITLES = {'update': 'Update this program', 'precheck': 'Check this PC', 'packages': 'Python packages',
           'inputs': 'Find your game files', 'dump': 'Prepare the game files', 'dlc': 'Add-on contents (DLC)', 'tools': 'Build tools', 'media': 'Music and movies',
           'deps': 'Check tools and game files', 'stage': 'Lay out the sources', 'convert': 'Convert the game code',
           'modules': 'Script modules', 'tables': 'Tables', 'lift': 'Translate the game code', 'sdk': 'System library',
-          'compile': 'Compile the game', 'nro': 'Compile the script modules', 'link': 'Link the game', 'rollback': 'Remove the old build', 'check': 'Self-tests',
+          'compile': 'Compile the game and the script modules', 'nro': 'Check the script modules', 'link': 'Link the game', 'rollback': 'Remove the old build', 'check': 'Self-tests',
           'menu': 'SSBU Arena menu', 'files': 'Record the files (for Check and repair)',
           'shortcuts': 'Shortcuts', 'unblock': 'Unblock files'}
 
@@ -976,7 +978,18 @@ def step_build(cx, P):
         if not m or not int(m.group(1)):
             return None
         n = re.findall(r'^\s+(\d+)/\d+\s+\d+s elapsed', t[i:], re.M)
-        return (int(n[-1]) if n else 0, int(m.group(1)))
+        done, total = (int(n[-1]) if n else 0, int(m.group(1)))
+        # the script modules and the game's -O0 units compiled in the same queue (setup.py RECOMP_WITH_NRO): build_opt.py
+        # says how many units the queue holds in all ("queue: ... units"), build_nro.py prints "  N/M units" as the modules'
+        # go, and the game's -O0 units are counted when their phase ends
+        q = re.search(r'^queue: (\d+) units', t[i:], re.M)
+        if q:
+            total = int(q.group(1))
+            u = re.findall(r'^\s+(\d+)/\d+ units\s+\d+s elapsed', t[i:], re.M)
+            done += int(u[-1]) if u else 0
+            c = re.search(r'^-O0 units of the game: (\d+) compiled', t[i:], re.M)
+            done += int(c.group(1)) if c else 0
+        return (min(done, total), total)
 
     def hb():
         s = cur['id']

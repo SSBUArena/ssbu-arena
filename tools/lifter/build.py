@@ -72,6 +72,7 @@ def compile_one(name):
 
 
 order_key = None          # build_opt.py: compile order (slowest first by measured time)
+todo_hook = None          # build_opt.py: told the list of files about to be compiled (their -O0 units follow them)
 
 
 def cmd_compile(jobs, force):
@@ -119,14 +120,17 @@ def cmd_compile(jobs, force):
             os.remove(os.path.join(OBJ, n))
     # OBJ_big: the -O0 units of split files (build_opt.py, tu_prepare.py), <name>_b.obj. A file compiled again makes its
     # own again (or none), and one whose source is gone loses it: a part of an old split never links beside a new object
+    # (g_*_b.obj: units of several files' -O0 parts, build_opt.cold_phase keeps those up to date itself)
     if os.path.isdir(OBJ_BIG):
         again = set(n[:-2] + '_b.obj' for n in todo)
         for n in os.listdir(OBJ_BIG):
-            if n.endswith('_b.obj') and (n in again or n[:-6] + '.obj' not in wanted):
+            if n.endswith('_b.obj') and not n.startswith('g_') and (n in again or n[:-6] + '.obj' not in wanted):
                 os.remove(os.path.join(OBJ_BIG, n))
     # longest first (source size: the compile time follows it): the biggest files no longer start last and hold up the end
     # (build_opt.py sets order_key: by the seconds each file took before, see build_opt.hints)
     todo.sort(key=order_key or (lambda n: -os.path.getsize(os.path.join(GEN, n))))
+    if todo_hook:
+        todo_hook(todo)
     print('sources: %d   to compile: %d   jobs: %d' % (len(sources), len(todo), jobs), flush=True)
     t0 = time.time()
     failed, done, cpu = [], 0, 0.0
@@ -156,9 +160,9 @@ def cmd_compile(jobs, force):
                     failed.append(name)
                     print('FAILED again %s\n%s' % (name, err), flush=True)
     print('compiled: %d   failed: %d   elapsed: %.0fs' % (len(todo) - len(failed), len(failed), time.time() - t0), flush=True)
-    for n in todo:                                   # what each object was made from (cmd_compile's content check)
-        if n not in failed:
-            cur[n] = src_hash(n)
+    ok = [n for n in todo if n not in failed]        # what each object was made from (cmd_compile's content check)
+    with concurrent.futures.ThreadPoolExecutor(8) as pool:      # (1.3 GB hashed: threads, hashlib lets go of the GIL)
+        cur.update(zip(ok, pool.map(src_hash, ok)))
     try:
         with open(hpath, 'w') as f:
             json.dump(cur, f)
