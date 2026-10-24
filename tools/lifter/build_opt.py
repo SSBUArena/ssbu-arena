@@ -416,16 +416,18 @@ def compile_file_inline(src, obj, base_flags, time_limit=None, key=None):
 
 
 
-_report = []
+_report = []                 # the game's lines
+_nro_report = []             # the script modules' (the two may be compiled at once: RECOMP_WITH_NRO)
 
 
-def report(objdir):
-    if not _report:
+def report(objdir, lines=None):
+    lines = _report if lines is None else lines
+    if not lines:
         return
     with open(os.path.join(objdir, '_opt_report.txt'), 'a') as f:
         f.write('# %s  %s %s %s  optnone over %d statements, time limit %.0fs\n' % (time.strftime('%Y-%m-%d %H:%M'), CLANG, OPT, ' '.join(EXTRA), OPTNONE_LINES, TIME_LIMIT))
-        f.writelines(line + '\n' for line in _report)
-    del _report[:]
+        f.writelines(line + '\n' for line in lines)
+    del lines[:]
 
 
 # ---- reduced LLVM pipeline (speedtest2, 2026-10-24) ------------------------------------------------------------
@@ -443,7 +445,13 @@ def report(objdir):
 LLVM19 = os.environ.get('RECOMP_LLVM19', '')
 PIPE = os.environ.get('RECOMP_PIPE') or ('llvm19' if LLVM19 and all(os.path.isfile(os.path.join(LLVM19, n)) for n in ('opt.exe', 'llc.exe')) else 'clang9')
 PIPE_PASSES = os.environ.get('RECOMP_PIPE_PASSES', 'cgscc(inline<only-mandatory>,function(sroa,early-cse,instcombine<no-verify-fixpoint>,simplifycfg))')
-PIPE_LLC = ['-O1', '-fp-contract=off', '-mcpu=x86-64']
+# RECOMP_LLC_FLAGS: more llc options (default LLC_EXTRA). The lifted functions' loops are the guest's branches, not
+# induction-variable loops, so the machine-level loop passes gain little on them and cost most of llc's time (measured
+# 2026-10-24, 6 hot game units, -time-passes: llc 24.6 s, of which MachineLICM 3.6 s and its loop analyses; without
+# MachineLICM, LSR, machine sinking, the machine scheduler and block placement 12.3 s, objects the same size). The guest's
+# block order is kept (no block placement): what the original compiler laid out. '-' : none of them.
+LLC_EXTRA = '-disable-machine-licm -disable-lsr -disable-machine-sink -enable-misched=false -disable-block-placement'
+PIPE_LLC = ['-O1', '-fp-contract=off', '-mcpu=x86-64'] + [f for f in (os.environ.get('RECOMP_LLC_FLAGS') or LLC_EXTRA).split() if f != '-']
 # cx16 (cmpxchg16b, on every x86-64 CPU Windows 10/11 runs on): lets stxp64 (STXP, 16-byte compare-and-swap) be inlined;
 # without it a unit holding an STXP had to drop the inlined helpers altogether
 PIPE_FE = ['-O1', '-Xclang', '-disable-llvm-passes', '-emit-llvm', '-mcx16']
@@ -477,6 +485,7 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
 # ---- scenario D: the -O0 unit (tu_prepare.py) -------------------------------------------------------------------
 _cov = []
 _split_stats = {}
+_nro_split_stats = {}             # the same for the script modules
 _split_lock = threading.Lock()
 
 
@@ -550,10 +559,11 @@ def compile_big(src, obj, base_flags, extra=None):
             mem_release(want)
 
 
-def compile_split(src, obj, base_flags, opt_compile, cold_fn, own_decls, key=None):
+def compile_split(src, obj, base_flags, opt_compile, cold_fn, own_decls, key=None, agg=None, defer=False):
     """src compiled as its parts (tu_prepare.prepare): the optimised one by opt_compile(part, obj) -> (code, out, secs,
     note), the -O0 one into <obj dir>_big\\<name>_b.obj (build.py / build_nro.py link it beside obj and delete it whenever
-    the file is compiled again or is gone). If the -O0 unit does not compile, the file is compiled whole the old way."""
+    the file is compiled again or is gone). If the -O0 unit does not compile, the file is compiled whole the old way.
+    defer: the -O0 part is only written (the game's cold phase compiles it in a unit with other files', cold_phase)."""
     objdir, name = os.path.dirname(obj), os.path.basename(obj)[:-4]
     bobj = os.path.join(objdir + '_big', name + '_b.obj')
     stats = {}
@@ -564,16 +574,26 @@ def compile_split(src, obj, base_flags, opt_compile, cold_fn, own_decls, key=Non
         if os.path.exists(bobj):
             os.remove(bobj)
         return code, out, secs, note
+    if defer:
+        agg = _split_stats if agg is None else agg
+        with _split_lock:
+            for why, (n, st) in stats.items():
+                s = agg.setdefault(why, [0, 0, 0])
+                s[0] += n
+                s[1] += st
+            agg.setdefault('files', [0, 0, 0])[0] += 1
+        return code, out, secs, note
     bcode, bout, bsecs = compile_big(big, bobj, base_flags)
     if key:
         hint_save(objdir, name + '_b.obj', key, bsecs, 0)
+    agg = _split_stats if agg is None else agg
     with _split_lock:
         for why, (n, st) in stats.items():
-            s = _split_stats.setdefault(why, [0, 0, 0])
+            s = agg.setdefault(why, [0, 0, 0])
             s[0] += n
             s[1] += st
-        _split_stats.setdefault('files', [0, 0, 0])[0] += 1
-        _split_stats['files'][2] += bsecs
+        agg.setdefault('files', [0, 0, 0])[0] += 1
+        agg['files'][2] += bsecs
     what = ', '.join('%d %s (%d statements)' % (n, {'long': 'long', 'cold': 'never executed'}[w], st) for w, (n, st) in sorted(stats.items()))
     note = (note + '; ' if note else '') + '-O0 unit %.0fs: %s' % (bsecs, what)
     if bcode == 0:
@@ -594,7 +614,12 @@ def compile_one_main(name):
         key = hint_key(src, split_signature())
         opt_compile = ((lambda part, o: compile_pipeline(part, o, base, INLINE)) if PIPE == 'llvm19' else
                        (lambda part, o: compile_file_inline(part, o, base, key=key)))
-        code, out, secs, note = compile_split(src, obj, base, opt_compile, cold, OWN_DECLS, key)
+        code, out, secs, note = compile_split(src, obj, base, opt_compile, cold, OWN_DECLS, key, defer=MAIN_UNITY > 1)
+        if code == 0 and PIPE == 'llvm19':
+            # the reduced pipeline's time (compile_pipeline keeps no hint of its own): the next build starts the slowest first
+            hint_save(build.OBJ, name[:-2] + '.obj', key, secs, 1)
+        if MAIN_UNITY > 1:
+            cold_ready(name)
     else:
         code, out, secs, note = compile_file_inline(src, obj, base)
     # (the -O0 unit alone is not worth a line: most files have one with the coverage list)
@@ -605,11 +630,182 @@ def compile_one_main(name):
     return name, code, out, secs
 
 
+# RECOMP_MAIN_UNITY (default 8): the game's -O0 parts (tu_prepare 'big': the long functions and the code never executed in
+# competitive play, ~824 of the 1161 files) are compiled after the optimised units, in units of this many consecutive
+# files (by name; <obj dir>_big\\g_<first>_b.obj from <obj dir>_tu\\g_<first>_b.c, which #includes the parts). Each part
+# alone paid the compiler's start and the parse of runtime.h / neon.h / fpexact.h; the groups are fixed, so the objects
+# are the same on every PC. 1: each part compiled alone, right after its file's optimised unit, as before.
+MAIN_UNITY = max(1, int(os.environ.get('RECOMP_MAIN_UNITY') or 8))
+
+
+def cold_groups():
+    """[(unit name, [generated file names])] of the game's cold phase."""
+    names = sorted(n for n in os.listdir(build.GEN) if n.startswith('c_') and n.endswith('.c'))
+    return [('g_' + grp[0][:-2], grp) for grp in (names[i:i + MAIN_UNITY] for i in range(0, len(names), MAIN_UNITY))]
+
+
+_cold_lock = threading.Lock()
+_cold_pending = {}            # unit -> set of its files still to compile in this run (the in-queue trigger, cold_ready)
+_cold_group_of = {}           # file name -> unit
+
+
+def cold_unit(unit, grp, base, run=None):
+    """One -O0 unit of the game: its files' parts on disk -> <obj>_tu\\<unit>_b.c -> <obj>_big\\<unit>_b.obj when missing
+    or older than the parts or the headers. Returns (compiled, failed, seconds)."""
+    tu, bigdir = build.OBJ + '_tu', build.OBJ + '_big'
+    newest = max(os.path.getmtime(os.path.join(HERE, h)) for h in build.GEN_HEADERS)
+    parts = [p for p in (os.path.join(tu, n[:-2] + '_b.c') for n in grp) if os.path.exists(p)]
+    bobj, bunit = os.path.join(bigdir, unit + '_b.obj'), os.path.join(tu, unit + '_b.c')
+    if not parts:
+        for p in (bobj, bunit):
+            if os.path.exists(p):
+                os.remove(p)
+        return False, False, 0.0
+    os.makedirs(bigdir, exist_ok=True)
+    tu_prepare._write_if_changed(bunit, build_nro.unity_text(parts))
+    if os.path.exists(bobj) and os.path.getmtime(bobj) >= max([os.path.getmtime(p) for p in parts] + [newest, os.path.getmtime(bunit)]):
+        return False, False, 0.0
+    code, out, secs = (run or (lambda fn, *a: fn(*a)))(compile_big, bunit, bobj, base)
+    if code != 0:
+        if os.path.exists(bobj):
+            os.remove(bobj)
+        print('FAILED %s\n%s' % (unit, (out or '')[-2000:]), flush=True)
+    with _split_lock:
+        _split_stats.setdefault('files', [0, 0, 0])[2] += secs
+    return True, code != 0, secs
+
+
+def main_base_flags():
+    return ['-w', '-fno-strict-aliasing', '-I', HERE, '-I', build.GEN] + build.NOCRT_FLAGS + build.PLAT_FLAGS
+
+
+def cold_begin(todo):
+    """build.cmd_compile tells which files it compiles: a unit whose files are all through compile_one_main (their parts
+    written) is compiled right then, inside the queue (cold_ready), not in a phase of its own at the end."""
+    todo = set(todo)
+    with _cold_lock:
+        _cold_pending.clear()
+        _cold_group_of.clear()
+        for unit, grp in cold_groups():
+            left = set(grp) & todo
+            if left:
+                _cold_pending[unit] = left
+                for n in grp:
+                    _cold_group_of[n] = unit
+
+
+def cold_ready(name):
+    """After name's optimised unit: compiles its -O0 unit when name was the last file of the unit still to do."""
+    with _cold_lock:
+        unit = _cold_group_of.get(name)
+        left = _cold_pending.get(unit)
+        if left is None:
+            return
+        left.discard(name)
+        if left:
+            return
+        del _cold_pending[unit]
+        grp = sorted(n for n, u in _cold_group_of.items() if u == unit)
+    cold_unit(unit, grp, main_base_flags())
+
+
+def cold_phase(jobs, run=None):
+    """After the game's compile: the -O0 units still missing or stale (none of a unit's files was compiled this time, one
+    failed, another RECOMP_MAIN_UNITY) are compiled; units of another size and the single files' -O0 objects are removed.
+    run(fn, *args): how each compile is run (the shared slots of RECOMP_WITH_NRO), default directly. Returns failures."""
+    bigdir = build.OBJ + '_big'
+    os.makedirs(bigdir, exist_ok=True)
+    groups = cold_groups()
+    # (not part of the split stamp: a build whose -O0 parts were compiled one per file, or in units of another size, keeps
+    # its optimised objects; its parts are on disk, so only the -O0 units are made again)
+    units = set(unit + '_b.obj' for unit, _ in groups)
+    for n in os.listdir(bigdir):
+        if n.endswith('_b.obj') and (not n.startswith('g_') or n not in units):
+            os.remove(os.path.join(bigdir, n))
+    base = main_base_flags()
+    failed, done, cpu = [], [0], [0.0]
+    t0 = time.time()
+
+    def one(t):
+        unit, grp = t
+        compiled, bad, secs = cold_unit(unit, grp, base, run)
+        with _cold_lock:
+            done[0] += compiled
+            cpu[0] += secs
+            if bad:
+                failed.append(unit)
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+        list(pool.map(one, groups))
+    if done[0]:
+        print('-O0 units of the game: %d compiled after the queue (%d files each), %d failed, %.0fs elapsed, %.0fs of compiler time'
+              % (done[0], MAIN_UNITY, len(failed), time.time() - t0, cpu[0]), flush=True)
+    return failed
+
+
+class Slots:
+    """`n` compile slots shared by the game's compile and the script modules' (RECOMP_WITH_NRO): a waiting unit with the
+    larger estimate (seconds) gets the next free slot, so the two queues (each largest first) merge into one, largest
+    first, and neither leaves cores idle while the other still has work (the tail of each step)."""
+
+    def __init__(self, n):
+        self.free, self.cv, self.heap, self.seq = n, threading.Condition(), [], 0
+
+    def run(self, est, fn, *args):
+        import heapq
+        with self.cv:
+            self.seq += 1
+            me = (-est, self.seq)
+            heapq.heappush(self.heap, me)
+            while self.heap[0] != me or self.free == 0:
+                self.cv.wait()
+            heapq.heappop(self.heap)
+            self.free -= 1
+            self.cv.notify_all()
+        try:
+            return fn(*args)
+        finally:
+            with self.cv:
+                self.free += 1
+                self.cv.notify_all()
+
+
+# RECOMP_WITH_NRO=1 (scripts/setup.py, compile step): `build_opt.py main` also builds the script modules (lift, compile,
+# link: build_nro.py), all in one queue of `jobs` compile slots (Slots). The nro step after it then finds them up to date.
+# RECOMP_NRO_MODULES: a comma list of modules (default all). The modules' unit estimate: source size x NRO_SECS_PER_BYTE
+# (the game's units: their measured seconds from the hints, else 3e-6 s per byte).
+WITH_NRO = os.environ.get('RECOMP_WITH_NRO', '') not in ('', '0')
+NRO_SECS_PER_BYTE = 1.5e-6
+
+
 def cmd_main(jobs):
     build.compile_one = compile_one_main
     _jobs[0] = jobs
     limit_memory(jobs)
     t0 = time.time()
+    nro_thread, nro_rc = None, [0]
+    if MAIN_UNITY > 1 and split_on():
+        build.todo_hook = cold_begin
+    # the DLL's data objects (game_data.c, sdklift_gen.c, the shim: ~30 s of compiler) now, beside the queue, not in the
+    # serial tail before the link (build_game_dll then finds them up to date)
+    data_thread = threading.Thread(target=lambda: build.compile_game_data(build.OBJ + '_data', os.path.join(HERE, os.environ.get('RECOMP_SHIM', 'game_shim_eh.c'))))
+    data_thread.daemon = True
+    data_thread.start()
+    if WITH_NRO:
+        slots = Slots(jobs)
+        one = compile_one_main
+        build.compile_one = lambda n: slots.run(-build.order_key(n) if build.order_key else 0, one, n)
+        build_nro.slot_runner = lambda job: slots.run(build_nro.job_size(job) * NRO_SECS_PER_BYTE, run_clang_nro, job)
+
+        def nro():
+            mods = [m for m in os.environ.get('RECOMP_NRO_MODULES', '').split(',') if m and m != 'all']
+            try:
+                nro_rc[0] = cmd_nro(jobs, mods, retry=False)
+            except Exception:                              # noqa: BLE001  (the nro step runs again after this one)
+                import traceback
+                traceback.print_exc()
+                nro_rc[0] = 1
+        nro_thread = threading.Thread(target=nro)
     big_dir = build.OBJ + '_big'
     # objects compiled with the other RECOMP_INLINE setting are compiled again (the compile skips an object newer than its
     # source, whatever flags made it): a build from before inlining existed gets the faster code on its next update
@@ -632,6 +828,8 @@ def cmd_main(jobs):
         redo = 'the game objects were compiled %s the inlined helpers' % ('with' if have == '1' else 'without')
     elif old and shave is not None and shave != swant:
         redo = 'the game objects were split another way (coverage list or RECOMP_SPLIT_LINES changed)'
+    elif old and MAIN_UNITY == 1 and any(n.startswith('g_') for n in (os.listdir(big_dir) if os.path.isdir(big_dir) else [])):
+        redo = 'the -O0 parts were compiled in units of several files (RECOMP_MAIN_UNITY), now one per file'
     if redo:
         print('%s: all %d are compiled again (once)' % (redo, len(old)), flush=True)
         for n in old:
@@ -640,20 +838,47 @@ def cmd_main(jobs):
             os.remove(os.path.join(big_dir, n))
     sig = split_signature() if split_on() else ''
 
+    # the hint keys of every file (a sha1 of 1.3 GB of generated C): 8 threads, ~2 s instead of ~10 before the first compile
+    import concurrent.futures
+    names = [n for n in os.listdir(build.GEN) if n.endswith('.c')] if os.path.isdir(build.GEN) else []
+    with concurrent.futures.ThreadPoolExecutor(8) as pool:
+        keys = dict(zip(names, pool.map(lambda n: hint_key(os.path.join(build.GEN, n), sig), names)))
+
     def order_key(n):                    # slowest first by the time it took before (same source and flags), else by size
         h = hints(build.OBJ).get(n[:-2] + '.obj')
         hb = hints(build.OBJ).get(n[:-2] + '_b.obj')
         size = os.path.getsize(os.path.join(build.GEN, n))
-        if h and h[0] == hint_key(os.path.join(build.GEN, n), sig):
+        if h and h[0] == keys.get(n):
             return -h[1] - (hb[1] if hb and hb[0] == h[0] else 0)
-        return -size * 3e-6                # ~1 MB of source ~ 3 s: unmeasured files sit among the measured ones
+        return -size * 5e-6                # ~1 MB of source ~ 5 s (the reduced pipeline): unmeasured files sit among the measured ones
     build.order_key = order_key
+    if nro_thread:
+        # what the queue holds, for the installer's progress (install.py compiled): the game's files, about one module
+        # unit per UNITY x 48 KB of module code plus the three single files of each module, the game's -O0 units
+        try:
+            mods = [m for m in os.environ.get('RECOMP_NRO_MODULES', '').split(',') if m and m != 'all']
+            entries = [e for e in build_nro.load_map() if not mods or e['name'] in mods or e['name'][8:] in mods]
+            units = sum(e['image_size'] // (0xC000 * UNITY) + 4 for e in entries)
+        except (OSError, ValueError, KeyError):
+            units = 0
+        print('queue: %d units (%d game files, about %d module units, %d -O0 units of the game)' % (
+            len(os.listdir(build.GEN)) + units + len(cold_groups()), len([n for n in os.listdir(build.GEN) if n.endswith('.c')]), units,
+            len(cold_groups()) if MAIN_UNITY > 1 else 0), flush=True)
+        nro_thread.start()
+    def nro_join():
+        # after the game's link: the modules' queue keeps the cores busy through the data compile and the link
+        if nro_thread:
+            nro_thread.join()
+            print('main and script modules: compiled in one queue, %.0fs; modules %s' % (time.time() - t0, 'failed (the nro step builds them again)' if nro_rc[0] else 'built'), flush=True)
     try:
         rc = build.cmd_compile(jobs, False)
     finally:
         hints_write(build.OBJ)
+    if not rc and MAIN_UNITY > 1 and split_on():
+        rc = 1 if cold_phase(jobs, (lambda fn, *a: slots.run(10.0, fn, *a)) if WITH_NRO else None) else 0
+    data_thread.join()
     report(build.OBJ)
-    if _split_stats:
+    if _split_stats and _split_stats.get('files', [0])[0]:
         s = _split_stats
         print('-O0 units: %d files, %.0fs of compiler time; functions over %d statements: %d (%d statements); never executed '
               'in competitive play: %d (%d statements)' % (s['files'][0], s['files'][2], SPLIT_LINES, s.get('long', [0, 0])[0],
@@ -666,46 +891,181 @@ def cmd_main(jobs):
         f.write(swant + chr(10))
     rc = build.build_game_dll()
     print('main: compile + link %.0fs' % (time.time() - t0))
+    nro_join()
     return rc
 
 
 # ---- modules: build_nro.run_clang replaced --------------------------------------------------------------------
+# The script modules' coverage list (2026-10-24): coverage\\<game build>_nro.txt beside this script (RECOMP_NRO_COVERAGE_LIST
+# another file, 'off' none; RECOMP_COVERAGE=off turns it off too): the guest addresses of the module functions executed in
+# competitive play (runtime-independent: tools/lifter/nro_cov.c in a coverage build, tools/competitive/nro_coverage.sh).
+# Every other function of a module goes to the module file's -O0 unit, like the game's. Each module's addresses lie in
+# its own range (ro_study\\nro_map.json); a module with no address in the list (never loaded by the campaign) or whose
+# addresses are not functions of its lift (another game build) is compiled as before (only the long functions split).
+_nro_cov = {}
+_nro_cov_lock = threading.Lock()
+
+
+def nro_coverage(module):
+    """(set of executed addresses, sha1 of them) for one script module, or None."""
+    with _nro_cov_lock:
+        if 'list' not in _nro_cov:
+            path = os.environ.get('RECOMP_NRO_COVERAGE_LIST', '')
+            if not path and COVERAGE != 'off':
+                ver = os.path.basename(os.path.normpath(os.environ.get('RECOMP_BIN', ''))) if os.environ.get('RECOMP_BIN') else ''
+                path = os.path.join(HERE, 'coverage', ver + '_nro.txt') if ver else ''
+            addrs = None
+            if path and path != 'off' and os.path.isfile(path) and not build_nro.COVERAGE_BUILD:
+                with open(path, 'rb') as f:
+                    lines = (l.strip() for l in f.read().decode('ascii', 'replace').splitlines())
+                addrs = sorted(set(int(l, 16) for l in lines if l and not l.startswith('#')))
+                print('coverage list of the modules %s: %d executed functions' % (path, len(addrs)), flush=True)
+            _nro_cov['list'] = addrs
+            _nro_cov['map'] = {e['name']: e for e in build_nro.load_map()}
+        if module in _nro_cov:
+            return _nro_cov[module]
+        addrs, e = _nro_cov['list'], _nro_cov['map'].get(module)
+        res = None
+        if addrs and e:
+            import bisect
+            lo = int(e['base'], 16)
+            mine = addrs[bisect.bisect_left(addrs, lo):bisect.bisect_left(addrs, lo + e['image_size'])]
+            gen = os.path.join(HERE, 'gen_nro' + os.environ.get('RECOMP_NRO_GEN_SUFFIX', os.environ.get('RECOMP_NRO_SUFFIX', '_eh')), module)
+            have = set(int(n[2:], 16) for n in tu_prepare.decls(gen) if n and n[:2] in ('f_', 'u_')) if mine else set()
+            if mine and len(set(mine) & have) >= 0.98 * len(mine):
+                res = (set(mine), hashlib.sha1(' '.join('%x' % a for a in mine).encode()).hexdigest())
+            elif mine:
+                print('coverage list of the modules: %s: only %d of its %d addresses are functions of this lift: not used'
+                      % (module, len(set(mine) & have), len(mine)), flush=True)
+        _nro_cov[module] = res
+        return res
+
+
+def nro_split_signature(module):
+    cov = nro_coverage(module)
+    return repr((tu_prepare.VERSION, SPLIT_LINES, cov[1] if cov else None))
+
+
+# RECOMP_NRO_UNITY (default 8): generated files of a module per compile unit (build_nro.unity): the -O1 parts of 8 files
+# are one unit, their -O0 parts another (compile_unity). Measured 2026-10-24 (10 fighter modules, 12 jobs): compiler time
+# 411 s per file, 345 s by 4, 329 s by 8; clang's peak memory on the largest unit of 8: 170 MB. The main's units stay one per file: their compile times
+# differ a lot (the hints order them) and the ladder's limits are per unit.
+UNITY = max(1, int(os.environ.get('RECOMP_NRO_UNITY') or 8))
+
+
+def compile_unity(srcs, obj, base_flags, opt_compile, cold_fn, agg):
+    """Several generated files as one unit (obj = <obj dir>\\g_<first>.obj): each file's parts by tu_prepare.prepare, then
+    <obj dir>_tu\\g_<first>.c #includes the optimised parts and g_<first>_b.c the -O0 parts (compiled into
+    <obj dir>_big\\g_<first>_b.obj). If the -O0 unit does not compile, the files are compiled whole as one unit."""
+    objdir, name = os.path.dirname(obj), os.path.basename(obj)[:-4]
+    tu = objdir + '_tu'
+    bobj = os.path.join(objdir + '_big', name + '_b.obj')
+    stats = {}
+    hot, big = [], []
+    for s in srcs:
+        parts = tu_prepare.prepare(s, tu, SPLIT_LINES, cold_fn, False, stats)
+        hot.append(parts[0][0])
+        big += [p for p, k in parts if k == 'big']
+    os.makedirs(tu, exist_ok=True)
+    unit, bunit = os.path.join(tu, name + '.c'), os.path.join(tu, name + '_b.c')
+    tu_prepare._write_if_changed(unit, build_nro.unity_text(hot))
+    if big:
+        tu_prepare._write_if_changed(bunit, build_nro.unity_text(big))
+    elif os.path.exists(bunit):
+        os.remove(bunit)
+    code, out, secs, note = opt_compile(unit, obj)
+    if code != 0 or not big:
+        if os.path.exists(bobj):
+            os.remove(bobj)
+        return code, out, secs, note
+    bcode, bout, bsecs = compile_big(bunit, bobj, base_flags)
+    with _split_lock:
+        for why, (n, st) in stats.items():
+            s = agg.setdefault(why, [0, 0, 0])
+            s[0] += n
+            s[1] += st
+        agg.setdefault('files', [0, 0, 0])[0] += len(srcs)
+        agg['files'][2] += bsecs
+    what = ', '.join('%d %s (%d statements)' % (n, {'long': 'long', 'cold': 'never executed'}[w], st) for w, (n, st) in sorted(stats.items()))
+    note = (note + '; ' if note else '') + '-O0 unit %.0fs: %s' % (bsecs, what)
+    if bcode == 0:
+        return code, out, secs + bsecs, note
+    if os.path.exists(bobj):
+        os.remove(bobj)
+    print('  %s: the -O0 unit did not compile (%s): its files are compiled whole' % (name, (bout or '').strip()[-300:]), flush=True)
+    whole = os.path.join(tu, name + '_w.c')
+    tu_prepare._write_if_changed(whole, build_nro.unity_text(srcs))
+    code, out, secs2, note2 = compile_file(whole, obj, base_flags)
+    return code, out, secs + bsecs + secs2, 'split failed, whole files' + ('; ' + note2 if note2 else '')
+
+
 def run_clang_nro(job):
-    args, label = job
-    src, obj = args[-3], args[-1]
+    args, label = job[0], job[1]
+    srcs = job[2] if len(job) > 2 else [args[-3]]
+    src, obj = srcs[0], args[-1]
     base = [a for a in args[:-3] if a not in ('-c', '-O0', '-O1', '-O2')]
+    if len(srcs) > 1 and not (SPLIT_LINES and os.path.basename(src).startswith('c_')):     # a unit of whole files
+        tu = os.path.dirname(obj) + '_tu'
+        os.makedirs(tu, exist_ok=True)
+        src = os.path.join(tu, label)
+        tu_prepare._write_if_changed(src, build_nro.unity_text(srcs))
     if SPLIT_LINES and os.path.basename(src).startswith('c_'):
         # scenario D: the long functions of a module (item: 230k statements in one file) in an -O0 unit of their own, the
-        # rest -O1 as before (154 -> 22 s for item\c_0000.c). No coverage per function for the modules: only the long ones
-        # move; the modules keep their small funcs.h (it also declares the module's struct)
+        # rest -O1 as before (154 -> 22 s for item\c_0000.c), and with the modules' coverage list the functions never
+        # executed in competitive play too; the modules keep their small funcs.h (it also declares the module's struct)
         # reduced pipeline, WITHOUT the inlined helpers as before (measured 2026-10-24: same fight fps with or without them,
         # compile of all modules 658 -> 502 s, module DLLs 966 -> 746 MB)
         opt_compile = ((lambda part, o: compile_pipeline(part, o, base, False)) if PIPE == 'llvm19' else
                        (lambda part, o: compile_file(part, o, base)))
-        code, out, secs, note = compile_split(src, obj, base, opt_compile, None, False)
+        cov = nro_coverage(os.path.basename(os.path.dirname(src)))
+        cold_fn = None
+        if cov:
+            hot = cov[0]
+
+            def cold_fn(name):
+                if name[:2] not in ('f_', 'u_'):
+                    return False
+                try:
+                    return int(name[2:], 16) not in hot
+                except ValueError:
+                    return False
+        if len(srcs) > 1:
+            code, out, secs, note = compile_unity(srcs, obj, base, opt_compile, cold_fn, _nro_split_stats)
+        else:
+            code, out, secs, note = compile_split(src, obj, base, opt_compile, cold_fn, False, agg=_nro_split_stats)
     else:
         code, out, secs, note = compile_pipeline(src, obj, base, False) if PIPE == 'llvm19' and os.path.basename(src).startswith('c_') else compile_file(src, obj, base)
+    if note.startswith('-O0 unit') and secs <= 60:          # (most module files have one with the coverage list)
+        note = ''
     if note or secs > 60:
-        line = '%-40s %6.0fs  %s' % (os.path.basename(os.path.dirname(src)) + '/' + label, secs, note)
-        _report.append(line)
+        line = '%-40s %6.0fs  %s' % (os.path.basename(os.path.dirname(srcs[0])) + '/' + label, secs, note)
+        _nro_report.append(line)
         print('  ' + line, flush=True)
     return label, code, out, secs
 
 
-def cmd_nro(jobs, names):
+def cmd_nro(jobs, names, retry=True):
     build_nro.run_clang = run_clang_nro
+    build_nro.unity = UNITY
+    if SPLIT_LINES:
+        build_nro.split_signature = nro_split_signature
     limit_memory(jobs)
     if not names:
         names = [e['name'] for e in build_nro.load_map()]
     rc = build_nro.main(names + ['--jobs=%d' % jobs])
     # a compiler that crashed with many running at once usually ran out of memory (clang "due to signal"): the modules are
     # built again with far fewer at a time, then one; only the objects that failed are compiled again
-    for retry in (max(1, jobs // 4), 1):
-        if not rc or retry >= jobs:
+    for again in (max(1, jobs // 4), 1) if retry else ():
+        if not rc or again >= jobs:
             continue
-        print('building the modules again with %d job(s): some compiles failed (usually out of memory with %d at once)' % (retry, jobs), flush=True)
-        rc = build_nro.main(names + ['--jobs=%d' % retry])
-    report(os.path.join(HERE, 'obj_nro' + os.environ['RECOMP_NRO_SUFFIX']))
+        print('building the modules again with %d job(s): some compiles failed (usually out of memory with %d at once)' % (again, jobs), flush=True)
+        rc = build_nro.main(names + ['--jobs=%d' % again])
+    if _nro_split_stats:
+        s = _nro_split_stats
+        print('-O0 units of the modules: %d files, %.0fs of compiler time; functions over %d statements: %d (%d statements); '
+              'never executed in competitive play: %d (%d statements)' % (s['files'][0], s['files'][2], SPLIT_LINES, s.get('long', [0, 0])[0],
+                                                                          s.get('long', [0, 0])[1], s.get('cold', [0, 0])[0], s.get('cold', [0, 0])[1]), flush=True)
+    report(os.path.join(HERE, 'obj_nro' + os.environ['RECOMP_NRO_SUFFIX']), _nro_report)
     return rc
 
 
