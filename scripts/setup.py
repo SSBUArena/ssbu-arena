@@ -177,6 +177,8 @@ class Ctx:
         t = self.tools
         if 'clang' in t:
             env['RECOMP_CLANG'] = t['clang']
+        if 'llvm19' in t:
+            env['RECOMP_LLVM19'] = t['llvm19']
         if 'sdl3' in t:
             env['SDL3_ROOT'] = t['sdl3']
         if 'vulkan' in t:
@@ -466,6 +468,23 @@ def step_deps(cx):
     if 'version 9.' not in ver and 'version 8.' not in ver:
         say('  WARNING: the lifted code was only ever compiled with clang 8 and 9; %s is untested' % ver)
     cx.tools['clang'] = clang
+    # LLVM 19's opt.exe + llc.exe (deps/llvm19, scripts/install.py): the optimised units go clang 9 front end -> opt -> llc
+    # (tools/lifter/build_opt.py RECOMP_PIPE): about half the compile time of clang 9 -O1 and faster code. Without them the
+    # build is the same as before (clang 9 -O1), only slower.
+    def is_19(d):
+        if not all(os.path.isfile(os.path.join(d, n)) for n in ('opt.exe', 'llc.exe')):
+            return False
+        try:
+            return 'LLVM version 19.' in subprocess.run([os.path.join(d, 'opt.exe'), '--version'], capture_output=True, text=True).stdout
+        except OSError:
+            return False
+    llvm19 = find_first([a.llvm19, os.environ.get('LLVM19_ROOT'), os.path.join(deps, 'llvm19')], is_19)
+    if llvm19:
+        cx.tools['llvm19'] = llvm19
+        say('  opt/llc (LLVM 19): %s' % llvm19)
+    else:
+        say('  opt/llc (LLVM 19) not found (--llvm19 <folder with opt.exe and llc.exe>): the game is compiled with clang 9 -O1, '
+            'about twice as long')
     probe = os.path.join(cx.build, 'probe')
     os.makedirs(probe, exist_ok=True)
     if cx.nocrt:
@@ -1332,6 +1351,7 @@ def main():
     ap.add_argument('--jobs', type=int, help='parallel compiler jobs (default min(24, cpus); on Windows also at most one per 4 GB of RAM; on Linux / macOS the '
                                                   'compilers share RAM - 4 GB by reservations instead)')
     ap.add_argument('--llvm', help='LLVM 9.0.0 folder (bin\\clang.exe)')
+    ap.add_argument('--llvm19', help="folder with LLVM 19's opt.exe and llc.exe (deps/llvm19; optional: without it clang 9 -O1, slower)")
     ap.add_argument('--sdl3', help='SDL3 development package (VC) folder: include\\, lib\\x64\\')
     ap.add_argument('--vulkan-headers', help='Khronos Vulkan-Headers folder (include\\vulkan\\)')
     ap.add_argument('--glslang', help='glslang windows-x86_64 release folder (include\\, lib\\)')

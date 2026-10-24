@@ -57,7 +57,9 @@ def write_registry(entries):
 # left most of the CPU idle while a module waited for its largest file or ran its lifter (2026-10-19: 98 modules,
 # 937 s at 12 jobs, of which 226 s lifting and the rest mostly the tail of each module).
 _cc_slots = None
-_lift_slots = threading.BoundedSemaphore(2)
+# RECOMP_NRO_LIFTS: how many modules are lifted at once (default 4; was 2). With the reduced compile pipeline (build_opt.py
+# RECOMP_PIPE) lifting became the larger part of the step (2026-10-24: 729 s of lifting in 12m58s)
+_lift_slots = threading.BoundedSemaphore(int(os.environ.get('RECOMP_NRO_LIFTS') or 4))
 # Linux / macOS (scripts/setup.py sets it): the lifters' worker processes, which hold memory the compilers' sharing
 # (build_opt.py MEM_BUDGET) does not count, follow the RAM rule rather than the compiler job count
 LIFT_JOBS = int(os.environ.get('RECOMP_LIFT_JOBS') or 0) if (TARGET_LINUX or TARGET_MACOS) else 0
@@ -184,7 +186,7 @@ def main(argv):
             rc = 1
             continue
         todo.append(e)
-    at_once = int(next((a.split('=', 1)[1] for a in argv if a.startswith('--modules-at-once=')), os.environ.get('RECOMP_NRO_AT_ONCE') or max(1, min(6, jobs // 4))))
+    at_once = int(next((a.split('=', 1)[1] for a in argv if a.startswith('--modules-at-once=')), os.environ.get('RECOMP_NRO_AT_ONCE') or max(1, min(6, jobs // 2))))
     global _cc_slots
     _cc_slots = threading.BoundedSemaphore(jobs) if at_once > 1 else None
     size = lambda e: os.path.getsize(os.path.join(RO, 'nro', e['file'])) if os.path.exists(os.path.join(RO, 'nro', e['file'])) else 0

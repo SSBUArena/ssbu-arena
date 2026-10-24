@@ -72,6 +72,8 @@ def main():
     ap.add_argument('version', help='x.y.z (higher than the last release: the launchers compare it)')
     ap.add_argument('--publish', action='store_true', help='push, tag and create the GitHub release')
     ap.add_argument('--notes', default='', help='release notes (players see them on the release page)')
+    ap.add_argument('--asset', action='append', default=[], help='another file for the release (repeatable): e.g. a build tool zip '
+                    'that scripts/install.py TOOLS points at on this tag (its URL and sha256 must already be in install.py)')
     a, extra = ap.parse_known_args()
     if not re.fullmatch(r'\d+\.\d+\.\d+', a.version):
         sys.exit('version must look like 0.2.0')
@@ -138,7 +140,10 @@ def main():
     run(['git'] + who + ['tag', '-a', tag, '-m', 'SSBU Arena ' + a.version])
     run(['git', 'push', remote, tag])
     notes = a.notes or ('SSBU Arena %s. Download **SSBU-Arena.exe** only: it installs and updates everything else.' % a.version)
-    run(['gh', 'release', 'create', tag, '--repo', GITHUB, '--title', 'SSBU Arena ' + a.version, '--notes', notes, exe, pkg, rel_json])
+    for f in a.asset:
+        if not os.path.isfile(f):
+            sys.exit('--asset %s: no such file' % f)
+    run(['gh', 'release', 'create', tag, '--repo', GITHUB, '--title', 'SSBU Arena ' + a.version, '--notes', notes, exe, pkg, rel_json] + a.asset)
     say('published: https://github.com/%s/releases/tag/%s' % (GITHUB, tag))
     return 0
 

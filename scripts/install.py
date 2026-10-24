@@ -97,6 +97,13 @@ TOOLS = {   # checked 2026-10-19: SDL3 and glslang equal GitHub's own asset dige
     # (SHA-256 71ed99a6...8863, signed) extracted with 7-Zip, unchanged, only what the build uses (README.txt inside)
     'llvm': ('https://github.com/OpenSmash-Ultimate/ssbu-recomp/releases/download/llvm-9.0.0-portable/llvm-9.0.0-win64-portable.zip',
              '0e0c34046589a73efef3e2a4c06335815681afbc7c883b665cdbed98669a22e3', 'llvm', os.path.join('bin', 'clang.exe')),
+    # LLVM 19.1.7's opt.exe and llc.exe only (tools/lifter/build_opt.py RECOMP_PIPE: the reduced pipeline of the optimised
+    # units), unchanged, from the official clang+llvm-19.1.7-x86_64-pc-windows-msvc.tar.xz of
+    # https://github.com/llvm/llvm-project/releases/tag/llvmorg-19.1.7 (that archive's sha256 in the zip's README.txt, with
+    # LICENSE.TXT: Apache-2.0 WITH LLVM-exception). 39 MB instead of the 845 MB archive, published with Arena 0.2.8
+    # (scripts/arena_release.py --asset); without it setup.py builds with clang 9 -O1 as before (slower, same result).
+    'llvm19': ('https://github.com/Acid236/ssbu-arena/releases/download/v0.2.8/llvm19-opt-llc-19.1.7.zip',
+               'f41b92b7a41f557b004d2d41ca51cf2b382b8350dec772b0e246e55fe5328797', 'llvm19', 'opt.exe'),
     # Dear ImGui (MIT), optional: GitHub publishes no digest for tag archives, so this hash is the archive checked on
     # 2026-10-19 (2,021,831 bytes)
     'imgui': ('https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b.zip',
@@ -746,6 +753,16 @@ def msvc_stop(why):
                 'Build Tools" below, or run this in a Command Prompt, then press Resume:  ' + MSVC_WINGET, action='msvc')
 
 
+def llvm19_args():
+    """['--llvm19', deps/llvm19] when LLVM 19's opt/llc are there or can be fetched; [] otherwise (optional: the build
+    falls back to clang 9 -O1, slower, same result)"""
+    try:
+        return ['--llvm19', fetch('llvm19')]
+    except (Exception, SystemExit) as e:
+        say('   LLVM 19 opt/llc not available (%s): the game is compiled with clang 9 -O1 (about twice as long)' % str(e)[:200])
+        return []
+
+
 def tools_args(dump, runtime=None, extra=(), why=''):
     extra = list(extra)
     if runtime:                                  # only LLVM is needed: no MSVC, no SDL3 / Vulkan-Headers / glslang / suyu
@@ -756,7 +773,7 @@ def tools_args(dump, runtime=None, extra=(), why=''):
             rc, fail = probe_runtime(dump, runtime, extra + llvm)
         if rc == 0:
             say('   LLVM there; prebuilt runtime %s (no MSVC Build Tools needed)' % os.path.basename(runtime))
-            return ['--runtime', runtime] + llvm
+            return ['--runtime', runtime] + llvm + llvm19_args()
         if 'runtime package refused' not in fail:
             # a problem that has nothing to do with the package (the dump, a Python package): say it now, not "MSVC"
             raise Stop('the tools check stopped: %s' % fail[:400], 'Fix the point above, then press Resume (see the logs in %s).'
@@ -778,6 +795,7 @@ def tools_args(dump, runtime=None, extra=(), why=''):
     args = []
     for name, flag in (('llvm', '--llvm'), ('sdl3', '--sdl3'), ('vulkan-headers', '--vulkan-headers'), ('glslang', '--glslang')):
         args += [flag, fetch(name)]
+    args += llvm19_args()
     args += ['--suyu', fetch_suyu()]
     say('   all there')
     return args + extra

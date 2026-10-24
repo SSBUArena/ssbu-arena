@@ -286,7 +286,7 @@ def hint_key(src, split=''):
     """split: split_signature() when src is a generated file compiled as parts (the parts follow from it and the split);
     no absolute paths, so the keys of build_hints.json match on every PC (13.0.4 lift, same flags)."""
     with open(src, 'rb') as f:
-        return hashlib.sha1(f.read() + repr((OPT, EXTRA, INLINE)).encode() + split.encode()).hexdigest()
+        return hashlib.sha1(f.read() + repr((OPT, EXTRA, INLINE) + ((PIPE, PIPE_PASSES, PIPE_LLC, PIPE_FE) if PIPE == 'llvm19' else ())).encode() + split.encode()).hexdigest()
 
 
 def hint_save(objdir, name, key, secs, inlined):
@@ -428,6 +428,52 @@ def report(objdir):
     del _report[:]
 
 
+# ---- reduced LLVM pipeline (speedtest2, 2026-10-24) ------------------------------------------------------------
+# RECOMP_PIPE=llvm19 (default when RECOMP_LLVM19 names a folder with LLVM 19's opt.exe and llc.exe; setup.py sets it to
+# deps\llvm19): every OPTIMISED unit (game and script modules) is compiled as
+#   clang 9 -O1 -Xclang -disable-llvm-passes -emit-llvm   (the same front end, the same C, no LLVM pass yet)
+#   opt -passes=PIPE_PASSES                                (helpers inlined bottom-up, then sroa / early-cse / instcombine /
+#                                                           simplifycfg: no loop pass, no GVN)
+#   llc -O1 -fp-contract=off -mcpu=x86-64                  (the generic x86-64 target of today's build on every PC)
+# instead of clang 9 -O1. clang 9's -O1 spent ~76 % of its time in LoopSimplify / LCSSA / LICM / LoopUnswitch on the
+# lifted functions and produced 2.4x more x86 instructions (spills); measured 2026-10-24: game compile 1162 s -> 540 s
+# (from scratch, 12 jobs), fight fps 82 -> 147 (vs CPU, uncapped), rollback pairs identical (r1+r1 and r1 vs a clang 9
+# build), difftest 33486/33486 identical to Unicorn. No time ladder is needed (no file over ~60 s); a unit the pipeline
+# cannot compile goes the old way. The -O0 units (tu_prepare 'big') are unchanged. RECOMP_PIPE=clang9: the old way.
+LLVM19 = os.environ.get('RECOMP_LLVM19', '')
+PIPE = os.environ.get('RECOMP_PIPE') or ('llvm19' if LLVM19 and all(os.path.isfile(os.path.join(LLVM19, n)) for n in ('opt.exe', 'llc.exe')) else 'clang9')
+PIPE_PASSES = os.environ.get('RECOMP_PIPE_PASSES', 'cgscc(inline<only-mandatory>,function(sroa,early-cse,instcombine<no-verify-fixpoint>,simplifycfg))')
+PIPE_LLC = ['-O1', '-fp-contract=off', '-mcpu=x86-64']
+# cx16 (cmpxchg16b, on every x86-64 CPU Windows 10/11 runs on): lets stxp64 (STXP, 16-byte compare-and-swap) be inlined;
+# without it a unit holding an STXP had to drop the inlined helpers altogether
+PIPE_FE = ['-O1', '-Xclang', '-disable-llvm-passes', '-emit-llvm', '-mcx16']
+
+
+def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=None):
+    """An optimised unit through the reduced pipeline. Returns (exit code, output, seconds, note) like compile_file."""
+    extra = EXTRA if extra is None else extra
+    bc, bc2 = obj[:-4] + '.fe.bc', obj[:-4] + '.opt.bc'
+    total, note = 0.0, ''
+    for inl in ((True, False) if inline else (False,)):
+        steps = [[CLANG, '-c'] + PIPE_FE + extra + ([INLINE_FLAG] if inl else []) + base_flags + [src, '-o', bc],
+                 [os.path.join(LLVM19, 'opt.exe'), '-passes=' + PIPE_PASSES, bc, '-o', bc2],
+                 [os.path.join(LLVM19, 'llc.exe'), '-filetype=obj'] + PIPE_LLC + [bc2, '-o', obj]]
+        code, out = 0, ''
+        for cmd in steps:
+            code, out, secs = run_limited(cmd, time_limit or TIME_LIMIT)
+            total += secs
+            if code != 0:
+                break
+        for f in (bc, bc2):
+            if os.path.exists(f):
+                os.remove(f)
+        if code == 0:
+            return 0, out, total, note
+        note = 'helpers not inlined (the inlined compile failed)' if inl else note
+    code, out, secs, note2 = compile_file(src, obj, base_flags, time_limit, extra)
+    return code, out, total + secs, 'reduced pipeline failed, clang 9 -O1' + ('; ' + note2 if note2 else '')
+
+
 # ---- scenario D: the -O0 unit (tu_prepare.py) -------------------------------------------------------------------
 _cov = []
 _split_stats = {}
@@ -546,8 +592,9 @@ def compile_one_main(name):
     base = ['-w', '-fno-strict-aliasing', '-I', HERE, '-I', build.GEN] + build.NOCRT_FLAGS + build.PLAT_FLAGS
     if split_on():
         key = hint_key(src, split_signature())
-        code, out, secs, note = compile_split(src, obj, base, lambda part, o: compile_file_inline(part, o, base, key=key),
-                                              cold, OWN_DECLS, key)
+        opt_compile = ((lambda part, o: compile_pipeline(part, o, base, INLINE)) if PIPE == 'llvm19' else
+                       (lambda part, o: compile_file_inline(part, o, base, key=key)))
+        code, out, secs, note = compile_split(src, obj, base, opt_compile, cold, OWN_DECLS, key)
     else:
         code, out, secs, note = compile_file_inline(src, obj, base)
     # (the -O0 unit alone is not worth a line: most files have one with the coverage list)
@@ -566,7 +613,7 @@ def cmd_main(jobs):
     big_dir = build.OBJ + '_big'
     # objects compiled with the other RECOMP_INLINE setting are compiled again (the compile skips an object newer than its
     # source, whatever flags made it): a build from before inlining existed gets the faster code on its next update
-    stamp, want = os.path.join(build.OBJ, '_inline.txt'), '1' if INLINE else '0'
+    stamp, want = os.path.join(build.OBJ, '_inline.txt'), ('1' if INLINE else '0') + (' llvm19' if PIPE == 'llvm19' else '')
     try:
         have = open(stamp).read().strip()
     except OSError:
@@ -631,9 +678,13 @@ def run_clang_nro(job):
         # scenario D: the long functions of a module (item: 230k statements in one file) in an -O0 unit of their own, the
         # rest -O1 as before (154 -> 22 s for item\c_0000.c). No coverage per function for the modules: only the long ones
         # move; the modules keep their small funcs.h (it also declares the module's struct)
-        code, out, secs, note = compile_split(src, obj, base, lambda part, o: compile_file(part, o, base), None, False)
+        # reduced pipeline, WITHOUT the inlined helpers as before (measured 2026-10-24: same fight fps with or without them,
+        # compile of all modules 658 -> 502 s, module DLLs 966 -> 746 MB)
+        opt_compile = ((lambda part, o: compile_pipeline(part, o, base, False)) if PIPE == 'llvm19' else
+                       (lambda part, o: compile_file(part, o, base)))
+        code, out, secs, note = compile_split(src, obj, base, opt_compile, None, False)
     else:
-        code, out, secs, note = compile_file(src, obj, base)
+        code, out, secs, note = compile_pipeline(src, obj, base, False) if PIPE == 'llvm19' and os.path.basename(src).startswith('c_') else compile_file(src, obj, base)
     if note or secs > 60:
         line = '%-40s %6.0fs  %s' % (os.path.basename(os.path.dirname(src)) + '/' + label, secs, note)
         _report.append(line)
