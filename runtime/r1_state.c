@@ -34,6 +34,8 @@ int r1_on(void) {
 int r1_ra_phase(void) { return 0; }
 int r1_ra_quiet(void) { return 0; }
 int r1_rb_paced(void) { return 0; }
+int r1_rb_feat(int bit, int dflt) { (void)bit; return dflt; }
+int r1_rb_rerun_main(void) { return 0; }
 int r1_ra_present_mode(void) { return 0; }
 void r1_stats_report(void) {}
 int r1_poll(int ticks) { (void)ticks; return 0; }
@@ -333,7 +335,25 @@ static void slow_report(const char *when) {        /* which thread made the hold
     b[o] = 0;
     if (o) LOG("r1: hold %s: slow threads:%s\n", when, b);
 }
-static void unpark(void) { for (int i = 0; i < g_nth; i++) if (g_th[i].held) { ResumeThread(g_th[i].h); g_th[i].held = 0; } }
+/* (Arena perf) g_snd_keep (rb_rollback.c, from a rollback's load to its last re-run pass): unpark leaves the sound threads
+ * suspended (one suspension each, kept in g_snd_kept; the next holds find them at their wait at once); snd_let_go resumes them.
+ * The sound output has 5 buffers of 10.7 ms queued (nnaudio.c), the threads are held ~10-15 ms. SSBU_RB_SNDKEEP=0: off */
+static int g_snd_keep; static HANDLE g_snd_kept[16]; static int g_nsnd_kept; static long long g_snd_keeps;
+static int ra_audio(const char *n);
+static void unpark(void) {
+    for (int i = 0; i < g_nth; i++) if (g_th[i].held) {
+        g_th[i].held = 0;
+        if (g_snd_keep && g_th[i].name && ra_audio(g_th[i].name)) {
+            int k = 0; while (k < g_nsnd_kept && g_snd_kept[k] != g_th[i].h) k++;
+            if (k < g_nsnd_kept) ResumeThread(g_th[i].h);          /* already kept: the extra suspension of this hold goes */
+            else if (g_nsnd_kept < 16) { g_snd_kept[g_nsnd_kept++] = g_th[i].h; g_snd_keeps++; }      /* this suspension stays */
+            else ResumeThread(g_th[i].h);
+            continue;
+        }
+        ResumeThread(g_th[i].h);
+    }
+}
+static void snd_let_go(void) { g_snd_keep = 0; for (int k = 0; k < g_nsnd_kept; k++) ResumeThread(g_snd_kept[k]); g_nsnd_kept = 0; }
 static void restore_thread_regs(void) {     /* callee-saved registers + sp of each thread held at the same wait as at the save */
     for (int i = 0; i < g_nth; i++) {
         Th *t = &g_th[i];
@@ -1168,9 +1188,23 @@ static uint8_t *g_cp_cmp;                             /* (R2 round 3) set: the q
 /* (R3 net3) g_cp_cond set: each queued page is copied only if it differs from its source (a ring load: most learned pages
  * already hold the value being loaded; reading both is cheaper than writing the page); g_cp_wrote[k] counts the copies */
 static int g_cp_cond; static volatile long long g_cp_wrote[9];
+#include <emmintrin.h>
+/* (Arena perf) g_cp_nt set (ring captures, r1_ring.c): the destination (a pool buffer, read again only by a load) is written with
+ * non-temporal stores: the copy does not evict the game's own data from the caches. Both pages are 4 KB aligned. */
+static int g_cp_nt;
+static void cp_page_nt(uint8_t *d, const uint8_t *s) {
+    __m128i *D = (__m128i *)d; const __m128i *S = (const __m128i *)s;
+    for (int i = 0; i < 4096 / 16; i += 8) {
+        __m128i a0 = _mm_loadu_si128(S + i), a1 = _mm_loadu_si128(S + i + 1), a2 = _mm_loadu_si128(S + i + 2), a3 = _mm_loadu_si128(S + i + 3);
+        __m128i a4 = _mm_loadu_si128(S + i + 4), a5 = _mm_loadu_si128(S + i + 5), a6 = _mm_loadu_si128(S + i + 6), a7 = _mm_loadu_si128(S + i + 7);
+        _mm_stream_si128(D + i, a0); _mm_stream_si128(D + i + 1, a1); _mm_stream_si128(D + i + 2, a2); _mm_stream_si128(D + i + 3, a3);
+        _mm_stream_si128(D + i + 4, a4); _mm_stream_si128(D + i + 5, a5); _mm_stream_si128(D + i + 6, a6); _mm_stream_si128(D + i + 7, a7);
+    }
+}
 static void cp_part(int k) { size_t a = g_ncj * (size_t)k / (size_t)(g_ncp + 1), b = g_ncj * (size_t)(k + 1) / (size_t)(g_ncp + 1);
     if (g_cp_cmp) { for (size_t i = a; i < b; i++) g_cp_cmp[i] = memcmp(g_cj[i].d, g_cj[i].s, PG) != 0; }
     else if (g_cp_cond) { long long w = 0; for (size_t i = a; i < b; i++) if (memcmp(g_cj[i].d, g_cj[i].s, PG)) { memcpy(g_cj[i].d, g_cj[i].s, PG); w++; } g_cp_wrote[k < 9 ? k : 8] += w; }
+    else if (g_cp_nt) { for (size_t i = a; i < b; i++) cp_page_nt(g_cj[i].d, g_cj[i].s); _mm_sfence(); }
     else for (size_t i = a; i < b; i++) memcpy(g_cj[i].d, g_cj[i].s, PG); }
 static DWORD WINAPI cp_thread(void *p) { int k = (int)(intptr_t)p; for (;;) { WaitForSingleObject(g_cp_go[k], INFINITE); cp_part(k + 1); SetEvent(g_cp_done[k]); } return 0; }
 static void cp_init(void) {
@@ -1797,9 +1831,10 @@ static void ra_line(Ctx *c, void *user) {           /* the fighters' frame line:
     g_orig_line(c);
 }
 static void ra_report(void); static int rbg_noring_now(void);
+static int g_rgs_left;                                  /* (r1_ring.c) */
 static void ra_frame_end(double te) {
     double fe = now_ms();
-    if (g_ra_ready && g_t_poll > g_ra_t_mark && te > g_t_poll) { int k = g_ra_phase; g_rap[k][0] += g_t_poll - g_ra_t_mark; g_rap[k][1] += te - g_t_poll; g_rap[k][2] += fe - te; g_ra_fe_end = fe; g_ra_fe_kind = k + 1; }
+    if (g_ra_ready && g_t_poll > g_ra_t_mark && te > g_t_poll) { int k = g_ra_phase; if (k == 2 && g_rgs_left > 1) k = 1;      /* (online rollback: 1 = a re-run pass but the last) */ g_rap[k][0] += g_t_poll - g_ra_t_mark; g_rap[k][1] += te - g_t_poll; g_rap[k][2] += fe - te; g_ra_fe_end = fe; g_ra_fe_kind = k + 1; }
     g_ra_fe++;
     { static long long n; if (++n % 1200 == 0 && (g_ra_ready || rbg_noring_now())) ra_report(); }      /* (hs14: a match without the ring too) */
     if (InterlockedExchange(&g_ra_lines, 0) > 0) {      /* this iteration ran a fight frame: real or speculative (for tests\r1_ra_cmp.py) */
@@ -2072,7 +2107,8 @@ void r1_register_heap(void) {
         register_imports(md, 3);
     }
     if (!r1_on() || getenv("SSBU_R1_CRT_HEAP")) return;
-    g_ar = VirtualAlloc(NULL, AR_SIZE, MEM_RESERVE, PAGE_NOACCESS);
+    g_ar = VirtualAlloc(NULL, AR_SIZE, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS);      /* (Arena perf) write watch: an extra of the ring (r1_ring.c rgx_each) */
+    if (!g_ar) g_ar = VirtualAlloc(NULL, AR_SIZE, MEM_RESERVE, PAGE_NOACCESS);
     if (!g_ar || !VirtualAlloc(g_ar, 1u << 20, MEM_COMMIT, PAGE_READWRITE)) { g_ar = NULL; LOG("r1: guest heap reservation FAILED\n"); return; }
     ARH->bump = 4096; ARH->committed = 1u << 20;
     static const ImportDef defs[] = {

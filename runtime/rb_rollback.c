@@ -45,7 +45,7 @@ static long long g_rbg_rb, g_rbg_k[RG_MAXSLOT + 2], g_rbg_rerun, g_rbg_miss, g_r
 static double g_rbg_stall_ms, g_rbg_load_ms, g_rbg_tick0, g_rbg_next, g_rbg_last_go;
 static volatile LONG g_rbg_last_k, g_rbg_max_k;
 #define RBG_NT 200000
-static float *g_rbg_work, *g_rbg_gap, *g_rbg_wcyc; static ULONG64 g_rbg_cyc_go; static unsigned char *g_rbg_wk; static int g_rbg_nw, g_rbg_ng, g_rbg_pace = -1, g_rbg_tick_k;
+static float *g_rbg_work, *g_rbg_gap, *g_rbg_wcyc; static ULONG64 g_rbg_cyc_go; static unsigned char *g_rbg_wk, *g_rbg_wab; static int g_rbg_nw, g_rbg_ng, g_rbg_pace = -1, g_rbg_tick_k;
 static HANDLE g_rbg_timer;
 /* (hs10) the task workers at the safe point H2: r1_state.c holds them from the kick H1 to H2, so at H2 the kick's jobs are
  * queued and their (host-side) wake-up event is signaled and not consumed; a ring load relies on that, since the nn::os
@@ -99,9 +99,13 @@ static int rbg_rollback(Ctx *c, long long i, int m) {
         return 0;
     }
     double t0 = now_ms();
+    g_rbab_side = (int)(((g_rbg_rb + 1) >> 3) & 1);      /* (TEST, SSBU_RB_AB) this rollback's group */
     if (!g_ra_wh_on) { g_rbg_rb_unheld++; if (g_rbg_rb_unheld <= 10) LOG("r1: RB NET: rollback at frame %lld while the task workers are NOT held (watchdog releases so far %lld): the load may leave the job system waiting\n", i, g_ra_wd_fired); }
     if (g_rbg_refused_tick) { rbn_put_mismatch(m); return 0; }      /* (R3 pub1) refused once this tick: next tick */
+    {   static int sk = -1; if (sk < 0) { const char *e = getenv("SSBU_RB_SNDKEEP"); sk = !(e && e[0] == '0'); }
+        g_snd_keep = rb_feat(8, sk); }                  /* (Arena perf) the sound threads held through the re-run passes (r1_state.c unpark) */
     int lr = r1_ring_load(best, c);
+    if (lr <= 0) snd_let_go();
     if (lr < 0) { g_rbg_refused_tick = 1; g_rbg_pend = m; rbn_put_mismatch(m); return 0; }      /* (R3 pub1) refused (a thread running): the wrong guess stays pending */
     if (!lr) { g_rbg_miss++; return 0; }
     g_rbg_pend = 0;
@@ -168,6 +172,7 @@ static void rbg_step_body(Ctx *c) {
         { const char *e = getenv("SSBU_RB_NET_LASTLITE"); g_rgs_lastlite = !e || atoi(e) != 0; }      /* default on here: proven exact (rl4L, rl4K); =0 runs the last re-run pass fully */
         if (!g_rbg_timer) g_rbg_timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
         if (!g_rbg_timer) g_rbg_timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+        if (!g_rbg_wab) g_rbg_wab = calloc(RBG_NT, 1);
         if (!g_rbg_work) { g_rbg_work = calloc(RBG_NT, sizeof *g_rbg_work); g_rbg_gap = calloc(RBG_NT, sizeof *g_rbg_gap); g_rbg_wcyc = calloc(RBG_NT, sizeof *g_rbg_wcyc); g_rbg_wk = calloc(RBG_NT, 1); }
         LOG("r1: RB NET: match start, base state = frame %lld (fight frame %lld); pacing %s; re-run skip mask %d, lite mask %d%s\n", i, g_ff, g_rbg_pace ? "60 Hz" : "off", g_rgs_skip, g_rgs_lite, g_rgs_lastlite ? " (the last re-run pass too)" : "");
         {   /* start barrier: both games begin frame 1 together (the one that finished loading first waits here, at frame 0,
@@ -208,6 +213,7 @@ static void rbg_step_body(Ctx *c) {
         g_rgs_next = i + 1;
         if (--g_rgs_left > 0) { g_rbg_t_pass0 = now_ms(); return; }
         g_ra_phase = 0; g_ra_after_quiet = 1; g_rgs_left = 0;
+        snd_let_go();                                   /* (Arena perf) the sound threads go on (held since the load) */
     } else if (g_rbg_noring) {                          /* (hs13) a real pass ended, no ring: nothing to capture, nothing ran on a guess */
         g_rgs_next = i + 1; g_rbg_real++;
         rbn_drain(i);
@@ -256,7 +262,7 @@ static void rbg_step_body(Ctx *c) {
     }
     /* the next pass is a real one (frame i + 1): pending wrong guesses first, then the other player, then the tick */
     double tw = now_ms();
-    if (g_rbg_tick0 > 0 && g_rbg_nw < RBG_NT) { g_rbg_work[g_rbg_nw] = (float)(tw - g_rbg_tick0); g_rbg_wcyc[g_rbg_nw] = (float)((rgs_cyc_now() - g_rbg_cyc_go) / 1e6); g_rbg_wk[g_rbg_nw] = (unsigned char)(g_rbg_tick_k > 255 ? 255 : g_rbg_tick_k); g_rbg_nw++; }
+    if (g_rbg_tick0 > 0 && g_rbg_nw < RBG_NT) { g_rbg_work[g_rbg_nw] = (float)(tw - g_rbg_tick0); g_rbg_wcyc[g_rbg_nw] = (float)((rgs_cyc_now() - g_rbg_cyc_go) / 1e6); g_rbg_wk[g_rbg_nw] = (unsigned char)(g_rbg_tick_k > 255 ? 255 : g_rbg_tick_k); if (g_rbg_wab) g_rbg_wab[g_rbg_nw] = (unsigned char)g_rbab_side; g_rbg_nw++; }
     g_rbg_tick0 = 0;
     int stalled = 0; double ts = 0;
     for (;;) {
@@ -425,6 +431,11 @@ static void rbg_report(void) {
     rbg_dist("work per tick (real pass + its rollback, without waits)", g_rbg_work, g_rbg_nw, g_rbg_wk, -1);
     rbg_dist("work per tick without rollback", g_rbg_work, g_rbg_nw, g_rbg_wk, 0);
     rbg_dist("work per tick with rollback", g_rbg_work, g_rbg_nw, g_rbg_wk, 1);
+    if (g_rbab > 0 && g_rbg_wab) for (int sd = 0; sd < 2; sd++) {      /* (TEST, SSBU_RB_AB) the two groups */
+        unsigned char *kk = malloc((size_t)g_rbg_nw + 1); if (!kk) break;
+        for (int j = 0; j < g_rbg_nw; j++) kk[j] = g_rbg_wk[j] && g_rbg_wab[j] == sd;
+        char what[96]; snprintf(what, sizeof what, "AB %d side %s: work per tick with rollback", g_rbab, sd ? "ON" : "off");
+        rbg_dist(what, g_rbg_work, g_rbg_nw, kk, 1); free(kk); }
     rbg_dist("time between real passes (tick to tick)", g_rbg_gap, g_rbg_ng, NULL, -1);
     rbg_dist("main-thread CPU per tick with rollback (million cycles, shown as ms)", g_rbg_wcyc, g_rbg_nw, g_rbg_wk, 1);
     rbg_dist("main-thread CPU per tick without rollback (million cycles, shown as ms)", g_rbg_wcyc, g_rbg_nw, g_rbg_wk, 0);
@@ -433,6 +444,9 @@ static void rbg_report(void) {
 /* (Arena perf) nvn_gl.c: in a rollback match this file paces the ticks (60 Hz), so the submission does not also wait for
  * the display's refresh: with two 60 Hz clocks every tick over budget waited for the next refresh too (~6.5 ms of a
  * real pass, lwr_c1_vps_auto). The picture is still presented. SSBU_RB_NET_VSYNC=1: the refresh wait as before. */
+/* (Arena perf) nvn_gl.c sync_wait: the main thread in a re-run pass of a paced rollback match */
+int r1_rb_paced(void);
+int r1_rb_rerun_main(void) { return g_ra_phase == 2 && g_rgp_main && GetCurrentThreadId() == g_rgp_main && r1_rb_paced(); }
 int r1_rb_paced(void) {
     static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RB_NET_VSYNC"); v = e && atoi(e) != 0; }
     return !v && g_rbg_in_match == 1 && g_rbg_pace > 0 && !g_rbg_noring;

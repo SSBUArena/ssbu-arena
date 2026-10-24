@@ -4995,9 +4995,20 @@ static void job_sync_wait(void *arg) {
 }
 static void sync_wait(Ctx *c) {                         /* (sync, timeoutNs) -> NVNsyncWaitResult */
     L1T("sync wait %llx%s", (unsigned long long)A0, hobj(A0, K_SYNC) == g_window_sync ? " (WINDOW texture)" : "");
-    SyncObj *o = hobj(A0, K_SYNC);
+    SyncObj *o = hobj(A0, K_SYNC); int nowait = 0;
+    {   /* (Arena perf) the main thread in a re-run pass of a rollback (its picture is never shown, the real pass after it
+         * presents) does not wait for the render thread to finish the frames submitted before it: the first re-run pass of a
+         * rollback waited ~2 ms here for the replay of the real pass just thrown away. The game is told the GPU is done (as a
+         * wait would end); nothing in the simulation reads GPU results. The window texture's sync (never fenced: the wait
+         * only drained the render thread's queue, result 3) goes on to its own handling below with that result, without the
+         * drain. Other threads wait as before. SSBU_RB_RERUN_NOSYNC=0: the wait as before. */
+        static int ns = -1; int r1_rb_rerun_main(void);
+        if (ns < 0) { const char *e = getenv("SSBU_RB_RERUN_NOSYNC"); ns = !e || atoi(e) != 0; }
+        int r1_rb_feat(int bit, int dflt);
+        nowait = o && r1_rb_rerun_main() && r1_rb_feat(1, ns);
+        if (nowait && o != g_window_sync) { RET(1); return; } }
     SyncJob j = {o, 0, A1, 3};
-    if (o) gl_run(g_rb->sync_wait, &j);
+    if (o && !nowait) gl_run(g_rb->sync_wait, &j);
     if (o && o == g_window_sync && A1 && j.result == 3) {      /* P3 round 3: the window texture's sync (never fenced by us): it is free at the refresh that shows the queued frame (display.c) */
         if (l1_pipe_wait()) j.result = 1; else {      /* L1 round 2: pipe mode does not hold here */
         l1_early_present();                                    /* L1 (latency = early / SSBU_L1_EARLY=1): the picture the game finished before this wait goes to the window now (at its tick) */
