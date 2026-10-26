@@ -1821,7 +1821,7 @@ static void set_dynamic_state3(int samples) {
  * when the render thread is idle or a sync is waited for. The OpenGL path copies back before the next draw; what guest
  * memory holds once the batch is done is the same. Anything that reads guest memory through a range that only partly lies
  * in a CB forces the copy-back at once (cb_sync: submit, wait; counted). */
-typedef struct { uint64_t addr, size, cap, busy; VkBuffer buf; VMem mem; int state, dirty; uint8_t *snap; uint64_t snap_cap; int stale, age; uint64_t kserial, ww; VkBuffer stg; VMem stg_mem; uint64_t stg_cap, lserial; uint32_t wchk; uint8_t wrote, touch, mid_stg; } CB;  /* state: 0 free, 1 live in this batch, 2 pending (batch submitted), 3 kept (SSBU_VK_CBKEEP); snap: guest memory as it was when the CB was filled; stale: the buffer holds what compute wrote and guest memory does not; kserial: the submission that ended the last batch that used it */
+typedef struct { uint64_t addr, size, cap, busy; VkBuffer buf; VMem mem; int state, dirty; uint8_t *snap; uint64_t snap_cap; int stale, age; uint64_t kserial, ww; VkBuffer stg; VMem stg_mem; uint64_t stg_cap, lserial; uint32_t wchk; uint8_t wrote, touch, mid_stg; long long bseq; } CB;  /* state: 0 free, 1 live in this batch, 2 pending (batch submitted), 3 kept (SSBU_VK_CBKEEP); snap: guest memory as it was when the CB was filled; stale: the buffer holds what compute wrote and guest memory does not; kserial: the submission that ended the last batch that used it */
 static int g_cb_merge = -1;                        /* SSBU_VK_CBMERGE=0: the whole range is copied back as before session 5 */
 /* Round 16 (P3 section 15), SSBU_VK_CBKEEP=1 (0 = before: every buffer is filled from guest memory at its first dispatch of
  * a batch, twice, and merged back after the batch): a compute-written buffer STAYS on the GPU side between batches.
@@ -1932,7 +1932,30 @@ static int cb_guest_range_live(uint64_t addr, uint64_t size) {
     }
     return 1;
 }
-static void cb_keep_back(CB *c, const uint8_t *src) {      /* src: the bytes in ordinary memory already (the copy of an asynchronous landing), or NULL = the buffer itself */
+/* (Arena) the rollback cut (above): g_cb_r1seq = the number of the batch being replayed (vk_submit); g_cb_r1ab = the
+ * abandoned batch ranges (lo, hi], the newest 64 (nvn_vk_r1_load_cut, from r1_ring.c). g_cb_r1lock: shared while a landing
+ * writes guest memory, exclusive while a load adds a range. */
+static volatile LONG64 g_cb_r1seq; static long long g_cb_r1ab[64][2]; static int g_cb_r1abn; static SRWLOCK g_cb_r1lock = SRWLOCK_INIT; static int g_cb_r1on = -1; static LONG64 g_ck_r1drop;
+static int cb_r1_old(CB *c) {
+    if (g_cb_r1on < 0) { const char *e = getenv("SSBU_VK_R1EPOCH"); g_cb_r1on = !(e && e[0] == '0'); }
+    if (!g_cb_r1on) return 0;
+    int n = g_cb_r1abn < 64 ? g_cb_r1abn : 64;
+    for (int i = 0; i < n; i++) if (c->bseq > g_cb_r1ab[i][0] && c->bseq <= g_cb_r1ab[i][1]) return 1;
+    return 0;
+}
+void nvn_vk_r1_load_cut(long long at_capture, long long now) {
+    if (now <= at_capture) return;
+    AcquireSRWLockExclusive(&g_cb_r1lock); int k = g_cb_r1abn++ % 64; g_cb_r1ab[k][0] = at_capture; g_cb_r1ab[k][1] = now; ReleaseSRWLockExclusive(&g_cb_r1lock);
+}
+long long nvn_vk_r1_dropped(void) { return g_ck_r1drop; }
+static void cb_keep_back_(CB *c, const uint8_t *src);
+static void cb_keep_back(CB *c, const uint8_t *src) {
+    AcquireSRWLockShared(&g_cb_r1lock);
+    if ((c->dirty || c->stale) && cb_r1_old(c)) { g_ck_r1drop++; c->dirty = c->stale = 0; }      /* (Arena) written by an abandoned submission: not landed */
+    else cb_keep_back_(c, src);
+    ReleaseSRWLockShared(&g_cb_r1lock);
+}
+static void cb_keep_back_(CB *c, const uint8_t *src) {      /* src: the bytes in ordinary memory already (the copy of an asynchronous landing), or NULL = the buffer itself */
     if (!c->dirty && !c->stale) return;
     if (!cb_guest_range_live(c->addr, c->size)) {
         if (g_ck_unmapped++ < 10) printf("nvn_vk: kept compute buffer %llx+%llu not written back: the game has freed that memory\n", (unsigned long long)c->addr, (unsigned long long)c->size);
@@ -1999,7 +2022,9 @@ static void cb_land(int midbatch) {                /* the GPU has finished every
 #ifdef R1_MARK
         if (g_cb_keep <= 0 && c->dirty) { void r1_wrote(uint64_t, uint64_t); r1_wrote(c->addr, c->size); }      /* R1 (r1_state.c): the copy-back below is marked */
 #endif
-        if (g_cb_keep > 0) { cg_unguard(i); cb_keep_back(c, c->mid_stg ? (const uint8_t *)c->stg_mem.map : NULL); c->stale = 0; }      /* mid_stg: cb_sync had the GPU copy it into ordinary memory (V 2026-10-21) */
+        AcquireSRWLockShared(&g_cb_r1lock);              /* (Arena) a load does not add its cut in the middle of this copy-back */
+        if (g_cb_keep <= 0 && c->dirty && cb_r1_old(c)) { g_ck_r1drop++; c->dirty = 0; }      /* (Arena) written by an abandoned submission: not copied back */
+        if (g_cb_keep > 0) { cg_unguard(i); ReleaseSRWLockShared(&g_cb_r1lock); cb_keep_back(c, c->mid_stg ? (const uint8_t *)c->stg_mem.map : NULL); AcquireSRWLockShared(&g_cb_r1lock); c->stale = 0; }      /* mid_stg: cb_sync had the GPU copy it into ordinary memory (V 2026-10-21) */
         else if (c->dirty && !c->snap) { memcpy(P(c->addr), c->mem.map, (size_t)c->size); R.cb_bytes += (LONG64)c->size; }
         else if (c->dirty) {
             /* Session 5: the copy-back is DEFERRED (up to the next batch), so the guest may have written into the range since
@@ -2019,6 +2044,7 @@ static void cb_land(int midbatch) {                /* the GPU has finished every
             R.cb_bytes += (LONG64)c->size; R.cb_guest_words += gw; R.cb_conflict_words += cf;
             if (gw) { static int n; if (n++ < 10) printf("nvn_vk: copy-back of %llx+%llu: the guest wrote %lld words of the range while it was pending (%lld of them also written by compute); merged\n", (unsigned long long)c->addr, (unsigned long long)c->size, (long long)gw, (long long)cf); }
         }
+        ReleaseSRWLockShared(&g_cb_r1lock);
         c->state = c->dirty = 0; c->mid_stg = 0;
         c->busy = midbatch ? R.serial + 1 : 0;
     }
@@ -2300,8 +2326,8 @@ static CB *cb_new(uint64_t addr, uint64_t size) {
         for (int i = 0; i < g_cb_hi; i++) {
             CB *k = &g_cb[i];
             if (k->state != 3 || k->addr != addr || k->size != size) continue;
-            if (g_cb_ww && cb_guest_wrote(k)) { cb_kept_land(k, 4); break; }      /* the game wrote into the range: merged back, then filled again below */
-            k->state = 1; k->dirty = 0; g_cb_live++; g_ck_hits++;
+            if (cb_r1_old(k) || (g_cb_ww && cb_guest_wrote(k))) { cb_kept_land(k, 4); break; }      /* (Arena) or written by an abandoned submission: dropped, filled again below;      /* the game wrote into the range: merged back, then filled again below */
+            k->state = 1; k->dirty = 0; g_cb_live++; g_ck_hits++; k->bseq = g_cb_r1seq;      /* (Arena) this batch dispatches into it now */
             if (--g_cb_nkept == 0) { g_kept_lo = ~0ull; g_kept_hi = 0; }
             if (addr < g_live_lo) g_live_lo = addr;
             if (addr + size > g_live_hi) g_live_hi = addr + size;
@@ -2358,7 +2384,7 @@ static CB *cb_new(uint64_t addr, uint64_t size) {
         memcpy(c->mem.map, c->snap, (size_t)size);
     } else
     memcpy(c->mem.map, P(addr), (size_t)size);
-    c->stale = 0; g_ck_fills++; g_ck_fill_bytes += (LONG64)size;
+    c->stale = 0; g_ck_fills++; g_ck_fill_bytes += (LONG64)size; c->bseq = g_cb_r1seq;
     g_cb_live++;
     return c;
 }
@@ -3380,6 +3406,7 @@ static void replay(uint64_t handle, int depth) {
 static void prewarm_wait(void);
 static void vk_submit(void *arg) {
     SubmitJob *j = arg;
+    InterlockedIncrement64(&g_cb_r1seq);           /* (Arena) this batch's number: the n-th submission main posted (nvn_gl.c queue_submit) */
     if (!V.alive) return;                          /* after the shutdown at exit: the device is gone */
     prewarm_wait();
     LONG64 t0 = tk();

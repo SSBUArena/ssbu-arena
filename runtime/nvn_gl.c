@@ -4696,6 +4696,8 @@ void nvn_front_racechk(const uint64_t *handles, int count, int phase) {      /* 
 
 /* ---- queue and window */
 static void l1_pipe_after_submit(void); static int l1_pipe_wait(void);
+static volatile LONG64 g_r1_posted;
+long long nvn_r1_posted(void) { return g_r1_posted; }      /* (Arena) r1_ring.c: the submissions posted at a capture / a load */
 static void queue_submit(Ctx *c) {                      /* (queue, count, handles) */
     SubmitJob j = {(int)A1, P(A2)};
     L1T("SUBMIT %d lists: %llx %llx %llx %llx", (int)A1, A2 && A1 > 0 ? (unsigned long long)rd64(A2) : 0ull, A2 && A1 > 1 ? (unsigned long long)rd64(A2 + 8) : 0ull, A2 && A1 > 2 ? (unsigned long long)rd64(A2 + 16) : 0ull, A2 && A1 > 3 ? (unsigned long long)rd64(A2 + 24) : 0ull);
@@ -4726,6 +4728,7 @@ static void queue_submit(Ctx *c) {                      /* (queue, count, handle
     int r1_ra_quiet(void);
     if (j.count > 0 && A2 && r1_ra_quiet()) { static LONG64 n; n++; }      /* R1 round 5, run-ahead: the real pass's submission = the lists the speculative pass already ran on the GPU: not run again */
     else if (j.count > 0 && A2) {
+        InterlockedIncrement64(&g_r1_posted);          /* (Arena) submissions posted: the rollback cut of nvn_vk_draw.c */
         if (gl_async_on() && j.count <= 4096) {
             size_t size = sizeof j + (size_t)j.count * 8;
             SubmitJob *copy = malloc(size);
