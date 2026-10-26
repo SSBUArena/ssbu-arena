@@ -53,6 +53,7 @@ typedef struct {
     Fib *fib; int nfib; uint8_t *fpool; size_t fpool_used, fpool_com;
     int ncbs; uint8_t *cbs; uint8_t *cbd; size_t cbd_used, cbd_com;
     size_t pages, xpages;
+    long long posted;                                   /* (Arena) the submissions main had posted at this capture (nvn_gl.c) */
 } RgSlot;
 /* (hs13) g_rg_nomem: 1 = the ring's base could not be made for lack of memory (nothing kept: tried again at the next match),
  * 2 = the ring broke on the way (its own allocations or a rebase failed: off for the rest of the process). rb_rollback.c then
@@ -254,6 +255,7 @@ static void rg_cb_load(RgSlot *s) {
 }
 static void rg_meta_capture(RgSlot *s, Ctx *c) {       /* threads still held: their places, the fibers, the command buffers */
     s->ctx = *c;
+    { long long nvn_r1_posted(void); s->posted = nvn_r1_posted(); }
     s->nth = g_nth; s->ninfo = g_ninfo;
     memcpy(s->th, g_th, (size_t)g_nth * sizeof *g_th);
     for (int i = 0; i < s->nth; i++) { s->th[i].held = 0; s->th[i].cok = 0; }
@@ -642,6 +644,7 @@ static void rgc_after(void) {                           /* after the copies and 
     g_rgc_dropped += dropped; g_rgc_kept += kept; if (dropped || kept) g_rgc_loads_changed++;
 }
 static long long g_rg_refused;                        /* (R3 pub1) loads refused: a thread still running after the hold */
+static long long g_rg_rezero;                         /* (Arena) pages decommitted at the loaded frame, committed since: zeroed by the load */
 static long long g_rg_ldpg, g_rg_recommit, g_rg_rewake;           /* (R3 net3) pages to load, all loads (the written ones: g_cp_wrote); pages committed again by a load */
 int r1_ring_load(long long frame, Ctx *c) {
     int si = -1;
@@ -691,6 +694,7 @@ int r1_ring_load(long long frame, Ctx *c) {
         }
     }
     double t1 = now_ms();
+    { long long nvn_r1_posted(void); void nvn_vk_r1_load_cut(long long, long long); nvn_vk_r1_load_cut(g->posted, nvn_r1_posted()); }      /* (Arena) compute results of the abandoned submissions: not landed (nvn_vk_draw.c) */
     R1_CTR("load (state of frame)", frame, 0);
     rgc_before();
     g_rg_ntl = 0;
@@ -710,7 +714,14 @@ int r1_ring_load(long long frame, Ctx *c) {
     for (size_t n = 0; n < g_rg_ntl; n++) {               /* each page once, from its value at `frame` */
         uint32_t id = g_rg_tl[n]; g_rg_touch[id] = 0;
         uint8_t *a = rg_addr(id), *src = rg_src(id);
-        if (src == (uint8_t *)1) continue;                 /* decommitted then: left as it is */
+        if (src == (uint8_t *)1) {                         /* decommitted then */
+            /* (Arena) committed since (by the frames thrown away): zeroed, as a fresh commit; it was left as it was and the game's
+             * next commit of it found the old bytes (nu::GraphicsDevice::Update crash). SSBU_RB_DECOMFIX=0: left as it is */
+            static int df = -1; if (df < 0) { const char *e = getenv("SSBU_RB_DECOMFIX"); df = !(e && e[0] == '0'); }
+            if (df && id < g_rg_n1 && !g_dc[id]) { memset(a, 0, PG); g_rg_rezero++;
+                if (g_rg_rezero <= 10 || g_rg_rezero % 1000 == 0) LOG("r1: RING load of frame %lld: page %p decommitted then, committed since: zeroed (%lld so far)\n", frame, (void *)a, g_rg_rezero); }
+            continue;
+        }
         /* a page decommitted since (the game freed it) that was committed at `frame`: committed again, also when its value
          * there was all zeros (a fresh commit is zero). (Arena) it was left decommitted for zeros: a fiber stack page
          * freed after the capture, the fiber taken back by the load, its next write deeper on the stack crashed (c0000005) */
@@ -1115,7 +1126,7 @@ static void rgs_report(void) {
         g_rgx_n[1], g_rgx_n[1] ? g_rgx_ms[1] / g_rgx_n[1] : 0.0, g_rgx_n[1] ? (double)g_rgx_pages[1] / g_rgx_n[1] : 0.0, g_rgx_fallback[1]);
     {   long long w = 0; for (int q = 0; q < 9; q++) w += g_cp_wrote[q];
         LOG("r1: RING loads (net3, SSBU_RB_LOADCMP): pages to load %lld, of them written (they differed) %lld (%.1f%%)\n", g_rg_ldpg, w, g_rg_ldpg ? 100.0 * (double)w / (double)g_rg_ldpg : 0.0); }
-    LOG("r1: RING loads: pages committed again (freed by the game after the loaded frame) %lld; task worker wake-ups given again %lld\n", g_rg_recommit, g_rg_rewake);
+    LOG("r1: RING loads: pages committed again (freed by the game after the loaded frame) %lld; pages decommitted at the loaded frame and committed since, zeroed %lld; task worker wake-ups given again %lld\n", g_rg_recommit, g_rg_rezero, g_rg_rewake);
     for (int k = 0; k < RG_MAXSLOT; k++) {
         int m = g_rgl_n[k]; if (!m) continue;
         static double v[RG_NL], h[RG_NL], cpy[RG_NL]; double p = 0;
