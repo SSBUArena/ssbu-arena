@@ -77,6 +77,17 @@ static long long g_rbg_short_waits;
 /* (R3 pub1) a load refused at a wrong guess at frame g_rbg_pend (r1_ring_load -1): the state before it must stay in the ring
  * until the rollback is made next tick; g_rbg_refused_tick: no second try in the same tick (each try may hold for 500 ms) */
 static int g_rbg_pend, g_rbg_refused_tick;
+/* (Arena perf) GO CHECK: the other player's pads are read once more right after the pacing wait; a wrong guess found there is
+ * rolled back at once (load, re-run passes up to the newest frame), and the real pass of this tick follows them in the same
+ * tick (g_rbg_gorb: no second pacing wait). Without it the wrong guess was found at the next safe point, after a real pass the
+ * rollback then threw away (one more re-run pass, ~4-5 ms; in pairs ~15-20% of the rollbacks). The workers were let go before
+ * the wait (EARLY_GO) and may still run the preparation jobs: every thread is held first, briefly (0.5 ms per thread, 1 ms in
+ * all); not held -> the wrong guess waits for the next safe point as before (rbtick v1 loaded anyway: 40 ms waits + refusals;
+ * v2 checked the workers' imports and never fired: a worker always shows SwitchToFiber). The load takes the held threads and
+ * wakes the workers again (r1_ring_load). SSBU_RB_NET_GOCHECK=0: the old way; bit 32 of the A/B test.
+ * SSBU_RB_NET_TEST_GOLATE=<percent> (loop test only): that share of the bot's pads arrives during the wait (one frame early),
+ * as on a network, where a pad arrives at any moment of the tick. */
+static int g_rbg_gocheck = -1, g_rbg_gorb, g_rbg_golate = -1, g_rbg_gotry; static long long g_rbg_n_gorb, g_rbg_n_gobusy;
 void rbn_put_mismatch(int m);
 static int rbg_capture(long long i, Ctx *c) { g_rg_need = rbn_confirmed(); if (g_rbg_pend > 0 && g_rbg_pend - 1 < g_rg_need) g_rg_need = g_rbg_pend - 1; return r1_ring_capture(i, c); }
 void rbn_stats(int *delay, int *last, int *maxk) { *delay = rbn_delay(); *last = (int)g_rbg_last_k; *maxk = (int)g_rbg_max_k; }   /* net_relay.c net_stats_get (F2) */
@@ -100,7 +111,7 @@ static int rbg_rollback(Ctx *c, long long i, int m) {
     }
     double t0 = now_ms();
     g_rbab_side = (int)(((g_rbg_rb + 1) >> 3) & 1);      /* (TEST, SSBU_RB_AB) this rollback's group */
-    if (!g_ra_wh_on) { g_rbg_rb_unheld++; if (g_rbg_rb_unheld <= 10) LOG("r1: RB NET: rollback at frame %lld while the task workers are NOT held (watchdog releases so far %lld): the load may leave the job system waiting\n", i, g_ra_wd_fired); }
+    if (!g_ra_wh_on && !g_rbg_gotry) { g_rbg_rb_unheld++; if (g_rbg_rb_unheld <= 10) LOG("r1: RB NET: rollback at frame %lld while the task workers are NOT held (watchdog releases so far %lld): the load may leave the job system waiting\n", i, g_ra_wd_fired); }
     if (g_rbg_refused_tick) { rbn_put_mismatch(m); return 0; }      /* (R3 pub1) refused once this tick: next tick */
     {   static int sk = -1; if (sk < 0) { const char *e = getenv("SSBU_RB_SNDKEEP"); sk = !(e && e[0] == '0'); }
         g_snd_keep = rb_feat(8, sk); }                  /* (Arena perf) the sound threads held through the re-run passes (r1_state.c unpark) */
@@ -261,9 +272,9 @@ static void rbg_step_body(Ctx *c) {
         }
     }
     /* the next pass is a real one (frame i + 1): pending wrong guesses first, then the other player, then the tick */
-    double tw = now_ms();
-    if (g_rbg_tick0 > 0 && g_rbg_nw < RBG_NT) { g_rbg_work[g_rbg_nw] = (float)(tw - g_rbg_tick0); g_rbg_wcyc[g_rbg_nw] = (float)((rgs_cyc_now() - g_rbg_cyc_go) / 1e6); g_rbg_wk[g_rbg_nw] = (unsigned char)(g_rbg_tick_k > 255 ? 255 : g_rbg_tick_k); if (g_rbg_wab) g_rbg_wab[g_rbg_nw] = (unsigned char)g_rbab_side; g_rbg_nw++; }
-    g_rbg_tick0 = 0;
+    double tw = now_ms(); int gorb = g_rbg_gorb;        /* (Arena perf) the re-run passes of a rollback made after the pacing wait: same tick */
+    if (!gorb && g_rbg_tick0 > 0 && g_rbg_nw < RBG_NT) { g_rbg_work[g_rbg_nw] = (float)(tw - g_rbg_tick0); g_rbg_wcyc[g_rbg_nw] = (float)((rgs_cyc_now() - g_rbg_cyc_go) / 1e6); g_rbg_wk[g_rbg_nw] = (unsigned char)(g_rbg_tick_k > 255 ? 255 : g_rbg_tick_k); if (g_rbg_wab) g_rbg_wab[g_rbg_nw] = (unsigned char)g_rbab_side; g_rbg_nw++; }
+    if (!gorb) g_rbg_tick0 = 0;
     int stalled = 0; double ts = 0;
     for (;;) {
         rbn_drain(i);
@@ -290,6 +301,7 @@ static void rbg_step_body(Ctx *c) {
          * kick's preparation jobs run during the wait instead of after it. SSBU_RB_NET_EARLY_GO=0: at H2 as before */
         static int eg = -1; if (eg < 0) { const char *e = getenv("SSBU_RB_NET_EARLY_GO"); eg = !e || atoi(e) != 0; }
         if (eg && g_ra_wh_on) { ra_workers_release(); SetEvent(g_ra_wd_ev); } }
+    if (gorb) { g_rbg_gorb = 0; return; }              /* (Arena perf) this tick's real pass now: its safe point counts the whole tick */
     if (g_rbg_pace) {
         double period = 1000.0 / 60.0 + rbn_pace_extra(g_rgs_next), now = now_ms();
         if (g_rbg_next <= 0 || now - g_rbg_next > 3 * period) g_rbg_next = now;      /* (far behind: no catching up in a burst) */
@@ -299,6 +311,24 @@ static void rbg_step_body(Ctx *c) {
     double go = now_ms();
     if (g_rbg_last_go > 0 && g_rbg_ng < RBG_NT) g_rbg_gap[g_rbg_ng++] = (float)(go - g_rbg_last_go);
     g_rbg_last_go = go; g_rbg_tick0 = go; g_rbg_tick_k = 0; g_rbg_cyc_go = rgs_cyc_now();
+    if (g_rbg_gocheck < 0) { const char *e = getenv("SSBU_RB_NET_GOCHECK"); g_rbg_gocheck = !e || atoi(e) != 0; e = getenv("SSBU_RB_NET_TEST_GOLATE"); g_rbg_golate = e ? atoi(e) : 0; }
+    if (!g_rbg_noring && g_rg_ready) {                  /* (Arena perf) GO CHECK (above) */
+        if (g_rbg_golate > 0 && rbn_loop()) { static unsigned gs = 12345; gs = gs * 1103515245u + 12345u; if ((int)((gs >> 16) % 100) < g_rbg_golate) rbn_drain(i + 1); }
+        if (g_rbg_gocheck && rb_feat(32, 1)) {
+            rbn_drain(i);
+            int m = rbn_take_mismatch();
+            if (m > 0 && m <= i) {
+                double pk = g_ra_park_ms; g_ra_park_ms = 0.5; int held = ra_hold_quiet(1.0); g_ra_park_ms = pk;
+                if (!held) { g_rbg_n_gobusy++; rbn_put_mismatch(m); }      /* a thread still running: at the next safe point, as before */
+                else {
+                    g_rg_kept = 1;                          /* the load takes the threads held here */
+                    g_rbg_gotry = 1; int r = rbg_rollback(c, i, m); g_rbg_gotry = 0;
+                    if (r) { g_rbg_gorb = 1; g_rbg_n_gorb++; return; }
+                    r1_ring_let_go();                       /* (not loaded: the threads go on) */
+                }
+            }
+        }
+    }
     if (g_rbg_real % 600 == 0) LOG("r1: RB NET: frame %lld: %lld rollbacks (%lld frames again), %lld stalls (%.0f ms), round trip %d ms, delay %d, remote pads up to %lld, clock ahead of the other game by %.1f ms\n",
                                    i, g_rbg_rb, g_rbg_rerun, g_rbg_stalls, g_rbg_stall_ms, rbn_rtt_ms(), rbn_delay(), rbn_confirmed(), rbn_offset_ms());
 }
@@ -398,7 +428,7 @@ static void rbg_fight_off(void) {
     g_rbg_last_k = 0; g_rbg_max_k = 0; g_rbg_short_waits = 0; g_rg_short = 0; g_rg_need = -1; g_rbg_nw = g_rbg_ng = g_rbg_tick_k = 0; g_rbg_rb_unheld = 0; g_rbg_recap_first = 0;
     g_rbg_t_pre = g_rbg_t_load = g_rbg_t_rerun = g_rbg_t_recap = g_rbg_t_pass0 = 0; g_rbg_n_rerun = g_rbg_n_recap = 0;
     g_rbg_wd_before = g_ra_wd_fired;
-    g_rbg_pend = 0;
+    g_rbg_pend = 0; g_rbg_gorb = 0; g_rbg_n_gorb = g_rbg_n_gobusy = 0;
     rbn_match_reset();
 }
 static int cmp_f(const void *a, const void *b) { float x = *(const float *)a, y = *(const float *)b; return x < y ? -1 : x > y; }
@@ -426,6 +456,7 @@ static void rbg_report(void) {
     LOG("r1: RB NET report: host stack pages inside the guest windows left out of the state %lld (%lld ranges, %lld from fibers made later)\n", g_hs_pages, g_hs_ranges, g_hs_fibers_later);
     if (g_rbg_rb) LOG("r1: RB NET report: rollback parts (ms per rollback): before the load %.3f (keep mode %d), load %.3f, re-run passes %.3f (%.2f per rollback, %.3f each), re-run captures %.3f (%.2f per rollback, recap mode %d)\n",
         g_rbg_t_pre / g_rbg_rb, g_rbg_keep, g_rbg_t_load / g_rbg_rb, g_rbg_t_rerun / g_rbg_rb, (double)g_rbg_n_rerun / g_rbg_rb, g_rbg_n_rerun ? g_rbg_t_rerun / g_rbg_n_rerun : 0.0, g_rbg_t_recap / g_rbg_rb, (double)g_rbg_n_recap / g_rbg_rb, g_rbg_recap);
+    LOG("r1: RB NET report: rollbacks made right after the pacing wait (go check) %lld of %lld, not made (a thread still running) %lld (go check %s, loop test early pads %d%%)\n", g_rbg_n_gorb, g_rbg_rb, g_rbg_n_gobusy, g_rbg_gocheck ? "on" : "OFF", g_rbg_golate > 0 ? g_rbg_golate : 0);
     r1_hold_prof_report(); rg_meta_prof_report();
     LOG("r1: RB NET report: live host stack check (hs16): thread contexts taken from the hold %lld, asked again %lld (SSBU_R1_LIVECACHE %s)\n", g_live_cached, g_live_asked, g_live_cache ? "on" : "OFF");
     rbg_dist("work per tick (real pass + its rollback, without waits)", g_rbg_work, g_rbg_nw, g_rbg_wk, -1);
