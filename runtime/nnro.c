@@ -31,6 +31,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include "hostrt.h"
+/* (Arena perf) the modules' memory is write-watched: guest stacks there (r1_ring.c rg_stack_ww) */
+#ifdef _WIN32
+#define RO_WW MEM_WRITE_WATCH
+#else
+#define RO_WW 0
+#endif
 
 #define NRO_BASE 0x7200000000ULL
 #define NRO_SLOT_SHIFT 21                      /* 2 MB */
@@ -686,7 +692,7 @@ static void ro_LoadModule(Ctx *c) {              /* (Module *out, const void *nr
     if (m->loaded) why = "already loaded";
     else if (rd32(nro + 0x18) != in->file_size || (uint64_t)rd32(nro + 0x18) + rd32(nro + 0x38) != in->image_size) why = "sizes differ from the registry";
     else if (!attach_dll(m)) why = "no lifted code: run `python build.py nro <module>`";
-    else if (VirtualAlloc((void *)(uintptr_t)in->base, span, g_ro_reserved ? MEM_COMMIT : MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) != (void *)(uintptr_t)in->base) {
+    else if (VirtualAlloc((void *)(uintptr_t)in->base, span, g_ro_reserved ? MEM_COMMIT : MEM_RESERVE | MEM_COMMIT | RO_WW, PAGE_READWRITE) != (void *)(uintptr_t)in->base) {
         /* say why: the Windows error and what is at that address (1455 = commit limit, 487 = address in use) */
         static char msg[200];
         DWORD err = GetLastError();
@@ -858,7 +864,8 @@ static void ro_reserve_range(void) {
         if (e > end) end = e;
     }
     if (end == NRO_BASE) return;
-    if (VirtualAlloc((void *)(uintptr_t)NRO_BASE, (SIZE_T)(end - NRO_BASE), MEM_RESERVE, PAGE_NOACCESS) == (void *)(uintptr_t)NRO_BASE) g_ro_reserved = 1;
+    if (VirtualAlloc((void *)(uintptr_t)NRO_BASE, (SIZE_T)(end - NRO_BASE), MEM_RESERVE | RO_WW, PAGE_NOACCESS) == (void *)(uintptr_t)NRO_BASE) g_ro_reserved = 1;
+    else if (RO_WW && VirtualAlloc((void *)(uintptr_t)NRO_BASE, (SIZE_T)(end - NRO_BASE), MEM_RESERVE, PAGE_NOACCESS) == (void *)(uintptr_t)NRO_BASE) g_ro_reserved = 1;
     else printf("nn::ro: could not reserve %llx..%llx for the script modules (Windows error %lu): each module is mapped when it is loaded\n",
                 (unsigned long long)NRO_BASE, (unsigned long long)end, (unsigned long)GetLastError());
 }

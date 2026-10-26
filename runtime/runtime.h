@@ -96,6 +96,11 @@ __attribute__((target("cx16"))) static inline uint32_t stxp64(Ctx *c, uint64_t a
 static inline V128 rdv(uint64_t a, int n) { V128 v; v.d[0] = 0; v.d[1] = 0; memcpy(&v, (void *)(uintptr_t)a, (size_t)n); return v; }
 static inline void wrv(uint64_t a, const V128 *v, int n) { R1M(a, (uint64_t)n); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
 static inline void vzero(V128 *v) { v->d[0] = 0; v->d[1] = 0; }
+/* (Arena perf) stores relative to the guest SP (the lifter's wrsN / wrsv for a base register 31): no page mark; the
+ * rollback ring finds the stack pages written through the OS's write watch (r1_ring.c rg_stack_ww) */
+#define DEF_WRS(bits) static inline void wrs##bits(uint64_t a, uint##bits##_t v) { memcpy((void *)(uintptr_t)a, &v, sizeof v); }
+DEF_WRS(8) DEF_WRS(16) DEF_WRS(32) DEF_WRS(64)
+static inline void wrsv(uint64_t a, const V128 *v, int n) { memcpy((void *)(uintptr_t)a, v, (size_t)n); }
 
 static inline uint64_t adds64(Ctx *c, uint64_t a, uint64_t b, uint32_t cin) {
     uint64_t r = a + b + cin;

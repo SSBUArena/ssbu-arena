@@ -99,6 +99,16 @@ def XS(n):
     return 'c->x[%d]' % n            # register 31 is SP here
 
 
+# (Arena perf) a store whose base is SP writes the thread's own stack: no rollback page mark (runtime.h wrsN / wrsv); the
+# rollback ring asks the OS which stack pages were written (r1_ring.c rg_stack_ww)
+def WR(rn):
+    return 'wrs' if rn == 31 else 'wr'
+
+
+def WV(rn):
+    return 'wrsv' if rn == 31 else 'wrv'
+
+
 def W(n):
     return '0U' if n == 31 else '(uint32_t)c->x[%d]' % n
 
@@ -338,7 +348,7 @@ class Fn:
                 if load:
                     body += 'V128 t1 = rdv(a, %d), t2 = rdv(a + %d, %d); c->v[%d] = t1; c->v[%d] = t2;' % (size, size, size, rt, rt2)
                 else:
-                    body += 'wrv(a, &c->v[%d], %d); wrv(a + %d, &c->v[%d], %d);' % (rt, size, size, rt2, size)
+                    body += '%s(a, &c->v[%d], %d); %s(a + %d, &c->v[%d], %d);' % (WV(rn), rt, size, WV(rn), size, rt2, size)
             elif load:
                 rd = 'rd%d' % (size * 8)
                 if opc == 1:
@@ -347,7 +357,7 @@ class Fn:
                     body += 'uint64_t t1 = %s(a), t2 = %s(a + %d); ' % (rd, rd, size)
                 body += SET(rt, 1, 't1') + ' ' + SET(rt2, 1, 't2')
             else:
-                body += 'wr%d(a, %s); wr%d(a + %d, %s);' % (size * 8, R(rt, size == 8), size * 8, size, R(rt2, size == 8))
+                body += '%s%d(a, %s); %s%d(a + %d, %s);' % (WR(rn), size * 8, R(rt, size == 8), WR(rn), size * 8, size, R(rt2, size == 8))
             return '{ %s %s %s }' % (pre, body, post)
         if g == 7:                                       # single register
             size, opc = bits(w, 31, 30), bits(w, 23, 22)
@@ -360,14 +370,14 @@ class Fn:
                 if opc & 1:
                     body = 'c->v[%d] = rdv(a, %d);' % (rt, nbytes)
                 else:
-                    body = 'wrv(a, &c->v[%d], %d);' % (rt, nbytes)
+                    body = '%s(a, &c->v[%d], %d);' % (WV(rn), rt, nbytes)
                 return '{ %s uint64_t a = %s; %s %s }' % (pre, a, body, post)
             if size == 3 and opc == 2:
                 return ';'                               # prfm
             pre, a, post = self.addr_mode(w, size)
             nb = 8 << size
             if opc == 0:
-                body = 'wr%d(a, %s);' % (nb, R(rt, size == 3))
+                body = '%s%d(a, %s);' % (WR(rn), nb, R(rt, size == 3))
             elif opc == 1:
                 body = SET(rt, 1, 'rd%d(a)' % nb)
             else:
@@ -418,7 +428,7 @@ class Fn:
                         body = ' '.join('V128 t%d = rdv(a + %d, %d);' % (i, i * nb, nb) for i in range(nreg))
                         body += ' ' + ' '.join('c->v[%d] = t%d;' % ((rt + i) & 31, i) for i in range(nreg))
                     else:
-                        body = ' '.join('wrv(a + %d, &c->v[%d], %d);' % (i * nb, (rt + i) & 31, nb) for i in range(nreg))
+                        body = ' '.join('%s(a + %d, &c->v[%d], %d);' % (WV(rn), i * nb, (rt + i) & 31, nb) for i in range(nreg))
                     total = nb * nreg
                 else:
                     nstruct = {8: 2, 4: 3, 0: 4}.get(opcode)           # LD2..LD4 / ST2..ST4: interleaved
@@ -447,7 +457,7 @@ class Fn:
                     if load:
                         body = 'vset(&c->v[%d], %d, %d, rd%d(a));' % (rt, es, idx, 8 << es)
                     else:
-                        body = 'wr%d(a, vget(&c->v[%d], %d, %d));' % (8 << es, rt, es, idx)
+                        body = '%s%d(a, vget(&c->v[%d], %d, %d));' % (WR(rn), 8 << es, rt, es, idx)
                     total = 1 << es
             wb = ''
             if post:

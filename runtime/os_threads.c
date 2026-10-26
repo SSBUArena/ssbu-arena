@@ -318,8 +318,22 @@ static DWORD WINAPI thread_main(LPVOID arg) {
     return 0;
 }
 
+/* (Arena perf) every guest stack handed to a thread or a fiber (r1_ring.c write-watches them: stores relative to the SP
+ * carry no page mark). Kept for good (a stack's memory may be reused: asking about it then is harmless). */
+static struct { uint64_t lo, n; } g_r1_stk[1024]; static int g_r1_nstk; static SRWLOCK g_r1_stk_lock = SRWLOCK_INIT;
+static void r1_stack_note(uint64_t lo, uint64_t n) {
+    if (!lo || !n) return;
+    AcquireSRWLockExclusive(&g_r1_stk_lock);
+    int i; for (i = 0; i < g_r1_nstk; i++) if (g_r1_stk[i].lo == lo) { if (n > g_r1_stk[i].n) g_r1_stk[i].n = n; break; }
+    if (i == g_r1_nstk && g_r1_nstk < 1024) { g_r1_stk[i].lo = lo; g_r1_stk[i].n = n; g_r1_nstk++; }
+    ReleaseSRWLockExclusive(&g_r1_stk_lock);
+}
+void os_r1_stacks(void (*cb)(uint64_t lo, uint64_t n)) {
+    AcquireSRWLockShared(&g_r1_stk_lock); for (int i = 0; i < g_r1_nstk; i++) cb(g_r1_stk[i].lo, g_r1_stk[i].n); ReleaseSRWLockShared(&g_r1_stk_lock);
+}
 static void os_CreateThread(Ctx *c) {                 /* (ThreadType*, fn, arg, stack, stackSize, priority[, core]) */
     Obj *o = obj(A0);
+    r1_stack_note(A3, A4);
     o->fn = A1; o->arg = A2; o->stack = A3; o->stack_size = A4; o->priority = (int)c->x[5];
     o->finished = 0; o->thread = NULL; o->name = 0;
     o->ideal_core = OS_DEFAULT_CORE; o->core_mask = 1ull << OS_DEFAULT_CORE; o->core_set = 1;
@@ -750,7 +764,7 @@ static void CALLBACK fiber_main(void *arg) {
 }
 static void fib_init(Ctx *c) {                        /* (FiberType*, fn, arg, stack, stackSize, flags) */
     Obj *o = obj(A0);
-    o->fn = A1; o->arg = A2; o->stack = A3; o->stack_size = A4;
+    o->fn = A1; o->arg = A2; o->stack = A3; o->stack_size = A4; r1_stack_note(A3, A4);
     o->fiber = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o);
     InterlockedIncrement(&g_fib_gen);
     if (g_r1_fiber_born) g_r1_fiber_born(o->fiber);
@@ -785,7 +799,7 @@ long long g_r1_fls_stale;                              /* (R2) notes of a block 
 void *os_r1_fiber_fls(uint64_t key) { Obj *o = obj_peek(key); if (!o) return NULL; if (o->fls && o->fls_fiber != o->fiber) { g_r1_fls_stale++; return NULL; } return o->fls; }
 void os_r1_fiber_put_fls(uint64_t key, void *fiber, void *fls) { Obj *o = obj_peek(key); if (o) { o->fls = fls; o->fls_fiber = fls ? fiber : NULL; } }      /* (R2) ring load: the note goes back with the host fiber */
 void os_r1_fiber_get(uint64_t key, uint64_t v[6]) { Obj *o = obj_peek(key); if (!o) return; v[0] = (uint64_t)(uintptr_t)o->fiber; v[1] = (uint64_t)(uintptr_t)o->fctx; v[2] = o->fn; v[3] = o->arg; v[4] = o->stack; v[5] = o->stack_size; }
-void os_r1_fiber_put(uint64_t key, const uint64_t v[6]) { Obj *o = obj_peek(key); if (!o) return; o->fiber = (void *)(uintptr_t)v[0]; o->fctx = (Ctx *)(uintptr_t)v[1]; o->fn = v[2]; o->arg = v[3]; o->stack = v[4]; o->stack_size = v[5]; InterlockedIncrement(&g_fib_gen); }
+void os_r1_fiber_put(uint64_t key, const uint64_t v[6]) { Obj *o = obj_peek(key); if (!o) return; o->fiber = (void *)(uintptr_t)v[0]; o->fctx = (Ctx *)(uintptr_t)v[1]; o->fn = v[2]; o->arg = v[3]; o->stack = v[4]; o->stack_size = v[5]; r1_stack_note(v[4], v[5]); InterlockedIncrement(&g_fib_gen); }
 /* R1 restore: give a guest fiber back the host fiber it had at the save (kept alive by g_r1_keep_fibers), or a fresh one */
 void os_r1_fiber_set(uint64_t key, void *fiber, Ctx *fctx, int fresh) {
     Obj *o = obj_peek(key); if (!o) return;

@@ -1179,7 +1179,12 @@ void runtime_init(const char *elf, const char *trace_path) {
     install_crash_handler();
 #endif
 
+#ifdef _WIN32
+    void *mem = VirtualAlloc((void *)GUEST_BASE, IMAGE_SIZE, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);      /* (Arena perf) write watch: stacks in .bss (r1_ring.c rg_stack_ww) */
+    if (mem != (void *)GUEST_BASE) mem = VirtualAlloc((void *)GUEST_BASE, IMAGE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
     void *mem = VirtualAlloc((void *)GUEST_BASE, IMAGE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#endif
     if (mem != (void *)GUEST_BASE) { fprintf(stderr, "cannot map guest image at 0x%llx\n", GUEST_BASE); exit(1); }
     /* data symbols provided by other modules: zero-filled placeholders, IMPORT_SLOT bytes each */
     void *imp = VirtualAlloc((void *)IMPORT_BASE, (SIZE_T)dyn_sym_count * IMPORT_SLOT, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
