@@ -53,7 +53,9 @@ static inline void r1m(uint64_t a) {
     if (o < r1_n1) r1_m1[o >> 12] = 1;
     else { o = a - 0x7100000000ull; if (o < r1_n2) r1_m2[o >> 12] = 1; }
 }
-#define R1M(a, n) do { r1m(a); r1m((a) + (n) - 1); } while (0)
+/* (Arena perf) the page of the store's last byte is checked only when the store crosses a page (the same pages are marked;
+ * the second full check of every store was ~75% of the marks' cost: offline fight frame 5.9-6.6 -> 5.4 ms, no marks 5.2) */
+#define R1M(a, n) do { r1m(a); if ((n) > 1 && (((a) & 0xfff) + (n) > 0x1000)) r1m((a) + (n) - 1); } while (0)
 #else
 #define R1M(a, n) ((void)0)
 #endif
