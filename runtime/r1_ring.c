@@ -403,6 +403,44 @@ static void rgx_queue(size_t e) {                       /* capture: compare page
     cp_add(g_rg_xa[e], rg_src((uint32_t)(g_rg_n1 + g_rg_n2 + e))); g_rgx_q[g_rgx_nq++] = (uint32_t)e;
 }
 static void rgx_touch(size_t e) { rg_touch((uint32_t)(g_rg_n1 + g_rg_n2 + e)); }      /* load: page e copied back */
+/* (Arena perf) the guest stacks inside the windows: the pages written since the last question are marked (stores relative to
+ * the SP carry no mark: runtime.h wrsN). Called with every guest thread held, right before a sweep. */
+void os_r1_stacks(void (*cb)(uint64_t lo, uint64_t n));
+static void **g_sw_addr; static size_t g_sw_cap; static long long g_sw_pages, g_sw_calls, g_sw_fail, g_sw_badsp; static double g_sw_ms;
+static void rg_stack_cb(uint64_t lo, uint64_t n) {
+    uint64_t w1 = (uint64_t)(uintptr_t)g_win1, a = lo & ~0xfffull, e = (lo + n + 0xfff) & ~0xfffull; uint8_t *map; uint64_t base;
+    if (w1 && a >= w1 && e <= w1 + g_wn1) { map = *pm1; base = w1; } else if (a >= WIN2 && e <= WIN2 + WN2) { map = *pm2; base = WIN2; } else return;
+    size_t np = (size_t)((e - a) >> 12); if (!map) return;
+    if (g_sw_cap < np) { free(g_sw_addr); g_sw_cap = np + 256; g_sw_addr = malloc(g_sw_cap * sizeof *g_sw_addr); if (!g_sw_addr) { g_sw_cap = 0; return; } }
+    ULONG_PTR cnt = np; ULONG gran = 0;
+    if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, (void *)(uintptr_t)a, (SIZE_T)(e - a), g_sw_addr, &cnt, &gran) != 0) {      /* not watched / not committed: every page marked */
+        g_sw_fail++;                                   /* only the committed, writable parts (a stack freed since may be decommitted) */
+        for (uint64_t q = a; q < e;) { MEMORY_BASIC_INFORMATION m; if (!VirtualQuery((void *)(uintptr_t)q, &m, sizeof m)) break;
+            uint64_t qe = (uint64_t)(uintptr_t)m.BaseAddress + m.RegionSize; if (qe > e) qe = e;
+            if (m.State == MEM_COMMIT && (m.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) && !(m.Protect & PAGE_GUARD)) for (uint64_t r = q; r < qe; r += 0x1000) map[(r - base) >> 12] = 1;
+            q = qe; }
+        return; }
+    for (ULONG_PTR k = 0; k < cnt; k++) map[((uint64_t)(uintptr_t)g_sw_addr[k] - base) >> 12] = 1;
+    g_sw_pages += (long long)cnt;
+}
+static uint64_t g_sw_lo[1024], g_sw_hi[1024]; static int g_sw_n;
+static void rg_stack_list(uint64_t lo, uint64_t n) { if (g_sw_n < 1024) { g_sw_lo[g_sw_n] = lo; g_sw_hi[g_sw_n] = lo + n; g_sw_n++; } }
+static void rg_sp_check(uint64_t sp, const char *who) {      /* an SP inside a window must be in a registered stack */
+    uint64_t w1 = (uint64_t)(uintptr_t)g_win1;
+    if (!((w1 && sp >= w1 && sp < w1 + g_wn1) || (sp >= WIN2 && sp < WIN2 + WN2))) return;
+    for (int k = 0; k < g_sw_n; k++) if (sp >= g_sw_lo[k] && sp <= g_sw_hi[k]) return;
+    if (g_sw_badsp++ < 20) LOG("r1: RING stack write watch: %s has its SP %llx inside a window but in no registered stack: its stores are NOT tracked\n", who, (unsigned long long)sp);
+}
+static void rg_stack_ww(Ctx *main_c) {
+    double t = now_ms();
+    os_r1_stacks(rg_stack_cb); g_sw_calls++;
+    if ((g_sw_calls & 63) == 1) {                       /* every 64th call: every held thread's and main's SP checked */
+        g_sw_n = 0; os_r1_stacks(rg_stack_list);
+        if (main_c) rg_sp_check(main_c->x[31], "the main thread");
+        for (int i = 0; i < g_nth; i++) if (g_th[i].c) rg_sp_check(g_th[i].c->x[31], g_th[i].name ? g_th[i].name : "a thread");
+    }
+    g_sw_ms += now_ms() - t;
+}
 int r1_ring_capture(long long frame, Ctx *c) {
     R1_CTR("capture (frame)", frame, 0);
     double t0 = now_ms(); int seg_was = g_rgp_seg; g_rgp_seg = 4;
@@ -454,6 +492,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
         } }
     if (g_rgpg_on < 0) g_rgpg_on = getenv("SSBU_RB_SIM_PAGES") != NULL;
     g_rgpg_kind = g_ra_phase != 2 ? 0 : g_rgs_left > 1 ? 1 : 2; g_rgpg_caps[g_rgpg_kind]++;
+    rg_stack_ww(c);                                       /* (Arena perf) the stack pages written (no marks there) */
     if (g_ls_active) ls_capture(rg_cap_page); else rg_sweep(rg_cap_page);      /* R4: the learned set (rb_learned.c) instead of the marks */
     for (size_t e = 0; e < g_rg_nx && !g_rg_fail_now; e++) {             /* extras: the pages that differ from their newest value */
         uint32_t id = (uint32_t)(g_rg_n1 + g_rg_n2 + e);
@@ -524,7 +563,7 @@ int r1_ring_rebase(long long frame, Ctx *c) {
             if (*a1 != *pm1) { *a1 = *pm1; *a2 = *pm2; *l1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); *n2 = WN2; *n1 = g_wn1; nmod++; LOG("r1: RING rebase: mark maps set in %s (loaded after the first save)\n", me.szModule); }
         }
         if (sn != INVALID_HANDLE_VALUE) CloseHandle(sn); }
-    rg_sweep(rg_noop);                                    /* marks since the last capture: the copy below takes everything */
+    rg_stack_ww(c); rg_sweep(rg_noop);                    /* marks since the last capture: the copy below takes everything */
     g_rg_ntl = 0;
     collect(c);
     size_t nwin = g_rg_n1 + g_rg_n2, copied = 0, dropped = 0, freed = 0;
@@ -708,6 +747,7 @@ int r1_ring_load(long long frame, Ctx *c) {
         rg_slot_drop(s, 0);
     }
     g_rg_count = si + 1;
+    rg_stack_ww(NULL);                                    /* (Arena perf) the stack pages written since the newest capture */
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */
     rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
     size_t pages = g_rg_ntl; g_rg_ldpg += (long long)pages;
@@ -1116,6 +1156,8 @@ static void rgs_report(void) {
     LOG("r1: RING memory (hs14, fix %s): captures given up for lack of pool memory %lld (pages put back and marked again), old states freed early %lld, captures skipped to keep the oldest needed state %lld; test refusals %lld\n",
         g_rg_poolfix ? "on" : "OFF", g_rg_short_n, g_rg_freed_slots, g_rg_skip_full, g_rg_tp_refused);
     int n = g_rgc_n; double pg = 0, xp = 0; for (int i = 0; i < n; i++) { pg += (double)g_rgc_pg[i]; xp += (double)g_rgc_xp[i]; }
+    LOG("r1: RING stack write watch: %lld calls, %.4f ms each, %.1f pages each; ranges not watched %lld; SPs in no registered stack %lld\n",
+        g_sw_calls, g_sw_calls ? g_sw_ms / g_sw_calls : 0.0, g_sw_calls ? (double)g_sw_pages / g_sw_calls : 0.0, g_sw_fail, g_sw_badsp);
     LOG("r1: RING report: %lld captures (%lld skipped: a thread not at a wait), %lld loads, %u pool buffers made (%.1f MB), %u free; log overflows %lld\n",
         g_rg_caps, g_rg_cap_fail, g_rg_loads, g_rg_bump, g_rg_bump * (double)PG / 1048576.0, g_rg_nfree, g_rg_overflow);
     LOG("r1: RING loads right after a capture with the threads kept held: %lld (threads kept at the same wait: %lld); fibers %d (last); stale fiber-block notes refused %lld\n", g_rg_kept_n, g_rg_kept_same, g_nfib, g_r1_fls_stale);
