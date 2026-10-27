@@ -88,6 +88,26 @@ static int g_rbg_pend, g_rbg_refused_tick;
  * SSBU_RB_NET_TEST_GOLATE=<percent> (loop test only): that share of the bot's pads arrives during the wait (one frame early),
  * as on a network, where a pad arrives at any moment of the tick. */
 static int g_rbg_gocheck = -1, g_rbg_gorb, g_rbg_golate = -1, g_rbg_gotry; static long long g_rbg_n_gorb, g_rbg_n_gobusy;
+static int g_rbg_waitrb = -1; static long long g_rbg_n_wrb, g_rbg_n_wbusy; static double g_rbg_wrb_ms, g_rbg_wrb_late_ms; static long long g_rbg_wrb_late;
+static double g_rbg_wpad_at; static long long g_rbg_wpad_frame = -1;     /* loop test: when the next frame's bot pads arrive inside the wait */
+static double g_rbg_sched, *g_rbg_late; static int g_rbg_nlate, g_rbg_wrb_pend;      /* time to the real pass's end from its scheduled tick */
+static long long g_rbg_n_wmis, g_rbg_n_wpeek; static double g_rbg_wm_t0, g_rbg_wm_hold_ms; static long long g_rbg_wm_frame = -1;     /* (v2) */
+HANDLE rbn_rx_event(void);
+static void rbg_sleep_until(double t, HANDLE ev) {      /* (phase 3 v2) sleep on the timer (and the receive event), no spin */
+    double left = t - now_ms();
+    if (left <= 0.05) return;
+    if (!g_rbg_timer) { Sleep(0); return; }
+    LARGE_INTEGER due; due.QuadPart = -(LONGLONG)(left * 10000.0); SetWaitableTimer(g_rbg_timer, &due, 0, NULL, NULL, FALSE);
+    HANDLE hs[2] = { g_rbg_timer, ev }; WaitForMultipleObjects(ev ? 2 : 1, hs, FALSE, 100);
+}
+static int rbg_peek_idle(void) {                        /* (phase 3 v2) no other guest thread shows guest code now (no suspend; racy, a filter only) */
+    Ctx *tc; const char *nm; HANDLE h; DWORD me = GetCurrentThreadId();
+    for (int i = 0; guest_thread_info(i, &tc, &nm, &h); i++) {
+        if (!h || GetThreadId(h) == me || !tc || (nm && ra_free(nm))) continue;
+        if (!waiting_import(tc->in_import)) return 0;
+    }
+    return 1;
+}
 void rbn_put_mismatch(int m);
 static int rbg_capture(long long i, Ctx *c) { g_rg_need = rbn_confirmed(); if (g_rbg_pend > 0 && g_rbg_pend - 1 < g_rg_need) g_rg_need = g_rbg_pend - 1; return r1_ring_capture(i, c); }
 void rbn_stats(int *delay, int *last, int *maxk) { *delay = rbn_delay(); *last = (int)g_rbg_last_k; *maxk = (int)g_rbg_max_k; }   /* net_relay.c net_stats_get (F2) */
@@ -273,6 +293,10 @@ static void rbg_step_body(Ctx *c) {
     }
     /* the next pass is a real one (frame i + 1): pending wrong guesses first, then the other player, then the tick */
     double tw = now_ms(); int gorb = g_rbg_gorb;        /* (Arena perf) the re-run passes of a rollback made after the pacing wait: same tick */
+    if (!gorb && !g_rbg_wrb_pend && g_rbg_sched > 0) {      /* (phase 3) a real pass ended: its time from its scheduled tick (deadline 16.67 ms) */
+        if (!g_rbg_late) g_rbg_late = calloc(RBG_NT, sizeof *g_rbg_late);
+        if (g_rbg_late && g_rbg_nlate < RBG_NT) g_rbg_late[g_rbg_nlate++] = tw - g_rbg_sched; }
+    g_rbg_wrb_pend = 0;
     if (!gorb && g_rbg_tick0 > 0 && g_rbg_nw < RBG_NT) { g_rbg_work[g_rbg_nw] = (float)(tw - g_rbg_tick0); g_rbg_wcyc[g_rbg_nw] = (float)((rgs_cyc_now() - g_rbg_cyc_go) / 1e6); g_rbg_wk[g_rbg_nw] = (unsigned char)(g_rbg_tick_k > 255 ? 255 : g_rbg_tick_k); if (g_rbg_wab) g_rbg_wab[g_rbg_nw] = (unsigned char)g_rbab_side; g_rbg_nw++; }
     if (!gorb) g_rbg_tick0 = 0;
     int stalled = 0; double ts = 0;
@@ -305,7 +329,41 @@ static void rbg_step_body(Ctx *c) {
     if (g_rbg_pace) {
         double period = 1000.0 / 60.0 + rbn_pace_extra(g_rgs_next), now = now_ms();
         if (g_rbg_next <= 0 || now - g_rbg_next > 3 * period) g_rbg_next = now;      /* (far behind: no catching up in a burst) */
+        if (g_rbg_waitrb < 0) { const char *e = getenv("SSBU_RB_NET_WAITRB"); g_rbg_waitrb = !e || atoi(e) != 0; }
+        if (g_rbg_gocheck < 0) { const char *e = getenv("SSBU_RB_NET_GOCHECK"); g_rbg_gocheck = !e || atoi(e) != 0; e = getenv("SSBU_RB_NET_TEST_GOLATE"); g_rbg_golate = e ? atoi(e) : 0; }
+        if (g_rbg_golate > 0 && rbn_loop() && g_rbg_wpad_frame != i + 1) {      /* loop test: this tick's early pads arrive at a random point of the wait */
+            static unsigned gs = 777; gs = gs * 1103515245u + 12345u; g_rbg_wpad_frame = i + 1;
+            g_rbg_wpad_at = (int)((gs >> 16) % 100) < g_rbg_golate ? now + (g_rbg_next - now) * (double)((gs >> 8) % 100) / 100.0 : -1; }
+        if (g_rbg_waitrb && rb_feat(64, 1) && !g_rbg_noring && g_rg_ready) {
+            /* (Arena, phase 3) the wait in slices of <= 1 ms; a wrong guess found in it is rolled back now (as the go check
+             * does after the wait), the rest of the wait follows when the re-run passes are done (this code runs again) */
+            HANDLE ev = rbn_rx_event();
+            for (;;) {
+                double t = now_ms();
+                if (t >= g_rbg_next - 0.3) break;
+                if (g_rbg_wpad_at > 0 && t >= g_rbg_wpad_at && g_rbg_wpad_frame == i + 1) { rbn_drain(i + 1); g_rbg_wpad_at = -1; }
+                rbn_drain(i);
+                int m = rbn_take_mismatch();
+                double wake = g_rbg_next - 0.3;
+                if (g_rbg_wpad_at > 0 && g_rbg_wpad_frame == i + 1 && g_rbg_wpad_at < wake) wake = g_rbg_wpad_at;
+                if (m > 0 && m <= i) {
+                    if (g_rbg_wm_frame != i) { g_rbg_wm_frame = i; g_rbg_n_wmis++; g_rbg_wm_t0 = t; }      /* a wrong guess known inside this wait */
+                    int held = 0;
+                    if (rbg_peek_idle()) { double pk = g_ra_park_ms; g_ra_park_ms = 0.3; held = ra_hold_quiet(0.3); g_ra_park_ms = pk; g_rbg_n_wpeek++; }
+                    if (!held) { g_rbg_n_wbusy++; rbn_put_mismatch(m); if (t + 0.5 < wake) wake = t + 0.5; }      /* threads busy (preparation jobs): again in 0.5 ms */
+                    else {
+                        g_rg_kept = 1; double t0 = now_ms();
+                        g_rbg_gotry = 1; int r = rbg_rollback(c, i, m); g_rbg_gotry = 0;
+                        if (r) { g_rbg_n_wrb++; g_rbg_wrb_ms += g_rbg_next - t0; g_rbg_wm_hold_ms += t0 - g_rbg_wm_t0; g_rbg_wrb_pend = 1; return; }      /* re-run passes now; then back here for the rest of the wait */
+                        r1_ring_let_go();
+                    }
+                }
+                rbg_sleep_until(wake, ev);
+            }
+        }
+        if (now_ms() > g_rbg_next + 0.5) { g_rbg_wrb_late++; g_rbg_wrb_late_ms += now_ms() - g_rbg_next; }      /* the tick already passed (a rollback in the wait ran past it) */
         rbg_wait_until(g_rbg_next);
+        g_rbg_sched = g_rbg_next;
         g_rbg_next += period;
     }
     double go = now_ms();
@@ -313,7 +371,8 @@ static void rbg_step_body(Ctx *c) {
     g_rbg_last_go = go; g_rbg_tick0 = go; g_rbg_tick_k = 0; g_rbg_cyc_go = rgs_cyc_now();
     if (g_rbg_gocheck < 0) { const char *e = getenv("SSBU_RB_NET_GOCHECK"); g_rbg_gocheck = !e || atoi(e) != 0; e = getenv("SSBU_RB_NET_TEST_GOLATE"); g_rbg_golate = e ? atoi(e) : 0; }
     if (!g_rbg_noring && g_rg_ready) {                  /* (Arena perf) GO CHECK (above) */
-        if (g_rbg_golate > 0 && rbn_loop()) { static unsigned gs = 12345; gs = gs * 1103515245u + 12345u; if ((int)((gs >> 16) % 100) < g_rbg_golate) rbn_drain(i + 1); }
+        if (g_rbg_golate > 0 && rbn_loop() && g_rbg_pace) { if (g_rbg_wpad_frame == i + 1 && g_rbg_wpad_at > 0) { rbn_drain(i + 1); g_rbg_wpad_at = -1; } }      /* (v2) arrived in the wait, seen now */
+        else if (g_rbg_golate > 0 && rbn_loop()) { static unsigned gs = 12345; gs = gs * 1103515245u + 12345u; if ((int)((gs >> 16) % 100) < g_rbg_golate) rbn_drain(i + 1); }
         if (g_rbg_gocheck && rb_feat(32, 1)) {
             rbn_drain(i);
             int m = rbn_take_mismatch();
@@ -457,6 +516,12 @@ static void rbg_report(void) {
     if (g_rbg_rb) LOG("r1: RB NET report: rollback parts (ms per rollback): before the load %.3f (keep mode %d), load %.3f, re-run passes %.3f (%.2f per rollback, %.3f each), re-run captures %.3f (%.2f per rollback, recap mode %d)\n",
         g_rbg_t_pre / g_rbg_rb, g_rbg_keep, g_rbg_t_load / g_rbg_rb, g_rbg_t_rerun / g_rbg_rb, (double)g_rbg_n_rerun / g_rbg_rb, g_rbg_n_rerun ? g_rbg_t_rerun / g_rbg_n_rerun : 0.0, g_rbg_t_recap / g_rbg_rb, (double)g_rbg_n_recap / g_rbg_rb, g_rbg_recap);
     LOG("r1: RB NET report: rollbacks made right after the pacing wait (go check) %lld of %lld, not made (a thread still running) %lld (go check %s, loop test early pads %d%%)\n", g_rbg_n_gorb, g_rbg_rb, g_rbg_n_gobusy, g_rbg_gocheck ? "on" : "OFF", g_rbg_golate > 0 ? g_rbg_golate : 0);
+    LOG("r1: RB NET report: rollbacks made INSIDE the pacing wait %lld of %lld (time left in the wait at their start %.2f ms mean), not made there (a thread running) %lld, ticks that started late after one %lld (%.2f ms mean) (waitrb %s)\n",
+        g_rbg_n_wrb, g_rbg_rb, g_rbg_n_wrb ? g_rbg_wrb_ms / g_rbg_n_wrb : 0.0, g_rbg_n_wbusy, g_rbg_wrb_late, g_rbg_wrb_late ? g_rbg_wrb_late_ms / g_rbg_wrb_late : 0.0, g_rbg_waitrb > 0 ? "on" : "OFF");
+    LOG("r1: RB NET report: (waitrb v2) waits with a wrong guess known inside %lld, rolled back there %lld (after %.2f ms mean of waiting for the threads), holds tried %lld\n",
+        g_rbg_n_wmis, g_rbg_n_wrb, g_rbg_n_wrb ? g_rbg_wm_hold_ms / g_rbg_n_wrb : 0.0, g_rbg_n_wpeek);
+    if (g_rbg_nlate) { static double v[RBG_NT]; int n = g_rbg_nlate, o1 = 0, o2 = 0; for (int k = 0; k < n; k++) { v[k] = g_rbg_late[k]; o1 += v[k] > 1000.0 / 60.0; o2 += v[k] > 20.0; }
+        LOG("r1: RB NET TIMING real pass end after its scheduled tick (%d): median %.2f p90 %.2f p99 %.2f ms; past the 16.67 ms deadline %d (%.1f%%), past 20 ms %d (%.1f%%)\n", n, rg_pct(v, n, 50), rg_pct(v, n, 90), rg_pct(v, n, 99), o1, 100.0 * o1 / n, o2, 100.0 * o2 / n); }
     r1_hold_prof_report(); rg_meta_prof_report();
     LOG("r1: RB NET report: live host stack check (hs16): thread contexts taken from the hold %lld, asked again %lld (SSBU_R1_LIVECACHE %s)\n", g_live_cached, g_live_asked, g_live_cache ? "on" : "OFF");
     rbg_dist("work per tick (real pass + its rollback, without waits)", g_rbg_work, g_rbg_nw, g_rbg_wk, -1);

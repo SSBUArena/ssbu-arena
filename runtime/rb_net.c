@@ -568,6 +568,8 @@ static void hs_block_compare(void) {                    /* main thread (rbn_drai
 #define RQ_MAX 1100
 static struct { uint64_t at_us; long long at_frame; int n; uint8_t b[RQ_MAX]; } *g_rq;
 static volatile LONG g_rq_head, g_rq_tail; static SRWLOCK g_rq_lock = SRWLOCK_INIT;
+static HANDLE g_rq_ev;                                   /* (phase 3) set for every queued message: the pacing wait wakes at once */
+HANDLE rbn_rx_event(void) { if (!g_rq_ev) { HANDLE e = CreateEventW(NULL, FALSE, FALSE, NULL); if (InterlockedCompareExchangePointer((PVOID *)&g_rq_ev, e, NULL)) CloseHandle(e); } return g_rq_ev; }
 static volatile LONG64 g_rx_pkts, g_rx_bad, g_rx_drop, g_tx_pkts, g_tx_fail, g_rx_last_ms, g_rx_oldmatch;
 static volatile LONG g_rtt_us = -1, g_rtt_min_us = -1;
 static long long g_rtt_n; static double g_rtt_sum;      /* (under g_rq_lock) */
@@ -621,6 +623,7 @@ void rbn_rx(const uint8_t *p, int n) {
     if (g_rq && next != g_rq_tail) { g_rq[g_rq_head].at_us = now_us(); g_rq[g_rq_head].at_frame = g_cur; g_rq[g_rq_head].n = n; memcpy(g_rq[g_rq_head].b, p, (size_t)n); g_rq_head = next; }
     else InterlockedIncrement64(&g_rx_drop);
     ReleaseSRWLockExclusive(&g_rq_lock);
+    if (g_rq_ev) SetEvent(g_rq_ev);
 }
 static int rbn_peer_heard_ms(void) {                    /* (R3 lwr) any rollback message of the other game (its pings come every 100 ms) */
     LONG64 last = g_rx_last_ms;
