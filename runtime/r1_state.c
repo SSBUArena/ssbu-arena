@@ -1890,12 +1890,19 @@ static void ra_init(void) {
     int l = hook_install_name("_ZN7lua2cpp16L2CFighterCommon31sys_line_system_control_fighterEv", ra_line, NULL, &g_orig_line);
     LOG("r1: RUN-AHEAD on (one frame): marks %s; save point: the return of the job-counter wait 710354c720 called at 710374c028 (preparation done, before the render kick): %s; frame line counter: %s; park %.1f ms\n",
         g_mark > 0 ? "yes" : "NO (run-ahead will stay off)", k ? "installed" : "FAILED", l ? "installed or waiting" : "FAILED", g_ra_park_ms);
-    if (rgs_wanted() && rbg_on()) {                       /* R3: re-run passes but the last skip the preparation kicks + lists (49) and the presentation callees (127), proven exact in R2 round 3 */
-        g_rgs_skip = getenv("SSBU_RB_SIM_SKIP") ? atoi(getenv("SSBU_RB_SIM_SKIP")) : 49;
+    if (rgs_wanted() && rbg_on()) {                       /* R3: re-run passes skip the preparation kick (1); see below for what they no longer skip */
+        /* (Arena, 2026-10-27) defaults 1 / 0 instead of 49 / 123. With 49 / 123 about 1 short run in 10 (loop bench, bot 3
+         * frames late, to frame 600) crashed in nu::GraphicsDevice::Update (f_7103929760, read of 0xffff...) or ended in the
+         * game's std::terminate (__cxa_pure_virtual in the render dispatch loop 0x7103816180). Bisection, up to 60 short runs
+         * each (stopped at the first event): 0 / 0 clean in 65; 1 / 0 clean in 60; lists A/B (16 / 32) skipped: GD crash;
+         * lite group 1 (camera) skipped: std::terminate; lite group 64 (effect emitter tick) skipped: GD crash; 2 / 8 cost
+         * ~0.01 ms per pass, 16 / 32 are never called in re-runs. Cost of 1 / 0 against 49 / 123: ~+0.5 .. 1.3 ms on the
+         * median rollback tick (re-run pass ~4.5 -> ~4.9 ms). SSBU_RB_SIM_SKIP / SSBU_RB_SIM_LITE: the old masks (test). */
+        g_rgs_skip = getenv("SSBU_RB_SIM_SKIP") ? atoi(getenv("SSBU_RB_SIM_SKIP")) : 1;
         /* 123 = 127 without group 4 (lighting): skipping the lighting callees in re-run passes left the fighters' colour
          * blend wrong for the rest of the match (magenta / green / yellow fighters, seen in every rollback fight; groups 1, 2,
          * 8, 16, 32, 64 checked one by one: colours right). Costs ~0.3 of the ~1.3 ms a re-run pass saves. */
-        if (!getenv("SSBU_RB_SIM_LITE")) _putenv("SSBU_RB_SIM_LITE=123");
+        if (!getenv("SSBU_RB_SIM_LITE")) _putenv("SSBU_RB_SIM_LITE=0");
         rbn_init();
         LOG("r1: RB NET on (R3 online rollback on the snapshot ring): kick skip mask in re-run passes %d\n", g_rgs_skip);
         rgs_lite_init(); }
