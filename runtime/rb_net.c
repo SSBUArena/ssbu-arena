@@ -203,8 +203,9 @@ int rbn_room_rollback(void) { return g_hs_lwr; }       /* (R3 lwr) the last agre
  * and not the other's (a different base state: in sync again only by chance, and not at all with 4 frames of delay) */
 static volatile int g_hs_pending; static ULONGLONG g_hs_pending_t;
 /* (an agreement can come while the room's waiting-stage fight still runs: that fight's end must not clear it; it ends
- * when the agreed match starts, or after 30 s if it never does, so no later fight loses its pads) */
-int rbn_fight_pending(void) { return g_hs_pending && GetTickCount64() - g_hs_pending_t < 30000; }
+ * when the agreed match starts, or after 60 s if it never does, so no later fight loses its pads; 60 s and not 30: a slow
+ * PC's loading of the match must not give the pads back before the base state) */
+int rbn_fight_pending(void) { return g_hs_pending && GetTickCount64() - g_hs_pending_t < 60000; }
 static int rbn_peer_heard_ms(void);                     /* (R3 lwr) ms since the other game's rollback session was last heard, -1 = never */
 static volatile LONG g_lay_have_mine, g_lay_have_peer; static uint8_t g_lay_peer_has; static uint16_t g_lay_peer[11]; static uint8_t g_lay_peer_ctl[0x2d];
 static RbhMsg g_lay_mine;
