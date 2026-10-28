@@ -401,6 +401,7 @@
               <RadioButton x:Name="SecPlayer" Style="{StaticResource SideTab}" Content="Player" IsChecked="True" Checked="Section_Checked"/>
               <RadioButton x:Name="SecOnline" Style="{StaticResource SideTab}" Content="Online" Checked="Section_Checked"/>
               <RadioButton x:Name="SecVideo" Style="{StaticResource SideTab}" Content="Video" Checked="Section_Checked"/>
+              <RadioButton x:Name="SecAudio" Style="{StaticResource SideTab}" Content="Audio" Checked="Section_Checked"/>
               <RadioButton x:Name="SecPads" Style="{StaticResource SideTab}" Content="Controllers" Checked="Section_Checked"/>
               <RadioButton x:Name="SecSaves" Style="{StaticResource SideTab}" Content="Saves" Checked="Section_Checked"/>
               <RadioButton x:Name="SecDlc" Style="{StaticResource SideTab}" Content="DLC" Checked="Section_Checked"/>
@@ -491,6 +492,21 @@
                 </ComboBox>
                 <TextBlock Style="{StaticResource Small}" Margin="0,8,0,0" Text="Automatic: the keyboard is the first free player after the controllers connected at start."/>
                 <Button Style="{StaticResource Outline}" Height="42" HorizontalAlignment="Left" Margin="0,24,0,0" Click="FindPads_Click" FontSize="15">Find controllers</Button>
+                <TextBlock Text="BUTTONS" Style="{StaticResource FieldLabel}" Margin="0,30,0,6"/>
+                <TextBlock Style="{StaticResource Small}" Margin="0,0,0,14" TextWrapping="Wrap"
+                           Text="Which button of your controller presses each button of the game (Xbox, PlayStation and other controllers). Smash's own Options > Controls can still change what each button does."/>
+                <ItemsControl x:Name="BtnMap">
+                  <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="2"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                </ItemsControl>
+                <Button Style="{StaticResource Outline}" Height="42" HorizontalAlignment="Left" Margin="0,16,0,0" Click="BtnReset_Click" FontSize="15">Back to the default buttons</Button>
+              </StackPanel>
+
+              <!-- audio -->
+              <StackPanel x:Name="BoxAudio" Visibility="Collapsed">
+                <TextBlock Text="AUDIO" Style="{StaticResource SectionTitle}"/>
+                <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24" Text="The game's volume when it starts; the menu in the game (Home, or - and + held) changes it while you play."/>
+                <TextBlock Text="VOLUME" Style="{StaticResource FieldLabel}"/>
+                <ComboBox x:Name="VolBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed"/>
               </StackPanel>
 
               <!-- saves -->

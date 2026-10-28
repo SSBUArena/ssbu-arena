@@ -149,7 +149,7 @@ namespace Arena
             {
                 StateText.Text = Spaced("READY TO PLAY"); StateDot.Fill = Res("Accent");
                 if (shadersOk) Status("Game ready", "good");
-                else Status("Game ready · shaders not prepared yet: PLAY prepares them first (a few minutes, once)", "warn");
+                else Status("Game ready · shaders not prepared yet", "warn");
             }
             else { StateText.Text = Spaced("NEEDS ATTENTION"); StateDot.Fill = Res("Warn"); Status("The game needs attention: see Game files", "warn"); }
         }
@@ -210,7 +210,7 @@ namespace Arena
                 FilesSub.Text = bad > 0 ? bad + (bad == 1 ? " problem" : " problems") : shaders ? "Verified" : "Verified, shaders not prepared yet";
                 FilesMark.Content = Mark(bad > 0 ? "bad" : shaders ? "ok" : "warn");
                 var rows = checks.Select(c => CheckRow(c.Ok, c.Text)).ToList();
-                rows.Add(CheckRow(shaders, shaders ? "Shaders prepared" : "Shaders not prepared yet: done before the first match (a few minutes, once)", shaders ? "ok" : "warn"));
+                rows.Add(CheckRow(shaders, shaders ? "Shaders prepared" : "Shaders not prepared yet", shaders ? "ok" : "warn"));
                 CheckList.ItemsSource = rows;
                 SetState();
             }, TaskScheduler.FromCurrentSynchronizationContext());
@@ -269,6 +269,9 @@ namespace Arena
             SizeBox.IsEnabled = Core.WindowMode == 0;
             AspectBox.SelectedIndex = Core.Aspect;
             KbBox.SelectedIndex = Core.Keyboard;
+            VolBox.ItemsSource = Enumerable.Range(0, 11).Select(i => (i * 10) + " %").ToList();
+            VolBox.SelectedIndex = Math.Max(0, Math.Min(10, (Core.Volume + 5) / 10));
+            FillButtons();
             FillPads();
             RefreshSaves();
             RefreshDlc();
@@ -285,6 +288,8 @@ namespace Arena
             Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
             Core.Keyboard = Math.Max(0, KbBox.SelectedIndex);
+            if (VolBox.SelectedIndex >= 0) Core.Volume = VolBox.SelectedIndex * 10;
+            foreach (var cb in btnBoxes) if (cb.SelectedIndex >= 0) Core.Buttons[(string)cb.Tag] = Core.PadSources[cb.SelectedIndex].Item1;
             if (P1Box.SelectedIndex >= 0) Core.Player1 = padGuids[P1Box.SelectedIndex];
             if (P2Box.SelectedIndex >= 0) Core.Player2 = padGuids[P2Box.SelectedIndex];
         }
@@ -306,6 +311,37 @@ namespace Arena
         {
             int n = Core.DlcCount();
             DlcText.Text = n == 0 ? "No DLC active." : n + " DLC active.";
+        }
+
+        // (0.2.8) the controller's buttons: one list per game button, the controller's buttons to choose from (Core.Buttons)
+        readonly List<ComboBox> btnBoxes = new List<ComboBox>();
+        void FillButtons()
+        {
+            bool was = loading;
+            loading = true;
+            btnBoxes.Clear();
+            var cells = new List<UIElement>();
+            foreach (var b in Core.GameButtons)
+            {
+                var sp = new StackPanel { Margin = new Thickness(0, 0, 18, 12) };
+                sp.Children.Add(new TextBlock { Text = b.Item2, FontSize = 14, Foreground = Res("Muted"), Margin = new Thickness(0, 0, 0, 4) });
+                var cb = new ComboBox { Tag = b.Item1, Width = 330, HorizontalAlignment = HorizontalAlignment.Left, ItemsSource = Core.PadSources.Select(x => x.Item2).ToList() };
+                cb.SelectedIndex = Math.Max(0, Core.PadSources.FindIndex(x => x.Item1 == (Core.Buttons.TryGetValue(b.Item1, out var v) ? v : "")));
+                cb.SelectionChanged += (s, e) => Field_Changed(s, e);
+                btnBoxes.Add(cb);
+                sp.Children.Add(cb);
+                cells.Add(sp);
+            }
+            BtnMap.ItemsSource = cells;
+            loading = was;
+        }
+
+        void BtnReset_Click(object sender, RoutedEventArgs e)
+        {
+            Core.Buttons = new Dictionary<string, string>(Core.DefaultButtons);
+            FillButtons();
+            SaveQuiet();
+            Status("Default buttons back", "good");
         }
 
         void Field_Changed(object sender, RoutedEventArgs e)
@@ -411,7 +447,7 @@ namespace Arena
         void Section_Checked(object sender, RoutedEventArgs e)
         {
             if (BoxPlayer == null) return;
-            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecVideo, BoxVideo }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles } };
+            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecVideo, BoxVideo }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles } };
             foreach (var kv in map) kv.Value.Visibility = kv.Key == sender ? Visibility.Visible : Visibility.Collapsed;
         }
 
@@ -859,7 +895,7 @@ namespace Arena
             catch (Exception ex) { Show("Could not start the game", ex.Message, null, ("OK", null, true)); return; }
             game.Exited += (s, e) => Dispatcher.Invoke(GameExited);
             SetState();
-            if (first) StatusText.Text = "First start: the game prepares the shaders (a few minutes)";
+            if (first) StatusText.Text = "First start: preparing the shaders";
             ToTray();
         }
 
