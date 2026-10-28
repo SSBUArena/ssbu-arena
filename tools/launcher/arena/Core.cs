@@ -566,7 +566,7 @@ namespace Arena
                 using (var fs = new FileStream(file ?? GameLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 using (var sr = new StreamReader(fs))
                 {
-                    var all = sr.ReadToEnd().Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l != "").ToArray();
+                    var all = sr.ReadToEnd().Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l != "" && !l.StartsWith("##")).ToArray();      // not the launcher's progress lines
                     return all.Skip(Math.Max(0, all.Length - n)).ToArray();
                 }
             }

@@ -141,10 +141,16 @@
               <Grid Margin="0,44,0,0">
               <!-- the shader preparation (Core.StartPrepare): in place of the buttons while it runs -->
               <StackPanel x:Name="PrepPanel" Visibility="Collapsed" Width="470" HorizontalAlignment="Left">
-                <StackPanel Orientation="Horizontal">
-                  <TextBlock x:Name="PrepTitle" Text="PREPARING SHADERS" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="34"/>
-                  <TextBlock x:Name="PrepPct" Text="0%" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="34" Foreground="{StaticResource Accent}" Margin="16,0,0,0"/>
-                </StackPanel>
+                <Grid>
+                  <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock x:Name="PrepTitle" Text="PREPARING SHADERS" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="34"/>
+                    <TextBlock x:Name="PrepPct" Text="0%" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="34" Foreground="{StaticResource Accent}" Margin="16,0,0,0"/>
+                  </StackPanel>
+                  <!-- stop: a square button with a thin cross, on the title's line -->
+                  <Button x:Name="PrepCancel" Style="{StaticResource Outline}" Width="28" Height="28" Padding="0" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,0,6" Click="PrepCancel_Click" ToolTip="Stop (it goes on from here next time)">
+                    <Path Data="M0,0 L12,12 M12,0 L0,12" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="9" Height="9" Stretch="Fill"/>
+                  </Button>
+                </Grid>
                 <Grid Height="10" Margin="0,14,0,0">
                   <Grid.ColumnDefinitions><ColumnDefinition x:Name="PrepDone" Width="0*"/><ColumnDefinition x:Name="PrepLeft" Width="1*"/></Grid.ColumnDefinitions>
                   <Border Grid.ColumnSpan="2" CornerRadius="5" Background="#1E2A38"/>
@@ -156,10 +162,7 @@
                   <TextBlock x:Name="PrepDetail" Text="Starting..." FontSize="16" Foreground="#C9D3DD"/>
                   <TextBlock x:Name="PrepEta" HorizontalAlignment="Right" FontSize="16" Foreground="{StaticResource Muted}"/>
                 </Grid>
-                <Grid Margin="0,18,0,0">
-                  <TextBlock x:Name="PrepNote" Text="Once per graphics card and driver: the game starts right after." Style="{StaticResource Small}" FontSize="14" VerticalAlignment="Center"/>
-                  <Button x:Name="PrepCancel" Style="{StaticResource Link}" HorizontalAlignment="Right" Click="PrepCancel_Click" FontSize="15">Cancel</Button>
-                </Grid>
+                <TextBlock x:Name="PrepNote" Margin="0,18,0,0" Style="{StaticResource Small}" FontSize="14"/>
               </StackPanel>
               <StackPanel x:Name="PlayButtons" Orientation="Horizontal">
                 <Button x:Name="PlayButton" AutomationProperties.Name="Play" Style="{StaticResource Primary}" Width="256" Height="86" Click="Play_Click">
@@ -464,10 +467,10 @@
                   <ComboBoxItem>Windowed</ComboBoxItem><ComboBoxItem>Borderless</ComboBoxItem><ComboBoxItem>Fullscreen</ComboBoxItem>
                 </ComboBox>
                 <TextBlock Text="WINDOW SIZE" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
-                <ComboBox x:Name="SizeBox" Width="300" HorizontalAlignment="Left" IsEditable="True" LostFocus="Field_Changed">
+                <ComboBox x:Name="SizeBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
                   <ComboBoxItem>1280x720</ComboBoxItem><ComboBoxItem>1600x900</ComboBoxItem><ComboBoxItem>1920x1080</ComboBoxItem><ComboBoxItem>2560x1440</ComboBoxItem>
                 </ComboBox>
-                <TextBlock Style="{StaticResource Small}" Margin="0,8,0,0" Text="Windowed mode only. You can type your own, for example 1366x768."/>
+                <TextBlock Style="{StaticResource Small}" Margin="0,8,0,0" Text="Windowed mode only."/>
                 <TextBlock Text="ASPECT" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
                 <ComboBox x:Name="AspectBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
                   <ComboBoxItem>16:9 (black bars)</ComboBoxItem><ComboBoxItem>Stretched (fill)</ComboBoxItem>

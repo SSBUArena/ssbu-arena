@@ -2652,11 +2652,21 @@ static void cache_wipe_stale(void) {
     char full[300]; snprintf(full, sizeof full, "%s/%s", vkc_dir(), pat);
     HANDLE h = FindFirstFileA(full, &fd);
     if (h != INVALID_HANDLE_VALUE) { FindClose(h); return; }          /* this version was prepared here before: keep it all */
-    int a = wipe_glob("pipelines_*.bin"), b = wipe_glob("pipes.bin") + wipe_glob("pipes_novi.bin"), c = wipe_glob("prepared_*.txt"),
+    /* (0.2.8) a preparation of this version stopped before its marker: what it made is of this version and is kept, the next
+     * one goes on from it (it was all removed: every stop started the preparation again from nothing) */
+    char started[300]; snprintf(started, sizeof started, "%s/started_v%u%s.txt", vkc_dir(), MX_VK_VERSION, kv);
+    if (GetFileAttributesA(started) != INVALID_FILE_ATTRIBUTES) {
+        printf("nvn_vk_prep: a preparation of shader version %u%s was stopped here before: its records are kept, it goes on from them\n", MX_VK_VERSION, kv);
+        fflush(stdout);
+        return;
+    }
+    int a = wipe_glob("pipelines_*.bin"), b = wipe_glob("pipes.bin") + wipe_glob("pipes_novi.bin"), c = wipe_glob("prepared_*.txt") + wipe_glob("started_*.txt"),
         d = wipe_glob("stage/*"), e = wipe_glob("spv/*");
     printf("nvn_vk_prep: no marker of shader version %u%s here: older records removed before the preparation (%d pipeline caches, %d pipeline lists, %d markers, %d stage records, %d SPIR-V files)\n",
            MX_VK_VERSION, kv, a, b, c, d, e);
     fflush(stdout);
+    FILE *sf = fopen(started, "w");
+    if (sf) { fputs("a preparation of this shader version began here: the records beside it are of this version\n", sf); fclose(sf); }
 }
 /* `ssbu_vk1.exe --prepare-shaders [folder]` (boot.c): no game, no window, no Vulkan device. Every *.bnsh file of the folder
  * (tools_vk/bnsh_extract.py writes them from data.arc) is walked as the scan above walks a container in the game's memory
