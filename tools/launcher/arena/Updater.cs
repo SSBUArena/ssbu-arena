@@ -128,6 +128,30 @@ namespace Arena
         {
             foreach (var p in new[] { ExePath + ".old", ExePath + ".new" })
                 try { if (File.Exists(p)) File.Delete(p); } catch { }
+            if (Installed && !Directory.Exists(Path.Combine(Core.Repo, ".git"))) HideScripts(Core.Repo);
+        }
+
+        /// <summary>(0.2.8) a player's install: the sources' own scripts at the top of the folder (Install SSBU.bat, Play SSBU.bat,
+        /// play.sh, ...: the way in without this launcher) hidden, so the folder shows the launcher; they still work. Again after
+        /// every update (update.py writes them anew). A developer's git checkout is left as it is.</summary>
+        public static void HideScripts(string root)
+        {
+            try
+            {
+                // only the repository's own files (the update manifest's list): a file the player put there stays visible
+                var m = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(root, @"build\update_manifest.json")));
+                if (!(m.TryGetValue("files", out var fo) && fo is Dictionary<string, object> files)) return;
+                foreach (var rel in files.Keys)
+                {
+                    string ext = Path.GetExtension(rel).ToLowerInvariant();
+                    if (rel.Contains("/") || (ext != ".bat" && ext != ".cmd" && ext != ".sh")) continue;
+                    string f = Path.Combine(root, rel);
+                    if (!File.Exists(f)) continue;
+                    var a = File.GetAttributes(f);
+                    if ((a & FileAttributes.Hidden) == 0) File.SetAttributes(f, a | FileAttributes.Hidden);
+                }
+            }
+            catch { }
         }
 
         /// <summary>the new launcher in place of this exe (and of the copy in build\, if any); then it is started again</summary>
@@ -212,6 +236,7 @@ namespace Arena
             };
             Directory.CreateDirectory(Path.Combine(root, "build"));
             File.WriteAllText(Path.Combine(root, @"build\update_manifest.json"), new JavaScriptSerializer().Serialize(manifest));
+            HideScripts(root);
         }
     }
 }

@@ -734,6 +734,11 @@ namespace Arena
         // ---------------------------------------------------------------- shader preparation
         Process prep;
         bool prepThenPlay, prepCancelled;
+        // the time left, estimated here: the share done in the last 45 s of the shader phase (the game's own "eta" divides
+        // the whole time so far by the share done: reading the data is 10 % of the bar but ~45 s, the first shaders come
+        // slowly, so it only grew); shown smoothed: it counts down by itself and moves toward each new estimate
+        readonly List<Tuple<DateTime, double>> prepHist = new List<Tuple<DateTime, double>>();
+        double prepEtaShown = -1; DateTime prepEtaAt;
         static readonly System.Text.RegularExpressions.Regex PrepField = new System.Text.RegularExpressions.Regex("\"(\\w+)\":(?:\"([^\"]*)\"|(-?\\d+))");
 
         /// <summary>the game prepares the shaders hidden (Core.StartPrepare); the hero shows the progress; thenPlay: the
@@ -743,6 +748,7 @@ namespace Arena
             if (prep != null || game != null) return;
             if (Core.GameRunning()) { Show("Already running", "Close the game first.", null, ("OK", null, true)); return; }
             prepThenPlay = thenPlay; prepCancelled = false;
+            prepHist.Clear(); prepEtaShown = -1;
             TabHome.IsChecked = true;
             PlayButtons.Visibility = Visibility.Collapsed; PrepPanel.Visibility = Visibility.Visible;
             PrepTitle.Text = "PREPARING SHADERS"; PrepPct.Text = "0%"; SetPrepBar(0);
@@ -768,12 +774,36 @@ namespace Arena
             foreach (System.Text.RegularExpressions.Match m in PrepField.Matches(l)) v[m.Groups[1].Value] = m.Groups[2].Success && m.Groups[2].Value != "" ? m.Groups[2].Value : m.Groups[3].Value;
             if (!v.TryGetValue("state", out var st) || st != "running") return;
             int pct = v.TryGetValue("pct", out var p) && int.TryParse(p, out var pi) ? pi : 0;
-            int eta = v.TryGetValue("eta", out var e) && int.TryParse(e, out var ei) ? ei : -1;
             PrepPct.Text = pct + "%";
             SetPrepBar(pct / 100.0);
             if (v.TryGetValue("phase", out var ph) && ph == "data") PrepDetail.Text = "Reading the game data";
             else PrepDetail.Text = string.Format("{0:N0} of about {1:N0} shaders", long.Parse(v.ContainsKey("done") ? v["done"] : "0"), long.Parse(v.ContainsKey("total") ? v["total"] : "0"));
-            PrepEta.Text = eta >= 0 ? string.Format("about {0}:{1:00} left", eta / 60, eta % 60) : "";
+            PrepEta.Text = PrepEta_(v);
+        }
+
+        string PrepEta_(Dictionary<string, string> v)
+        {
+            var now = DateTime.UtcNow;
+            long done = v.TryGetValue("done", out var d) && long.TryParse(d, out var di) ? di : 0, total = v.TryGetValue("total", out var t) && long.TryParse(t, out var ti) ? ti : 0;
+            if (!(v.TryGetValue("phase", out var ph) && ph == "shaders") || total <= 0) return "estimating the time...";
+            double f = Math.Min(1, (double)done / total);
+            prepHist.Add(Tuple.Create(now, f));
+            while (prepHist.Count > 2 && (now - prepHist[1].Item1).TotalSeconds > 45) prepHist.RemoveAt(0);
+            var first = prepHist[0];
+            double span = (now - first.Item1).TotalSeconds, rate = span > 0 ? (f - first.Item2) / span : 0;
+            if (prepEtaShown >= 0) prepEtaShown = Math.Max(0, prepEtaShown - (now - prepEtaAt).TotalSeconds);      // counts down by itself
+            prepEtaAt = now;
+            if (span >= 10 && rate > 1e-6)
+            {
+                double raw = Math.Min(3600, (1 - f) / rate);
+                if (prepEtaShown < 0) prepEtaShown = raw;
+                else prepEtaShown += (raw - prepEtaShown) * (raw > prepEtaShown ? 0.03 : 0.08);      // slow to go up, quicker down
+            }
+            if (prepEtaShown < 0) return "estimating the time...";
+            int sec = (int)Math.Round(prepEtaShown);
+            if (sec < 45) return "less than a minute left";
+            int min = (int)Math.Round(sec / 60.0);
+            return min <= 1 ? "about a minute left" : "about " + min + " minutes left";
         }
 
         void PrepEnded(int code)
