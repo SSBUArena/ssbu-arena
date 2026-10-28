@@ -103,7 +103,7 @@ TOOLS = {   # checked 2026-10-19: SDL3 and glslang equal GitHub's own asset dige
     # LICENSE.TXT: Apache-2.0 WITH LLVM-exception). 39 MB instead of the 845 MB archive, published with Arena 0.2.8
     # (scripts/arena_release.py --asset); without it setup.py builds with clang 9 -O1 as before (slower, same result).
     'llvm19': ('https://github.com/Acid236/ssbu-arena/releases/download/v0.2.8/llvm19-opt-llc-19.1.7.zip',
-               'f41b92b7a41f557b004d2d41ca51cf2b382b8350dec772b0e246e55fe5328797', 'llvm19', 'opt.exe'),
+               'c6d9dc8d0503ecdd23567d13554d3dac21fbdf78dd716739524290e8ceca610a', 'llvm19', 'opt.exe'),
     # Dear ImGui (MIT), optional: GitHub publishes no digest for tag archives, so this hash is the archive checked on
     # 2026-10-19 (2,021,831 bytes)
     'imgui': ('https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b.zip',
