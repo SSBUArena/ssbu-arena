@@ -16,6 +16,7 @@ namespace Arena
     public partial class MainWindow : Window
     {
         List<Check> checks;                 // last game files check (null while it runs)
+        bool shadersOk = true;              // the shaders prepared for this exe and graphics driver (last check)
         List<string> missingCodecs = new List<string>();
         List<Pad> pads = new List<Pad>();   // the game's own list (--pad-list)
         List<string> padGuids = new List<string>();
@@ -26,6 +27,12 @@ namespace Arena
         public MainWindow()
         {
             InitializeComponent();
+            {   // (0.2.8) open at the design size (zoom 1: text drawn on whole pixels, sharp) when the screen has room, else as
+                // large as the work area allows; it opened at 1460 x 920 (zoom 0.92: every glyph scaled, soft on a 1080p screen)
+                var wa = SystemParameters.WorkArea;
+                double z0 = Math.Min(1, Math.Min((wa.Width - 24) / 1586, (wa.Height - 24 - 36) / 956));
+                Width = Math.Floor(1586 * z0); Height = Math.Floor(36 + 956 * z0);
+            }
             Core.Load();
             SpaceOut(this);
             FillSettings();
@@ -58,8 +65,11 @@ namespace Arena
             double w = host.ActualWidth - Root.Margin.Left - Root.Margin.Right, h = host.ActualHeight - 36 - Root.Margin.Top - Root.Margin.Bottom;
             if (w <= 0 || h <= 0) return;
             double z = Math.Max(0.55, Math.Min(1.6, Math.Min(w / 1586, h / 956)));
+            if (z > 1 && z < 1.08) z = 1;             // a little larger than the design size: exactly 1 (sharp text), the rest is margin
             if (Math.Abs(z - Zoom.ScaleX) < 0.001) return;
             Zoom.ScaleX = Zoom.ScaleY = z;
+            // at zoom 1 the glyphs snap to the pixel grid (Display); scaled, the layout stays even (Ideal)
+            TextOptions.SetTextFormattingMode(Scaled, z == 1 ? TextFormattingMode.Display : TextFormattingMode.Ideal);
         }
 
         /// <summary>letter-spaced caps (TextBlock has no letter spacing): the TextBlocks tagged "sp"</summary>
@@ -119,7 +129,12 @@ namespace Arena
             }
             PlayButton.IsEnabled = true; PlayText.Text = "PLAY";
             if (checks == null) { StateText.Text = Spaced("CHECKING FILES"); StateDot.Fill = Res("Muted"); Status("Checking game files...", "busy"); }
-            else if (checks.All(c => c.Ok)) { StateText.Text = Spaced("READY TO PLAY"); StateDot.Fill = Res("Accent"); Status("Game ready", "good"); }
+            else if (checks.All(c => c.Ok))
+            {
+                StateText.Text = Spaced("READY TO PLAY"); StateDot.Fill = Res("Accent");
+                if (shadersOk) Status("Game ready", "good");
+                else Status("Game ready · shaders not prepared yet: PLAY prepares them first (a few minutes, once)", "warn");
+            }
             else { StateText.Text = Spaced("NEEDS ATTENTION"); StateDot.Fill = Res("Warn"); Status("The game needs attention: see Game files", "warn"); }
         }
 
@@ -139,20 +154,18 @@ namespace Arena
 
         void RefreshOnline()
         {
-            string code = Core.Code.Trim();
-            CodeBig.Text = code == "" ? "PUBLIC" : code.ToUpperInvariant();
             if (!Core.HasOnline) { NetDot.Fill = Res("Dim"); NetText.Text = "This build has no online"; }
             else if (!Core.Online) { NetDot.Fill = Res("Dim"); NetText.Text = "Offline"; }
             else
             {
                 NetDot.Fill = Res("Good");
-                NetText.Text = "Online" + (Core.Rollback ? " · rollback" : "") + " · code " + (code == "" ? "public" : code);
+                NetText.Text = "Online";
             }
             bool on = OnlineBox.IsChecked == true && Core.HasOnline;
             OnlineFields.IsEnabled = on;
             OnlineFields.Opacity = on ? 1 : 0.45;
             OnlineHelp.Text = !Core.HasOnline ? "This build of the game has no online." : !on ? "Online off: local play only."
-                            : RollbackBox.IsChecked == true ? "Rollback: 1-on-1 in Local Wireless rooms, and Smash > Versus with a code." : "Local Wireless rooms through the server (the game's netcode).";
+                            : "Online Ranked finds you an opponent; every online match plays with rollback.";
         }
 
         void SetPadState()
@@ -177,9 +190,9 @@ namespace Arena
             {
                 checks = t.Result.Item1; missingCodecs = t.Result.Item2;
                 int bad = checks.Count(c => !c.Ok);
-                bool shaders = Core.CanPrepare() ? !Core.NeedsPrepare() : !Core.FirstRun();
+                bool shaders = shadersOk = Core.CanPrepare() ? !Core.NeedsPrepare() : !Core.FirstRun();
                 FilesSub.Text = bad > 0 ? bad + (bad == 1 ? " problem" : " problems") : shaders ? "Verified" : "Verified, shaders not prepared yet";
-                FilesMark.Content = Mark(bad == 0 ? "ok" : "bad");
+                FilesMark.Content = Mark(bad > 0 ? "bad" : shaders ? "ok" : "warn");
                 var rows = checks.Select(c => CheckRow(c.Ok, c.Text)).ToList();
                 rows.Add(CheckRow(shaders, shaders ? "Shaders prepared for this graphics card" : "Shaders not prepared yet: done before the first match (a few minutes, once)", shaders ? "ok" : "warn"));
                 CheckList.ItemsSource = rows;
@@ -231,8 +244,6 @@ namespace Arena
             NameBox.Text = Core.Nickname;
             OnlineBox.IsChecked = Core.Online;
             OnlineBox.IsEnabled = Core.HasOnline;
-            CodeBox.Text = Core.Code;
-            RollbackBox.IsChecked = Core.Rollback;
             PingBox.IsChecked = Core.Ping;
             ServerBox.Items.Clear();
             foreach (var s in Core.Servers) ServerBox.Items.Add(s.Name);
@@ -243,10 +254,6 @@ namespace Arena
             AspectBox.SelectedIndex = Core.Aspect;
             KbBox.SelectedIndex = Core.Keyboard;
             FillPads();
-            CompBox.IsChecked = Core.Competitive;
-            CompBox.IsEnabled = Core.HasCompetitive && !Core.LightArc;
-            if (Core.LightArc) CompHelp.Text = "Always on: the light archive holds only the competitive 1v1.";
-            else if (!Core.HasCompetitive) CompHelp.Text = "build\\characters\\competitive is missing: python tools/competitive/make_competitive.py";
             RefreshSaves();
             RefreshDlc();
         }
@@ -256,8 +263,6 @@ namespace Arena
         {
             Core.Nickname = NameBox.Text.Trim();
             Core.Online = OnlineBox.IsChecked == true && Core.HasOnline;
-            Core.Code = CodeBox.Text.Trim();
-            Core.Rollback = RollbackBox.IsChecked == true;
             Core.Ping = PingBox.IsChecked == true;
             Core.Server = Core.Servers[Math.Max(0, ServerBox.SelectedIndex)].Address;
             Core.WindowMode = Math.Max(0, WinBox.SelectedIndex);
@@ -266,7 +271,6 @@ namespace Arena
             Core.Keyboard = Math.Max(0, KbBox.SelectedIndex);
             if (P1Box.SelectedIndex >= 0) Core.Player1 = padGuids[P1Box.SelectedIndex];
             if (P2Box.SelectedIndex >= 0) Core.Player2 = padGuids[P2Box.SelectedIndex];
-            Core.Competitive = CompBox.IsChecked == true;
         }
 
         bool SaveQuiet()
@@ -429,11 +433,6 @@ namespace Arena
         void Started_Click(object sender, RoutedEventArgs e) { Core.Open(Core.Site + "getting-started"); }
         void Recomp_Click(object sender, RoutedEventArgs e) { Core.Open("https://github.com/OpenSmash-Ultimate/ssbu-recomp"); }
         void FrameData_Click(object sender, RoutedEventArgs e) { Core.Open("https://ultimateframedata.com/"); }
-
-        void CopyCode_Click(object sender, RoutedEventArgs e)
-        {
-            try { Clipboard.SetText(Core.Code.Trim() == "" ? "public" : Core.Code.Trim()); Status("Friend code copied", "good"); } catch { }
-        }
 
         void Minimize_Click(object sender, RoutedEventArgs e) { WindowState = WindowState.Minimized; }
         void Maximize_Click(object sender, RoutedEventArgs e) { WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized; }
@@ -781,9 +780,10 @@ namespace Arena
         {
             prep = null;
             PrepPanel.Visibility = Visibility.Collapsed; PlayButtons.Visibility = Visibility.Visible;
+            if (!prepCancelled && code == 0) { Core.ShaderStamp = Core.ShaderKey(); SaveQuiet(); }      // before the check below reads it
             RunChecks();
             if (prepCancelled) { Status("Shader preparation stopped: it goes on from where it was next time", "warn"); return; }
-            if (code == 0) { Core.ShaderStamp = Core.ShaderKey(); SaveQuiet(); Status("Shaders prepared", "good"); if (prepThenPlay) Start(); return; }
+            if (code == 0) { Status("Shaders prepared", "good"); if (prepThenPlay) Start(); return; }
             if (code == 3) { if (prepThenPlay) Start(); else Show("Shaders", "This graphics card prepares its shaders while you play (no stage libraries): nothing to do here.", null, ("OK", null, true)); return; }
             Show("Shader preparation failed", "Exit code " + code + ". Last lines of build\\prepare.log:", Core.PrepareLogTail(8),
                  ("Play anyway", () => Start(), false), ("OK", null, true));

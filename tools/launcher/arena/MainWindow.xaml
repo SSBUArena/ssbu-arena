@@ -214,10 +214,16 @@
               </StackPanel>
               <Border Height="1" Background="{StaticResource Line}" Margin="0,20,0,16"/>
               <StackPanel Orientation="Horizontal">
-                <Grid Width="56" Height="62">
-                  <Path Data="{StaticResource IcoShield}" Stroke="#7D8C9E" StrokeThickness="1.6" Stretch="Uniform" StrokeLineJoin="Round"/>
-                  <Path Data="{StaticResource IcoChevron}" Stroke="#AAB6C4" StrokeThickness="2.6" Width="24" Height="14" Stretch="Uniform" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
-                </Grid>
+                <!-- the rank badge, unranked: a hexagon in steel with an empty diamond (no rank yet) -->
+                <Canvas Width="56" Height="62">
+                  <Path Data="M28,1 L54,16 L54,46 L28,61 L2,46 L2,16 Z" StrokeThickness="2" StrokeLineJoin="Round">
+                    <Path.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#22344A" Offset="0"/><GradientStop Color="#0D1724" Offset="1"/></LinearGradientBrush></Path.Fill>
+                    <Path.Stroke><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#C3CEDA" Offset="0"/><GradientStop Color="#56657A" Offset="1"/></LinearGradientBrush></Path.Stroke>
+                  </Path>
+                  <Path Data="M28,7 L49,19 L49,43 L28,55 L7,43 L7,19 Z" Stroke="#33B6D4E8" StrokeThickness="1" StrokeLineJoin="Round"/>
+                  <Path Data="M28,18 L39,31 L28,44 L17,31 Z" Stroke="#AAB6C4" StrokeThickness="2" StrokeLineJoin="Round" Fill="#14FFFFFF"/>
+                  <Path Data="M28,26 L32.5,31 L28,36 L23.5,31 Z" Fill="#7D8C9E"/>
+                </Canvas>
                 <TextBlock x:Name="RankText" Tag="sp" Text="UNRANKED" FontSize="17" FontWeight="SemiBold" Margin="30,0,0,0" VerticalAlignment="Center"/>
               </StackPanel>
               <Button Style="{StaticResource Link}" HorizontalAlignment="Right" Margin="0,6,0,0" Click="Profile_Click">
@@ -351,22 +357,7 @@
       <!-- ============================================================ COMMUNITY -->
       <Grid x:Name="PageCommunity" Visibility="Collapsed">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-        <Border Style="{StaticResource Panel}" Padding="36,30" ClipToBounds="True">
-          <Grid>
-            <Path Data="{StaticResource BrandMarkGeometry}" Width="300" Stretch="Uniform" HorizontalAlignment="Right" Margin="0,-40,20,-60" Opacity="0.08" Fill="{StaticResource Accent}"/>
-            <StackPanel>
-              <TextBlock Tag="sp" Text="YOUR FRIEND CODE" Style="{StaticResource Kicker}"/>
-              <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                <TextBlock x:Name="CodeBig" Text="PUBLIC" Style="{StaticResource SectionTitle}" FontSize="64" Foreground="{StaticResource Accent}"/>
-                <Button Style="{StaticResource Outline}" Height="44" Margin="26,0,0,0" VerticalAlignment="Center" Click="CopyCode_Click" FontSize="15">Copy</Button>
-                <Button Style="{StaticResource Outline}" Height="44" Margin="10,0,0,0" VerticalAlignment="Center" Click="Configure_Click" FontSize="15">Change</Button>
-              </StackPanel>
-              <TextBlock x:Name="CodeHelp" Style="{StaticResource Small}" FontSize="16" Margin="0,8,0,0" MaxWidth="760" HorizontalAlignment="Left"
-                         Text="Players with the same code find each other: the same rooms in Local Wireless and the same opponents in Smash > Versus. Without a code, rooms are open to everyone."/>
-            </StackPanel>
-          </Grid>
-        </Border>
-        <UniformGrid Grid.Row="1" Columns="3" Margin="-8,20,-8,0">
+        <UniformGrid Grid.Row="0" Columns="3" Margin="-8,0,-8,0">
           <Button Style="{StaticResource CardButton}" Margin="8,0" Padding="28,26" Click="Site_Click">
             <StackPanel>
               <Path Data="{StaticResource IcoGlobe}" Stroke="{StaticResource Accent}" StrokeThickness="1.6" Width="34" Height="34" Stretch="Uniform" HorizontalAlignment="Left"/>
@@ -409,7 +400,7 @@
               <RadioButton x:Name="SecVideo" Style="{StaticResource SideTab}" Content="Video" Checked="Section_Checked"/>
               <RadioButton x:Name="SecPads" Style="{StaticResource SideTab}" Content="Controllers" Checked="Section_Checked"/>
               <RadioButton x:Name="SecSaves" Style="{StaticResource SideTab}" Content="Saves" Checked="Section_Checked"/>
-              <RadioButton x:Name="SecDlc" Style="{StaticResource SideTab}" Content="DLC and mode" Checked="Section_Checked"/>
+              <RadioButton x:Name="SecDlc" Style="{StaticResource SideTab}" Content="DLC" Checked="Section_Checked"/>
               <RadioButton x:Name="SecFiles" Style="{StaticResource SideTab}" Content="Game files" Checked="Section_Checked"/>
             </StackPanel>
           </DockPanel>
@@ -452,16 +443,7 @@
                            Text="Everything goes through the Arena server: no player ever sees another player's address."/>
                 <CheckBox x:Name="OnlineBox" Style="{StaticResource Switch}" Content="Play online" Checked="Online_Changed" Unchecked="Online_Changed"/>
                 <StackPanel x:Name="OnlineFields" Margin="0,22,0,0">
-                  <TextBlock Text="FRIEND CODE" Style="{StaticResource FieldLabel}"/>
-                  <TextBox x:Name="CodeBox" Width="360" HorizontalAlignment="Left" MaxLength="31" TextChanged="Field_Changed"/>
-                  <TextBlock Style="{StaticResource Small}" Margin="0,8,0,22" Text="Players with the same code find each other. Empty: public, anyone."/>
-                  <CheckBox x:Name="RollbackBox" Style="{StaticResource Switch}" Checked="Online_Changed" Unchecked="Online_Changed">
-                    <StackPanel>
-                      <TextBlock Text="Rollback netcode" FontSize="15"/>
-                      <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="1-on-1 matches in Local Wireless rooms play with rollback; with a code, Smash > Versus finds an opponent with the same code."/>
-                    </StackPanel>
-                  </CheckBox>
-                  <CheckBox x:Name="PingBox" Style="{StaticResource Switch}" Margin="0,18,0,0" Checked="Field_Changed" Unchecked="Field_Changed">
+                  <CheckBox x:Name="PingBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed">
                     <StackPanel>
                       <TextBlock Text="Show ping on screen" FontSize="15"/>
                       <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Next to each player in every online match: green up to 60 ms, yellow up to 120, red above."/>
@@ -523,21 +505,15 @@
                 </WrapPanel>
               </StackPanel>
 
-              <!-- DLC and mode -->
+              <!-- DLC -->
               <StackPanel x:Name="BoxDlc" Visibility="Collapsed">
-                <TextBlock Text="DLC AND MODE" Style="{StaticResource SectionTitle}"/>
+                <TextBlock Text="DLC" Style="{StaticResource SectionTitle}"/>
                 <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24" Text="Your own DLC, from the file names of your dumps."/>
                 <TextBlock x:Name="DlcText" FontSize="16"/>
                 <WrapPanel Margin="0,14,0,26">
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Dlc_Click" FontSize="15">Activate from your DLC folder</Button>
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="DlcOff_Click" FontSize="15">Turn off</Button>
                 </WrapPanel>
-                <CheckBox x:Name="CompBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed">
-                  <StackPanel>
-                    <TextBlock Text="Competitive mode" FontSize="15"/>
-                    <TextBlock x:Name="CompHelp" Style="{StaticResource Small}" Margin="0,3,0,0" Text="6 stages (Battlefield, Small Battlefield, Final Destination, Pokemon Stadium 2, Smashville, Town and City), no random items, no Final Smash meter. For Local Wireless, every PC needs it on."/>
-                  </StackPanel>
-                </CheckBox>
               </StackPanel>
 
               <!-- game files -->

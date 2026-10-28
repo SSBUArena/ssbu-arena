@@ -67,8 +67,8 @@ namespace Arena
         public static bool HasOnline, RbPair, HasCompetitive, LightArc;
 
         // settings (launcher.ini and the game's ini files)
-        public static string Nickname = "", Server = DefaultServer, Code = "", Saves;
-        public static bool Online, Rollback = true, Ping = true, Competitive = true;
+        public static string Nickname = "", Server = DefaultServer, Saves;
+        public static bool Online = true, Ping = true, Competitive = true;
         public static string ShaderStamp = "";
         public static string Ticket;                // the lobby ticket of this start (Account.LobbyTicket), signed in only      // launcher.ini shaders: what the last preparation was made for (ShaderKey)
         public static int Aspect, WindowMode, Keyboard;
@@ -122,21 +122,18 @@ namespace Arena
             string defSaves = Portable ? Path.Combine(Path.GetDirectoryName(Build), "saves") : Path.Combine(Build, "saves");
             Saves = Get(L, "saves") ?? defSaves;
             Nickname = Get(O, "nickname") ?? Get(L, "nickname") ?? "";
-            Online = L.ContainsKey("online") ? L["online"] == "on" : (Get(O, "server") != null && Get(O, "room") != null);
+            Online = Get(L, "online_choice") == "1" ? Get(L, "online") != "off" : true;      // (0.2.8) on by default; a choice made since is kept
             Server = Servers[ServerIndex(Get(L, "server") ?? DefaultServer)].Address;
-            Code = Get(L, "code") ?? Get(O, "room") ?? "";
-            Rollback = Get(L, "rollback") != "off";
             Ping = Get(L, "ping") != "off";
             ShaderStamp = Get(L, "shaders") ?? "";
-            Competitive = LightArc || (HasCompetitive && Get(L, "competitive") != "off");
+            Competitive = LightArc || HasCompetitive;      // (0.2.8) always: Arena is the competitive game
             if (!HasOnline) Online = false;
-            foreach (var old in new[] { "online.ini.off", "online.ini.old" })      // an older launcher's settings: code and name
+            foreach (var old in new[] { "online.ini.off", "online.ini.old" })      // an older launcher's settings: the name
             {
                 string p = Path.Combine(Cfg, old);
-                if (L.ContainsKey("code") || Code != "" || !File.Exists(p)) continue;
+                if (Nickname != "" || !File.Exists(p)) continue;
                 var o2 = ReadIni(p);
-                if (Get(o2, "room") != null) Code = o2["room"];
-                if (Nickname == "" && Get(o2, "nickname") != null) Nickname = o2["nickname"];
+                if (Get(o2, "nickname") != null) Nickname = o2["nickname"];
             }
 
             var G = ReadIni(GfxIni);
@@ -165,9 +162,8 @@ namespace Arena
             }
             File.WriteAllLines(LauncherIni, new[] {
                 "# written by the launcher", "saves = " + Saves, "nickname = " + n,
-                "competitive = " + (Competitive ? "on" : "off"), "online = " + (Online ? "on" : "off"),
-                "server = " + Server.Trim(), "code = " + Code.Trim(),
-                "rollback = " + (Rollback ? "on" : "off"), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp }, Encoding.ASCII);
+                "online = " + (Online ? "on" : "off"), "online_choice = 1",
+                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp }, Encoding.ASCII);
             var gfx = new Dictionary<string, string> {
                 { "aspect", Aspect == 1 ? "stretch" : "keep" },
                 { "window", new[] { "windowed", "borderless", "fullscreen" }[Math.Max(0, Math.Min(2, WindowMode))] },
@@ -282,11 +278,8 @@ namespace Arena
         {
             var bad = new List<string>();
             if (!Online) return bad;
-            string code = Code.Trim();
             if (!Account.SignedIn) bad.Add("Online play needs your SSBU Arena account: sign in (Settings > Player), or turn online off");
             if (!Regex.IsMatch(Server.Trim(), @"^[^\s:]+:\d+$")) bad.Add("Online: server must be address:port");
-            if (Regex.IsMatch(code, @"\s")) bad.Add("Online: the friend code cannot have spaces");
-            else if (Encoding.UTF8.GetByteCount(code) > 31) bad.Add("Online: friend code too long (31 at most)");
             return bad;
         }
 
@@ -536,15 +529,15 @@ namespace Arena
             // online through the lobby server (runtime/net_relay.c), relay only; rollback (runtime/rb_net.c) in Smash > Versus
             if (Online && HasOnline && Account.SignedIn)
             {
-                string n = Account.Me.Username, code = Code.Trim();
+                string n = Account.Me.Username;
                 env["SSBU_ONLINE_TICKET"] = Ticket ?? "";              // the lobby takes the player's name from it (rb_lobby.c)
                 env["SSBU_ONLINE"] = Server.Trim();
                 env["SSBU_ONLINE_NAME"] = n;
                 env["SSBU_NICKNAME"] = n;
-                env["SSBU_ONLINE_CODE"] = code != "" ? code : "public";
+                env["SSBU_ONLINE_CODE"] = "public";                  // (0.2.8) no friend codes: one public pool
                 env["SSBU_ONLINE_DIRECT"] = "0";                     // never a direct path: no player sees another one's address
                 env["SSBU_NET_PING"] = Ping ? "1" : "0";             // each player's ping to the server (nvn_vk_draw.c)
-                if (Rollback && RbPair)      // only with the marked pair: the normal build's rollback drifts apart (the game's own netcode then)
+                if (RbPair)      // (0.2.8) always rollback; only with the marked pair: the normal build's rollback drifts apart (the game's own netcode then)
                 {
                     env["SSBU_RB_NET"] = "net";
                     env["SSBU_R1_GAMEDLL"] = "ssbu_game_r1.dll"; env["SSBU_NRO_BIN"] = "nro_bin_eh_o2r1";
