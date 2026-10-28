@@ -55,8 +55,11 @@ EDIT_MAIN = {
 # Online Ranked. A pane is (centre x, centre y, width, height); their selection cursors (window panes of the centre
 # layout) are centred on the new tiles.
 RIGHT_EDGE = 690                                     # LDN's and Online Ranked's right edge
-COL_LEFT, COL_RIGHT = 720, 940                       # the Settings / Exit column
-TOP, MID_BOTTOM, LOW_TOP, BOTTOM = 423, -63, -115, -432   # Smash's top and bottom, Online Ranked's
+COL_LEFT, COL_RIGHT = 719, 940                       # the Settings / Exit column
+TOP, MID_BOTTOM, LOW_TOP, BOTTOM = 423, -66, -95, -434   # Smash's top and bottom, Battle Arena's top and bottom
+# (0.2.8, measured at 1920 x 1080, 1 unit = 1 pixel: Smash's and Battle Arena's tiles are the game's, their gap 29; every
+# other gap made 29 too: Settings and Exit 29 right of LDN and Online Ranked, Online Ranked 29 right of Battle Arena, and
+# the lower row level with Battle Arena. The gaps were 29 / 49 / 52 between the rows and 30 / 42 between the columns)
 CIRCLE_X = 6                                         # the centre circle's x (the centre of Smash's cut, measured)
 LDN_PANE = (2 * CIRCLE_X + 514, 178, 1000, 560)      # Smash's mask (-514, 178) mirrored about the circle
 LDN_LEFT = 2 * CIRCLE_X + 45                         # (Smash's visible right edge is -45)
@@ -64,10 +67,11 @@ RANKED_PANE = (311, -274, 872, 384)                  # the game's
 _cw, _cx = COL_RIGHT - COL_LEFT, (COL_LEFT + COL_RIGHT) / 2
 SET_PANE = (_cx, (TOP + MID_BOTTOM) / 2, _cw, TOP - MID_BOTTOM)
 EXIT_PANE = (_cx, (LOW_TOP + BOTTOM) / 2, _cw, LOW_TOP - BOTTOM)
-EXIT_CURSOR = 20                                     # Exit's bright border: this much larger than the tile
+EXIT_CURSOR = 14                                     # Exit's bright border: 7 outside the tile on every side
+CURSOR_BAND = 19                                     # the bright band's width (Smash's cursor's, measured)
 ESHOP_GROUP = (158, -615)                            # the eShop group's offset (Exit's panes are inside it)
 LDN_X = 515                                          # LDN's button (its icon and name), right of the centre circle
-RANKED_LEFT = -93                                    # Online Ranked's visible left edge
+RANKED_LEFT = -106                                   # Online Ranked's visible left edge (Battle Arena's right edge is -136)
 SETTINGS_BG = 105
 LDN_LINE = -45                                       # Online / LDN: the gap between the lines 60% smaller (measured)
 RING = (6, 36, 280)                                  # the centre circle's ring: Battle Arena's cut (centre, radius; measured)
@@ -76,6 +80,7 @@ _lx, _ly, _lw, _lh = (LDN_LEFT + RIGHT_EDGE) / 2, (TOP + MID_BOTTOM) / 2, RIGHT_
 _sx, _sy, _sw, _sh = SET_PANE
 _ex, _ey, _ew, _eh = EXIT_PANE
 _rx, _rw = (RANKED_LEFT + RIGHT_EDGE) / 2, RIGHT_EDGE - RANKED_LEFT
+_ry, _rh = (LOW_TOP + BOTTOM) / 2, LOW_TOP - BOTTOM
 
 
 def _hits(hw, hh, x=0, y=0):
@@ -128,22 +133,29 @@ EDIT_MAIN['main_menu.bflyt'].update({
         'txt_off': {'font_size': FONT, 'size': [600, 96], 'text_id': ['mnu_top_online', 'mnu_top_notices']},
         **_hits(_ew / 2, _eh / 2)}},
     # Online Ranked: the frame is redrawn on its own pane (menu_shapes); its hit box ends at the straight edge
-    'set_parts_btn_online': {'parts': dict(_font, **_hits(_rw / 2, 155, _rx - RANKED_PANE[0], 5))},
+    'set_parts_btn_online': {'parts': dict(_font, **_hits(_rw / 2, (LOW_TOP - BOTTOM) / 2, _rx - RANKED_PANE[0], (LOW_TOP + BOTTOM) / 2 - RANKED_PANE[1]))},
 })
 # the help line above the tiles: the footer moved up by its height plus the screen's (its bar then fills the top band)
 EDIT_FOOTER = {'main_menu_footer.bflyt': {'RootPane': {'pos': [0, 966]}}}
 # the cursors, centred on their tiles (the game's extend past the screen's edge)
 EDIT_MAIN['main_menu_lct_center_00.bflyt'] = {
-    # (LDN's drew 40 narrower and 40 short at the bottom: measured)
-    'other_crs_square_01': {'pos': [_lx, _ly - 20]},
-    'sel_csr_blink_04': {'size': [_lw + 48, _lh + 48]}, 'sel_csr_hl_00_add_03': {'size': [_lw + 48, _lh + 48]},
-    'sel_csr_hl_01_add_03': {'size': [_lw + 48, _lh + 48]},
-    'other_crs_00': {'pos': [_lx, _ly - 20], 'size': [_lw + 58, _lh + 58]},
-    # (Settings' cursor drew 30 narrower and 60 shorter, 9 right of and 30 above its centre: measured)
-    'collection_crs_square_01': {'pos': [_sx - 9, _sy - 30]},
-    'sel_csr_blink_07': {'size': [_sw + 38, _sh + 68]}, 'sel_csr_hl_00_add_06': {'size': [_sw + 38, _sh + 68]},
-    'sel_csr_hl_01_add_06': {'size': [_sw + 38, _sh + 68]},
-    'collection_crs_00': {'pos': [_sx - 9, _sy - 30], 'size': [_sw + 48, _sh + 78]},
+    # (0.2.8) every cursor as Smash's own (the reference): its bright band 19 wide, its outer edge 7 outside the tile's.
+    # Measured at 1920 x 1080 (1 unit = 1 pixel) and moved by what each was off (a window's frames keep their size, so
+    # a change of its size moves its band by as much). LDN's was 8 too far right and 13 short at the bottom
+    # (its top, as Smash's, 10 above the tile: under the help bar 11 of its band show)
+    'other_crs_square_01': {'pos': [_lx - 4, _ly - 27.5]},
+    'sel_csr_blink_04': {'size': [_lw + 40, _lh + 59]}, 'sel_csr_hl_00_add_03': {'size': [_lw + 40, _lh + 59]},
+    'sel_csr_hl_01_add_03': {'size': [_lw + 40, _lh + 59]},
+    'other_crs_00': {'pos': [_lx - 4, _ly - 27.5], 'size': [_lw + 50, _lh + 69]},
+    # Settings' 6 too narrow on each side, 5 too high at the top and 7 too low at the bottom
+    'collection_crs_square_01': {'pos': [_sx - 9, _sy - 27.5]},
+    'sel_csr_blink_07': {'size': [_sw + 50, _sh + 59]}, 'sel_csr_hl_00_add_06': {'size': [_sw + 50, _sh + 59]},
+    'sel_csr_hl_01_add_06': {'size': [_sw + 50, _sh + 59]},
+    'collection_crs_00': {'pos': [_sx - 9, _sy - 27.5], 'size': [_sw + 60, _sh + 69]},
+    # Battle Arena's (the game's) reached 29 below its tile (the game's footer used to cover it) and 6 too far right
+    'spirits_crs_square_00': {'pos': [-561 - 3, -306 + 11.5]},
+    **{w: {'size': [911 - 6, 426 - 21]} for w in ('sel_csr_blink_00', 'sel_csr_hl_00_add_00', 'sel_csr_hl_01_add_00')},
+    'spirit_crs_00': {'pos': [-566 - 3, -305 + 11.5], 'size': [916 - 6, 426 - 21]},
     # the pointer from the centre circle to the selected tile (white tab, its black backing, the arrow): LDN's is
     # Smash's mirrored, Online Ranked's Battle Arena's mirrored (x 0 is the circle's centre in this layout; measured on
     # screen: Ranked's tab centre (201, -156) mirrors Battle Arena's (-182, -154) about the circle's centre x 8)
@@ -160,21 +172,21 @@ EDIT_MAIN['main_menu_lct_center_00.bflyt'] = {
     # nothing, and its black arrow is only seen on that white tab
     'black_08': {'scale': [0, 0]}, 'pic_04': {'scale': [0, 0]}, 'collection_arrow': {'scale': [0, 0]},
     'online_arrow': {'rotate': 180 - 43},
-    # Online Ranked's (scaled 1.05 in the game) ends at the straight edge
-    'online_crs_square_00': {'pos': [_rx - 8, -304]},
-    **{w: {'size': [(_rw + 52) / 1.05, 416 / 1.05], 'window_frames': [32, 32, 32, 32]}      # (scaled 1.05: the border's size)
+    # Online Ranked's: the game's three-band border (a straight and a slanted frame) made Settings' one-band window
+    # (CURSOR_LIKE: its texture, one frame for four corners, 80 wide), mirrored as Settings' is, and placed as Settings'
+    # on its tile; its glow windows (scaled 1.05 in the game) likewise
+    'online_crs_square_00': {'pos': [_rx - 9, _ry - 29]},
+    **{w: {'size': [(_rw + 50) / 1.05, (_rh + 56) / 1.05], 'window_frames': [32, 32, 32, 32]}      # (scaled 1.05: the border's size)
        for w in ('sel_csr_blink_09', 'sel_csr_hl_00_add_09', 'sel_csr_hl_00_add_08')},
-    # its bright border: a left frame (straight) and a right one (slanted): the right made the left's mirror
-    # (0.2.8: measured on screen, the border drew 20 inside the tile's left edge, 19 above its bottom and 9 below its
-    # top: moved 8 left and 5 down, 34 wider and 36 taller, so it lies on the tile's edge as the other tiles' do)
-    'online_crs': {'pos': [_rx - 8, -305], 'size': [_rw + 52, 416], 'window_frames': [82, 82, 380, 380]},
+    'online_crs': {'pos': [_rx - 9, _ry - 29], 'size': [_rw + 60, _rh + 66], 'scale': [-1, 1], 'window_frames': [80, 80, 80, 80]},
     # Exit's cursor: its windows (at (493, -95) in their square, scaled 1.05) its dark rim, one-frame windows like
     # Settings' (cursor_like; measured 20 x 24 smaller and 10, 30 off); its bright border the eshop_crs picture, its
     # texture redrawn as a rectangle (tile_shapes); its glow and name balloon are not used
-    'echop_crs_square_01': {'pos': [_ex - 493 - 10, _ey + 95 - 30]},
-    **{w: {'size': [(_ew + 28) / 1.05, (_eh + 32) / 1.05], 'window_frames': [32, 32, 32, 32]}
+    # (0.2.8: its band lay wholly outside the tile, 14 wide, so the tile's own line showed inside it: now 19 wide, 7 out)
+    'echop_crs_square_01': {'pos': [_ex - 493 - 9, _ey + 95 - 29]},
+    **{w: {'size': [(_ew + 50) / 1.05, (_eh + 56) / 1.05], 'window_frames': [32, 32, 32, 32]}
        for w in ('sel_csr_blink_11', 'sel_csr_hl_00_add_11', 'sel_csr_hl_00_add_12')},
-    'eshop_crs': {'pos': [_ex - 10, _ey - 30], 'size': [_ew + EXIT_CURSOR, _eh + EXIT_CURSOR],   # (10, 30 off: measured)
+    'eshop_crs': {'pos': [_ex - 9, _ey - 29], 'size': [_ew + EXIT_CURSOR, _eh + EXIT_CURSOR],   # (9, 29 off: measured)
                   'material_white': '2a9bffff', 'texture_uv': True},    # Settings' cursor colour (measured)
     'eshop_glow': {'scale': [0, 0]},
     'bg_bln': {'scale': [0, 0]}, 'txt_eshop': {'scale': [0, 0]},     # (nul_bln's own scale is animated)
@@ -233,7 +245,8 @@ CURSOR_LIKE = (('sel_csr_blink_11', 'sel_csr_blink_07'), ('sel_csr_hl_00_add_11'
                ('sel_csr_hl_00_add_12', 'sel_csr_hl_01_add_06'),
                # Online Ranked's (slanted on the right in the game) too
                ('sel_csr_blink_09', 'sel_csr_blink_07'), ('sel_csr_hl_00_add_09', 'sel_csr_hl_00_add_06'),
-               ('sel_csr_hl_00_add_08', 'sel_csr_hl_01_add_06'))
+               ('sel_csr_hl_00_add_08', 'sel_csr_hl_01_add_06'),
+               ('online_crs', 'collection_crs_00'))
 
 
 
@@ -275,7 +288,7 @@ def tile_shapes(data):
     bntx, frames = menu_shapes.write(bntx, masks)
     frames['main_menu_btn3_00_online_crs_00_r^t'] = menu_shapes.read_bc5(bntx, 'main_menu_btn3_00_online_crs_00_l^t').transpose(
         Image.Transpose.FLIP_LEFT_RIGHT)
-    frames['main_menu_btn3_00_eshop_crs_00^t'] = menu_shapes.outline((_ew + EXIT_CURSOR, _eh + EXIT_CURSOR), 14)
+    frames['main_menu_btn3_00_eshop_crs_00^t'] = menu_shapes.outline((_ew + EXIT_CURSOR, _eh + EXIT_CURSOR), CURSOR_BAND)
     return replace_sarc_member(bytearray(data[:s] + bntx + data[e:]), 'timg/__Combined.bntx', replace_rgba(bntx, frames))
 
 
