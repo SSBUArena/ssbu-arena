@@ -145,12 +145,11 @@ EDIT_MAIN['main_menu_lct_center_00.bflyt'] = {
     'sel_csr_hl_01_add_06': {'size': [_sw + 38, _sh + 68]},
     'collection_crs_00': {'pos': [_sx - 9, _sy - 30], 'size': [_sw + 48, _sh + 78]},
     # the pointer from the centre circle to the selected tile (white tab, its black backing, the arrow): LDN's is
-    # Smash's mirrored, Online Ranked's Battle Arena's mirrored (x 0 is the circle's centre in this layout)
+    # Smash's mirrored (x 0 is the circle's centre in this layout)
     # (each quad mirrored about its centre: the white tabs are anchored at a corner, made centred here)
     **{pane: {'material_like': ['main_menu_lct_center_00.bflyt', like], 'texture_uv': True, 'pos': pos, 'size': size,
               'scale': [-1, 1], 'origin': 0}
-       for pane, like, pos, size in (('pic_02', 'pic_00', [176, 101], [260, 412]), 
-                                     ('pic_03', 'pic_01', [204, -194], [132, 132]), )},
+       for pane, like, pos, size in (('pic_02', 'pic_00', [176, 101], [260, 412]), )},
     'other_arrow': {'rotate': 180 + 27.2},
     # (their black backings, Smash's and Battle Arena's mirrored, covered the new tiles' names: none)
     'black_07': {'scale': [0, 0]}, 'black_00': {'scale': [0, 0]},
@@ -158,13 +157,18 @@ EDIT_MAIN['main_menu_lct_center_00.bflyt'] = {
     # tile's bright border says it. The Vault's black backing lay across Online LDN's name, its white tab pointed at
     # nothing, and its black arrow is only seen on that white tab
     'black_08': {'scale': [0, 0]}, 'pic_04': {'scale': [0, 0]}, 'collection_arrow': {'scale': [0, 0]},
-    'online_arrow': {'rotate': 180 - 43},
+    # (0.2.8) Online Ranked reaches under the circle (its left edge is left of the circle's centre): there is no gap for
+    # the white tab, which either covered the tile's corner or hid under the circle. No pointer, as Settings and Exit;
+    # the bright border on the tile's edge says it
+    'online_arrow': {'scale': [0, 0]}, 'pic_03': {'scale': [0, 0]},
     # Online Ranked's (scaled 1.05 in the game) ends at the straight edge
-    'online_crs_square_00': {'pos': [_rx, -297]},
-    **{w: {'size': [(_rw + 8) / 1.05, 380], 'window_frames': [32, 32, 32, 32]}
+    'online_crs_square_00': {'pos': [_rx - 8, -304]},
+    **{w: {'size': [(_rw + 52) / 1.05, 416 / 1.05], 'window_frames': [32, 32, 32, 32]}      # (scaled 1.05: the border's size)
        for w in ('sel_csr_blink_09', 'sel_csr_hl_00_add_09', 'sel_csr_hl_00_add_08')},
     # its bright border: a left frame (straight) and a right one (slanted): the right made the left's mirror
-    'online_crs': {'pos': [_rx, -300], 'size': [_rw + 18, 380], 'window_frames': [82, 82, 380, 380]},
+    # (0.2.8: measured on screen, the border drew 20 inside the tile's left edge, 19 above its bottom and 9 below its
+    # top: moved 8 left and 5 down, 34 wider and 36 taller, so it lies on the tile's edge as the other tiles' do)
+    'online_crs': {'pos': [_rx - 8, -305], 'size': [_rw + 52, 416], 'window_frames': [82, 82, 380, 380]},
     # Exit's cursor: its windows (at (493, -95) in their square, scaled 1.05) its dark rim, one-frame windows like
     # Settings' (cursor_like; measured 20 x 24 smaller and 10, 30 off); its bright border the eshop_crs picture, its
     # texture redrawn as a rectangle (tile_shapes); its glow and name balloon are not used

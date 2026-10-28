@@ -224,6 +224,27 @@ namespace Arena
             catch { }
         }
 
+        /// <summary>(0.2.8) the Kirby loading animation's atlas beside the exe (runtime/loading_anim.c): made on this PC from
+        /// Ultimate Frame Data's GIF by tools/ui/loading_inhale.py (game-derived, never in the repository; about 15 s with
+        /// the download). No install made it, so the boot stayed black. In the background, once, when it is missing.</summary>
+        public static void MakeLoadingArt()
+        {
+            try
+            {
+                string dst = Path.Combine(Work, "loading_kirby.png");
+                if (File.Exists(dst) || Repo == null) return;
+                string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\ui\loading_inhale.py"), art = Path.Combine(Repo, @"media\loading_kirby.png");
+                if (!File.Exists(art))
+                {
+                    if (!File.Exists(py) || !File.Exists(script)) return;
+                    var psi = new ProcessStartInfo(py, "\"" + script + "\" --download") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
+                    using (var p = Process.Start(psi)) p.WaitForExit(180000);
+                }
+                if (File.Exists(art) && Directory.Exists(Work)) File.Copy(art, dst, true);
+            }
+            catch { }
+        }
+
         /// <summary>the keys of one [section] of an ini file (lower case), the others ignored</summary>
         static Dictionary<string, string> ReadIniSection(string path, string section)
         {

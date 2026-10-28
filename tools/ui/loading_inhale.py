@@ -156,7 +156,7 @@ def main():
         atlas.alpha_composite(frame, ((i % COLS) * SIZE[0], (i // COLS) * SIZE[1]))
     atlas.save(REPO / 'media/loading_kirby.png', optimize=True)
     import json
-    (REPO / 'media/loading_kirby.json').write_text(json.dumps({
+    meta = (json.dumps({
         'source': SOURCE_URL, 'page': 'https://ultimateframedata.com/kirby',
         'credit': 'Ultimate Frame Data / MetalMusicMan; Smash Ultimate hitboxes: Zeckemyro',
         'source_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -164,7 +164,11 @@ def main():
         'frames': FRAMES, 'fps': FPS,
         'edits': 'Original opaque debug volumes separated from Kirby; Arena website wireframe spheres with translucent fills, curved meridians and soft rims; subtle bob, breathing and seamless cyan suction motes.',
         'style_reference': 'arena-website/src/components/arena-art.tsx HitSphere; illustrative geometry, not a frame-data visualization'
-    }, indent=2) + '\n', encoding='utf-8')
+    }, indent=2) + '\n')
+    mj = REPO / 'media/loading_kirby.json'      # a file of the repository: written only when it changes, with LF (a
+    if not mj.is_file() or mj.read_text(encoding='utf-8') != meta:      # player's install must not see it as edited)
+        with open(mj, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(meta)
     if a.preview:
         a.preview.parent.mkdir(parents=True, exist_ok=True)
         preview = []
