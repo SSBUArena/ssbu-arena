@@ -27,12 +27,8 @@ namespace Arena
         public MainWindow()
         {
             InitializeComponent();
-            {   // (0.2.8) open at the design size (zoom 1: text drawn on whole pixels, sharp) when the screen has room, else as
-                // large as the work area allows; it opened at 1460 x 920 (zoom 0.92: every glyph scaled, soft on a 1080p screen)
-                var wa = SystemParameters.WorkArea;
-                double z0 = Math.Min(1, Math.Min((wa.Width - 24) / 1586, (wa.Height - 24 - 36) / 956));
-                Width = Math.Floor(1586 * z0); Height = Math.Floor(36 + 956 * z0);
-            }
+            // (0.2.8, the user's choice) opens at its smallest size (MinWidth x MinHeight); the page is scaled to it (Rescale)
+            Width = MinWidth; Height = MinHeight;
             Core.Load();
             SpaceOut(this);
             FillSettings();
