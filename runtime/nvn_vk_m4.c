@@ -635,8 +635,14 @@ static VkPipeline stagelib_ensure(VStage *v, int alone, int *how) {
         r = pw_graphics(t == 2 ? VK_NULL_HANDLE : g_pcache, &gi, lib);
     }
     if (r != VK_SUCCESS) {
-        FILE *mk = fopen("../cache/vk/no_stage_libraries.txt", "w");
-        if (mk) { fprintf(mk, "The graphics driver refused a stage library (%s): the game uses whole pipelines from the next start. Delete this file to try the libraries again.\n", vk_result_name(r)); fclose(mk); }
+        /* (0.2.8) a refusal in one run only is not the driver's last word (a VK_ERROR_UNKNOWN once in a preparation on the
+         * owner's NVIDIA card, every other run fine): the first one is noted, the next start tries the libraries again,
+         * and only a refusal in a second run switches to whole pipelines for good */
+        const char *first = "../cache/vk/stage_library_refused.txt";
+        int again = GetFileAttributesA(first) != INVALID_FILE_ATTRIBUTES;
+        FILE *mk = fopen(again ? "../cache/vk/no_stage_libraries.txt" : first, "w");
+        if (mk) { fprintf(mk, again ? "The graphics driver refused a stage library in two runs (%s): the game uses whole pipelines from the next start. Delete this file to try the libraries again.\n"
+                                    : "The graphics driver refused a stage library once (%s): the next start tries again; a second refusal switches to whole pipelines.\n", vk_result_name(r)); fclose(mk); }
         vkd_fail("vkCreateGraphicsPipelines, stage library (%s stage %u): %s. START THE GAME AGAIN: from now on it uses whole pipelines, which this driver accepts", isfs ? "fragment" : "vertex", v->id, vk_result_name(r));
     }
     LONG64 dt = tk() - t0;
@@ -1883,6 +1889,7 @@ static void pcache_write(PcWrite *w) {
     if (ok && w->marker && !g_prep_limited && g_prep_marker[0]) {
         FILE *mf = fopen(g_prep_marker, "wb");
         if (mf) { fprintf(mf, "%d containers, %lld variations\n", g_prep_nfiles, (long long)g_prep_vars); fclose(mf); printf("nvn_vk_prep: marker %s written with the pipeline cache: the next start skips the preparation\n", g_prep_marker); }
+        DeleteFileA("../cache/vk/stage_library_refused.txt");      /* a whole preparation with libraries: an old single refusal is forgotten */
     }
     fflush(stdout);
     free(w->data);

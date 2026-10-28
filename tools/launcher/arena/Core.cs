@@ -73,6 +73,26 @@ namespace Arena
         public static string Ticket;                // the lobby ticket of this start (Account.LobbyTicket), signed in only      // launcher.ini shaders: what the last preparation was made for (ShaderKey)
         public static int Aspect, WindowMode, Keyboard;
         public static string WindowSize = "1280x720";
+        public static int Volume = 100;                                   // graphics.ini volume (0..100), the game's start volume
+        // (0.2.8) which controller button presses each game button ([type ...] map.* of controllers.ini, written for the
+        // Xbox, PlayStation, Switch and other pads alike; GameCube controllers keep their own); the default is the
+        // position of Nintendo's layout: A on the right, B at the bottom, X at the top, Y on the left
+        public static readonly List<Tuple<string, string>> GameButtons = new List<Tuple<string, string>> {
+            Tuple.Create("A", "A"), Tuple.Create("B", "B"), Tuple.Create("X", "X"), Tuple.Create("Y", "Y"),
+            Tuple.Create("L", "L"), Tuple.Create("R", "R"), Tuple.Create("ZL", "ZL"), Tuple.Create("ZR", "ZR"),
+            Tuple.Create("PLUS", "+ (pause)"), Tuple.Create("MINUS", "-"), Tuple.Create("STICK_L", "Left stick press"), Tuple.Create("STICK_R", "Right stick press") };
+        public static readonly List<Tuple<string, string>> PadSources = new List<Tuple<string, string>> {
+            Tuple.Create("east", "Right face button (Xbox B, PS circle)"), Tuple.Create("south", "Bottom face button (Xbox A, PS cross)"),
+            Tuple.Create("north", "Top face button (Xbox Y, PS triangle)"), Tuple.Create("west", "Left face button (Xbox X, PS square)"),
+            Tuple.Create("leftshoulder", "Left bumper (LB / L1)"), Tuple.Create("rightshoulder", "Right bumper (RB / R1)"),
+            Tuple.Create("lefttrigger", "Left trigger (LT / L2)"), Tuple.Create("righttrigger", "Right trigger (RT / R2)"),
+            Tuple.Create("start", "Menu / Options / Start"), Tuple.Create("back", "View / Share / Select"),
+            Tuple.Create("leftstick", "Left stick press"), Tuple.Create("rightstick", "Right stick press") };
+        public static readonly Dictionary<string, string> DefaultButtons = new Dictionary<string, string> {
+            { "A", "east" }, { "B", "south" }, { "X", "north" }, { "Y", "west" }, { "L", "leftshoulder" }, { "R", "rightshoulder" },
+            { "ZL", "lefttrigger" }, { "ZR", "righttrigger" }, { "PLUS", "start" }, { "MINUS", "back" }, { "STICK_L", "leftstick" }, { "STICK_R", "rightstick" } };
+        public static Dictionary<string, string> Buttons = new Dictionary<string, string>(DefaultButtons);
+        static readonly string[] PadTypes = { "xbox", "playstation", "switch", "generic" };
         public static string Player1 = "auto", Player2 = "auto";
 
         static string FindRepo()
@@ -140,6 +160,11 @@ namespace Arena
             Aspect = Get(G, "aspect") == "stretch" ? 1 : 0;
             WindowMode = Get(G, "window") == "borderless" ? 1 : Get(G, "window") == "fullscreen" ? 2 : 0;
             if (Get(G, "width") != null && Get(G, "height") != null) WindowSize = G["width"] + "x" + G["height"];
+            Volume = int.TryParse(Get(G, "volume"), out var vol) ? Math.Max(0, Math.Min(100, vol)) : 100;
+            Buttons = new Dictionary<string, string>(DefaultButtons);
+            foreach (var kv in ReadIniSection(PadIni, "type xbox"))
+                if (kv.Key.StartsWith("map.") && DefaultButtons.ContainsKey(kv.Key.Substring(4).ToUpperInvariant()) && PadSources.Any(x => x.Item1 == kv.Value.Trim().ToLowerInvariant()))
+                    Buttons[kv.Key.Substring(4).ToUpperInvariant()] = kv.Value.Trim().ToLowerInvariant();
             var P = ReadIni(PadIni);
             Player1 = (Get(P, "player1") ?? "auto").ToLowerInvariant();
             Player2 = (Get(P, "player2") ?? "auto").ToLowerInvariant();
@@ -167,12 +192,32 @@ namespace Arena
             var gfx = new Dictionary<string, string> {
                 { "aspect", Aspect == 1 ? "stretch" : "keep" },
                 { "window", new[] { "windowed", "borderless", "fullscreen" }[Math.Max(0, Math.Min(2, WindowMode))] },
-                { "latency", "normal" } };      // input latency: always normal (the option is gone)
+                { "latency", "normal" },        // input latency: always normal (the option is gone)
+                { "volume", Volume.ToString() } };
             var m = Regex.Match(WindowSize.Trim(), @"^(\d{3,5})\s*[xX*]\s*(\d{3,5})$");
             if (m.Success) { gfx["width"] = m.Groups[1].Value; gfx["height"] = m.Groups[2].Value; }
             SetIniValues(GfxIni, null, gfx);
             SetIniValues(PadIni, "players", new Dictionary<string, string> { { "player1", Player1 }, { "player2", Player2 } });
             SetIniValues(PadIni, "keyboard", new Dictionary<string, string> { { "player", new[] { "auto", "1", "2", "none" }[Math.Max(0, Math.Min(3, Keyboard))] } });
+            var map = Buttons.ToDictionary(kv => "map." + kv.Key, kv => kv.Value);
+            foreach (var t in PadTypes) SetIniValues(PadIni, "type " + t, map);
+        }
+
+        /// <summary>the keys of one [section] of an ini file (lower case), the others ignored</summary>
+        static Dictionary<string, string> ReadIniSection(string path, string section)
+        {
+            var h = new Dictionary<string, string>();
+            if (!File.Exists(path)) return h;
+            bool on = false;
+            foreach (var l in File.ReadAllLines(path))
+            {
+                var s = Regex.Match(l, @"^\s*\[(.+?)\]\s*$");
+                if (s.Success) { on = string.Equals(s.Groups[1].Value.Trim(), section, StringComparison.OrdinalIgnoreCase); continue; }
+                if (!on || Regex.IsMatch(l, @"^\s*[#;]")) continue;
+                var m = Regex.Match(l, @"^\s*([A-Za-z0-9_.]+)\s*=\s*(.*?)\s*$");
+                if (m.Success) h[m.Groups[1].Value.ToLowerInvariant()] = m.Groups[2].Value;
+            }
+            return h;
         }
 
         static string Get(Dictionary<string, string> h, string k) { return h.TryGetValue(k, out var v) && v != "" ? v : null; }

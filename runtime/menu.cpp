@@ -1816,6 +1816,129 @@ static void draw_arena(int cw, int ch) {
     ImGui::End();
 }
 
+/* (Arena, 0.2.8) the in-game menu of the competitive build: a few big rows over the dimmed game, made for a controller.
+ * Up / down choose, left / right change the value, A does it, B (or + / Home) goes back to the game. The rest of the
+ * settings is in the launcher (window size, controllers and their buttons, online, saves, shaders). */
+enum { Q_RESUME, Q_VOLUME, Q_WINDOW, Q_STATS, Q_EXIT, Q_N };
+static int g_q_sel, g_q_confirm;                   /* the chosen row; 1 = "Exit the game?" asked on the Exit row */
+static uint64_t g_q_down, g_q_held;                /* this frame's new pad buttons and the held ones (menu_frame) */
+static float g_q_y = -1;                           /* the highlight's position, eased toward the chosen row */
+static const char *const k_q_win[] = {"Window", "Borderless", "Fullscreen"};
+static int q_rep(int bit) {                        /* a d-pad direction: once at the press, then every 90 ms after 350 ms held */
+    static ULONGLONG t0[32], last[32];
+    ULONGLONG now = GetTickCount64();
+    if (g_q_down & BIT(bit)) { t0[bit] = last[bit] = now; return 1; }
+    if (!(g_q_held & BIT(bit))) return 0;
+    if (now - t0[bit] >= 350 && now - last[bit] >= 90) { last[bit] = now; return 1; }
+    return 0;
+}
+static int q_volume(void) { int cur = nnaudio_volume(); return S.volume < 0 ? (cur >= 0 ? cur : 100) : S.volume; }
+static void q_change(int row, int dir) {           /* dir -1 / +1: left / right; 0: A */
+    if (row == Q_VOLUME) {
+        int v = q_volume() + (dir ? dir : 1) * 10;
+        v = v < 0 ? 0 : v > 100 ? 100 : v;
+        S.volume = v; nnaudio_set_volume(v);
+        char t[8]; snprintf(t, sizeof t, "%d", v); ini("volume", t);
+    } else if (row == Q_WINDOW) {
+        int m = (display_window_mode() + (dir < 0 ? 2 : 1)) % 3;
+        S.window = m; display_set_window_mode(m); ini("window", k_window[m]);
+    } else if (row == Q_STATS) apply_stats(!S.stats);
+    else if (row == Q_RESUME && dir == 0) menu_request_toggle();
+    else if (row == Q_EXIT && dir == 0) { if (g_q_confirm) exit_game(); else g_q_confirm = 1; }
+}
+static void draw_quick(void) {
+    ImGuiIO &io = ImGui::GetIO();
+    const float W = io.DisplaySize.x, H = io.DisplaySize.y, fs = ImGui::GetFontSize();
+    if (g_exit_popup) { g_exit_popup = 0; g_q_sel = Q_EXIT; g_q_confirm = 1; }      /* asked from the game's own menu */
+    /* input: d-pad or arrows, A or Enter; B cancels the exit question here (menu_frame does not close then) */
+    int up = q_rep(B_UP) || ImGui::IsKeyPressed(ImGuiKey_UpArrow), dn = q_rep(B_DOWN) || ImGui::IsKeyPressed(ImGuiKey_DownArrow);
+    int lf = q_rep(B_LEFT) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow), rt = q_rep(B_RIGHT) || ImGui::IsKeyPressed(ImGuiKey_RightArrow);
+    int a = (g_q_down & BIT(B_A)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false);
+    if (g_q_confirm && (g_q_down & BIT(B_B))) { g_q_confirm = 0; a = 0; }
+    if (up || dn) { g_q_sel = (g_q_sel + (up ? Q_N - 1 : 1)) % Q_N; g_q_confirm = 0; }
+    if (lf) q_change(g_q_sel, -1);
+    if (rt) q_change(g_q_sel, +1);
+    if (a) q_change(g_q_sel, 0);
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, hexc(AR_BG, 0.0f));
+    ImGui::Begin("##arena_quick", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+                 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImGui::PopStyleColor();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    {   /* the game, dimmed, darker on the left where the rows are */
+        ImU32 l = ImGui::GetColorU32(hexc(0x05080D, 0.96f)), r = ImGui::GetColorU32(hexc(0x05080D, 0.82f));
+        dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(W, H), l, r, r, l);
+    }
+    const float x0 = W * 0.075f, colw = W * 0.40f, rh = fs * 2.5f, gap = fs * 0.55f, skew = rh * 0.28f;
+    float title_h = g_font_title ? g_font_title->FontSize * io.FontGlobalScale : fs * 2.0f;
+    float y = H * 0.16f;
+    arena_mark(dl, x0, y + title_h * 0.14f, title_h * 0.78f, ImGui::GetColorU32(hexc(AR_ACCENT)));
+    if (g_font_title) dl->AddText(g_font_title, title_h, ImVec2(x0 + title_h * 1.15f, y), ImGui::GetColorU32(hexc(AR_TEXT)), "MENU");
+    else dl->AddText(ImVec2(x0 + title_h * 1.15f, y), ImGui::GetColorU32(hexc(AR_TEXT)), "MENU");
+    y += title_h + fs * 1.1f;
+    /* the highlight eases toward the chosen row */
+    float target = y + g_q_sel * (rh + gap);
+    if (g_q_y < 0) g_q_y = target;
+    g_q_y += (target - g_q_y) * (io.DeltaTime * 18.0f > 1.0f ? 1.0f : io.DeltaTime * 18.0f);
+    for (int i = 0; i < Q_N; i++) {
+        float ry = y + i * (rh + gap);
+        ImVec2 p0(x0, ry), p1(x0 + colw, ry + rh);
+        ImVec2 q[4] = {ImVec2(p0.x + skew, p0.y), ImVec2(p1.x + skew, p0.y), ImVec2(p1.x, p1.y), ImVec2(p0.x, p1.y)};      /* a slanted bar */
+        dl->AddConvexPolyFilled(q, 4, ImGui::GetColorU32(hexc(0x111B28, 0.88f)));
+        ImGui::SetCursorScreenPos(p0);
+        ImGui::PushID(i);
+        if (ImGui::InvisibleButton("##row", ImVec2(colw + skew, rh))) {
+            g_q_sel = i;
+            if (i == Q_VOLUME) q_change(i, io.MousePos.x < x0 + colw * 0.5f ? -1 : +1);
+            else q_change(i, i == Q_WINDOW ? +1 : 0);
+        }
+        if (ImGui::IsItemHovered() && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) g_q_sel = i;
+        ImGui::PopID();
+    }
+    {   /* the chosen row: an accent bar over it */
+        float ry = g_q_y;
+        ImVec2 p0(x0 - fs * 0.25f, ry - fs * 0.12f), p1(x0 + colw + fs * 0.25f, ry + rh + fs * 0.12f);
+        ImVec2 q[4] = {ImVec2(p0.x + skew, p0.y), ImVec2(p1.x + skew, p0.y), ImVec2(p1.x, p1.y), ImVec2(p0.x, p1.y)};
+        dl->AddConvexPolyFilled(q, 4, ImGui::GetColorU32(hexc(AR_ACCENT)));
+    }
+    for (int i = 0; i < Q_N; i++) {
+        float ry = y + i * (rh + gap);
+        bool sel = i == g_q_sel && fabsf(g_q_y - ry) < rh * 0.5f;
+        ImU32 tc = ImGui::GetColorU32(sel ? hexc(0x06121D) : hexc(AR_TEXT)), vc = ImGui::GetColorU32(sel ? hexc(0x06121D) : hexc(AR_MUTED));
+        const char *label = i == Q_RESUME ? "Back to the game" : i == Q_VOLUME ? "Volume" : i == Q_WINDOW ? "Screen" : i == Q_STATS ? "Ping and stats on screen"
+                          : g_q_confirm ? "Exit the game?   A yes   B no" : "Exit the game";
+        float ty = ry + (rh - fs * 1.25f) * 0.5f;
+        if (g_font_title) dl->AddText(g_font_title, fs * 1.25f, ImVec2(x0 + skew + fs * 0.9f, ty), tc, label);
+        else dl->AddText(ImVec2(x0 + skew + fs * 0.9f, ty), tc, label);
+        char val[32] = "";
+        if (i == Q_VOLUME) snprintf(val, sizeof val, "%d %%", q_volume());
+        else if (i == Q_WINDOW) snprintf(val, sizeof val, "%s", k_q_win[display_window_mode() % 3]);
+        else if (i == Q_STATS) snprintf(val, sizeof val, "%s", S.stats ? "On" : "Off");
+        if (val[0]) {      /* the value at the right end, between two small arrows */
+            ImVec2 vs = ImGui::CalcTextSize(val);
+            float vx = x0 + colw - fs * 1.4f - vs.x, vy = ry + (rh - fs) * 0.5f;
+            dl->AddText(ImVec2(vx, vy), vc, val);
+            float ax = fs * 0.32f, cy = ry + rh * 0.5f;
+            dl->AddTriangleFilled(ImVec2(vx - fs * 0.55f, cy), ImVec2(vx - fs * 0.55f + ax, cy - ax), ImVec2(vx - fs * 0.55f + ax, cy + ax), vc);
+            dl->AddTriangleFilled(ImVec2(x0 + colw - fs * 0.65f, cy), ImVec2(x0 + colw - fs * 0.65f - ax, cy - ax), ImVec2(x0 + colw - fs * 0.65f - ax, cy + ax), vc);
+            if (i == Q_VOLUME) {   /* a thin bar of the volume at the row's foot */
+                float bx0 = x0 + skew + fs * 0.9f, bx1 = vx - fs * 1.2f, by = ry + rh - fs * 0.42f, f = q_volume() / 100.0f;
+                dl->AddRectFilled(ImVec2(bx0, by), ImVec2(bx1, by + 3), ImGui::GetColorU32(sel ? hexc(0x06121D, 0.25f) : hexc(AR_LINE)), 1.5f);
+                dl->AddRectFilled(ImVec2(bx0, by), ImVec2(bx0 + (bx1 - bx0) * f, by + 3), ImGui::GetColorU32(sel ? hexc(0x06121D) : hexc(AR_ACCENT)), 1.5f);
+            }
+        }
+    }
+    {   /* the buttons at the bottom */
+        float r = W - x0, by = H - fs * 2.4f;
+        r = arena_hint(dl, r, by, "B", g_q_confirm ? "No" : "Back to the game");
+        r = arena_hint(dl, r, by, "A", "Choose");
+        arena_hint(dl, r, by, "< >", "Change");
+        dl->AddText(ImVec2(x0, by), ImGui::GetColorU32(hexc(AR_MUTED)), "More settings in the SSBU Arena launcher");
+    }
+    ImGui::End();
+}
+
 static void set_open(int on) {
     if (on == (g_open != 0)) return;
     if (on) {
@@ -2034,9 +2157,10 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
             break;
         }
     }
-    pad_feed(io, g_open && !capturing() && !osk_active() ? b : 0);
-    if (g_open && !capturing() && (down & BIT(B_L))) { g_section = (g_section + SEC_N - 1) % SEC_N; g_section_req = g_section; }
-    if (g_open && !capturing() && (down & BIT(B_R))) { g_section = (g_section + 1) % SEC_N; g_section_req = g_section; }
+    g_q_down = down; g_q_held = b;
+    pad_feed(io, g_open && !capturing() && !osk_active() && !arena_ui() ? b : 0);      /* Arena: the quick menu reads the pad itself */
+    if (g_open && !capturing() && !arena_ui() && (down & BIT(B_L))) { g_section = (g_section + SEC_N - 1) % SEC_N; g_section_req = g_section; }
+    if (g_open && !capturing() && !arena_ui() && (down & BIT(B_R))) { g_section = (g_section + 1) % SEC_N; g_section_req = g_section; }
     io.MouseDrawCursor = false;
     ImGui::NewFrame();
     if (S.overlay) draw_overlay();
@@ -2086,8 +2210,8 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
         ImGui::PopStyleColor();
         if (!InterlockedExchange(&g_popup_drawn, 1)) { printf("menu: online popup drawn (presented frame %lld): %s: %s\n", g_frame, title, text); fflush(stdout); }
     }
-    if (g_open && !osk_active()) draw_arena(width, height);
-    g_back_blocked = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen(NULL, ImGuiPopupFlags_AnyPopupId);
+    if (g_open && !osk_active()) { if (arena_ui()) draw_quick(); else draw_arena(width, height); }
+    g_back_blocked = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen(NULL, ImGuiPopupFlags_AnyPopupId) || g_q_confirm;      /* B answers "no" to the exit question */
     ImGui::Render();
 #ifndef _WIN32
     InterlockedExchange(&g_text_want, g_open && io.WantTextInput ? 1 : 0);      /* a text box is active: SDL's text input on (window thread) */
