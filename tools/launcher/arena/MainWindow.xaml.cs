@@ -49,7 +49,7 @@ namespace Arena
             poll.Tick += (s, e) => { int n = Core.XInputCount(); if (n != xinput) { xinput = n; SetPadState(); } };
             poll.Start();
             xinput = Core.XInputCount();
-            Loaded += (s, e) => { RunChecks(); FindPads(); OpenFromArgs(); ResumeAccount(); CheckUpdates(); };
+            Loaded += (s, e) => { RunChecks(); FindPads(); OpenFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); };
             Scaled.SizeChanged += (s, e) => Rescale();
             SizeChanged += (s, e) => Rescale();
         }

@@ -1031,6 +1031,13 @@ def step_menu(cx):
         pass
     if stream(comp, cwd=REPO)[0] != 0:
         return 'skip', 'the competitive set-up was not made (the Arena menu and rules stay off); see the lines above'
+    # (0.2.8) the Kirby loading animation (runtime/loading_anim.c): its atlas is made on each PC from Ultimate Frame Data's
+    # GIF (tools/ui/loading_inhale.py; game-derived, never in the repository) and goes beside the exe. No install made it
+    art = os.path.join(REPO, 'media', 'loading_kirby.png')
+    if not os.path.isfile(art):
+        stream([sys.executable, os.path.join(REPO, 'tools', 'ui', 'loading_inhale.py'), '--download'], cwd=REPO)
+    if os.path.isfile(art):
+        shutil.copy2(art, os.path.join(BUILD, 'work', 'loading_kirby.png'))
     return 'done', out
 
 
