@@ -792,6 +792,21 @@ void rbn_drain(long long cur) {
         if (jit == -2) { const char *e = getenv("SSBU_RB_NET_LOOP_JIT"); jit = e && *e; if (jit) jseed = (unsigned)strtoul(e, NULL, 0); }
         int lat = lat2_from >= 0 && cur >= lat2_from ? lat2 : g_loop_lat;
         if (jit) { uint32_t h = mix32(jseed * 0x9E3779B9u ^ (uint32_t)(cur / (4 + (mix32(jseed) % 17))) * 0x85EBCA6Bu); lat -= (int)(h & 1); }
+        {   /* (Arena, test) SSBU_RB_NET_LOOP_SPIKE=<seed>: a ping spike every 2..6 s, 4..24 frames long, the pads 1 or 2 frames later than usual */
+            static int spk = -2; static unsigned sseed; static long long s_seen = -1, s_next, s_end; static int s_add, s_n;
+            if (spk == -2) { const char *e = getenv("SSBU_RB_NET_LOOP_SPIKE"); spk = e && *e; if (spk) sseed = (unsigned)strtoul(e, NULL, 0); }
+            if (spk && cur < s_seen - 100) { s_seen = -1; s_next = s_end = 0; }      /* a new match: its frames start again at 0 */
+            if (spk && cur > s_seen) {
+                s_seen = cur;
+                uint32_t h = mix32(sseed * 0x9E3779B9u ^ (uint32_t)cur * 0x85EBCA6Bu);
+                if (!s_next) s_next = cur + 120 + h % 241;
+                else if (cur >= s_next) {
+                    s_end = cur + 4 + h % 21; s_add = 1 + (int)((h >> 8) & 1); s_next = s_end + 120 + (h >> 12) % 241;
+                    printf("[rbnet] loop: ping spike %d at frame %lld: %lld frames, pads %d frame(s) later\n", ++s_n, cur, s_end - cur, s_add);
+                }
+            }
+            if (spk && cur < s_end) lat += s_add;
+        }
         long long upto = cur + g_delay - lat;
         for (long long f = rb_input_remote_latest(g_remote) + 1; f <= upto; f++) rb_input_remote_put(g_remote, (int)f, loop_remote_pad(f));
         return;

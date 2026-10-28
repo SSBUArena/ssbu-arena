@@ -533,6 +533,8 @@ static void rbg_report(void) {
         char what[96]; snprintf(what, sizeof what, "AB %d side %s: work per tick with rollback", g_rbab, sd ? "ON" : "off");
         rbg_dist(what, g_rbg_work, g_rbg_nw, kk, 1); free(kk); }
     rbg_dist("time between real passes (tick to tick)", g_rbg_gap, g_rbg_ng, NULL, -1);
+    {   const char *e = getenv("SSBU_RB_NET_TICKS"); FILE *tf;      /* (Arena, test) one line per tick: work ms, frames rolled back, gap to the previous tick */
+        if (e && *e && (tf = fopen(e, "w"))) { for (int j = 0; j < g_rbg_nw; j++) fprintf(tf, "%d %.2f %d %.2f\n", j, g_rbg_work[j], g_rbg_wk[j], j > 0 && j - 1 < g_rbg_ng ? g_rbg_gap[j - 1] : 0.0f); fclose(tf); } }
     rbg_dist("main-thread CPU per tick with rollback (million cycles, shown as ms)", g_rbg_wcyc, g_rbg_nw, g_rbg_wk, 1);
     rbg_dist("main-thread CPU per tick without rollback (million cycles, shown as ms)", g_rbg_wcyc, g_rbg_nw, g_rbg_wk, 0);
     rbn_report(g_log, g_rbg_real);
