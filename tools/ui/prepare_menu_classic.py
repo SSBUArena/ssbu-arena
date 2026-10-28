@@ -123,7 +123,7 @@ EDIT_MAIN['main_menu.bflyt'].update({
         # its name (hidden in the game, an eShop tile): shown, read from mnu_top_notices (the hidden news ticker's;
         # its own label, mnu_top_online, is Online Ranked's) under the icon
         'txt_position': {'visible': True, 'pos': [40, -110], 'scale': [0.42, 0.42]},
-        'txt_sdw': {'visible': True},
+        'txt_sdw': {'scale': [0, 0]},      # (0.2.8: the eShop name's shadow lit a band across the tile behind Exit's name)
         'txt_on': {'font_size': FONT, 'size': [600, 96], 'text_id': ['mnu_top_online', 'mnu_top_notices']},
         'txt_off': {'font_size': FONT, 'size': [600, 96], 'text_id': ['mnu_top_online', 'mnu_top_notices']},
         **_hits(_ew / 2, _eh / 2)}},
@@ -145,11 +145,13 @@ EDIT_MAIN['main_menu_lct_center_00.bflyt'] = {
     'sel_csr_hl_01_add_06': {'size': [_sw + 38, _sh + 68]},
     'collection_crs_00': {'pos': [_sx - 9, _sy - 30], 'size': [_sw + 48, _sh + 78]},
     # the pointer from the centre circle to the selected tile (white tab, its black backing, the arrow): LDN's is
-    # Smash's mirrored (x 0 is the circle's centre in this layout)
+    # Smash's mirrored, Online Ranked's Battle Arena's mirrored (x 0 is the circle's centre in this layout; measured on
+    # screen: Ranked's tab centre (201, -156) mirrors Battle Arena's (-182, -154) about the circle's centre x 8)
     # (each quad mirrored about its centre: the white tabs are anchored at a corner, made centred here)
     **{pane: {'material_like': ['main_menu_lct_center_00.bflyt', like], 'texture_uv': True, 'pos': pos, 'size': size,
               'scale': [-1, 1], 'origin': 0}
-       for pane, like, pos, size in (('pic_02', 'pic_00', [176, 101], [260, 412]), )},
+       for pane, like, pos, size in (('pic_02', 'pic_00', [176, 101], [260, 412]),
+                                     ('pic_03', 'pic_01', [204, -194], [132, 132]), )},
     'other_arrow': {'rotate': 180 + 27.2},
     # (their black backings, Smash's and Battle Arena's mirrored, covered the new tiles' names: none)
     'black_07': {'scale': [0, 0]}, 'black_00': {'scale': [0, 0]},
@@ -157,10 +159,7 @@ EDIT_MAIN['main_menu_lct_center_00.bflyt'] = {
     # tile's bright border says it. The Vault's black backing lay across Online LDN's name, its white tab pointed at
     # nothing, and its black arrow is only seen on that white tab
     'black_08': {'scale': [0, 0]}, 'pic_04': {'scale': [0, 0]}, 'collection_arrow': {'scale': [0, 0]},
-    # (0.2.8) Online Ranked reaches under the circle (its left edge is left of the circle's centre): there is no gap for
-    # the white tab, which either covered the tile's corner or hid under the circle. No pointer, as Settings and Exit;
-    # the bright border on the tile's edge says it
-    'online_arrow': {'scale': [0, 0]}, 'pic_03': {'scale': [0, 0]},
+    'online_arrow': {'rotate': 180 - 43},
     # Online Ranked's (scaled 1.05 in the game) ends at the straight edge
     'online_crs_square_00': {'pos': [_rx - 8, -304]},
     **{w: {'size': [(_rw + 52) / 1.05, 416 / 1.05], 'window_frames': [32, 32, 32, 32]}      # (scaled 1.05: the border's size)
