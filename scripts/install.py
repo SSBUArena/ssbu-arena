@@ -1020,6 +1020,17 @@ def step_menu(cx):
         return 'dry', 'would make the Arena menu in ' + out
     if stream(cmd, cwd=REPO)[0] != 0:
         return 'skip', 'the Arena menu was not made (the game keeps its own menu); see the lines above'
+    # (0.2.8) the competitive set-up (6 stages, no items, no Final Smash meter: tools/competitive/make_competitive.py), from
+    # this dump's data.arc into build/characters/competitive: the launcher turns the Arena menu and the competitive rules
+    # on only with it, and no install made it (a fresh install got the game's own menu)
+    comp = [sys.executable, os.path.join(REPO, 'tools', 'competitive', 'make_competitive.py'), '--out', os.path.join(BUILD, 'characters')]
+    try:
+        with open(os.path.join(BUILD, 'state.json'), encoding='utf-8') as f:
+            comp += ['--arc', os.path.join(json.load(f)['dump']['romfs'], 'data.arc')]
+    except (OSError, ValueError, KeyError):
+        pass
+    if stream(comp, cwd=REPO)[0] != 0:
+        return 'skip', 'the competitive set-up was not made (the Arena menu and rules stay off); see the lines above'
     return 'done', out
 
 

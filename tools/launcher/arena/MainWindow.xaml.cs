@@ -268,6 +268,7 @@ namespace Arena
             SizeBox.SelectedIndex = Math.Max(0, SizeBox.Items.Cast<ComboBoxItem>().ToList().FindIndex(i => (string)i.Content == Core.WindowSize.Replace(" ", "")));      // (0.2.8) our sizes only
             SizeBox.IsEnabled = Core.WindowMode == 0;
             AspectBox.SelectedIndex = Core.Aspect;
+            FpsBox.IsChecked = Core.Fps;
             KbBox.SelectedIndex = Core.Keyboard;
             VolBox.ItemsSource = Enumerable.Range(0, 11).Select(i => (i * 10) + " %").ToList();
             VolBox.SelectedIndex = Math.Max(0, Math.Min(10, (Core.Volume + 5) / 10));
@@ -287,6 +288,7 @@ namespace Arena
             Core.WindowMode = Math.Max(0, WinBox.SelectedIndex);
             Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
+            Core.Fps = FpsBox.IsChecked == true;
             Core.Keyboard = Math.Max(0, KbBox.SelectedIndex);
             if (VolBox.SelectedIndex >= 0) Core.Volume = VolBox.SelectedIndex * 10;
             foreach (var cb in btnBoxes) if (cb.SelectedIndex >= 0) Core.Buttons[(string)cb.Tag] = Core.PadSources[cb.SelectedIndex].Item1;

@@ -450,7 +450,7 @@
                   <CheckBox x:Name="PingBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed">
                     <StackPanel>
                       <TextBlock Text="Show ping on screen" FontSize="15"/>
-                      <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Next to each player in every online match: green up to 60 ms, yellow up to 120, red above."/>
+                      <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Next to each player in every online match: green up to 60 ms, yellow up to 120, red above. Also in the game's menu."/>
                     </StackPanel>
                   </CheckBox>
                   <TextBlock Text="SERVER" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
@@ -476,6 +476,12 @@
                 <ComboBox x:Name="AspectBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
                   <ComboBoxItem>16:9 (black bars)</ComboBoxItem><ComboBoxItem>Stretched (fill)</ComboBoxItem>
                 </ComboBox>
+                <CheckBox x:Name="FpsBox" Style="{StaticResource Switch}" Margin="0,26,0,0" Checked="Field_Changed" Unchecked="Field_Changed">
+                  <StackPanel>
+                    <TextBlock Text="FPS counter" FontSize="15"/>
+                    <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="A small counter at the top right of the game. Also in the game's menu (Home, or - and + held)."/>
+                  </StackPanel>
+                </CheckBox>
               </StackPanel>
 
               <!-- controllers -->

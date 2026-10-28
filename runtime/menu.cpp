@@ -1818,12 +1818,15 @@ static void draw_arena(int cw, int ch) {
 
 /* (Arena, 0.2.8) the in-game menu of the competitive build: a few big rows over the dimmed game, made for a controller.
  * Up / down choose, left / right change the value, A does it, B (or + / Home) goes back to the game. The rest of the
- * settings is in the launcher (window size, controllers and their buttons, online, saves, shaders). */
-enum { Q_RESUME, Q_VOLUME, Q_WINDOW, Q_STATS, Q_EXIT, Q_N };
-static int g_q_sel, g_q_confirm;                   /* the chosen row; 1 = "Exit the game?" asked on the Exit row */
+ * settings is in the launcher (window size, controllers and their buttons, online, saves, shaders). Exit (this menu's
+ * row, or the Exit tile of the Arena main menu) asks on a screen of its own: Yes / No, left / right, A; B = No. */
+enum { Q_RESUME, Q_VOLUME, Q_WINDOW, Q_FPS, Q_PING, Q_EXIT, Q_N };
+static int g_q_sel, g_q_confirm;                   /* the chosen row; the exit question: 0 none, 1 from the Exit row, 2 from the main menu's tile */
+static int g_q_yes;                                /* the exit question's chosen answer: 1 Yes, 0 No */
 static uint64_t g_q_down, g_q_held;                /* this frame's new pad buttons and the held ones (menu_frame) */
 static float g_q_y = -1;                           /* the highlight's position, eased toward the chosen row */
 static const char *const k_q_win[] = {"Window", "Borderless", "Fullscreen"};
+extern "C" int net_ping_on(void); extern "C" void net_ping_set(int on);      /* net_relay.c (net_off.c) */
 static int q_rep(int bit) {                        /* a d-pad direction: once at the press, then every 90 ms after 350 ms held */
     static ULONGLONG t0[32], last[32];
     ULONGLONG now = GetTickCount64();
@@ -1842,52 +1845,101 @@ static void q_change(int row, int dir) {           /* dir -1 / +1: left / right;
     } else if (row == Q_WINDOW) {
         int m = (display_window_mode() + (dir < 0 ? 2 : 1)) % 3;
         S.window = m; display_set_window_mode(m); ini("window", k_window[m]);
-    } else if (row == Q_STATS) apply_stats(!S.stats);
+    } else if (row == Q_FPS) apply_stats(!S.stats);
+    else if (row == Q_PING) { int on = !net_ping_on(); net_ping_set(on); ini("ping_overlay", k_onoff[on]); }
     else if (row == Q_RESUME && dir == 0) menu_request_toggle();
-    else if (row == Q_EXIT && dir == 0) { if (g_q_confirm) exit_game(); else g_q_confirm = 1; }
+    else if (row == Q_EXIT && dir == 0) { g_q_confirm = 1; g_q_yes = 0; }
+}
+/* a slanted bar (Smash's menus lean their rows) */
+static void q_bar(ImDrawList *dl, ImVec2 p0, ImVec2 p1, float skew, ImU32 col) {
+    ImVec2 q[4] = {ImVec2(p0.x + skew, p0.y), ImVec2(p1.x + skew, p0.y), ImVec2(p1.x, p1.y), ImVec2(p0.x, p1.y)};
+    dl->AddConvexPolyFilled(q, 4, col);
+}
+static void q_dim(ImDrawList *dl, float W, float H) {
+    /* the game, dimmed (the picture is blended in linear light on an sRGB swapchain: a black at 0.8 hardly showed on the
+     * game's white option screens), darker on the left where the rows are */
+    ImU32 l = ImGui::GetColorU32(hexc(0x05080D, 0.985f)), r = ImGui::GetColorU32(hexc(0x05080D, 0.94f));
+    dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(W, H), l, r, r, l);
+}
+static void q_text(ImDrawList *dl, ImFont *f, float size, ImVec2 at, ImU32 col, const char *t) {
+    if (f) dl->AddText(f, size, at, col, t); else dl->AddText(at, col, t);
+}
+/* the exit question, on a screen of its own */
+static void draw_exit_question(void) {
+    ImGuiIO &io = ImGui::GetIO();
+    const float W = io.DisplaySize.x, H = io.DisplaySize.y, fs = ImGui::GetFontSize();
+    if (q_rep(B_LEFT) || q_rep(B_RIGHT) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_RightArrow)) g_q_yes = !g_q_yes;
+    int a = (g_q_down & BIT(B_A)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false);
+    if (g_q_down & BIT(B_B)) { if (g_q_confirm == 1) g_q_confirm = 0; return; }      /* from the tile, menu_frame closes the menu */
+    if (a) { if (g_q_yes) exit_game(); else if (g_q_confirm == 2) menu_request_toggle(); else g_q_confirm = 0; if (!g_q_yes) return; }
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    q_dim(dl, W, H);
+    float bw = W * 0.44f, bh = fs * 10.5f, x0 = (W - bw) * 0.5f, y0 = (H - bh) * 0.5f;
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + bw, y0 + bh), ImGui::GetColorU32(hexc(AR_CARD, 0.98f)), 6.0f);
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x0 + bw, y0 + bh), ImGui::GetColorU32(hexc(AR_LINE)), 6.0f, 0, 1.5f);
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + bw, y0 + 4), ImGui::GetColorU32(hexc(AR_ACCENT)), 6.0f, ImDrawFlags_RoundCornersTop);
+    float th = g_font_title ? g_font_title->FontSize * io.FontGlobalScale * 0.9f : fs * 1.8f;
+    const char *title = "EXIT THE GAME?";
+    ImVec2 ts = g_font_title ? g_font_title->CalcTextSizeA(th, FLT_MAX, 0, title) : ImGui::CalcTextSize(title);
+    q_text(dl, g_font_title, th, ImVec2(x0 + (bw - ts.x) * 0.5f, y0 + fs * 1.4f), ImGui::GetColorU32(hexc(AR_TEXT)), title);
+    const char *sub = "What the game has not saved is lost.";
+    ImVec2 ss = ImGui::CalcTextSize(sub);
+    dl->AddText(ImVec2(x0 + (bw - ss.x) * 0.5f, y0 + fs * 1.4f + th + fs * 0.5f), ImGui::GetColorU32(hexc(AR_MUTED)), sub);
+    float btw = bw * 0.34f, bth = fs * 2.3f, gap = bw * 0.06f, by = y0 + bh - bth - fs * 1.5f, skew = bth * 0.28f;
+    for (int i = 0; i < 2; i++) {                  /* Yes on the left, No on the right */
+        bool yes = i == 0, sel = (g_q_yes != 0) == yes;
+        float bx = W * 0.5f + (yes ? -gap * 0.5f - btw : gap * 0.5f);
+        ImVec2 p0(bx, by), p1(bx + btw, by + bth);
+        q_bar(dl, p0, p1, skew, ImGui::GetColorU32(sel ? hexc(AR_ACCENT) : hexc(0x16222F)));
+        ImGui::SetCursorScreenPos(p0);
+        ImGui::PushID(i);
+        if (ImGui::InvisibleButton("##ans", ImVec2(btw + skew, bth))) { g_q_yes = yes; if (yes) exit_game(); else if (g_q_confirm == 2) menu_request_toggle(); else g_q_confirm = 0; }
+        if (ImGui::IsItemHovered() && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) g_q_yes = yes;
+        ImGui::PopID();
+        const char *t = yes ? "Yes" : "No";
+        float fsz = fs * 1.3f;
+        ImVec2 tz = g_font_title ? g_font_title->CalcTextSizeA(fsz, FLT_MAX, 0, t) : ImGui::CalcTextSize(t);
+        q_text(dl, g_font_title, fsz, ImVec2(bx + skew * 0.5f + (btw - tz.x) * 0.5f, by + (bth - tz.y) * 0.5f), ImGui::GetColorU32(sel ? hexc(0x06121D) : hexc(AR_TEXT)), t);
+    }
+    float r = W - W * 0.075f, hy = H - fs * 2.4f;
+    r = arena_hint(dl, r, hy, "B", "No");
+    r = arena_hint(dl, r, hy, "A", "Choose");
+    arena_hint(dl, r, hy, "< >", "Yes / No");
 }
 static void draw_quick(void) {
     ImGuiIO &io = ImGui::GetIO();
     const float W = io.DisplaySize.x, H = io.DisplaySize.y, fs = ImGui::GetFontSize();
-    if (g_exit_popup) { g_exit_popup = 0; g_q_sel = Q_EXIT; g_q_confirm = 1; }      /* asked from the game's own menu */
-    /* input: d-pad (or the left stick) of any controller, or the arrows; A, Enter or Space; B cancels the exit question
-     * here (menu_frame does not close then) */
-    int up = q_rep(B_UP) || ImGui::IsKeyPressed(ImGuiKey_UpArrow), dn = q_rep(B_DOWN) || ImGui::IsKeyPressed(ImGuiKey_DownArrow);
-    int lf = q_rep(B_LEFT) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow), rt = q_rep(B_RIGHT) || ImGui::IsKeyPressed(ImGuiKey_RightArrow);
-    int a = (g_q_down & BIT(B_A)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false);
-    if (g_q_confirm && (g_q_down & BIT(B_B))) { g_q_confirm = 0; a = 0; }
-    if (up || dn) { g_q_sel = (g_q_sel + (up ? Q_N - 1 : 1)) % Q_N; g_q_confirm = 0; }
-    if (lf) q_change(g_q_sel, -1);
-    if (rt) q_change(g_q_sel, +1);
-    if (a) q_change(g_q_sel, 0);
+    if (g_exit_popup) { g_exit_popup = 0; g_q_sel = Q_EXIT; g_q_confirm = 2; g_q_yes = 0; }      /* the Exit tile of the main menu */
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, hexc(AR_BG, 0.0f));
     ImGui::Begin("##arena_quick", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
                  ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImGui::PopStyleColor();
+    if (g_q_confirm) { draw_exit_question(); ImGui::End(); return; }
+    /* input: d-pad (or the left stick) of any controller, or the arrows; A, Enter or Space */
+    int up = q_rep(B_UP) || ImGui::IsKeyPressed(ImGuiKey_UpArrow), dn = q_rep(B_DOWN) || ImGui::IsKeyPressed(ImGuiKey_DownArrow);
+    int lf = q_rep(B_LEFT) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow), rt = q_rep(B_RIGHT) || ImGui::IsKeyPressed(ImGuiKey_RightArrow);
+    int a = (g_q_down & BIT(B_A)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false);
+    if (up || dn) g_q_sel = (g_q_sel + (up ? Q_N - 1 : 1)) % Q_N;
+    if (lf) q_change(g_q_sel, -1);
+    if (rt) q_change(g_q_sel, +1);
+    if (a) q_change(g_q_sel, 0);
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    {   /* the game, dimmed (the picture is blended in linear light on an sRGB swapchain: a black at 0.8 hardly showed on the
-         * game's white option screens), darker on the left where the rows are */
-        ImU32 l = ImGui::GetColorU32(hexc(0x05080D, 0.985f)), r = ImGui::GetColorU32(hexc(0x05080D, 0.94f));
-        dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(W, H), l, r, r, l);
-    }
+    q_dim(dl, W, H);
     const float x0 = W * 0.075f, colw = W * 0.40f, rh = fs * 2.5f, gap = fs * 0.55f, skew = rh * 0.28f;
     float title_h = g_font_title ? g_font_title->FontSize * io.FontGlobalScale : fs * 2.0f;
-    float y = H * 0.16f;
+    float y = H * 0.14f;
     arena_mark(dl, x0, y + title_h * 0.14f, title_h * 0.78f, ImGui::GetColorU32(hexc(AR_ACCENT)));
-    if (g_font_title) dl->AddText(g_font_title, title_h, ImVec2(x0 + title_h * 1.15f, y), ImGui::GetColorU32(hexc(AR_TEXT)), "MENU");
-    else dl->AddText(ImVec2(x0 + title_h * 1.15f, y), ImGui::GetColorU32(hexc(AR_TEXT)), "MENU");
+    q_text(dl, g_font_title, title_h, ImVec2(x0 + title_h * 1.15f, y), ImGui::GetColorU32(hexc(AR_TEXT)), "MENU");
     y += title_h + fs * 1.1f;
-    /* the highlight eases toward the chosen row */
-    float target = y + g_q_sel * (rh + gap);
+    float target = y + g_q_sel * (rh + gap);       /* the highlight eases toward the chosen row */
     if (g_q_y < 0) g_q_y = target;
     g_q_y += (target - g_q_y) * (io.DeltaTime * 18.0f > 1.0f ? 1.0f : io.DeltaTime * 18.0f);
     for (int i = 0; i < Q_N; i++) {
         float ry = y + i * (rh + gap);
         ImVec2 p0(x0, ry), p1(x0 + colw, ry + rh);
-        ImVec2 q[4] = {ImVec2(p0.x + skew, p0.y), ImVec2(p1.x + skew, p0.y), ImVec2(p1.x, p1.y), ImVec2(p0.x, p1.y)};      /* a slanted bar */
-        dl->AddConvexPolyFilled(q, 4, ImGui::GetColorU32(hexc(0x111B28, 0.88f)));
+        q_bar(dl, p0, p1, skew, ImGui::GetColorU32(hexc(0x111B28, 0.88f)));
         ImGui::SetCursorScreenPos(p0);
         ImGui::PushID(i);
         if (ImGui::InvisibleButton("##row", ImVec2(colw + skew, rh))) {
@@ -1898,25 +1950,19 @@ static void draw_quick(void) {
         if (ImGui::IsItemHovered() && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) g_q_sel = i;
         ImGui::PopID();
     }
-    {   /* the chosen row: an accent bar over it */
-        float ry = g_q_y;
-        ImVec2 p0(x0 - fs * 0.25f, ry - fs * 0.12f), p1(x0 + colw + fs * 0.25f, ry + rh + fs * 0.12f);
-        ImVec2 q[4] = {ImVec2(p0.x + skew, p0.y), ImVec2(p1.x + skew, p0.y), ImVec2(p1.x, p1.y), ImVec2(p0.x, p1.y)};
-        dl->AddConvexPolyFilled(q, 4, ImGui::GetColorU32(hexc(AR_ACCENT)));
-    }
+    q_bar(dl, ImVec2(x0 - fs * 0.25f, g_q_y - fs * 0.12f), ImVec2(x0 + colw + fs * 0.25f, g_q_y + rh + fs * 0.12f), skew, ImGui::GetColorU32(hexc(AR_ACCENT)));
     for (int i = 0; i < Q_N; i++) {
         float ry = y + i * (rh + gap);
         bool sel = i == g_q_sel && fabsf(g_q_y - ry) < rh * 0.5f;
         ImU32 tc = ImGui::GetColorU32(sel ? hexc(0x06121D) : hexc(AR_TEXT)), vc = ImGui::GetColorU32(sel ? hexc(0x06121D) : hexc(AR_MUTED));
-        const char *label = i == Q_RESUME ? "Back to the game" : i == Q_VOLUME ? "Volume" : i == Q_WINDOW ? "Screen" : i == Q_STATS ? "Ping and stats on screen"
-                          : g_q_confirm ? "Exit the game?   A yes   B no" : "Exit the game";
-        float ty = ry + (rh - fs * 1.25f) * 0.5f;
-        if (g_font_title) dl->AddText(g_font_title, fs * 1.25f, ImVec2(x0 + skew + fs * 0.9f, ty), tc, label);
-        else dl->AddText(ImVec2(x0 + skew + fs * 0.9f, ty), tc, label);
+        const char *label = i == Q_RESUME ? "Back to the game" : i == Q_VOLUME ? "Volume" : i == Q_WINDOW ? "Screen" : i == Q_FPS ? "FPS counter"
+                          : i == Q_PING ? "Ping in online matches" : "Exit the game";
+        q_text(dl, g_font_title, fs * 1.25f, ImVec2(x0 + skew + fs * 0.9f, ry + (rh - fs * 1.25f) * 0.5f), tc, label);
         char val[32] = "";
         if (i == Q_VOLUME) snprintf(val, sizeof val, "%d %%", q_volume());
         else if (i == Q_WINDOW) snprintf(val, sizeof val, "%s", k_q_win[display_window_mode() % 3]);
-        else if (i == Q_STATS) snprintf(val, sizeof val, "%s", S.stats ? "On" : "Off");
+        else if (i == Q_FPS) snprintf(val, sizeof val, "%s", S.stats ? "On" : "Off");
+        else if (i == Q_PING) snprintf(val, sizeof val, "%s", net_ping_on() ? "On" : "Off");
         if (val[0]) {      /* the value at the right end, between two small arrows */
             ImVec2 vs = ImGui::CalcTextSize(val);
             float vx = x0 + colw - fs * 1.4f - vs.x, vy = ry + (rh - fs) * 0.5f;
@@ -1933,12 +1979,29 @@ static void draw_quick(void) {
     }
     {   /* the buttons at the bottom */
         float r = W - x0, by = H - fs * 2.4f;
-        r = arena_hint(dl, r, by, "B", g_q_confirm ? "No" : "Back to the game");
+        r = arena_hint(dl, r, by, "B", "Back to the game");
         r = arena_hint(dl, r, by, "A", "Choose");
         arena_hint(dl, r, by, "< >", "Change");
         dl->AddText(ImVec2(x0, by), ImGui::GetColorU32(hexc(AR_MUTED)), "More settings in the SSBU Arena launcher");
     }
     ImGui::End();
+}
+/* the FPS counter of the competitive build: one small pill at the top right (frames per second only) */
+static void draw_fps(void) {
+    float sum = 0;
+    int n = 0;
+    for (int i = 0; i < 120; i++) if (g_ft[i] > 0) { sum += g_ft[i]; n++; }
+    float fps = n && sum > 0 ? 1000.0f * n / sum : 0.0f;
+    ImGuiIO &io = ImGui::GetIO();
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    float fs = ImGui::GetFontSize() * 0.8f;
+    char t[16]; snprintf(t, sizeof t, "%.0f FPS", fps);
+    ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, t);
+    float pad = fs * 0.45f, x1 = io.DisplaySize.x - fs * 0.6f, y0 = fs * 0.5f, x0 = x1 - ts.x - pad * 2 - fs * 0.6f, y1 = y0 + ts.y + pad;
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), ImGui::GetColorU32(hexc(0x05080D, 0.72f)), (y1 - y0) * 0.5f);
+    ImU32 dot = ImGui::GetColorU32(fps >= 58.0f ? hexc(0x46D37E) : fps >= 50.0f ? hexc(0xFFC857) : hexc(0xFF6B5E));
+    dl->AddCircleFilled(ImVec2(x0 + pad + fs * 0.22f, (y0 + y1) * 0.5f), fs * 0.22f, dot);
+    dl->AddText(ImGui::GetFont(), fs, ImVec2(x0 + pad + fs * 0.6f, y0 + pad * 0.5f), ImGui::GetColorU32(hexc(AR_TEXT)), t);
 }
 
 static void set_open(int on) {
@@ -1953,6 +2016,7 @@ static void set_open(int on) {
     } else {
         InterlockedExchange(&g_open, 0);
         g_closed_at = g_frame;
+        g_q_confirm = 0;
         capture_cancel("menu closed");
         printf("menu: closed at presented frame %lld\n", g_frame);
     }
@@ -2166,20 +2230,21 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
     io.MouseDrawCursor = false;
     ImGui::NewFrame();
     if (S.overlay) draw_overlay();
-    if (S.stats) draw_stats();
-    if (in_options && !g_open) {                         /* the game's options: how to reach the Arena settings */
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.98f, io.DisplaySize.y * 0.035f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-        ImGui::SetNextWindowBgAlpha(0.85f);
-        ImGui::PushStyleColor(ImGuiCol_Border, hexc(AR_ACCENT));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f);
-        ImGui::Begin("##options_hint", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
-                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings);
-        ImGui::TextColored(hexc(AR_ACCENT), "+");
-        ImGui::SameLine();
-        ImGui::TextUnformatted("SSBU Arena settings");
-        ImGui::End();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
+    if (S.stats) { if (arena_ui()) draw_fps(); else draw_stats(); }      /* Arena: the small FPS counter */
+    if (in_options && !g_open) {                         /* the game's options: how to reach the Arena settings (a button-like pill) */
+        ImDrawList *dl = ImGui::GetForegroundDrawList();
+        float fs = ImGui::GetFontSize() * 1.1f, W = io.DisplaySize.x, H = io.DisplaySize.y;
+        const char *word = "SSBU Arena settings";
+        ImVec2 ws = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, word);
+        float r = fs * 0.72f, pad = fs * 0.7f, w = pad + 2 * r + fs * 0.5f + ws.x + pad, h = 2 * r + pad;
+        float x1 = W - H * 0.035f, y0 = H * 0.035f + (S.stats ? fs * 1.3f : 0.0f), x0 = x1 - w, y1 = y0 + h;      /* below the FPS counter */
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), ImGui::GetColorU32(hexc(0x0A1424, 0.92f)), h * 0.5f);
+        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), ImGui::GetColorU32(hexc(AR_ACCENT)), h * 0.5f, 0, 2.0f);
+        ImVec2 c(x0 + pad * 0.6f + r, (y0 + y1) * 0.5f);
+        dl->AddCircleFilled(c, r, ImGui::GetColorU32(hexc(AR_ACCENT)));
+        ImVec2 ps = ImGui::GetFont()->CalcTextSizeA(fs * 1.1f, FLT_MAX, 0.0f, "+");
+        dl->AddText(ImGui::GetFont(), fs * 1.1f, ImVec2(c.x - ps.x * 0.5f, c.y - ps.y * 0.5f), ImGui::GetColorU32(hexc(0x06121D)), "+");
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(c.x + r + fs * 0.5f, c.y - ws.y * 0.5f), ImGui::GetColorU32(hexc(AR_TEXT)), word);
     }
     if (g_notice_on) {                                   /* R3: the online match's message, in the middle */
         char text[512];
@@ -2213,7 +2278,7 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
         if (!InterlockedExchange(&g_popup_drawn, 1)) { printf("menu: online popup drawn (presented frame %lld): %s: %s\n", g_frame, title, text); fflush(stdout); }
     }
     if (g_open && !osk_active()) { if (arena_ui()) draw_quick(); else draw_arena(width, height); }
-    g_back_blocked = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen(NULL, ImGuiPopupFlags_AnyPopupId) || g_q_confirm;      /* B answers "no" to the exit question */
+    g_back_blocked = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen(NULL, ImGuiPopupFlags_AnyPopupId) || g_q_confirm == 1;      /* B answers "no" to the exit question asked from the menu (from the tile, B closes it) */
     ImGui::Render();
 #ifndef _WIN32
     InterlockedExchange(&g_text_want, g_open && io.WantTextInput ? 1 : 0);      /* a text box is active: SDL's text input on (window thread) */
