@@ -44,7 +44,7 @@
     </Grid>
 
     <!-- everything under the title bar is laid out for 1586 x 956 and scaled to the window (MainWindow.Rescale) -->
-    <Grid x:Name="Scaled" Grid.Row="1">
+    <Grid x:Name="Scaled" Grid.Row="1" RenderOptions.ClearTypeHint="Enabled" TextOptions.TextHintingMode="Fixed">
     <Grid.LayoutTransform><ScaleTransform x:Name="Zoom" ScaleX="1" ScaleY="1"/></Grid.LayoutTransform>
     <Grid.RowDefinitions>
       <RowDefinition Height="88"/>
