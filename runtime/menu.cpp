@@ -1850,7 +1850,8 @@ static void draw_quick(void) {
     ImGuiIO &io = ImGui::GetIO();
     const float W = io.DisplaySize.x, H = io.DisplaySize.y, fs = ImGui::GetFontSize();
     if (g_exit_popup) { g_exit_popup = 0; g_q_sel = Q_EXIT; g_q_confirm = 1; }      /* asked from the game's own menu */
-    /* input: d-pad or arrows, A or Enter; B cancels the exit question here (menu_frame does not close then) */
+    /* input: d-pad (or the left stick) of any controller, or the arrows; A, Enter or Space; B cancels the exit question
+     * here (menu_frame does not close then) */
     int up = q_rep(B_UP) || ImGui::IsKeyPressed(ImGuiKey_UpArrow), dn = q_rep(B_DOWN) || ImGui::IsKeyPressed(ImGuiKey_DownArrow);
     int lf = q_rep(B_LEFT) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow), rt = q_rep(B_RIGHT) || ImGui::IsKeyPressed(ImGuiKey_RightArrow);
     int a = (g_q_down & BIT(B_A)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false);
@@ -1866,8 +1867,9 @@ static void draw_quick(void) {
                  ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImGui::PopStyleColor();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    {   /* the game, dimmed, darker on the left where the rows are */
-        ImU32 l = ImGui::GetColorU32(hexc(0x05080D, 0.96f)), r = ImGui::GetColorU32(hexc(0x05080D, 0.82f));
+    {   /* the game, dimmed (the picture is blended in linear light on an sRGB swapchain: a black at 0.8 hardly showed on the
+         * game's white option screens), darker on the left where the rows are */
+        ImU32 l = ImGui::GetColorU32(hexc(0x05080D, 0.985f)), r = ImGui::GetColorU32(hexc(0x05080D, 0.94f));
         dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(W, H), l, r, r, l);
     }
     const float x0 = W * 0.075f, colw = W * 0.40f, rh = fs * 2.5f, gap = fs * 0.55f, skew = rh * 0.28f;

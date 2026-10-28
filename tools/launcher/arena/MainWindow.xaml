@@ -543,6 +543,7 @@
                 <WrapPanel Margin="0,20,0,0">
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Recheck_Click" FontSize="15">Check again</Button>
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="PrepareNow_Click" FontSize="15">Prepare shaders now</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="DeleteShaders_Click" FontSize="15">Delete the shaders</Button>
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="OpenLog_Click" FontSize="15">Open game log</Button>
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Reinstall_Click" FontSize="15">Run the setup again</Button>
                 </WrapPanel>
