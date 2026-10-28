@@ -73,7 +73,8 @@ namespace Arena
         public static string Ticket;                // the lobby ticket of this start (Account.LobbyTicket), signed in only      // launcher.ini shaders: what the last preparation was made for (ShaderKey)
         public static int Aspect, WindowMode, Keyboard;
         public static string WindowSize = "1280x720";
-        public static int Volume = 100;                                   // graphics.ini volume (0..100), the game's start volume
+        public static int Volume = 100;
+        public static bool Fps;                                           // graphics.ini stats_overlay: the FPS counter in the game                                   // graphics.ini volume (0..100), the game's start volume
         // (0.2.8) which controller button presses each game button ([type ...] map.* of controllers.ini, written for the
         // Xbox, PlayStation, Switch and other pads alike; GameCube controllers keep their own); the default is the
         // position of Nintendo's layout: A on the right, B at the bottom, X at the top, Y on the left
@@ -134,6 +135,7 @@ namespace Arena
             // the rollback build: game DLL and script modules with dirty-page marks (setup.py step rollback); online rollback
             // runs only with it (the normal build's save is not complete enough: the two games drift apart)
             RbPair = File.Exists(Path.Combine(Work, "ssbu_game_r1.dll")) && File.Exists(Path.Combine(Work, @"nro_bin_eh_o2r1\lua2cpp_common.dll"));      // (0.2.8: ssbu_native.exe itself is the rollback build)
+            if (!Directory.Exists(CompDir)) MakeCompetitive();
             HasCompetitive = Directory.Exists(CompDir);
             LightArc = RomFS != null && File.Exists(Path.Combine(RomFS, "data.arcp")) && !File.Exists(Path.Combine(RomFS, "data.arc"));
 
@@ -161,6 +163,8 @@ namespace Arena
             WindowMode = Get(G, "window") == "borderless" ? 1 : Get(G, "window") == "fullscreen" ? 2 : 0;
             if (Get(G, "width") != null && Get(G, "height") != null) WindowSize = G["width"] + "x" + G["height"];
             Volume = int.TryParse(Get(G, "volume"), out var vol) ? Math.Max(0, Math.Min(100, vol)) : 100;
+            Fps = Get(G, "stats_overlay") == "on";
+            if (Get(G, "ping_overlay") != null) Ping = Get(G, "ping_overlay") != "off";      // (0.2.8) the in-game menu's choice wins: one switch in both places
             Buttons = new Dictionary<string, string>(DefaultButtons);
             foreach (var kv in ReadIniSection(PadIni, "type xbox"))
                 if (kv.Key.StartsWith("map.") && DefaultButtons.ContainsKey(kv.Key.Substring(4).ToUpperInvariant()) && PadSources.Any(x => x.Item1 == kv.Value.Trim().ToLowerInvariant()))
@@ -193,7 +197,7 @@ namespace Arena
                 { "aspect", Aspect == 1 ? "stretch" : "keep" },
                 { "window", new[] { "windowed", "borderless", "fullscreen" }[Math.Max(0, Math.Min(2, WindowMode))] },
                 { "latency", "normal" },        // input latency: always normal (the option is gone)
-                { "volume", Volume.ToString() } };
+                { "volume", Volume.ToString() }, { "stats_overlay", Fps ? "on" : "off" }, { "ping_overlay", Ping ? "on" : "off" } };
             var m = Regex.Match(WindowSize.Trim(), @"^(\d{3,5})\s*[xX*]\s*(\d{3,5})$");
             if (m.Success) { gfx["width"] = m.Groups[1].Value; gfx["height"] = m.Groups[2].Value; }
             SetIniValues(GfxIni, null, gfx);
@@ -201,6 +205,23 @@ namespace Arena
             SetIniValues(PadIni, "keyboard", new Dictionary<string, string> { { "player", new[] { "auto", "1", "2", "none" }[Math.Max(0, Math.Min(3, Keyboard))] } });
             var map = Buttons.ToDictionary(kv => "map." + kv.Key, kv => kv.Value);
             foreach (var t in PadTypes) SetIniValues(PadIni, "type " + t, map);
+        }
+
+        /// <summary>(0.2.8) build\characters\competitive (6 stages, no items, no Final Smash meter) made from the dump's
+        /// data.arc by tools/competitive/make_competitive.py (half a second): no install made it, so the Arena menu and
+        /// the competitive rules stayed off (they need it). Here once, when it is missing and the sources are there.</summary>
+        static void MakeCompetitive()
+        {
+            try
+            {
+                string py = Repo == null ? null : Path.Combine(Repo, @"deps\python\python.exe"), script = Repo == null ? null : Path.Combine(Repo, @"tools\competitive\make_competitive.py");
+                string arc = RomFS == null ? null : Path.Combine(RomFS, "data.arc");
+                if (py == null || !File.Exists(py) || !File.Exists(script) || arc == null || !File.Exists(arc)) return;
+                var psi = new ProcessStartInfo(py, "\"" + script + "\" --out \"" + Path.Combine(Build, "characters") + "\" --arc \"" + arc + "\"")
+                { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
+                using (var p = Process.Start(psi)) p.WaitForExit(60000);
+            }
+            catch { }
         }
 
         /// <summary>the keys of one [section] of an ini file (lower case), the others ignored</summary>

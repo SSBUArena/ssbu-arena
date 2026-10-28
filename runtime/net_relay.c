@@ -1573,10 +1573,16 @@ static int peer_rtt(uint32_t vip) {
     ReleaseSRWLockShared(&g_prtt_lock);
     return ms;
 }
+/* (0.2.8) on / off from the launcher (SSBU_NET_PING) and from the in-game menu (menu.cpp net_ping_set, saved to graphics.ini
+ * ping_overlay, which the launcher reads back): one switch in both places */
+static volatile LONG g_ping_on = -1;
+int net_ping_on(void) {
+    if (g_ping_on < 0) { const char *e = getenv("SSBU_NET_PING"); InterlockedExchange(&g_ping_on, !(e && e[0] == '0')); }
+    return g_ping_on > 0;
+}
+void net_ping_set(int on) { InterlockedExchange(&g_ping_on, on ? 1 : 0); }
 int net_ping_overlay(int *ms, int max) {
-    static int on = -1;
-    if (on < 0) { const char *e = getenv("SSBU_NET_PING"); on = !(e && e[0] == '0'); }
-    if (!on || g_cfg <= 0 || !g_joined || max < 2) return 0;
+    if (!net_ping_on() || g_cfg <= 0 || !g_joined || max < 2) return 0;
     int rbn_started(void), rbn_local_player(void);
     if (rbn_started()) {                                  /* an online rollback match: players 1 and 2 */
         int me = rbn_local_player() ? 1 : 0;

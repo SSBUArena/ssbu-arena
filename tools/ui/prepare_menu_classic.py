@@ -154,6 +154,10 @@ EDIT_MAIN['main_menu_lct_center_00.bflyt'] = {
     'other_arrow': {'rotate': 180 + 27.2},
     # (their black backings, Smash's and Battle Arena's mirrored, covered the new tiles' names: none)
     'black_07': {'scale': [0, 0]}, 'black_00': {'scale': [0, 0]},
+    # (0.2.8) Settings is not beside the centre circle (Online LDN is between them): no pointer, like Exit; the selected
+    # tile's bright border says it. The Vault's black backing lay across Online LDN's name, its white tab pointed at
+    # nothing, and its black arrow is only seen on that white tab
+    'black_08': {'scale': [0, 0]}, 'pic_04': {'scale': [0, 0]}, 'collection_arrow': {'scale': [0, 0]},
     'online_arrow': {'rotate': 180 - 43},
     # Online Ranked's (scaled 1.05 in the game) ends at the straight edge
     'online_crs_square_00': {'pos': [_rx, -297]},

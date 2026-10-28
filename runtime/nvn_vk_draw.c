@@ -3718,6 +3718,8 @@ static void ldn_ping_item(uint32_t index, int x, int y, int dot, int ms) {    /*
     ldn_ping_text(index, x + 4 * bw + 3 * gap + dot * 2, y, dot, t, layer);
 }
 static void ldn_ping_draw(uint32_t index) {
+    int net_ping_on(void);                             /* net_relay.c: the launcher's and the in-game menu's switch */
+    if (!net_ping_on()) return;
     int ms[8], n = ldn_ping_overlay(ms, 8);
     if (n <= 0) n = net_ping_overlay(ms, 8);
     if (n <= 0) return;
