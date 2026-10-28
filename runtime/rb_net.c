@@ -730,9 +730,21 @@ static void send_pads(void) {
     if (cf > 0 && g_hframe[cf % HR] == cf) { m.check_frame = (int32_t)cf; m.check = (uint32_t)(g_hash[cf % HR] ^ (g_hash[cf % HR] >> 32)); }
     send_msg(&m); g_sent_newest = newest;
 }
+static int16_t hyst1(int16_t v, int16_t *last, int h) {
+    if (v >= -RB_STICK_REST && v <= RB_STICK_REST) { *last = 0; return 0; }
+    if (v == 32767 || v == -32767 || abs((int)v - (int)*last) > h) *last = v;
+    return *last;
+}
+static RbPad stick_hyst(RbPad p, int16_t st[4]) {        /* (Arena) SSBU_RB_NET_STICK_HYST, default 600 (0: off) */
+    static int h = -1; if (h < 0) { const char *e = getenv("SSBU_RB_NET_STICK_HYST"); h = e ? atoi(e) : 600; }
+    if (h <= 0) return p;
+    p.lx = hyst1(p.lx, &st[0], h); p.ly = hyst1(p.ly, &st[1], h); p.rx = hyst1(p.rx, &st[2], h); p.ry = hyst1(p.ry, &st[3], h);
+    return p;
+}
 /* the local player's pad of a real pass (frame f): kept for f + delay and sent */
 void rbn_local_pad(long long f, RbPad now) {
     if (g_bot) now = bot_pad(g_bot_seed, f);
+    { static int16_t st[4]; now = stick_hyst(now, st); }
     rb_input_local((int)f, now);
     send_pads();
 }
@@ -764,8 +776,9 @@ static unsigned loop_bot2(void) {
     if (on < 0) { const char *e = getenv("SSBU_RB_NET_LOOP_BOT2"); on = e && *e; if (on) seed = (unsigned)strtoul(e, NULL, 0); }
     return on ? seed : g_bot_seed ^ 0x5bd1e995u;
 }
+static RbPad stick_hyst(RbPad p, int16_t st[4]);
 static RbPad loop_remote_pad(long long f) {             /* with SSBU_RB_NET_LOOP_BOT2: exactly what that bot sends as a pair's other game (its input delay applied) */
-    if (!getenv("SSBU_RB_NET_LOOP_BOT2")) return bot_pad(loop_bot2(), f);
+    if (!getenv("SSBU_RB_NET_LOOP_BOT2")) { static int16_t st[4]; return stick_hyst(bot_pad(loop_bot2(), f), st); }      /* (frames come in order) */
     RbPad z; memset(&z, 0, sizeof z);
     return f <= g_delay ? z : rb_pad_rest(bot_pad(loop_bot2(), f - g_delay));
 }
