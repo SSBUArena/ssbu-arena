@@ -881,6 +881,22 @@ namespace Arena
             try { prep.Kill(); } catch { }
         }
 
+        /// <summary>(0.2.8) the prepared shaders thrown away (build\cachek): the next PLAY prepares them again from nothing</summary>
+        void DeleteShaders_Click(object sender, RoutedEventArgs e)
+        {
+            if (prep != null || game != null || Core.GameRunning()) { Show("Shaders", "Close the game and wait for the preparation to end first.", null, ("OK", null, true)); return; }
+            Show("Delete the shaders?", "The prepared shaders of this PC are deleted. The next PLAY prepares them again (about 10 minutes). Do it when the game shows wrong pictures or stutters after a driver update.", null,
+                 ("Delete", () =>
+                 {
+                     try { if (System.IO.Directory.Exists(Core.VkCache)) System.IO.Directory.Delete(Core.VkCache, true); }
+                     catch (Exception ex) { Show("Shaders", "Some files could not be deleted: " + ex.Message, null, ("OK", null, true)); return; }
+                     Core.ShaderStamp = ""; SaveQuiet();
+                     RunChecks();
+                     Status("Shaders deleted: PLAY prepares them again", "warn");
+                 }, false),
+                 ("Cancel", null, true));
+        }
+
         void PrepareNow_Click(object sender, RoutedEventArgs e)
         {
             if (!SaveQuiet()) return;
