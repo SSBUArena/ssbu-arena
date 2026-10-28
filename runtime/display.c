@@ -1083,7 +1083,11 @@ void display_present_plan(int vulkan) {
     InterlockedExchange(&g_latch_pending, iv != 0);
     if (iv && !on_time) g_hold_late++;
     l1_plan(iv && !on_time && now_n > prev + iv);      /* L1 (a frame queued after the tick it was due at = late) */
-    InterlockedExchange64(&g_hold_target, on_time && g_hold_on && !g_lockstep ? at : 0);
+    /* (Arena) a rollback match is paced by rb_rollback.c's own 60 Hz clock: held for this file's tick as well, the two clocks
+     * beat (a frame finished just past this tick waited a whole frame, the next one came right after it: 0.7 ms apart, one
+     * picture never on screen, for minutes while the phases stayed close). There the frame goes out as soon as it is ready. */
+    int paced; { int r1_rb_paced(void); paced = r1_rb_paced() && !getenv("SSBU_PACE_HOLD"); }
+    InterlockedExchange64(&g_hold_target, on_time && g_hold_on && !g_lockstep && !paced ? at : 0);
     InterlockedExchange(&g_planned, 1);
 }
 /* Render thread, at the place of vkQueuePresentKHR. Returns 1 when the finished frame is to be KEPT for the tick decided
