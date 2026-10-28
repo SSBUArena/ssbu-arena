@@ -29,6 +29,8 @@ namespace Arena
             InitializeComponent();
             // (0.2.8, the user's choice) opens at its smallest size (MinWidth x MinHeight); the page is scaled to it (Rescale)
             Width = MinWidth; Height = MinHeight;
+            // (0.2.8) resizing keeps the window's proportions (the page is laid out for one shape)
+            SourceInitialized += (s0, e0) => System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(this).Handle).AddHook(KeepAspect);
             Core.Load();
             SpaceOut(this);
             FillSettings();
@@ -50,6 +52,24 @@ namespace Arena
             Loaded += (s, e) => { RunChecks(); FindPads(); OpenFromArgs(); ResumeAccount(); CheckUpdates(); };
             Scaled.SizeChanged += (s, e) => Rescale();
             SizeChanged += (s, e) => Rescale();
+        }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct Rect32 { public int Left, Top, Right, Bottom; }
+
+        /// <summary>WM_SIZING: the dragged edge decides, the other side follows the MinWidth : MinHeight shape</summary>
+        IntPtr KeepAspect(IntPtr hwnd, int msg, IntPtr wp, IntPtr lp, ref bool handled)
+        {
+            if (msg != 0x0214) return IntPtr.Zero;
+            var r = (Rect32)System.Runtime.InteropServices.Marshal.PtrToStructure(lp, typeof(Rect32));
+            double ratio = MinWidth / MinHeight;
+            int edge = wp.ToInt32(), w = r.Right - r.Left, h = r.Bottom - r.Top;
+            if (edge == 3 || edge == 6) r.Right = r.Left + (int)Math.Round(h * ratio);       // top / bottom: the width follows
+            else if (edge == 4 || edge == 5) r.Top = r.Bottom - (int)Math.Round(w / ratio);  // top corners: the top moves
+            else r.Bottom = r.Top + (int)Math.Round(w / ratio);                              // left / right / bottom corners
+            System.Runtime.InteropServices.Marshal.StructureToPtr(r, lp, false);
+            handled = true;
+            return (IntPtr)1;
         }
 
         // ---------------------------------------------------------------- look
@@ -190,7 +210,7 @@ namespace Arena
                 FilesSub.Text = bad > 0 ? bad + (bad == 1 ? " problem" : " problems") : shaders ? "Verified" : "Verified, shaders not prepared yet";
                 FilesMark.Content = Mark(bad > 0 ? "bad" : shaders ? "ok" : "warn");
                 var rows = checks.Select(c => CheckRow(c.Ok, c.Text)).ToList();
-                rows.Add(CheckRow(shaders, shaders ? "Shaders prepared for this graphics card" : "Shaders not prepared yet: done before the first match (a few minutes, once)", shaders ? "ok" : "warn"));
+                rows.Add(CheckRow(shaders, shaders ? "Shaders prepared" : "Shaders not prepared yet: done before the first match (a few minutes, once)", shaders ? "ok" : "warn"));
                 CheckList.ItemsSource = rows;
                 SetState();
             }, TaskScheduler.FromCurrentSynchronizationContext());
@@ -245,7 +265,7 @@ namespace Arena
             foreach (var s in Core.Servers) ServerBox.Items.Add(s.Name);
             ServerBox.SelectedIndex = Core.ServerIndex(Core.Server);
             WinBox.SelectedIndex = Core.WindowMode;
-            SizeBox.Text = Core.WindowSize;
+            SizeBox.SelectedIndex = Math.Max(0, SizeBox.Items.Cast<ComboBoxItem>().ToList().FindIndex(i => (string)i.Content == Core.WindowSize.Replace(" ", "")));      // (0.2.8) our sizes only
             SizeBox.IsEnabled = Core.WindowMode == 0;
             AspectBox.SelectedIndex = Core.Aspect;
             KbBox.SelectedIndex = Core.Keyboard;
@@ -262,7 +282,7 @@ namespace Arena
             Core.Ping = PingBox.IsChecked == true;
             Core.Server = Core.Servers[Math.Max(0, ServerBox.SelectedIndex)].Address;
             Core.WindowMode = Math.Max(0, WinBox.SelectedIndex);
-            Core.WindowSize = SizeBox.Text.Trim();
+            Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
             Core.Keyboard = Math.Max(0, KbBox.SelectedIndex);
             if (P1Box.SelectedIndex >= 0) Core.Player1 = padGuids[P1Box.SelectedIndex];
@@ -643,7 +663,7 @@ namespace Arena
             TabHome.IsChecked = true;
             PlayButtons.Visibility = Visibility.Collapsed; PrepPanel.Visibility = Visibility.Visible; PrepCancel.Visibility = Visibility.Collapsed;
             PrepTitle.Text = title; PrepPct.Text = "0%"; SetPrepBar(0);
-            PrepDetail.Text = detail; PrepEta.Text = ""; PrepNote.Text = note;
+            PrepDetail.Text = detail; PrepEta.Text = ""; PrepNote.Text = note; PrepNote.Visibility = string.IsNullOrEmpty(note) ? Visibility.Collapsed : Visibility.Visible;
             StateText.Text = Spaced(title); StateDot.Fill = Res("Accent");
         }
 
@@ -730,11 +750,15 @@ namespace Arena
         // ---------------------------------------------------------------- shader preparation
         Process prep;
         bool prepThenPlay, prepCancelled;
-        // the time left, estimated here: the share done in the last 45 s of the shader phase (the game's own "eta" divides
-        // the whole time so far by the share done: reading the data is 10 % of the bar but ~45 s, the first shaders come
-        // slowly, so it only grew); shown smoothed: it counts down by itself and moves toward each new estimate
-        readonly List<Tuple<DateTime, double>> prepHist = new List<Tuple<DateTime, double>>();
-        double prepEtaShown = -1; DateTime prepEtaAt;
+        // (0.2.8) progress and time left, worked out here from two counts the game prints: the stage libraries (the first
+        // ~2.5 min of a fresh preparation, when the shader count hardly moves) and the shaders done. Each is weighed by
+        // the seconds it took per item in a measured fresh preparation (owner's PC: 8602 libraries at ~64 / s, then 42382
+        // shaders at ~85 / s, the first ~2300 of them almost free), so the bar moves with time; the time left is that work
+        // times this PC's measured speed (with 60 s of "reference speed" as a start, so the first minute is not a guess),
+        // smoothed, counting down by itself. A stopped preparation goes on from its records (runtime/nvn_vk_m4.c).
+        const double PrepLibs = 8602, PrepJobs = 42382, PrepJobsFree = 2300, PrepLibRate = 64, PrepJobRate = 85;
+        long prepLibs; double prepW0 = -1, prepBar, prepEtaShown = -1; DateTime prepT0, prepEtaAt;
+        static readonly System.Text.RegularExpressions.Regex PrepLibsRx = new System.Text.RegularExpressions.Regex(@"nvn_vk_prep: progress: .*stage libraries (\d+)");
         static readonly System.Text.RegularExpressions.Regex PrepField = new System.Text.RegularExpressions.Regex("\"(\\w+)\":(?:\"([^\"]*)\"|(-?\\d+))");
 
         /// <summary>the game prepares the shaders hidden (Core.StartPrepare); the hero shows the progress; thenPlay: the
@@ -744,14 +768,14 @@ namespace Arena
             if (prep != null || game != null) return;
             if (Core.GameRunning()) { Show("Already running", "Close the game first.", null, ("OK", null, true)); return; }
             prepThenPlay = thenPlay; prepCancelled = false;
-            prepHist.Clear(); prepEtaShown = -1;
+            prepLibs = 0; prepW0 = -1; prepBar = 0; prepEtaShown = -1;
             TabHome.IsChecked = true;
             PlayButtons.Visibility = Visibility.Collapsed; PrepPanel.Visibility = Visibility.Visible;
             PrepTitle.Text = "PREPARING SHADERS"; PrepPct.Text = "0%"; SetPrepBar(0);
             PrepDetail.Text = "Starting the game in the background..."; PrepEta.Text = "";
-            PrepNote.Text = thenPlay ? "Once per graphics card and driver: the game starts right after." : "Once per graphics card and driver.";
+            PrepNote.Text = ""; PrepNote.Visibility = Visibility.Collapsed;
             StateText.Text = Spaced("PREPARING SHADERS"); StateDot.Fill = Res("Accent");
-            Status("Preparing the shaders for this graphics card", "busy");
+            Status("Preparing the shaders", "busy");
             try { prep = Core.StartPrepare(l => Dispatcher.BeginInvoke(new Action(() => PrepLine(l))), c => Dispatcher.BeginInvoke(new Action(() => PrepEnded(c)))); }
             catch (Exception ex) { prep = null; PrepPanel.Visibility = Visibility.Collapsed; PlayButtons.Visibility = Visibility.Visible; SetState(); Show("Could not prepare the shaders", ex.Message, null, ("OK", null, true)); }
         }
@@ -765,41 +789,40 @@ namespace Arena
 
         void PrepLine(string l)
         {
+            var lm = PrepLibsRx.Match(l);
+            if (lm.Success) { long.TryParse(lm.Groups[1].Value, out prepLibs); return; }
             if (!l.StartsWith("##prep ")) return;
             var v = new Dictionary<string, string>();
             foreach (System.Text.RegularExpressions.Match m in PrepField.Matches(l)) v[m.Groups[1].Value] = m.Groups[2].Success && m.Groups[2].Value != "" ? m.Groups[2].Value : m.Groups[3].Value;
             if (!v.TryGetValue("state", out var st) || st != "running") return;
             int pct = v.TryGetValue("pct", out var p) && int.TryParse(p, out var pi) ? pi : 0;
-            PrepPct.Text = pct + "%";
-            SetPrepBar(pct / 100.0);
-            if (v.TryGetValue("phase", out var ph) && ph == "data") PrepDetail.Text = "Reading the game data";
-            else PrepDetail.Text = string.Format("{0:N0} of about {1:N0} shaders", long.Parse(v.ContainsKey("done") ? v["done"] : "0"), long.Parse(v.ContainsKey("total") ? v["total"] : "0"));
-            PrepEta.Text = PrepEta_(v);
-        }
-
-        string PrepEta_(Dictionary<string, string> v)
-        {
+            long done = v.TryGetValue("done", out var d) && long.TryParse(d, out var di) ? di : 0;
+            bool shaders = v.TryGetValue("phase", out var ph) && ph == "shaders";
             var now = DateTime.UtcNow;
-            long done = v.TryGetValue("done", out var d) && long.TryParse(d, out var di) ? di : 0, total = v.TryGetValue("total", out var t) && long.TryParse(t, out var ti) ? ti : 0;
-            if (!(v.TryGetValue("phase", out var ph) && ph == "shaders") || total <= 0) return "estimating the time...";
-            double f = Math.Min(1, (double)done / total);
-            prepHist.Add(Tuple.Create(now, f));
-            while (prepHist.Count > 2 && (now - prepHist[1].Item1).TotalSeconds > 45) prepHist.RemoveAt(0);
-            var first = prepHist[0];
-            double span = (now - first.Item1).TotalSeconds, rate = span > 0 ? (f - first.Item2) / span : 0;
-            if (prepEtaShown >= 0) prepEtaShown = Math.Max(0, prepEtaShown - (now - prepEtaAt).TotalSeconds);      // counts down by itself
-            prepEtaAt = now;
-            if (span >= 10 && rate > 1e-6)
+            string eta = "estimating the time...";
+            double bar = pct / 100.0;                                   // reading the game data: the game's own share (the first tenth)
+            if (shaders)
             {
-                double raw = Math.Min(3600, (1 - f) / rate);
-                if (prepEtaShown < 0) prepEtaShown = raw;
-                else prepEtaShown += (raw - prepEtaShown) * (raw > prepEtaShown ? 0.03 : 0.08);      // slow to go up, quicker down
+                double libTotal = prepLibs > 0 || (prepW0 >= 0 && (now - prepT0).TotalSeconds < 30) ? Math.Max(PrepLibs, prepLibs) : 0;      // no libraries on this card: none counted
+                double total = libTotal / PrepLibRate + Math.Max(0, Math.Max(PrepJobs, done) - PrepJobsFree) / PrepJobRate;
+                double w = Math.Min(libTotal, prepLibs) / PrepLibRate + Math.Max(0, done - PrepJobsFree) / PrepJobRate;
+                if (prepW0 < 0) { prepW0 = w; prepT0 = now; }
+                bar = 0.10 + 0.90 * Math.Min(1, w / total);
+                double el = (now - prepT0).TotalSeconds, k = (el + 60) / (w - prepW0 + 60), raw = Math.Min(3 * 3600, k * Math.Max(0, total - w));
+                if (prepEtaShown >= 0) prepEtaShown = Math.Max(0, prepEtaShown - (now - prepEtaAt).TotalSeconds);      // counts down by itself
+                prepEtaAt = now;
+                if (el >= 5) prepEtaShown = prepEtaShown < 0 ? raw : prepEtaShown + (raw - prepEtaShown) * (raw > prepEtaShown ? 0.04 : 0.08);
+                if (prepEtaShown >= 0)
+                {
+                    int sec = (int)Math.Round(prepEtaShown), min = (int)Math.Round(sec / 60.0);
+                    eta = sec < 45 ? "less than a minute left" : min <= 1 ? "about a minute left" : "about " + min + " minutes left";
+                }
             }
-            if (prepEtaShown < 0) return "estimating the time...";
-            int sec = (int)Math.Round(prepEtaShown);
-            if (sec < 45) return "less than a minute left";
-            int min = (int)Math.Round(sec / 60.0);
-            return min <= 1 ? "about a minute left" : "about " + min + " minutes left";
+            prepBar = Math.Max(prepBar, Math.Min(0.99, bar));            // never backwards
+            PrepPct.Text = (int)(prepBar * 100) + "%";
+            SetPrepBar(prepBar);
+            PrepDetail.Text = shaders ? "Compiling the shaders" : "Reading the game data";
+            PrepEta.Text = eta;
         }
 
         void PrepEnded(int code)
@@ -836,7 +859,7 @@ namespace Arena
             catch (Exception ex) { Show("Could not start the game", ex.Message, null, ("OK", null, true)); return; }
             game.Exited += (s, e) => Dispatcher.Invoke(GameExited);
             SetState();
-            if (first) StatusText.Text = "First start: the game prepares the shaders for this graphics card (a few minutes)";
+            if (first) StatusText.Text = "First start: the game prepares the shaders (a few minutes)";
             ToTray();
         }
 

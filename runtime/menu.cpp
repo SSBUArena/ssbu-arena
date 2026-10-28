@@ -684,6 +684,9 @@ static void note(const char *fmt, ...) {
 }
 static void help(const char *s) { ImGui::SetWindowFontScale(0.82f); ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("%s", s); ImGui::PopTextWrapPos(); ImGui::SetWindowFontScale(1.0f); }
 
+/* (Arena, 0.2.8) the competitive build: the same picture and timing for every player, so the menu shows only the window,
+ * its size, the sound and the overlays; the rendering, pacing, latency and shader options stay at their defaults */
+static bool arena_ui(void) { const char *e = getenv("SSBU_COMPETITIVE_UI"); return e && e[0] == '1'; }
 static void sec_display(int cw, int ch) {
     int wm = display_window_mode();
     S.window = wm;
@@ -719,6 +722,7 @@ static void sec_display(int cw, int ch) {
     }
     tag(0, 0);
     note("now %d x %d (the windowed size is kept for later when borderless)", cw, ch);
+    if (arena_ui()) return;
     ImGui::Separator();
     if (combo("Vsync / pacing", &S.vsync, k_vsync, N(k_vsync))) ini("vsync", k_vsync[S.vsync]);
     tag(1, S.vsync != S0.vsync);
@@ -733,6 +737,7 @@ static void sec_display(int cw, int ch) {
     note("in use: %s   (auto, a number of the list in the log, or a part of the name)", nvn_vk_device_name());
 }
 static void sec_graphics(void) {
+    if (!arena_ui()) {
     flabel("Resolution scale");
     if (ImGui::SliderFloat("##Resolution scale", &S.scale, 0.25f, 2.0f, "%.2f")) S.scale = floorf(S.scale * 20.0f + 0.5f) / 20.0f;
     if (ImGui::IsItemDeactivatedAfterEdit()) { char v[16]; snprintf(v, sizeof v, "%.2f", S.scale); ini("resolution_scale", v); }
@@ -751,6 +756,7 @@ static void sec_graphics(void) {
     tag(1, S.load != S0.load);
     if (combo("Console mode", &S.console, k_console, N(k_console))) ini("console_mode", k_console[S.console]);
     tag(1, S.console != S0.console);
+    }
     bool ov = S.overlay != 0;
     if (ImGui::Checkbox("Frame time overlay", &ov)) apply_overlay(ov);
     tag(0, 0);
