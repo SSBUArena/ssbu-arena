@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* rb_lobby.c - the online lobby of ssbu_lobby.py (protocol "SU" 1, lobby 1.4) in C for Linux, RELAY ONLY.
  *
- *     cc -O2 -o rb_lobby rb_lobby.c
- *     ./rb_lobby [--port 39500] [--bind 0.0.0.0] [--per-ip 32] [--search-secs 120] [--match-secs 180] [--stats 10]
+ *     cc -O2 -pthread -o rb_lobby rb_lobby.c
+ *     ./rb_lobby [--port 39500] [--bind 0.0.0.0] [--per-ip 32] [--search-secs 120] [--match-secs 180] [--stats 10] [--replay-dir <dir>]
  *
  * Same messages, same rules and the same answers as ssbu_lobby.py (the Python file stays the description of the
  * protocol): players join and get a 10.13.x.y address, Local Wireless rooms are listed and their datagrams relayed,
- * matchmaking pairs two searching players (MATCH op 1: a room; op 2: an online rollback match), and the rollback
+ * matchmaking pairs two searching players (MATCH op 1: a room; op 2: an online rollback match; op 3: a quick match whose
+ * result the lobby judges and records, rb_ranked.c), and the rollback
  * messages (RB, type 16) of a pair are relayed between them.
  *
  * What differs on purpose:
@@ -32,7 +33,7 @@
 #include <unistd.h>
 
 #define PROTO 1
-#define LOBBY_VERSION "1.4"
+#define LOBBY_VERSION "1.5"                 /* 1.5: quick matches with a recorded result (rb_ranked.c) */
 enum { JOIN = 1, WELCOME, REJECT, PING, PONG, DATA, LEAVE, LIST, LISTING, LIST_END, PEERS, PUNCH, DIRECT, BCAST };
 enum { RB = 16, ROOMS = 17, ROOM_INFO = 18, ROOMS_END = 19, MATCH = 20, MATCH_STATE = 21 };
 enum { MS_IDLE, MS_SEARCHING, MS_MATCHED, MS_TIMEOUT, MS_PEER_LEFT, MS_TOGETHER, MS_EXPIRED };
@@ -76,6 +77,7 @@ struct Client {
     uint8_t nonce[8];
     uint32_t ip;
     char name[NAME_LEN + 1];
+    char uid[40];                               /* the account id from its lobby ticket ("" without one) */
     uint8_t build[BUILD_LEN]; int build_len;
     char code[CODE_LEN + 1];
     uint64_t cookie;
@@ -91,6 +93,7 @@ struct Client {
     int has_final; uint32_t f_sid; int f_state, f_role; uint32_t f_peer; char f_name[NAME_LEN + 1];
     int kind; uint32_t rb_peer;
     int rtt;                                    /* its round trip to this lobby (from its PING), ms; -1 unknown */
+    int rk_game; uint64_t rk_gid;               /* (rb_ranked.c) its quick match with a recorded result: record index + 1, game id */
 };
 
 static Client g_c[MAX_CLIENTS];
@@ -221,11 +224,12 @@ static void match_send(Client *c, int state) {               /* state -1: how it
     double since = m ? m->at : c->searching ? c->search_since : -1;
     int same = 0, searching = 0;
     for (int i = 0; i < g_hi; i++) if (g_c[i].used && same_part(&g_c[i], c)) { same++; searching += g_c[i].searching; }
-    uint8_t b[80], *p = hdr(b, MATCH_STATE);
+    uint8_t b[88], *p = hdr(b, MATCH_STATE);
     p = w32(p, sid); p = w8(p, (unsigned)state); p = w8(p, (unsigned)role); p = w8(p, (unsigned)flags); p = w32(p, peer);
     p = wpad(p, name, strlen(name), NAME_LEN);
     p = w16(p, (unsigned)searching); p = w16(p, (unsigned)same);
     double w = since >= 0 ? g_now - since : 0; p = w16(p, w > 65535 ? 65535u : (unsigned)w);
+    p = w64(p, c->kind == 3 /* KIND_QUICK */ ? c->rk_gid : 0);      /* (lobby 1.5) the quick match's game id; an older game reads up to here - 8 */
     csend(b, (size_t)(p - b), c);
 }
 static void match_end(Client *c, int state, const char *fmt, ...) {
@@ -251,7 +255,12 @@ static void match_room(Match *m) {
     if (room_open(h) && !m->room_said) { m->room_said = 1; match_send(g, -1); match_send(h, -1); }
 }
 
+#include "rb_replay_rec.c"                     /* (SSBU Arena replays: --replay-dir) */
+#include "rb_ranked.c"                         /* (SSBU Arena quick matches with a recorded result: MATCH op 3, RESULT, VERDICT) */
+
 static void drop(Client *c, const char *why) {
+    rec_client_gone(c);
+    rk_client_gone(c);
     if (c->match) { Match *m = c->match; Client *o = other_of(m, c); c->match = NULL; match_end(o, MS_PEER_LEFT, "%s left the lobby", c->name); }
     c->searching = 0;
     if (c->has_room) close_room(c, "host left");
@@ -334,7 +343,7 @@ static void hmac_sha256(const uint8_t *key, size_t kn, const uint8_t *msg, size_
 }
 static char g_ticket_secret[129];                          /* the database's secret as text (64 hex characters), "" = tickets not required */
 /* 1 when the ticket is the database's and not expired; *name gets the name in it. why = the reason told to the game. */
-static int ticket_ok(const uint8_t *t, int tn, char *name, const char **why) {
+static int ticket_ok(const uint8_t *t, int tn, char *name, char *uid, const char **why) {
     char s[320]; const char *dot, *bar1, *bar2;
     *why = "sign in to SSBU Arena (the launcher) to play online";
     if (tn <= 0 || tn >= (int)sizeof s) return 0;
@@ -348,6 +357,8 @@ static int ticket_ok(const uint8_t *t, int tn, char *name, const char **why) {
     if (atoll(bar2 + 1) < (long long)time(NULL)) { *why = "your online pass expired: start the game again from the SSBU Arena launcher"; return 0; }
     int nl = (int)(bar2 - bar1 - 1); if (nl > NAME_LEN) nl = NAME_LEN;
     memcpy(name, bar1 + 1, (size_t)nl); name[nl] = 0;
+    int ul = (int)(bar1 - s); if (ul > 39) ul = 39;
+    memcpy(uid, s, (size_t)ul); uid[ul] = 0;
     return 1;
 }
 
@@ -362,7 +373,7 @@ static void on_join(const uint8_t *p, int n, const struct sockaddr_in *at, Clien
         int o = ml >= 0 ? JOIN_LEN + 2 + ml : n, tn = 0;
         const char *why = "sign in to SSBU Arena (the launcher) to play online";
         if (o + 4 <= n && p[o] == 'T' && p[o + 1] == 'K') tn = (int)(p[o + 2] << 8 | p[o + 3]);
-        if (!tn || o + 4 + tn > n || !ticket_ok(p + o + 4, tn, tmp.name, &why)) {
+        if (!tn || o + 4 + tn > n || !ticket_ok(p + o + 4, tn, tmp.name, tmp.uid, &why)) {
             uint8_t b[4 + 8 + 64], *q = hdr(b, REJECT); q = wbytes(q, p + 4, 8);
             wpad(q, why, strlen(why), 64); tsend(b, sizeof b, at); return;
         }
@@ -388,7 +399,7 @@ static void on_join(const uint8_t *p, int n, const struct sockaddr_in *at, Clien
         }
         c = &g_c[free_i]; memset(c, 0, sizeof *c);
         c->used = 1; c->at = *at; memcpy(c->nonce, p + 4, 8); c->ip = ip;
-        memcpy(c->name, tmp.name, sizeof c->name); memcpy(c->code, tmp.code, sizeof c->code);
+        memcpy(c->name, tmp.name, sizeof c->name); memcpy(c->uid, tmp.uid, sizeof c->uid); memcpy(c->code, tmp.code, sizeof c->code);
         memcpy(c->build, tmp.build, BUILD_LEN); c->build_len = tmp.build_len;
         c->cookie = rnd64(); c->mods_len = -1; c->kind = KIND_ROOM; c->rtt = -1;
         at_put(c); g_by_ip[ip & 0xFFFF] = free_i + 1; g_nclients++; if (free_i + 1 > g_hi) g_hi = free_i + 1;
@@ -521,23 +532,31 @@ static void on_match(Client *c, int op, uint32_t sid) {
         c->has_final = 1; c->f_sid = sid; c->f_state = MS_IDLE; c->f_role = 0; c->f_peer = 0; c->f_name[0] = 0;
         match_send(c, -1); return;
     }
-    if (op != KIND_ROOM && op != KIND_ROLLBACK) return;
+    if (op != KIND_ROOM && op != KIND_ROLLBACK && op != KIND_QUICK) return;
     if (c->has_search_id && c->search_id == sid && (c->match || c->searching || c->has_final)) { match_send(c, -1); return; }
+    if (op == KIND_QUICK && !c->uid[0]) {                   /* (rb_ranked.c) a quick match needs a signed-in player (lobby ticket) */
+        if (c->match) { Client *o = other_of(c->match, c); c->match = NULL; match_end(o, MS_PEER_LEFT, "%s searches again", c->name); }
+        c->has_search_id = 1; c->search_id = sid; c->searching = 0; c->kind = op;
+        c->has_final = 1; c->f_sid = sid; c->f_state = MS_NO_ACCOUNT; c->f_role = 0; c->f_peer = 0; c->f_name[0] = 0;
+        say("match: %s: a quick match needs a signed-in account (no lobby ticket)", c->name); match_send(c, -1); return;
+    }
     if (c->match) { Client *o = other_of(c->match, c); c->match = NULL; match_end(o, MS_PEER_LEFT, "%s searches again", c->name); }
     c->has_search_id = 1; c->search_id = sid; c->search_since = g_now; c->searching = 1; c->has_final = 0; c->kind = op;
-    say("match: %s searches an opponent%s (build %.*s)", c->name, op == KIND_ROLLBACK ? " for a rollback match" : "", c->build_len, (const char *)c->build);
+    if (op == KIND_QUICK) { c->rk_game = 0; c->rk_gid = 0; }      /* (a new quick match: the last one's record keeps its own state) */
+    say("match: %s searches an opponent%s (build %.*s)", c->name, op == KIND_QUICK ? " for a quick match (recorded result)" : op == KIND_ROLLBACK ? " for a rollback match" : "", c->build_len, (const char *)c->build);
     Client *o = NULL;
     for (int i = 0; i < g_hi; i++) {
         Client *x = &g_c[i];
-        if (x->used && x != c && same_part(x, c) && x->searching && !x->match && x->kind == op && (!o || x->search_since < o->search_since)) o = x;
+        if (x->used && x != c && same_part(x, c) && x->searching && !x->match && x->kind == op && (op != KIND_QUICK || strcmp(x->uid, c->uid)) && (!o || x->search_since < o->search_since)) o = x;
     }
     if (!o) { match_send(c, -1); return; }
     Match *m = match_new(); if (!m) { match_send(c, -1); return; }
     int c_open = op == KIND_ROOM && c->has_room && room_open(c), o_open = op == KIND_ROOM && o->has_room && room_open(o);
     m->host = c_open && !o_open ? c : o; m->guest = m->host == c ? o : c; m->at = g_now;
     c->match = o->match = m; c->searching = o->searching = 0;
-    if (op == KIND_ROLLBACK) { c->rb_peer = o->ip; o->rb_peer = c->ip; }
-    say("match: %s hosts, %s joins%s", m->host->name, m->guest->name, op == KIND_ROLLBACK ? " (rollback match)" : "");
+    if (op == KIND_ROLLBACK || op == KIND_QUICK) { c->rb_peer = o->ip; o->rb_peer = c->ip; }
+    say("match: %s hosts, %s joins%s", m->host->name, m->guest->name, op == KIND_QUICK ? " (quick match)" : op == KIND_ROLLBACK ? " (rollback match)" : "");
+    if (op == KIND_QUICK) rk_paired(m->host, m->guest);
     match_send(m->host, -1); match_send(m->guest, -1);
     if (m->host->has_room && op == KIND_ROOM) match_room(m);
 }
@@ -550,10 +569,10 @@ static void on_rb(Client *c, const uint8_t *p, int n) {
         if (!in) { g_dropped++; return; }
     }
     static uint8_t out[1504]; uint8_t *q = hdr(out, RB); q = w32(q, c->ip); memcpy(q, p + 16, (size_t)(n - 16)); size_t len = 8 + (size_t)(n - 16);
-    if (dst) { Client *x = by_ip(dst); if (x && x != c && same_part(x, c)) csend(out, len, x); }
+    if (dst) { Client *x = by_ip(dst); if (x && x != c && same_part(x, c)) { csend(out, len, x); rec_rb(c, x, p + 16, n - 16); if (c->rk_game) rk_rb(c, p + 16, n - 16); } }
     else for (int i = 0; i < g_hi; i++) { Client *x = &g_c[i]; if (x->used && x != c && same_part(x, c)) csend(out, len, x); }
     Match *m = c->match;
-    if (dst && m && c->kind == KIND_ROLLBACK && other_of(m, c)->ip == dst) {
+    if (dst && m && (c->kind == KIND_ROLLBACK || c->kind == KIND_QUICK) && other_of(m, c)->ip == dst) {
         m->rb_seen |= m->host == c ? 1 : 2;
         if (m->rb_seen == 3) {
             Client *h = m->host, *g = m->guest;
@@ -595,6 +614,7 @@ static void packet(const uint8_t *p, int n, const struct sockaddr_in *at) {
     else if (kind == ROOMS && n >= 16 && ck) on_rooms(c, p + 12);
     else if (kind == MATCH && n >= 17 && ck) on_match(c, p[12], rd32(p + 13));
     else if (kind == RB && n > 16 && n <= 1500 && ck) on_rb(c, p, n);
+    else if (kind == RESULT && ck) rk_result(c, p, n);             /* (rb_ranked.c) */
     else if (kind == DATA && n >= 16) on_data(c, p, n, NULL, 0);
     else if (kind == BCAST && n >= 5) {
         int k = p[4], body = 5 + 4 * k; uint32_t skip[255];
@@ -608,6 +628,8 @@ static void packet(const uint8_t *p, int n, const struct sockaddr_in *at) {
 }
 
 static void sweep(void) {
+    rec_sweep();
+    rk_sweep();
     for (int i = 0; i < g_hi; i++) if (g_c[i].used && g_now - g_c[i].seen > CLIENT_TIMEOUT) drop(&g_c[i], "silent for 10 s");
     for (int i = 0; i < g_hi; i++) {
         Client *c = &g_c[i]; if (!c->used) continue;
@@ -622,7 +644,10 @@ static void sweep(void) {
     for (int i = 0; i < g_hi; i++) if (g_c[i].used && g_c[i].has_room && g_now - g_c[i].updated > ROOM_TIMEOUT) close_room(&g_c[i], "no advertisement for 10 s");
 }
 
+static volatile sig_atomic_t g_stop;
+static void on_term(int s) { (void)s; g_stop = 1; }
 int main(int argc, char **argv) {
+    const char *replay_dir = NULL;
     const char *bind_to = "0.0.0.0"; int port = 39500; double stats = 10.0;
     const char *e;                                          /* (test_ssbu_lobby.py LOBBY_EXE=: "<exe> <port>" and these two) */
     if ((e = getenv("SSBU_LOBBY_SEARCH_SECS"))) g_search_for = atof(e);
@@ -635,6 +660,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--search-secs")) g_search_for = atof(argv[i + 1]);
         else if (!strcmp(argv[i], "--match-secs")) g_match_for = atof(argv[i + 1]);
         else if (!strcmp(argv[i], "--stats")) stats = atof(argv[i + 1]);
+        else if (!strcmp(argv[i], "--results-file")) snprintf(g_rk_file, sizeof g_rk_file, "%s", argv[i + 1]);     /* (rb_ranked.c) quick-match results, one JSON line each */
+        else if (!strcmp(argv[i], "--replay-dir")) replay_dir = argv[i + 1];      /* SSBU Arena replays: every online rollback match relayed, one .ssbr file (rb_replay_rec.c) */
         else if (!strcmp(argv[i], "--ticket-secret-file")) {      /* SSBU Arena accounts: online needs a signed-in player */
             FILE *f = fopen(argv[i + 1], "r");
             if (!f || !fgets(g_ticket_secret, sizeof g_ticket_secret, f)) { fprintf(stderr, "cannot read the ticket secret %s\n", argv[i + 1]); return 2; }
@@ -644,20 +671,25 @@ int main(int argc, char **argv) {
         }
         else { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
     }
+    if (!replay_dir && (e = getenv("SSBU_LOBBY_REPLAY_DIR")) && *e) replay_dir = e;      /* (the service's drop-in replays.conf sets it) */
     signal(SIGPIPE, SIG_IGN);
+    if (replay_dir && !rec_start(replay_dir)) { fprintf(stderr, "cannot record replays in %s\n", replay_dir); return 2; }
+    if (replay_dir) { struct sigaction sa2; memset(&sa2, 0, sizeof sa2); sa2.sa_handler = on_term; sigaction(SIGTERM, &sa2, NULL); sigaction(SIGINT, &sa2, NULL); }
     g_sock = socket(AF_INET, SOCK_DGRAM, 0);
     int big = 4 << 20; setsockopt(g_sock, SOL_SOCKET, SO_RCVBUF, &big, sizeof big); setsockopt(g_sock, SOL_SOCKET, SO_SNDBUF, &big, sizeof big);
     struct sockaddr_in sa = {0}; sa.sin_family = AF_INET; sa.sin_port = htons((uint16_t)port);
     if (inet_pton(AF_INET, bind_to, &sa.sin_addr) != 1 || bind(g_sock, (struct sockaddr *)&sa, sizeof sa) < 0) { perror("bind"); return 1; }
     say("lobby on UDP %s:%d (protocol SU %d, lobby %s, relay only; %s)", bind_to, port, PROTO, LOBBY_VERSION,
         g_ticket_secret[0] ? "SSBU Arena accounts: signed-in players only" : "no account check");
+    say("quick matches (MATCH op 3): %s", g_ticket_secret[0] ? (g_rk_file[0] ? "on, results written to the results file" : "on, results NOT stored (no --results-file)") : "refused (no --ticket-secret-file: no account ids)");
+    if (replay_dir) say("replays: every online rollback match is recorded in %s/pending (names and account ids only)", replay_dir);
     static uint8_t buf[BATCH][PKT_MAX]; static struct sockaddr_in from[BATCH]; static struct iovec iov[BATCH]; static struct mmsghdr msg[BATCH];
     for (int i = 0; i < BATCH; i++) {
         iov[i].iov_base = buf[i]; iov[i].iov_len = PKT_MAX;
         msg[i].msg_hdr.msg_iov = &iov[i]; msg[i].msg_hdr.msg_iovlen = 1; msg[i].msg_hdr.msg_name = &from[i];
     }
     double last_sweep = mono(), last_stats = last_sweep;
-    for (;;) {
+    while (!g_stop) {
         struct pollfd pf = {g_sock, POLLIN, 0};
         int r = poll(&pf, 1, 500);
         g_now = mono();
@@ -675,4 +707,7 @@ int main(int argc, char **argv) {
             }
         }
     }
+    rec_stop_all();
+    say("stopped (replays written %llu, not written %llu)", g_rec_written, g_rec_skipped);
+    return 0;
 }
