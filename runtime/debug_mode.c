@@ -279,12 +279,15 @@ static uint64_t hash40(const char *s) {
  * Both games force + 0x454 = 1 with the agreed layout of each player, so a player's own controls are the same on both PCs. */
 #include "rb_hs.h"
 static int g_hs_wanted, g_hs_ok, g_hs_local, g_hs_lwr;      /* (R3 lwr) g_hs_lwr: a Local Wireless room's match played with rollback */
+static int g_hs_quick;
 /* (Arena, online matchmaking) a quick match from the Arena menu's Online Ranked tile (competitive.c comp_quickplay): both games
  * play the same locked rules whatever the player's own ruleset: stock (rule kind 1), 3 stocks, no items, no hazards (the
  * competitive mode keeps the FS meter, the item switch, hazards and stage morph off already). Written into this game's
  * choice before the handshake and into BOTH players' panel states, so the two games' states and match blocks agree (no
  * "rule kind here differs"). The time limit comes from the rule struct copies competitive.c forces while the flag is on. */
-static int g_hs_quick;
+/* (Arena, fighter_sdk/replay_state.c) the kind of the match set up last: 0 a local one, 1 matchmaking (a quick match from the
+ * lobby's search), 2 a Local Wireless room over the relay, 3 another online match (host / join) */
+int dm_match_kind(void) { return !g_hs_wanted || !g_hs_ok || g_hs_local ? 0 : g_hs_lwr ? 2 : g_hs_quick ? 1 : 3; }
 #define QUICK_RULE_KIND 1
 #define QUICK_STOCKS 3
 static RbhMatch g_hs_m;

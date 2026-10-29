@@ -53,7 +53,10 @@ typedef struct {
     uint32_t local_player, match_number; uint64_t seed;
     uint32_t first_ff, ended_frame; int32_t winner; uint32_t rec_us;      /* rec_us: mean recorder cost per frame (main thread), microseconds */
     uint8_t slot_entry[4];          /* the entry id (player) of each recorded slot, 0xff unused: a player can have two (Ice Climbers) */
-    uint8_t reserved[0x200 - 0x1a4];
+    uint32_t match_id;              /* the rollback handshake's match id (online; the lobby's .ssbr has the same), 0 local */
+    uint8_t kind, pad1[3];          /* 0 local, 1 matchmaking, 2 Local Wireless room, 3 other online (debug_mode.c dm_match_kind) */
+    char local_name[32];            /* this player's name (SSBU_ONLINE_NAME / SSBU_NICKNAME) */
+    uint8_t reserved[0x200 - 0x1cc];
 } RvHead;
 #pragma pack(pop)
 _Static_assert(sizeof(RvHead) == 0x200, "RvHead");
@@ -404,8 +407,28 @@ static void rv_end(const char *why, int sync) {
     HANDLE t = sync ? NULL : CreateThread(NULL, 0, rv_writer, j, 0, NULL);
     if (t) CloseHandle(t); else rv_writer(j);
 }
+/* SSBU_REPLAY_MODES=<list> (the launcher's choice, default all): local, mm (matchmaking), ldn (Local Wireless rooms over the
+ * relay), arena (Battle Arena, when it exists); the other online matches (host / join) follow mm */
+static int g_rv_skip;
+static int rv_mode_on(int kind) {
+    const char *e = getenv("SSBU_REPLAY_MODES");
+    if (!e) return 1;
+    const char *want = kind == 0 ? "local" : kind == 2 ? "ldn" : "mm";
+    for (const char *p = e; *p;) {
+        size_t n = strcspn(p, ",; ");
+        if (n == strlen(want) && !_strnicmp(p, want, n)) return 1;
+        p += n; while (*p == ',' || *p == ';' || *p == ' ') p++;
+    }
+    return 0;
+}
 static void rv_begin(void) {
     if (g_rv_active) rv_end("a new match", 0);
+    {   int dm_match_kind(void); int kind = rbn_on() > 0 && !rbn_loop() ? dm_match_kind() : 0;
+        if (!rv_mode_on(kind)) {
+            if (!g_rv_skip) { printf("[rv] this match is not recorded (kind %d not in SSBU_REPLAY_MODES)\n", kind); fflush(stdout); }
+            g_rv_skip = 1; return;
+        }
+        g_rv_skip = 0; }
     g_rv_active = 1; g_rv_frames = 0; g_rv_len = 0; g_rv_last_final = 0; g_rv_direct_n = 0;
     g_rv_nlines = 0; g_rv_scan_x = 0; g_rv_scan_done = 0; g_rv_scan_final = 0; g_rv_cost_ticks = g_rv_cost_n = g_rv_cost_max = g_rv_scan_ticks = g_rv_lines_ticks = 0; memset(g_rv_cost_hist, 0, sizeof g_rv_cost_hist);
     memset(&g_rv_acc, 0, sizeof g_rv_acc);
@@ -413,6 +436,13 @@ static void rv_begin(void) {
     if (g_rv_ring) for (int i = 0; i < RV_RING; i++) g_rv_ring[i].frame = -1;
     rv_head_start();
     memset(g_rv_head.slot_entry, 0xff, sizeof g_rv_head.slot_entry);
+    {   int dm_match_kind(void); uint32_t rbn_match_id(void);
+        g_rv_head.kind = (uint8_t)(rbn_on() > 0 && !rbn_loop() ? dm_match_kind() : 0);
+        g_rv_head.match_id = g_rv_head.kind ? rbn_match_id() : 0;
+        const char *n = getenv("SSBU_ONLINE_NAME"); if (!n || !*n) n = getenv("SSBU_NICKNAME");
+        if (n) snprintf(g_rv_head.local_name, sizeof g_rv_head.local_name, "%.31s", n);
+        if (n && *n && g_rv_head.kind && g_rv_head.local_player < g_rv_head.nfighters)
+            snprintf(g_rv_head.fighter[g_rv_head.local_player].name, sizeof g_rv_head.fighter[0].name, "%.31s", n); }
     if (!g_rv_buf) { g_rv_cap = (size_t)8 << 20; g_rv_buf = malloc(g_rv_cap); if (!g_rv_buf) g_rv_cap = 0; }      /* (about 7 minutes: no growth on the main thread in most matches) */
     printf("[rv] recording the match state (%s): %d fighters, stage %llx\n", g_rv_rb ? "final frames of the rollback session" : "every frame", g_rv_head.nfighters, (unsigned long long)g_rv_head.ui_stage);
     fflush(stdout);
@@ -472,7 +502,7 @@ static void rv_frame_line(Ctx *c, uint64_t boma, int k, long long ff) {
     if (!rv_fight_on()) return;                         /* the countdown and the end of the match are not recorded */
     LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
     rv_fns();
-    if (!g_rv_rb && !g_rv_active) rv_begin();
+    if (!g_rv_rb && !g_rv_active && !g_rv_skip) rv_begin();
     if (!g_rv_active) return;
     AcquireSRWLockExclusive(&g_rv_lock);
     Ctx saved = *c;
@@ -555,6 +585,7 @@ static void rv_poll(void) {
     if (g_rv_on <= 0) return;
     int on = rv_fight_on();
     if (was && !on && g_rv_active) { AcquireSRWLockExclusive(&g_rv_lock); rv_end("ready-go cleared", 0); ReleaseSRWLockExclusive(&g_rv_lock); }
+    if (was && !on) g_rv_skip = 0;                      /* (a match not recorded: the next one is decided again) */
     was = on;
 }
 static void rv_exit(void) { if (g_rv_active) rv_end("process exit", 1); }

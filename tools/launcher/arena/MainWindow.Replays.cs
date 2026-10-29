@@ -17,27 +17,52 @@ using System.Windows.Media;
 
 namespace Arena
 {
-    /// <summary>one row of the list</summary>
+    /// <summary>one row of the list: a match on this PC (R), on the Arena server (C), or both</summary>
     public sealed class ReplayRow
     {
-        public ReplayState R;
-        public string WhenText => R.When.ToString("dd MMM yyyy  HH:mm", CultureInfo.InvariantCulture);
-        public string Kind => R.LoopTest ? "Rollback test (one PC)" : R.Rollback ? "Online (rollback)" : "Local match";
-        RvFighter F(int i) => i < R.Fighters.Count ? R.Fighters[i] : null;
-        public string P1Fighter => F(0)?.FighterName ?? "-";
-        public string P2Fighter => F(1)?.FighterName ?? "-";
-        public string P1Name => F(0)?.Name ?? "";
-        public string P2Name => F(1)?.Name ?? "";
-        public string Stage => R.StageName;
-        public string Length => R.Length;
+        public ReplayState R; public CloudReplay C; public bool Uploaded;
+        static ulong Hex(string h) => ulong.TryParse(h, NumberStyles.HexNumber, null, out ulong v) ? v : 0;
+        DateTime WhenUtc => R != null ? R.When.ToUniversalTime() : C.PlayedAt;
+        public DateTime Sort => WhenUtc;
+        public string WhenText => WhenUtc.ToLocalTime().ToString("dd MMM yyyy  HH:mm", CultureInfo.InvariantCulture);
+        public string Kind
+        {
+            get
+            {
+                if (R == null) return "Online";
+                if (R.LoopTest) return "Rollback test (one PC)";
+                return R.Kind == 1 ? "Matchmaking" : R.Kind == 2 ? "Online LDN" : R.Kind == 3 ? "Online" : R.Rollback ? "Online (rollback)" : "Local match";
+            }
+        }
+        RvFighter F(int i) => R != null && i < R.Fighters.Count ? R.Fighters[i] : null;
+        public string P1Fighter => R != null ? F(0)?.FighterName ?? "-" : ReplayNames.FighterName(Hex(C.P1Chara), -1);
+        public string P2Fighter => R != null ? F(1)?.FighterName ?? "-" : ReplayNames.FighterName(Hex(C.P2Chara), -1);
+        public string P1Name => C != null ? C.P1Name : F(0)?.Name ?? "";
+        public string P2Name => C != null ? C.P2Name : F(1)?.Name ?? "";
+        public string Stage => R != null ? R.StageName : ReplayNames.StageName(Hex(C.Stage));
+        public string Length { get { int fr = R != null ? R.Frames : C.Frames, s = fr / 60; return (s / 60) + ":" + (s % 60).ToString("00"); } }
         public string Result
         {
             get
             {
-                if (R.Winner >= 0 && R.Winner < R.Fighters.Count) return R.Fighters[R.Winner].Name + " won (" + R.Fighters[R.Winner].FighterName + ")";
+                if (R != null && R.Winner >= 0 && R.Winner < R.Fighters.Count) return R.Fighters[R.Winner].Name + " won (" + R.Fighters[R.Winner].FighterName + ")";
+                if (R == null) return C.Winner == 0 ? C.P1Name + " won" : C.Winner == 1 ? C.P2Name + " won" : "";
                 return R.Ended ? "Played to the end" : "Ended early";
             }
         }
+        /// <summary>where the replay is: this PC, the server (private / public)</summary>
+        public string Where
+        {
+            get
+            {
+                if (C != null) return (C.IsPublic ? "Public" : "Private: you and your opponent") + (C.HasState ? "" : " · inputs only");
+                if (R != null && R.Kind != 0) return Uploaded ? "Uploaded" : "This PC (not uploaded yet)";
+                return "This PC";
+            }
+        }
+        public bool CanWatch => R != null || (C != null && C.HasState);
+        public Visibility PublicVisible => C != null && C.Mine ? Visibility.Visible : Visibility.Collapsed;
+        public string PublicText => C != null && C.IsPublic ? "Make private" : "Make public";
     }
 
     public partial class MainWindow
@@ -54,17 +79,82 @@ namespace Arena
             LoadReplays();
         }
 
+        List<ReplayRow> replayRows = new List<ReplayRow>();
+        string cloudError;
+
+        /// <summary>this PC's recordings and, signed in, the server's replays this player may watch (one row per match)</summary>
         void LoadReplays()
         {
-            ReplaysStatus.Text = "Reading " + ReplayLibrary.Folder + " ...";
-            Task.Run(() => ReplayLibrary.List()).ContinueWith(t =>
+            ReplaysStatus.Text = "Reading the replays...";
+            bool signed = Account.SignedIn;
+            Task.Run(() =>
+            {
+                ReplayLibrary.Cap();
+                var local = ReplayLibrary.List();
+                var up = ReplayCloud.Uploaded();
+                List<CloudReplay> cloud = null; string err = null;
+                if (signed) { try { cloud = ReplayCloud.List(); } catch (Exception e) { err = e.Message; } }
+                var rows = new List<ReplayRow>();
+                foreach (var c in cloud ?? new List<CloudReplay>())
+                {
+                    // the server's row of a match recorded here: one row, played from this PC's file
+                    var mine = local.FirstOrDefault(l => l.MatchId != 0 && l.MatchId == c.MatchId && Math.Abs((l.When.ToUniversalTime() - c.PlayedAt).TotalHours) < 6);
+                    if (mine != null) local.Remove(mine);
+                    rows.Add(new ReplayRow { C = c, R = mine, Uploaded = true });
+                }
+                foreach (var l in local) rows.Add(new ReplayRow { R = l, Uploaded = up.ContainsKey(Path.GetFileName(l.Path)) });
+                return Tuple.Create(rows.OrderByDescending(r => r.Sort).ToList(), err);
+            }).ContinueWith(t =>
             {
                 if (t.IsFaulted) { ReplaysStatus.Text = "Could not read the replays: " + t.Exception.GetBaseException().Message; return; }
-                var rows = t.Result.Select(r => new ReplayRow { R = r }).ToList();
-                ReplaysList.ItemsSource = rows;
-                ReplaysEmpty.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-                ReplaysStatus.Text = rows.Count + " match" + (rows.Count == 1 ? "" : "es") + " in " + ReplayLibrary.Folder;
+                replayRows = t.Result.Item1; cloudError = t.Result.Item2;
+                ShowReplayRows();
             }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        void ShowReplayRows()
+        {
+            string f = RvFilterMine.IsChecked == true ? "mine" : RvFilterPublic.IsChecked == true ? "public" : RvFilterPc.IsChecked == true ? "pc" : "all";
+            var rows = replayRows.Where(r => f == "all" || (f == "mine" && (r.C == null || r.C.Mine)) || (f == "public" && r.C != null && r.C.IsPublic) || (f == "pc" && r.R != null)).ToList();
+            ReplaysList.ItemsSource = rows;
+            ReplaysEmpty.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            int server = replayRows.Count(r => r.C != null);
+            ReplaysStatus.Text = rows.Count + " match" + (rows.Count == 1 ? "" : "es") + " shown; " + replayRows.Count(r => r.R != null) + " on this PC (the last " + ReplayLibrary.Keep + " are kept), "
+                + (Account.SignedIn ? server + " on the Arena server" : "sign in to see the Arena server's replays") + (cloudError != null ? " (server: " + cloudError + ")" : "") + ".";
+        }
+
+        void ReplaysFilter_Checked(object sender, RoutedEventArgs e) { if (ReplaysList != null && replayRows != null) ShowReplayRows(); }
+
+        void ReplayPublic_Click(object sender, RoutedEventArgs e)
+        {
+            e.Handled = true;                               // (inside the row's own button: not a Watch click)
+            var row = (sender as Button)?.Tag as ReplayRow;
+            if (row?.C == null) return;
+            bool pub = !row.C.IsPublic;
+            Task.Run(() => ReplayCloud.SetPublic(row.C.Id, pub)).ContinueWith(t =>
+            {
+                if (t.IsFaulted) { Show("Replay", "Could not change it: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
+                LoadReplays();
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        /// <summary>(GameExited) the cap on this PC's files, then the new online matches to the server (when chosen and signed in)</summary>
+        void ReplaysAfterGame()
+        {
+            bool upload = Core.RecUpload && Account.SignedIn;
+            Task.Run(() =>
+            {
+                ReplayLibrary.Cap();
+                if (!upload) return 0;
+                var up = ReplayCloud.Uploaded(); int n = 0;
+                foreach (var l in ReplayLibrary.List())
+                {
+                    if (l.Kind == 0 || l.MatchId == 0 || up.ContainsKey(Path.GetFileName(l.Path)) || (DateTime.Now - l.When).TotalDays > 7) continue;
+                    try { ReplayCloud.Upload(l); n++; } catch { }
+                }
+                return n;
+            }).ContinueWith(t => { if (PageReplays.Visibility == Visibility.Visible && ReplayViewer.Visibility != Visibility.Visible) LoadReplays(); },
+                            TaskScheduler.FromCurrentSynchronizationContext());
         }
 
         void ReplaysRefresh_Click(object sender, RoutedEventArgs e) { LoadReplays(); }
@@ -74,7 +164,14 @@ namespace Arena
         {
             var row = (sender as Button)?.Tag as ReplayRow;
             if (row == null) return;
-            OpenReplay(row.R.Path);
+            if (row.R != null) { OpenReplay(row.R.Path); return; }
+            if (!row.CanWatch) { Show("Replay", "The server has only the input recording of this match: it will be watchable in the game itself later.", null, ("OK", null, true)); return; }
+            ReplaysStatus.Text = "Downloading the replay...";
+            Task.Run(() => ReplayCloud.Download(row.C)).ContinueWith(t =>
+            {
+                if (t.IsFaulted) { ReplaysStatus.Text = ""; Show("Replay", "Could not download it: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
+                OpenReplay(t.Result);
+            }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
         /// <summary>a match file in the viewer (also: --replay &lt;file&gt; [--frame n] on the command line, for screenshots)</summary>

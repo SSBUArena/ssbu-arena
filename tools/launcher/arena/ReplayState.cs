@@ -45,6 +45,7 @@ namespace Arena
         public const int HeaderSize = 0x200;
         public string Path;
         public byte[] SlotEntry = { 0xff, 0xff, 0xff, 0xff };
+        public uint MatchId; public int Kind; public string LocalName = "";      // online: the handshake's match id; 0 local 1 matchmaking 2 LDN room 3 other online
         public int Version, Flags, Frames, Codec, RuleKind, Stocks, GameBuild, LocalPlayer, MatchNumber, FirstFf, EndedFrame, Winner, RecUs;
         public long UnixTime;
         public ulong UiStage, Seed; public int StageForm, StageId;
@@ -96,6 +97,7 @@ namespace Arena
             r.LocalPlayer = (int)BitConverter.ToUInt32(f, 0x180); r.MatchNumber = (int)BitConverter.ToUInt32(f, 0x184); r.Seed = BitConverter.ToUInt64(f, 0x188);
             r.FirstFf = (int)BitConverter.ToUInt32(f, 0x190); r.EndedFrame = (int)BitConverter.ToUInt32(f, 0x194); r.Winner = BitConverter.ToInt32(f, 0x198); r.RecUs = (int)BitConverter.ToUInt32(f, 0x19c);
             Buffer.BlockCopy(f, 0x1a0, r.SlotEntry, 0, 4);
+            r.MatchId = BitConverter.ToUInt32(f, 0x1a4); r.Kind = f[0x1a8]; r.LocalName = CStr(f, 0x1ac, 32);
             if (!body) return r;
             if (hs + (long)stored > f.Length) throw new Exception("the match state file is cut short");
             byte[] b;
@@ -217,6 +219,19 @@ namespace Arena
     public static class ReplayLibrary
     {
         public static string Folder => System.IO.Path.Combine(Core.Saves ?? ".", "replays");
+        public const int Keep = 100;
+
+        /// <summary>this PC keeps the newest Keep recordings (the server's copies of uploaded ones stay)</summary>
+        public static void Cap()
+        {
+            try
+            {
+                if (!Directory.Exists(Folder)) return;
+                var files = new DirectoryInfo(Folder).GetFiles("*.ssbv").OrderByDescending(f => f.Name).ToList();      // (names are the date and time)
+                foreach (var f in files.Skip(Keep)) { try { f.Delete(); } catch { } }
+            }
+            catch { }
+        }
 
         public static List<ReplayState> List()
         {

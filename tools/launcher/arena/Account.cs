@@ -136,6 +136,12 @@ namespace Arena
             return Json.Deserialize<string>(Http("POST", "/rest/v1/rpc/lobby_ticket", "{}", access));
         }
 
+        /// <summary>(replays, ReplayCloud.cs) the player's own session token, refreshed when needed: never a service key</summary>
+        public static string AccessToken() { EnsureAccess(); return access; }
+
+        /// <summary>(replays) a REST / RPC call with the player's session; the answer's text</summary>
+        public static string Rest(string method, string path, string body) { EnsureAccess(); return Http(method, path, body, access); }
+
         static void EnsureAccess()
         {
             if (access != null && DateTime.UtcNow < accessUntil) return;
