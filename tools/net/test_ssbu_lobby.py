@@ -91,7 +91,7 @@ class Fake:
     def state(self, secs=2.0):
         """the next MATCH_STATE: (id, state, role, flags, peer, peer name, searching, players, waited)"""
         b = self.rx(L.MATCH_STATE, secs)
-        assert len(b) == 49, len(b)
+        assert len(b) in (49, 57), len(b)      # (rb_lobby 1.5 adds the quick match's game id)
         sid, st, role, flags, peer = struct.unpack_from(">IBBBI", b)
         return (sid, st, role, flags, peer, b[11:43].rstrip(b"\0")) + struct.unpack_from(">HHH", b, 43)
 
