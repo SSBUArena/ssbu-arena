@@ -557,6 +557,15 @@ namespace Arena
             return canPrepare == 1;
         }
 
+        /// <summary>(0.2.10) every base-game fighter playable: the base save when there is none, else the fighters still
+        /// locked unlocked (BaseSave.cs); only while the game is closed (it keeps its save in memory)</summary>
+        static void PrepareSave()
+        {
+            if (GameRunning()) return;
+            string done = BaseSave.Ensure(Saves);
+            if (done != "") Updater.Log(done);
+        }
+
         /// <summary>what every start of the game gets, a match or the shader preparation</summary>
         static void GameEnv(System.Collections.Specialized.StringDictionary env)
         {
@@ -577,6 +586,7 @@ namespace Arena
         public static Process StartPrepare(Action<string> line, Action<int> exited)
         {
             Directory.CreateDirectory(Path.Combine(Build, "cache"));
+            PrepareSave();
             var psi = new ProcessStartInfo(PrepExe(), "\"" + MainElf + "\" 0") { WorkingDirectory = Work, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
             var env = psi.EnvironmentVariables;
             GameEnv(env);
@@ -608,6 +618,7 @@ namespace Arena
         {
             Directory.CreateDirectory(Saves);
             Directory.CreateDirectory(Path.Combine(Build, "cache"));
+            PrepareSave();
             var psi = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe")) { WorkingDirectory = Work, UseShellExecute = false, CreateNoWindow = true };
             var env = psi.EnvironmentVariables;
             GameEnv(env);

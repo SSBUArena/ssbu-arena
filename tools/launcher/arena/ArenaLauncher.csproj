@@ -20,6 +20,7 @@
   <ItemGroup>
     <Resource Include="Assets\Fonts\*.ttf" />
     <Resource Include="Assets\arena.ico" />
+    <EmbeddedResource Include="Assets\base_save.zip" LogicalName="Arena.base_save.zip" />
     <None Remove="Assets\*.svg" />
     <Reference Include="System.Management" />
     <Reference Include="System.Web" />
