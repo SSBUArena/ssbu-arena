@@ -61,8 +61,23 @@ namespace Arena
             }
         }
         public bool CanWatch => R != null || (C != null && C.HasState);
-        public Visibility PublicVisible => C != null && C.Mine ? Visibility.Visible : Visibility.Collapsed;
-        public string PublicText => C != null && C.IsPublic ? "Make private" : "Make public";
+        // (0.2.11) visibility, upload and delete
+        bool OnlineMatch => R != null && R.Kind != 0 && R.MatchId != 0 && !R.LoopTest;
+        public bool IsPublic => C != null && C.IsPublic;
+        /// <summary>a player of the match (a server row), or a local online match not uploaded yet (made public = uploaded first)</summary>
+        public bool CanSetVis => (C != null && C.Mine) || (C == null && OnlineMatch && Account.SignedIn);
+        public Visibility VisVisible => CanSetVis || IsPublic ? Visibility.Visible : Visibility.Collapsed;
+        public string VisText => IsPublic ? "Public" : "Private";
+        public Geometry VisIcon => (Geometry)Application.Current.Resources[IsPublic ? "IcoGlobe" : "IcoLock"];
+        public Brush VisBrush => (Brush)Application.Current.Resources[IsPublic ? "Accent" : "Muted"];
+        public string VisTip => !CanSetVis ? "Public: every signed-in player can watch it."
+            : IsPublic ? "Public: every signed-in player can find it by name. Click to make it private."
+            : C == null ? "Only on this PC. Click to upload it and make it public."
+            : "Only you and your opponent. Click to make it public.";
+        public Visibility UploadVisible => C == null && OnlineMatch && !Uploaded && Account.SignedIn ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility DeleteVisible => R != null ? Visibility.Visible : Visibility.Collapsed;
+        /// <summary>what the search box looks in (lower case)</summary>
+        public string Haystack => string.Join(" ", P1Name, P2Name, P1Fighter, P2Fighter, Stage, Kind).ToLowerInvariant();
     }
 
     public partial class MainWindow
@@ -90,6 +105,7 @@ namespace Arena
             Task.Run(() =>
             {
                 ReplayLibrary.Cap();
+                if (signed) UploadPending();                // (0.2.11) the ones left behind, before the list is read
                 var local = ReplayLibrary.List();
                 var up = ReplayCloud.Uploaded();
                 List<CloudReplay> cloud = null; string err = null;
@@ -115,46 +131,130 @@ namespace Arena
         void ShowReplayRows()
         {
             string f = RvFilterMine.IsChecked == true ? "mine" : RvFilterPublic.IsChecked == true ? "public" : RvFilterPc.IsChecked == true ? "pc" : "all";
-            var rows = replayRows.Where(r => f == "all" || (f == "mine" && (r.C == null || r.C.Mine)) || (f == "public" && r.C != null && r.C.IsPublic) || (f == "pc" && r.R != null)).ToList();
+            string q = (RvSearch.Text ?? "").Trim().ToLowerInvariant();
+            var words = q.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            var all = replayRows.Concat(searchRows.Where(s => !replayRows.Any(r => r.C != null && r.C.Id == s.C.Id)));
+            var rows = all.Where(r => f == "all" || (f == "mine" && (r.C == null || r.C.Mine)) || (f == "public" && r.C != null && r.C.IsPublic) || (f == "pc" && r.R != null))
+                          .Where(r => words.All(w => r.Haystack.Contains(w))).OrderByDescending(r => r.Sort).ToList();
             ReplaysList.ItemsSource = rows;
             ReplaysEmpty.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            ReplaysEmptyTitle.Text = q.Length > 0 ? "No match for \u201c" + RvSearch.Text.Trim() + "\u201d" : replayRows.Count > 0 ? "Nothing here" : "No matches recorded yet";
+            ReplaysEmptyText.Text = q.Length > 0 ? (Account.SignedIn ? "No replay of yours and no public replay has a player, fighter or stage with that name." : "Sign in to search the Arena server's public replays too.")
+                                  : replayRows.Count > 0 ? "No replay fits this filter." : "Play a match: the game records it and it shows up here.";
             int server = replayRows.Count(r => r.C != null);
             ReplaysStatus.Text = rows.Count + " match" + (rows.Count == 1 ? "" : "es") + " shown; " + replayRows.Count(r => r.R != null) + " on this PC (the last " + ReplayLibrary.Keep + " are kept), "
-                + (Account.SignedIn ? server + " on the Arena server" : "sign in to see the Arena server's replays") + (cloudError != null ? " (server: " + cloudError + ")" : "") + ".";
+                + (Account.SignedIn ? server + " on the Arena server" : "sign in to see the Arena server's replays") + (searching ? "; searching the server..." : searchError != null && RvSearch.Text.Trim().Length >= 2 ? "; the server's search failed: " + searchError : "")
+                + (cloudError != null ? " (server: " + cloudError + ")" : "") + ".";
         }
 
         void ReplaysFilter_Checked(object sender, RoutedEventArgs e) { if (ReplaysList != null && replayRows != null) ShowReplayRows(); }
+
+        // ------------------------------------------------------------ (0.2.11) search: this list at once, the server's replays of that player after a pause in typing
+        List<ReplayRow> searchRows = new List<ReplayRow>();
+        System.Windows.Threading.DispatcherTimer rvSearchTimer;
+        bool searching; int searchSeq; string searchError;
+        void ReplaysSearch_Changed(object sender, TextChangedEventArgs e)
+        {
+            bool empty = string.IsNullOrEmpty(RvSearch.Text);
+            RvSearchHint.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+            RvSearchClear.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
+            if (ReplaysList == null || replayRows == null) return;
+            if (rvSearchTimer == null)
+            {
+                rvSearchTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+                rvSearchTimer.Tick += (s2, e2) => { rvSearchTimer.Stop(); SearchServer(); };
+            }
+            rvSearchTimer.Stop();
+            string q = RvSearch.Text.Trim();
+            if (q.Length < 2 || !Account.SignedIn) { searchSeq++; searchRows = new List<ReplayRow>(); searching = false; }
+            else rvSearchTimer.Start();
+            ShowReplayRows();
+        }
+        void ReplaysSearchClear_Click(object sender, RoutedEventArgs e) { RvSearch.Text = ""; RvSearch.Focus(); }
+        void SearchServer()
+        {
+            string q = RvSearch.Text.Trim();
+            if (q.Length < 2 || !Account.SignedIn) return;
+            int seq = ++searchSeq; searching = true; ShowReplayRows();
+            Task.Run(() => ReplayCloud.List(100, q)).ContinueWith(t =>
+            {
+                if (seq != searchSeq) return;               // (a newer search is on its way)
+                searching = false;
+                searchError = t.IsFaulted ? t.Exception.GetBaseException().Message : null;
+                searchRows = t.IsFaulted ? new List<ReplayRow>() : t.Result.Select(c => new ReplayRow { C = c, Uploaded = true }).ToList();
+                ShowReplayRows();
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
 
         void ReplayPublic_Click(object sender, RoutedEventArgs e)
         {
             e.Handled = true;                               // (inside the row's own button: not a Watch click)
             var row = (sender as Button)?.Tag as ReplayRow;
-            if (row?.C == null) return;
-            bool pub = !row.C.IsPublic;
-            Task.Run(() => ReplayCloud.SetPublic(row.C.Id, pub)).ContinueWith(t =>
+            if (row == null || !row.CanSetVis) return;
+            bool pub = !row.IsPublic;
+            ReplaysStatus.Text = row.C == null ? "Uploading the replay..." : pub ? "Making it public..." : "Making it private...";
+            Task.Run(() =>
             {
-                if (t.IsFaulted) { Show("Replay", "Could not change it: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
+                string id = row.C?.Id ?? ReplayCloud.Upload(row.R);      // (a local match: on the server first)
+                ReplayCloud.SetPublic(id, pub);
+            }).ContinueWith(t =>
+            {
+                if (t.IsFaulted) { ReplaysStatus.Text = ""; Show("Replay", "Could not change it: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
+                searchRows.Clear(); LoadReplays();
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        void ReplayUpload_Click(object sender, RoutedEventArgs e)
+        {
+            e.Handled = true;
+            var row = (sender as Button)?.Tag as ReplayRow;
+            if (row?.R == null) return;
+            ReplaysStatus.Text = "Uploading the replay...";
+            bool pub = Core.RecPublic;
+            Task.Run(() => { string id = ReplayCloud.Upload(row.R); if (pub) ReplayCloud.SetPublic(id, true); }).ContinueWith(t =>
+            {
+                if (t.IsFaulted) { ReplaysStatus.Text = ""; Show("Replay", "Could not upload it: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
                 LoadReplays();
             }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        void ReplayDelete_Click(object sender, RoutedEventArgs e)
+        {
+            e.Handled = true;
+            var row = (sender as Button)?.Tag as ReplayRow;
+            if (row?.R == null) return;
+            string note = row.C != null || row.Uploaded ? "\n\nThe copy on the Arena server stays: you and your opponent can still watch it." : "";
+            Show("Delete replay", row.P1Fighter + " vs " + row.P2Fighter + ", " + row.WhenText + ": this PC's file is deleted." + note, null,
+                 ("Delete", () =>
+                 {
+                     try { File.Delete(row.R.Path); } catch (Exception ex) { Show("Replay", "Could not delete it: " + ex.Message, null, ("OK", null, true)); return; }
+                     LoadReplays();
+                 }, true), ("Cancel", null, false));
         }
 
         /// <summary>(GameExited) the cap on this PC's files, then the new online matches to the server (when chosen and signed in)</summary>
         void ReplaysAfterGame()
         {
-            bool upload = Core.RecUpload && Account.SignedIn;
-            Task.Run(() =>
+            Task.Run(() => { ReplayLibrary.Cap(); UploadPending(); })
+                .ContinueWith(t => { if (PageReplays.Visibility == Visibility.Visible && ReplayViewer.Visibility != Visibility.Visible) LoadReplays(); },
+                              TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        /// <summary>(0.2.11) the online matches of the last 30 days not on the server yet (played offline, signed out, a failed try): sent
+        /// after each game and when the Replays page opens, when uploads are on; one try per file per launcher run</summary>
+        static readonly HashSet<string> uploadTried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        static int UploadPending()
+        {
+            if (!Core.RecUpload || !Account.SignedIn) return 0;
+            var up = ReplayCloud.Uploaded(); int n = 0;
+            foreach (var l in ReplayLibrary.List())
             {
-                ReplayLibrary.Cap();
-                if (!upload) return 0;
-                var up = ReplayCloud.Uploaded(); int n = 0;
-                foreach (var l in ReplayLibrary.List())
-                {
-                    if (l.Kind == 0 || l.MatchId == 0 || up.ContainsKey(Path.GetFileName(l.Path)) || (DateTime.Now - l.When).TotalDays > 7) continue;
-                    try { ReplayCloud.Upload(l); n++; } catch { }
-                }
-                return n;
-            }).ContinueWith(t => { if (PageReplays.Visibility == Visibility.Visible && ReplayViewer.Visibility != Visibility.Visible) LoadReplays(); },
-                            TaskScheduler.FromCurrentSynchronizationContext());
+                string name = Path.GetFileName(l.Path);
+                if (l.Kind == 0 || l.MatchId == 0 || l.LoopTest || up.ContainsKey(name) || (DateTime.Now - l.When).TotalDays > 30) continue;
+                lock (uploadTried) if (!uploadTried.Add(name)) continue;
+                try { string id = ReplayCloud.Upload(l); if (Core.RecPublic) ReplayCloud.SetPublic(id, true); n++; } catch { }
+            }
+            return n;
         }
 
         void ReplaysRefresh_Click(object sender, RoutedEventArgs e) { LoadReplays(); }

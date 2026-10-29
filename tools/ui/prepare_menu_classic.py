@@ -199,37 +199,37 @@ ICONS = {'spirits': 'online_top_btn3_04_icon_off^s', 'online': 'ranked', 'other'
 # names and help lines, by the message file's region (2 US English, 5 UK English, 10 Italian)
 LABELS = {
     'it': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Battle Arena con i giocatori di SSBU Arena (presto disponibile).',
-           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Partite online contro altri giocatori, regole competitive (classifica presto).',
+           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Trova un avversario online: regole competitive, con il rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'LDN', 'mnu_top_help_other': 'Stanze Local Wireless via internet, con il rollback.',
            'mnu_top_collection': 'Impostazioni', 'mnu_top_help_collection': 'Impostazioni del gioco. Dentro, premi + per le impostazioni di SSBU Arena.',
            'mnu_top_tip_eshop': 'Esci', 'mnu_top_notices': 'Esci', 'mnu_top_help_eshop': 'Chiudi SSBU Arena.'},
     'en': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Battle Arena with SSBU Arena players (coming soon).',
-           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Online matches against other players, competitive rules (ranking coming soon).',
+           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Find an opponent online: competitive rules, with rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'LDN', 'mnu_top_help_other': 'Local Wireless rooms over the internet, with rollback.',
            'mnu_top_collection': 'Settings', 'mnu_top_help_collection': "The game's settings. Inside, press + for the SSBU Arena settings.",
            'mnu_top_tip_eshop': 'Exit', 'mnu_top_notices': 'Exit', 'mnu_top_help_eshop': 'Close SSBU Arena.'},
     'fr': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Battle Arena avec les joueurs de SSBU Arena (bientôt disponible).',
-           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Matchs en ligne contre d’autres joueurs, règles compétitives (classement bientôt).',
+           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Trouvez un adversaire en ligne : règles compétitives, avec le rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'LDN', 'mnu_top_help_other': 'Salles Local Wireless par Internet, avec le rollback.',
            'mnu_top_collection': 'Paramètres', 'mnu_top_help_collection': "Paramètres du jeu. À l'intérieur, appuyez sur + pour les paramètres de SSBU Arena.",
            'mnu_top_tip_eshop': 'Quitter', 'mnu_top_notices': 'Quitter', 'mnu_top_help_eshop': 'Fermer SSBU Arena.'},
     'es': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Battle Arena con jugadores de SSBU Arena (próximamente).',
-           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Partidas en línea contra otros jugadores, reglas competitivas (clasificación pronto).',
+           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Encuentra un rival en línea: reglas competitivas, con rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'LDN', 'mnu_top_help_other': 'Salas de Local Wireless por internet, con rollback.',
            'mnu_top_collection': 'Ajustes', 'mnu_top_help_collection': 'Ajustes del juego. Dentro, pulsa + para los ajustes de SSBU Arena.',
            'mnu_top_tip_eshop': 'Salir', 'mnu_top_notices': 'Salir', 'mnu_top_help_eshop': 'Cerrar SSBU Arena.'},
     'de': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Battle Arena mit SSBU-Arena-Spielern (bald verfügbar).',
-           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Online-Matches gegen andere Spieler, Turnierregeln (Rangliste bald).',
+           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Finde online einen Gegner: Turnierregeln, mit Rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'LDN', 'mnu_top_help_other': 'Local-Wireless-Räume über das Internet, mit Rollback.',
            'mnu_top_collection': 'Optionen', 'mnu_top_help_collection': 'Die Spieloptionen. Drücke darin +, um die Einstellungen von SSBU Arena zu öffnen.',
            'mnu_top_tip_eshop': 'Beenden', 'mnu_top_notices': 'Beenden', 'mnu_top_help_eshop': 'SSBU Arena schließen.'},
     'nl': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Battle Arena met SSBU Arena-spelers (binnenkort beschikbaar).',
-           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Online wedstrijden tegen andere spelers, competitieve regels (ranglijst binnenkort).',
+           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Vind online een tegenstander: competitieve regels, met rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'LDN', 'mnu_top_help_other': 'Local Wireless-kamers via internet, met rollback.',
            'mnu_top_collection': 'Opties', 'mnu_top_help_collection': 'De opties van het spel. Druk daarin op + voor de instellingen van SSBU Arena.',
            'mnu_top_tip_eshop': 'Afsluiten', 'mnu_top_notices': 'Afsluiten', 'mnu_top_help_eshop': 'SSBU Arena afsluiten.'},
     'ru': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Battle Arena с игроками SSBU Arena (скоро).',
-           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Онлайн-матчи с другими игроками, турнирные правила (рейтинг скоро).',
+           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Найдите соперника онлайн: турнирные правила, с роллбэком.',
            'mnu_top_other': 'Online' + chr(10) + 'LDN', 'mnu_top_help_other': 'Комнаты Local Wireless через интернет, с роллбэком.',
            'mnu_top_collection': 'Настройки', 'mnu_top_help_collection': 'Настройки игры. Внутри нажмите +, чтобы открыть настройки SSBU Arena.',
            'mnu_top_tip_eshop': 'Выход', 'mnu_top_notices': 'Выход', 'mnu_top_help_eshop': 'Закрыть SSBU Arena.'},
@@ -397,7 +397,7 @@ def main():
             raise ValueError('Lua chunk round-trip changed ' + name)
         outputs[SCRIPTS + name + '.lc'] = transform(source)
     outputs[MESSAGES] = msbt_patch.apply_grow(arc.get(MESSAGES, a.region), LABELS[REGIONS.get(a.region, ('en-US', 'en'))[1]])
-    print('routes: Arena, Online Ranked (not yet), Online LDN, Settings, Exit; labels for region %d' % a.region)
+    print('routes: Arena, Online Matchmaking, Online LDN, Settings, Exit; labels for region %d' % a.region)
     for relative, content in outputs.items():
         dest = a.out / relative
         dest.parent.mkdir(parents=True, exist_ok=True)

@@ -65,7 +65,7 @@ settings stay.
 | 📶 | **Ping on screen** in every online match, next to each player | Live |
 | 🏆 | **Competitive mode**: the six legal stages (Battlefield, Small Battlefield, Final Destination, Pokémon Stadium 2, Smashville, Town and City), no items, no Final Smash meter, no hazards | Live |
 | 🖥️ | **SSBU Arena launcher** ([`tools/launcher/arena`](tools/launcher/arena)): one-file download, guided setup, automatic updates, account sign-in, controllers, video and audio settings, shader preparation | Live |
-| 🎮 | **Arena main menu**: Smash, Online LDN, Battle Arena, Online Ranked, Settings and Exit, with an in-game settings menu | Live |
+| 🎮 | **Arena main menu**: Smash, Online LDN, Battle Arena, Online Matchmaking, Settings and Exit, with an in-game settings menu | Live |
 | 💾 | **Light archive**: only what competitive 1v1 needs (8.8 of 16.4 GB) | Live |
 | 👥 | Friends, invites and Arena lobbies | In development |
 | 📈 | Automatic ranked 1v1 with skill-based ratings | In development |

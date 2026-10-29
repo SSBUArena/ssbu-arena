@@ -70,7 +70,7 @@ namespace Arena
         public static string Nickname = "", Server = DefaultServer, Saves;
         public static bool Online = true, Ping = true, Competitive = true;
         // (replays) which matches the game records (runtime: SSBU_REPLAY_MODES), and whether online ones go to the Arena server
-        public static bool RecMatchmaking = true, RecLdn = true, RecArena = true, RecLocal = true, RecUpload = true;
+        public static bool RecMatchmaking = true, RecLdn = true, RecArena = true, RecLocal = true, RecUpload = true, RecPublic;
         public static string ShaderStamp = "";
         public static string Ticket;                // the lobby ticket of this start (Account.LobbyTicket), signed in only      // launcher.ini shaders: what the last preparation was made for (ShaderKey)
         public static int Aspect, WindowMode, Keyboard;
@@ -150,7 +150,7 @@ namespace Arena
             Server = Servers[ServerIndex(Get(L, "server") ?? DefaultServer)].Address;
             Ping = Get(L, "ping") != "off";
             RecMatchmaking = Get(L, "replay_matchmaking") != "off"; RecLdn = Get(L, "replay_ldn") != "off"; RecArena = Get(L, "replay_arena") != "off";
-            RecLocal = Get(L, "replay_local") != "off"; RecUpload = Get(L, "replay_upload") != "off";
+            RecLocal = Get(L, "replay_local") != "off"; RecUpload = Get(L, "replay_upload") != "off"; RecPublic = Get(L, "replay_public") == "on";
             ShaderStamp = Get(L, "shaders") ?? "";
             Competitive = LightArc || HasCompetitive;      // (0.2.8) always: Arena is the competitive game
             if (!HasOnline) Online = false;
@@ -198,7 +198,7 @@ namespace Arena
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
                 "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp,
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
-                "replay_local = " + (RecLocal ? "on" : "off"), "replay_upload = " + (RecUpload ? "on" : "off") }, Encoding.ASCII);
+                "replay_local = " + (RecLocal ? "on" : "off"), "replay_upload = " + (RecUpload ? "on" : "off"), "replay_public = " + (RecPublic ? "on" : "off") }, Encoding.ASCII);
             var gfx = new Dictionary<string, string> {
                 { "aspect", Aspect == 1 ? "stretch" : "keep" },
                 { "window", new[] { "windowed", "borderless", "fullscreen" }[Math.Max(0, Math.Min(2, WindowMode))] },
