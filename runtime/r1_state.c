@@ -515,14 +515,21 @@ static void live_teb(HANDLE h, uint64_t *fd, uint64_t *sb, uint64_t *sl) {     /
     if (!qit || qit(hh, 0, &tb, sizeof tb, NULL) < 0 || !tb.teb) return;
     uint8_t *t = tb.teb; *sb = *(uint64_t *)(t + 0x08); *sl = *(uint64_t *)(t + 0x10); *fd = *(uint64_t *)(t + 0x20);
 }
-static struct { HANDLE h; uint8_t *teb; } g_teb_cache[512]; static int g_nteb;
+static struct { HANDLE h; DWORD tid; uint8_t *teb; } g_teb_cache[512]; static int g_nteb;
 static uint8_t *live_teb_addr(HANDLE h) {               /* a thread's TEB (cached: it never moves) */
-    for (int i = 0; i < g_nteb; i++) if (g_teb_cache[i].h == h) return g_teb_cache[i].teb;
+    /* (0.2.11) the cache is keyed by the handle AND the thread id: a thread that ended (the room's waiting-stage fight) gives its
+     * handle value back and a new thread may get it: its TEB is another (the old one is freed: crash in a room match, run lwr_rvroom) */
+    DWORD tid = GetThreadId(h);
+    if (!tid || WaitForSingleObject(h, 0) == WAIT_OBJECT_0) return NULL;      /* (an ended thread: no TEB any more) */
+    for (int i = 0; i < g_nteb; i++) if (g_teb_cache[i].h == h) {
+        if (g_teb_cache[i].tid == tid) return g_teb_cache[i].teb;
+        g_teb_cache[i] = g_teb_cache[--g_nteb]; break;
+    }
     typedef LONG (WINAPI *QitFn)(HANDLE, int, void *, ULONG, ULONG *);
     static QitFn qit; if (!qit) qit = (QitFn)(void *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread");
     struct { LONG st; void *teb; void *pid, *tid; ULONG_PTR mask; LONG pri, bpri; } tb; memset(&tb, 0, sizeof tb);
     if (!qit || qit(h, 0, &tb, sizeof tb, NULL) < 0) return NULL;
-    if (g_nteb < 512) { g_teb_cache[g_nteb].h = h; g_teb_cache[g_nteb].teb = tb.teb; g_nteb++; }
+    if (g_nteb < 512) { g_teb_cache[g_nteb].h = h; g_teb_cache[g_nteb].tid = tid; g_teb_cache[g_nteb].teb = tb.teb; g_nteb++; }
     return tb.teb;
 }
 static int live_running(void *fiber) {                 /* the host fiber is the current fiber of a thread (its TEB says so) */
