@@ -493,6 +493,8 @@ static void rbg_fight_off(void) {
     if (g_rbg_in_match == 1) { rbg_report(); r1_ring_let_go(); if (g_rg_ready) r1_ring_release(); g_rbg_rebase = 1; }
     else if (g_rbg_in_match == 3) LOG("r1: RB NET: the Local Wireless room fight is over\n");
     else LOG("r1: RB NET: the match that was not agreed is over after %.1f s (player 1 walked off)\n", (now_ms() - g_rbg_quit_t0) / 1000.0);
+    {   int rbn_room_rollback(void), rbn_local_player(void); void nnhid_room_after_start(void);      /* (0.2.15) the joiner's result screen: its pad on port 2 */
+        if (g_rbg_in_match == 1 && rbn_room_rollback() && rbn_local_player() == 1) nnhid_room_after_start(); }
     if (g_rg_nomem == 1) g_rg_nomem = 0;                /* (hs13) nothing was kept: the next match tries the ring again */
     g_rbg_noring = 0;
     LOG("r1: RB NET: match %d over: ring emptied, session reset for the next match\n", rbn_match_number());

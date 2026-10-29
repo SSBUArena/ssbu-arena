@@ -28,8 +28,10 @@ namespace Arena
         {
             InitializeComponent();
             VersionText.Text = "v" + Updater.Current.ToString(3);      // (0.2.11) the release in use, in the status bar after the online state
-            // (0.2.8, the user's choice) opens at its smallest size (MinWidth x MinHeight); the page is scaled to it (Rescale)
-            Width = MinWidth; Height = MinHeight;
+            // (0.2.15) opens at the design size (1586 x 956 under the title bar) when the screen has room, else at 88 % of the work
+            // area in the same shape: at its smallest size (0.2.8) the page was scaled to 0.6 and its text was small and blurred
+            {   var wa = SystemParameters.WorkArea; double dw = 1586, dh = 956 + 36, k = Math.Min(1.0, Math.Min(wa.Width * 0.88 / dw, wa.Height * 0.88 / dh));
+                Width = Math.Max(MinWidth, Math.Round(dw * k)); Height = Math.Max(MinHeight, Math.Round(dh * k)); }
             // (0.2.8) resizing keeps the window's proportions (the page is laid out for one shape)
             SourceInitialized += (s0, e0) => System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(this).Handle).AddHook(KeepAspect);
             Core.Load();
