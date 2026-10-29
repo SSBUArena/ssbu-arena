@@ -173,7 +173,8 @@ static void rbg_step_body(Ctx *c) {
              * fight, instead of at the first frame of the room's match: that match's base is then a rebase (only the pages that
              * changed since). SSBU_RB_PREWARM=0: the old way. */
             static int pw = -1; if (pw < 0) { const char *e = getenv("SSBU_RB_PREWARM"); pw = !(e && e[0] == '0'); }
-            if (pw && !g_rg_ready && !g_rg_nomem && !g_rbg_rebase) {
+            int rbn_local_fight(void);
+            if (pw && !g_rg_ready && !g_rg_nomem && !g_rbg_rebase && !rbn_local_fight()) {      /* (0.2.11: a local fight against friends or CPUs is not a room: nothing to prepare) */
                 double t0 = now_ms();
                 r1_ring_capture(0, c);
                 if (g_rg_ready) { g_rbg_rebase = 1; LOG("r1: RB NET: the ring's first full save made at the room's waiting stage (%.1f ms): the match's base will be a rebase\n", now_ms() - t0); }

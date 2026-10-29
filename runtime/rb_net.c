@@ -194,6 +194,8 @@ uint64_t rbn_match_seed(void) {
 }
 static volatile LONG g_hs_room;                         /* (pub2) the last set-up was inside a Local Wireless room (until the next set-up: the fight-off of the
                                                            * room's waiting-stage fight comes AFTER the room match's set-up, run rm4) */
+static volatile LONG g_hs_local;                        /* (0.2.11) the last set-up was a LOCAL fight (no room code, not a quick match): not a room */
+int rbn_local_fight(void) { return (int)g_hs_local; }
 int rbn_match_cancelled(void) { return g_hs_room ? 2 : (int)g_hs_cancelled; }      /* 0, 1 (not agreed: walk off) or 2 (pub2: a room fight, the game's own netcode) */
 /* (R3 lwr) debug_mode.c tells which set-up this is: 1 = a Local Wireless room's waiting-stage fight (the record builder called from
  * the waiting-stage set-up, one player), 0 = any other (the select screens' "ready to fight", also the room's match) */
@@ -357,7 +359,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
      * here stopped its traffic: the other game waited on its loading screen for it, then left the room. So no handshake and no
      * rollback for these fights: they are played exactly as without rollback, whatever the other game's setting; a box says so
      * once. Rollback matches: Smash (versus) with a room code (host / join modes). SSBU_RB_NET_ROOM_MATCH=1: the old way (test). */
-    InterlockedExchange(&g_hs_room, 0);
+    InterlockedExchange(&g_hs_room, 0); InterlockedExchange(&g_hs_local, 0);
     /* (R3 lwr, owner 2026-10-21: "il rollback deve essere attivo anche nel local wireless con le stanze") the room's MATCH (not its
      * waiting-stage fight) with rollback on both games: the room has already agreed fighters, stage and rules on both PCs, so the
      * handshake here only checks that and agrees on a seed (no menus to wait for: both games reach this set-up together when the
@@ -407,7 +409,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
     int comp_quickplay(void); int quick = comp_quickplay();
     {   const char *e = getenv("SSBU_RB_NET_FIND"); int mode = net_online() > 0 ? net_mode() : -1;
         if (!lwr /* (R3 lwr: a room match) */ && mode != 2 /* NET_MODE_HOST */ && mode != 3 /* NET_MODE_JOIN */ && !(e && e[0] == '1') && !quick) {
-            InterlockedExchange(&g_hs_room, 1);
+            InterlockedExchange(&g_hs_room, 1); InterlockedExchange(&g_hs_local, 1);
             printf("[rbnet] handshake %ld: no room code: a local fight, played as without rollback\n", (long)round);
             fflush(stdout);
             return 0;
