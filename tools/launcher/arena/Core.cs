@@ -162,13 +162,7 @@ namespace Arena
                 if (Get(o2, "nickname") != null) Nickname = o2["nickname"];
             }
 
-            var G = ReadIni(GfxIni);
-            Aspect = Get(G, "aspect") == "stretch" ? 1 : 0;
-            WindowMode = Get(G, "window") == "borderless" ? 1 : Get(G, "window") == "fullscreen" ? 2 : 0;
-            if (Get(G, "width") != null && Get(G, "height") != null) WindowSize = G["width"] + "x" + G["height"];
-            Volume = int.TryParse(Get(G, "volume"), out var vol) ? Math.Max(0, Math.Min(100, vol)) : 100;
-            Fps = Get(G, "stats_overlay") == "on";
-            if (Get(G, "ping_overlay") != null) Ping = Get(G, "ping_overlay") != "off";      // (0.2.8) the in-game menu's choice wins: one switch in both places
+            LoadGfx();
             Buttons = new Dictionary<string, string>(DefaultButtons);
             foreach (var kv in ReadIniSection(PadIni, "type xbox"))
                 if (kv.Key.StartsWith("map.") && DefaultButtons.ContainsKey(kv.Key.Substring(4).ToUpperInvariant()) && PadSources.Any(x => x.Item1 == kv.Value.Trim().ToLowerInvariant()))
@@ -178,6 +172,36 @@ namespace Arena
             Player2 = (Get(P, "player2") ?? "auto").ToLowerInvariant();
             string kb = Get(P, "player");
             Keyboard = kb == "1" ? 1 : kb == "2" ? 2 : kb == "none" ? 3 : 0;
+        }
+
+        /// <summary>(0.2.12) the graphics.ini keys as the launcher last read or wrote them: Save writes only the ones the player
+        /// changed here since, so the in-game menu's choices (F1: the FPS counter, the window, the volume...) are not put back
+        /// by the next PLAY</summary>
+        static Dictionary<string, string> gfxSeen = new Dictionary<string, string>();
+
+        /// <summary>(0.2.12) graphics.ini read (Load, and again when the game ends: the in-game menu writes it)</summary>
+        public static void LoadGfx()
+        {
+            var G = ReadIni(GfxIni);
+            Aspect = Get(G, "aspect") == "stretch" ? 1 : 0;
+            WindowMode = Get(G, "window") == "borderless" ? 1 : Get(G, "window") == "fullscreen" ? 2 : 0;
+            if (Get(G, "width") != null && Get(G, "height") != null) WindowSize = G["width"] + "x" + G["height"];
+            Volume = int.TryParse(Get(G, "volume"), out var vol) ? Math.Max(0, Math.Min(100, vol)) : 100;
+            Fps = Get(G, "stats_overlay") == "on";
+            if (Get(G, "ping_overlay") != null) Ping = Get(G, "ping_overlay") != "off";      // (0.2.8) the in-game menu's choice wins: one switch in both places
+            gfxSeen = GfxValues().Where(kv => Get(G, kv.Key) != null).ToDictionary(kv => kv.Key, kv => kv.Value);      // a key not in the file yet is written
+        }
+
+        static Dictionary<string, string> GfxValues()
+        {
+            var gfx = new Dictionary<string, string> {
+                { "aspect", Aspect == 1 ? "stretch" : "keep" },
+                { "window", new[] { "windowed", "borderless", "fullscreen" }[Math.Max(0, Math.Min(2, WindowMode))] },
+                { "latency", "normal" },        // input latency: always normal (the option is gone)
+                { "volume", Volume.ToString() }, { "stats_overlay", Fps ? "on" : "off" }, { "ping_overlay", Ping ? "on" : "off" } };
+            var m = Regex.Match(WindowSize.Trim(), @"^(\d{3,5})\s*[xX*]\s*(\d{3,5})$");
+            if (m.Success) { gfx["width"] = m.Groups[1].Value; gfx["height"] = m.Groups[2].Value; }
+            return gfx;
         }
 
         public static void Save()
@@ -199,14 +223,9 @@ namespace Arena
                 "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp,
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off"), "replay_upload = " + (RecUpload ? "on" : "off"), "replay_public = " + (RecPublic ? "on" : "off") }, Encoding.ASCII);
-            var gfx = new Dictionary<string, string> {
-                { "aspect", Aspect == 1 ? "stretch" : "keep" },
-                { "window", new[] { "windowed", "borderless", "fullscreen" }[Math.Max(0, Math.Min(2, WindowMode))] },
-                { "latency", "normal" },        // input latency: always normal (the option is gone)
-                { "volume", Volume.ToString() }, { "stats_overlay", Fps ? "on" : "off" }, { "ping_overlay", Ping ? "on" : "off" } };
-            var m = Regex.Match(WindowSize.Trim(), @"^(\d{3,5})\s*[xX*]\s*(\d{3,5})$");
-            if (m.Success) { gfx["width"] = m.Groups[1].Value; gfx["height"] = m.Groups[2].Value; }
-            SetIniValues(GfxIni, null, gfx);
+            var gfx = GfxValues();
+            SetIniValues(GfxIni, null, gfx.Where(kv => kv.Key == "latency" || !gfxSeen.TryGetValue(kv.Key, out var v) || v != kv.Value).ToDictionary(kv => kv.Key, kv => kv.Value));
+            gfxSeen = gfx;
             SetIniValues(PadIni, "players", new Dictionary<string, string> { { "player1", Player1 }, { "player2", Player2 } });
             SetIniValues(PadIni, "keyboard", new Dictionary<string, string> { { "player", new[] { "auto", "1", "2", "none" }[Math.Max(0, Math.Min(3, Keyboard))] } });
             var map = Buttons.ToDictionary(kv => "map." + kv.Key, kv => kv.Value);

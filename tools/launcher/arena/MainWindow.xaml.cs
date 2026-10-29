@@ -256,6 +256,8 @@ namespace Arena
         }
 
         // ---------------------------------------------------------------- settings
+        int filledSize = -1, filledVol = -1;      // (0.2.12) the size and volume boxes as FillSettings set them
+
         void FillSettings()
         {
             NameBox.Text = Core.Nickname;
@@ -275,6 +277,7 @@ namespace Arena
             KbBox.SelectedIndex = Core.Keyboard;
             VolBox.ItemsSource = Enumerable.Range(0, 11).Select(i => (i * 10) + " %").ToList();
             VolBox.SelectedIndex = Math.Max(0, Math.Min(10, (Core.Volume + 5) / 10));
+            filledSize = SizeBox.SelectedIndex; filledVol = VolBox.SelectedIndex;
             FillButtons();
             FillPads();
             RefreshSaves();
@@ -291,11 +294,11 @@ namespace Arena
             Core.RecLocal = RecLocalBox.IsChecked == true; Core.RecUpload = RecUploadBox.IsChecked == true; Core.RecPublic = RecPublicBox.IsChecked == true;
             Core.Server = Core.Servers[Math.Max(0, ServerBox.SelectedIndex)].Address;
             Core.WindowMode = Math.Max(0, WinBox.SelectedIndex);
-            Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;
+            if (SizeBox.SelectedIndex != filledSize) Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;      // (0.2.12) a size set in the game, not in this list, stays
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
             Core.Fps = FpsBox.IsChecked == true;
             Core.Keyboard = Math.Max(0, KbBox.SelectedIndex);
-            if (VolBox.SelectedIndex >= 0) Core.Volume = VolBox.SelectedIndex * 10;
+            if (VolBox.SelectedIndex >= 0 && VolBox.SelectedIndex != filledVol) Core.Volume = VolBox.SelectedIndex * 10;      // (0.2.12) the game's own volume (any step) stays until changed here
             foreach (var cb in btnBoxes) if (cb.SelectedIndex >= 0) Core.Buttons[(string)cb.Tag] = Core.PadSources[cb.SelectedIndex].Item1;
             if (P1Box.SelectedIndex >= 0) Core.Player1 = padGuids[P1Box.SelectedIndex];
             if (P2Box.SelectedIndex >= 0) Core.Player2 = padGuids[P2Box.SelectedIndex];
@@ -655,12 +658,18 @@ namespace Arena
         Process updating;
         Release release;
         List<string> updSteps = new List<string>();
-        static readonly System.Text.RegularExpressions.Regex UpdField = new System.Text.RegularExpressions.Regex("\"(\\w+)\":\\s*(?:\"([^\"]*)\"|(-?[\\d.]+)|(true|false))");
+        internal static readonly System.Text.RegularExpressions.Regex UpdField = new System.Text.RegularExpressions.Regex("\"(\\w+)\":\\s*(?:\"([^\"]*)\"|(-?[\\d.]+)|(true|false))");
 
         /// <summary>at every start: the latest release (in the background); then a newer launcher, the game's update or the
         /// first install. Offline or no release: the launcher goes on as it is.</summary>
         void CheckUpdates()
         {
+            if (UpdateWindow.Checked)      // (0.2.12) the update window made the check and the updates: only what it left (the game was running)
+            {
+                release = UpdateWindow.Release;
+                if (release != null && UpdateWindow.GameLeft && Updater.GameOutdated(release) && System.IO.File.Exists(Core.Exe)) UpdateGame();
+                return;
+            }
             Updater.CleanUp();
             try { System.IO.File.Delete(System.IO.Path.Combine(Core.Repo ?? System.IO.Path.GetDirectoryName(Updater.ExePath), Core.Repo != null ? @"build\launcher_update.log" : "launcher_update.log")); } catch { }
             Updater.Log("launcher " + Updater.Current + ", repo " + (Core.Repo ?? "(not installed)") + ", build " + Core.Build + (Updater.DevCopy ? ", git checkout" : ""));
@@ -766,7 +775,7 @@ namespace Arena
             if (ev == "step" && v.TryGetValue("state", out var s2) && s2 == "start") PrepDetail.Text = UpdateStepName(id);
         }
 
-        static string UpdateStepName(string id)
+        internal static string UpdateStepName(string id)
         {
             switch (id)
             {
@@ -957,6 +966,8 @@ namespace Arena
         void GameExited()
         {
             game = null;
+            // (0.2.12) the in-game menu (F1) writes graphics.ini: its choices shown here, and kept by the next PLAY
+            try { Core.LoadGfx(); bool was = loading; loading = true; FillSettings(); loading = was; } catch { }
             ReplaysAfterGame();         // (MainWindow.Replays.cs) the cap on local files, the upload of new online matches
             HideTray();
             FromTray();
