@@ -448,7 +448,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
         g_rgp_seg = seg_was;
         if (g_rg_nomem) return 0;                         /* (hs13) out of memory: not tried again in this match */
         g_save_failed = 0; g_ra_wd_pause = 1; g_rs_drop = 1;
-        save(c); release(); g_rs_drop = 0;
+        double ts0 = now_ms(); save(c); double ts1 = now_ms(); release(); g_rs_drop = 0; double ts2 = now_ms();
         g_ra_wd_pause = 0;
         if (g_save_failed == 2) { g_rg_nomem = 1; LOG("r1: RING: the base state was NOT made (out of memory: free commit %.0f MB, needed %.0f MB + 1024 MB left for the game): no rollback ring\n", g_save_avail_mb, g_save_need_mb); return 0; }
         if (g_save_failed) return 0;
@@ -459,7 +459,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
         RgSlot *s = &g_rg[0]; g_rg_head = 0; g_rg_count = 1;
         s->frame = frame; s->nent = 0;
         rg_meta_capture(s, &g_ctx_save);
-        LOG("r1: RING: base state (frame %lld): full save in %.1f ms\n", frame, now_ms() - t0);
+        LOG("r1: RING: base state (frame %lld): full save in %.1f ms (save %.1f, release %.1f, ring init + meta %.1f)\n", frame, now_ms() - t0, ts1 - ts0, ts2 - ts1, now_ms() - ts2);
         return 1;
     }
     if (g_rg_poolfix < 0) { const char *e = getenv("SSBU_RB_POOLFIX"); g_rg_poolfix = !(e && e[0] == '0'); }
@@ -550,6 +550,7 @@ int r1_ring_rebase(long long frame, Ctx *c) {
     double t0 = now_ms();
     r1_ring_let_go();
     r1_ring_release();
+    { size_t np = 0; for (int i = 0; i < g_nr; i++) np += g_r[i].n / PG; cp_init(); cp_reserve(np + np / 4 + 65536); }   /* (0.2.11) before the hold */
     if (!ra_hold_quiet(200)) { LOG("r1: RING rebase (frame %lld): no quiet moment within 200 ms: next pass\n", frame); return 0; }
     double t1 = now_ms();
     hs_exclude_all();
@@ -578,14 +579,21 @@ int r1_ring_rebase(long long frame, Ctx *c) {
                 int w2 = cm == g_sh2c;
                 if (w2 ? g_ns2[pi] : g_ns1[pi]) continue;                    /* not simulation (a host stack) */
                 in[w2 ? g_rg_n1 + pi : pi] = 1;
-                if (!sh_commit(sh, cm, pi)) { free(in); g_rg_nomem = 2; unpark(); LOG("r1: RING rebase: commit of the shadow FAILED (out of memory): no rollback ring for the rest of this session\n"); return 0; }
-                memcpy(sh, a, PG); copied++;
+                if (!sh_commit(sh, cm, pi)) { cp_clear(); free(in); g_rg_nomem = 2; unpark(); LOG("r1: RING rebase: commit of the shadow FAILED (out of memory): no rollback ring for the rest of this session\n"); return 0; }
+                cp_add(sh, a); copied++;                  /* (0.2.11) compared and, where it differs, copied by main + the helpers below */
                 if (!w2) g_dc[pi] = 0;
             } else if (nnx < 8192) {
                 if (nnx && nx[nnx - 1].a + nx[nnx - 1].n == a) nx[nnx - 1].n += PG;
                 else { nx[nnx].a = a; nx[nnx].n = PG; nx[nnx].b = NULL; nnx++; }
             }
         }
+    }
+    long long wrote = 0;
+    {   /* (0.2.11) the rebase was a copy of every page (~1.9 GB) by main alone: 0.7-1.3 s at the first frame of each match after the
+         * first one. The shadow already holds the previous base: only the pages that differ are written, by main + the helpers. */
+        for (int k = 0; k < 9; k++) g_cp_wrote[k] = 0;
+        g_cp_cond = 1; cp_run_big(); g_cp_cond = 0;
+        for (int k = 0; k < 9; k++) wrote += g_cp_wrote[k];
     }
     for (size_t id = 0; id < nwin; id++) {
         if (g_rg_idx[id] != RG_FLAT) { if (g_rg_idx[id] >= 2) freed++; rg_pool_put(g_rg_idx[id]); g_rg_idx[id] = RG_FLAT; }
@@ -624,8 +632,8 @@ int r1_ring_rebase(long long frame, Ctx *c) {
     ls_rebase();                                          /* R4: the windows read-only again, the learned set emptied */
     unpark();
     g_rg_caps++;
-    LOG("r1: RING rebase: base state (frame %lld) made again in %.1f ms (hold %.1f, copy %.1f): %zu window pages copied into the shadow (%.1f MB), %zu pool buffers freed, %zu shadow pages of pages not committed now dropped; extras %d ranges %.1f MB (%zu pages); %d modules got the mark maps\n",
-        frame, now_ms() - t0, t1 - t0, t2 - t1, copied, copied * (double)PG / 1048576.0, freed, dropped, g_nx, g_xbytes / 1048576.0, g_rg_nx, nmod);
+    LOG("r1: RING rebase: base state (frame %lld) made again in %.1f ms (hold %.1f, copy %.1f): %zu window pages compared with the shadow (%.1f MB), %lld differed and were copied (%.1f MB; main + %d helpers), %zu pool buffers freed, %zu shadow pages of pages not committed now dropped; extras %d ranges %.1f MB (%zu pages); %d modules got the mark maps\n",
+        frame, now_ms() - t0, t1 - t0, t2 - t1, copied, copied * (double)PG / 1048576.0, wrote, wrote * (double)PG / 1048576.0, g_ncp_big, freed, dropped, g_nx, g_xbytes / 1048576.0, g_rg_nx, nmod);
     return 1;
 }
 /* (R3 hs13: tl4 / nmr / le3a / lg2a / lh4, c00000ff in ntdll's unwinder at a lua2cpp L2CExceptionShutdown throw, about 1 loop
