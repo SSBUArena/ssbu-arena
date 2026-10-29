@@ -563,10 +563,11 @@ static void rg_noop(uint32_t id, int w, size_t j) { (void)id; (void)w; (void)j; 
 #define LB_DONE 3
 #define LB_CHUNK 64
 static void lb_drain(void);
-static int g_lb_on = -1, g_lb_nth;
+static int g_lb_on = -1, g_lb_nth; static size_t g_lb_ns;      /* g_lb_ns: host stack pages met in this base (taken in the hold) */
 static volatile uint8_t *g_lb_st;                       /* per ring page id (window 1, then window 2) */
 static uint32_t *g_lb_list; static size_t g_lb_n, g_lb_cap;
 static volatile LONG64 g_lb_next, g_lb_left, g_lb_copied, g_lb_by_fault, g_lb_by_hook, g_lb_workers, g_lb_commit_fail;
+static long long g_lb_kept;                               /* pages a load left as they were (still pending: their base value) */
 static volatile LONG g_lb_active;
 static HANDLE g_lb_go;
 static double g_lb_t0, g_lb_hold_ms; static long long g_lb_frame;
@@ -589,8 +590,8 @@ static int lb_commit(uint32_t id) {
 static void lb_finished(void) {
     if (g_lb_commit_fail && g_rg_nomem != 2) { g_rg_nomem = 2; LOG("r1: LAZY BASE: %lld shadow commits FAILED (out of memory): no rollback ring for the rest of this session\n", (long long)g_lb_commit_fail); }
     if (InterlockedExchange(&g_lb_active, 0))
-        LOG("r1: LAZY BASE (frame %lld): the shadow complete %.1f ms after the base (hold %.1f ms): %zu pages, %lld copied (%.1f MB), %lld taken at their first write, %lld by host writes / commits\n",
-            g_lb_frame, now_ms() - g_lb_t0, g_lb_hold_ms, g_lb_n, (long long)g_lb_copied, g_lb_copied * (double)PG / 1048576.0, (long long)g_lb_by_fault, (long long)g_lb_by_hook);
+        LOG("r1: LAZY BASE (frame %lld): the shadow complete %.1f ms after the base (hold %.1f ms): %zu pages, %lld copied (%.1f MB), %lld taken at their first write, %lld by host writes / commits, %lld left as they were by loads\n",
+            g_lb_frame, now_ms() - g_lb_t0, g_lb_hold_ms, g_lb_n, (long long)g_lb_copied, g_lb_copied * (double)PG / 1048576.0, (long long)g_lb_by_fault, (long long)g_lb_by_hook, g_lb_kept);
 }
 /* one page: 1 = taken here, 0 = it was not pending (or another thread had it: waited until it is done) */
 static int lb_take(uint32_t id) {
@@ -670,12 +671,17 @@ static int lb_prepare(size_t np) {
         AddVectoredExceptionHandler(1, lb_veh);
     }
     if (g_lb_cap < np) { uint32_t *nl = realloc(g_lb_list, np * sizeof *nl); if (!nl) { g_lb_on = 0; return 0; } g_lb_list = nl; g_lb_cap = np; }
-    g_lb_n = 0;
+    g_lb_n = 0; g_lb_ns = 0;
     return 1;
 }
 /* the rebase's loop, threads held: one simulation page of a window to bring into the shadow */
 static void lb_add(uint8_t *a, int xrw) {
     uint32_t id; if (!lb_id(a, &id)) return;
+    /* (0.2.11, the replay agent's detA8 crashes) a host thread's or host fiber's stack inside a window (hs13: the OS may put them
+     * there) is never made read-only: the thread's own next push would fault on its stack and the exception could not even be
+     * delivered (it is written on that stack). Such pages are taken during the hold, as before. The rebase skipped them already;
+     * the lazy first save (mark_setup) did not. */
+    if (id < g_rg_n1 ? g_ns1[id] : g_ns2[id - g_rg_n1]) { xrw = 1; g_lb_ns++; }
     if (xrw) { if (lb_commit(id)) cp_add(lb_shadow(id), a); else g_rg_nomem = 2; return; }        /* (a range not all plain read-write: taken during the hold) */
     if (g_lb_n < g_lb_cap) { g_lb_list[g_lb_n++] = id; g_lb_st[id] = LB_PENDING; }
     else cp_add(lb_shadow(id), a);                        /* (no room left in the list: taken during the hold) */
@@ -683,7 +689,7 @@ static void lb_add(uint8_t *a, int xrw) {
 /* still in the hold: the listed pages read-only (plain read-write regions; the others are taken now), then the copy threads go */
 static void lb_start(long long frame, double hold_t0) {
     double t0 = now_ms();
-    g_lb_next = 0; g_lb_left = (LONG64)g_lb_n; g_lb_copied = g_lb_by_fault = g_lb_by_hook = 0; g_lb_frame = frame;
+    g_lb_next = 0; g_lb_left = (LONG64)g_lb_n; g_lb_copied = g_lb_by_fault = g_lb_by_hook = 0; g_lb_kept = 0; g_lb_frame = frame;
     size_t eager = 0, runs = 0, bad = 0;
     for (size_t j = 0; j < g_lb_n; ) {                    /* runs of consecutive pages inside plain read-write ranges (collect): one call each */
         size_t r = j + 1;
@@ -701,7 +707,7 @@ static void lb_start(long long frame, double hold_t0) {
     g_lb_active = 1;
     InterlockedExchange64(&g_lb_workers, g_lb_nth);
     ReleaseSemaphore(g_lb_go, g_lb_nth, NULL);
-    LOG("r1: LAZY BASE (frame %lld): %lld pages pending (read-only in %.1f ms, %zu runs%s), %zu taken during the hold; %d copy threads behind the game\n", frame, (long long)g_lb_left, t1 - t0, runs, bad ? ", SOME REFUSED: taken" : "", eager, g_lb_nth);
+    LOG("r1: LAZY BASE (frame %lld): %lld pages pending (read-only in %.1f ms, %zu runs%s), %zu taken during the hold, %zu host stack pages left writable; %d copy threads behind the game\n", frame, (long long)g_lb_left, t1 - t0, runs, bad ? ", SOME REFUSED: taken" : "", eager, g_lb_ns, g_lb_nth);
 }
 /* the pass finished (main helps), every page writable and the shadow whole */
 static void lb_drain(void) {
@@ -952,6 +958,14 @@ int r1_ring_load(long long frame, Ctx *c) {
     for (size_t n = 0; n < g_rg_ntl; n++) {               /* each page once, from its value at `frame` */
         uint32_t id = g_rg_tl[n]; g_rg_touch[id] = 0;
         uint8_t *a = rg_addr(id), *src = rg_src(id);
+        if (g_lb_active && id < g_rg_n1 + g_rg_n2 && g_rg_idx[id] == RG_FLAT && g_lb_st[id]) {
+            /* (0.2.11, the lazy base: the replay agent's detA8 crashes) a page whose value at `frame` is the base's: while it is still
+             * PENDING it was not written since the base (it is read-only), so it already holds that value - left as it is. The load
+             * used to copy it from the shadow, which a lazy base has not filled yet (pages reported written that were not: the
+             * stacks' write watch, ranges marked whole); with a full shadow that copy was harmless. One being taken: waited for. */
+            if (g_lb_st[id] == LB_PENDING) { g_lb_kept++; continue; }
+            while (g_lb_st[id] == LB_BUSY) YieldProcessor();
+        }
         if (src == (uint8_t *)1) {                         /* decommitted then */
             /* (Arena) committed since (by the frames thrown away): zeroed, as a fresh commit; it was left as it was and the game's
              * next commit of it found the old bytes (nu::GraphicsDevice::Update crash). SSBU_RB_DECOMFIX=0: left as it is */
