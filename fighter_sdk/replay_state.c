@@ -71,6 +71,11 @@ typedef struct { RvFig f; RvHit hit[RV_MAXHIT]; RvHurt hurt[RV_MAXHURT]; } RvSam
 typedef struct { long long frame; uint8_t mask; uint64_t valid; RvSample s[RV_MAXF]; float lines[RV_MAXLINE][4]; } RvSlot;
 
 static int g_rv_on = -1, g_rv_rb;                      /* on; this match runs in a rollback session */
+/* (0.2.11) per match: g_rv_mrb = this match goes through the rollback session (final frames from rv_final). A LOCAL fight in a
+ * rollback session (online on: friends or CPUs, no room code) never reaches rv_pass / rv_final: it is recorded as offline, every
+ * frame (it was not recorded at all). A room's waiting-stage fight still is not. */
+static int g_rv_mrb; int rbn_local_fight(void);
+static int rv_match_rb(void) { return g_rv_rb && !rbn_local_fight(); }
 static RvSlot g_rv_acc;                                /* the pass now running */
 static RvSlot *g_rv_ring;                              /* rollback: the last simulation of each frame, by frame number */
 static uint8_t *g_rv_buf; static size_t g_rv_len, g_rv_cap;
@@ -164,7 +169,7 @@ static void rv_head_start(void) {
     }
     const char *nick = getenv("SSBU_NICKNAME");
     h->local_player = rbn_on() > 0 ? (uint32_t)rbn_local_player() : 0;
-    h->flags = (g_rv_rb ? 1u : 0u) | (rbn_on() > 0 && rbn_loop() ? 2u : 0u);
+    h->flags = (g_rv_mrb ? 1u : 0u) | (rbn_on() > 0 && rbn_loop() ? 2u : 0u);
     h->match_number = rbn_on() > 0 ? (uint32_t)rbn_match_number() : 0;
     h->seed = rbn_match_seed();
     for (int i = 0; i < h->nfighters; i++) {
@@ -423,12 +428,13 @@ static int rv_mode_on(int kind) {
 }
 static void rv_begin(void) {
     if (g_rv_active) rv_end("a new match", 0);
-    {   int dm_match_kind(void); int kind = rbn_on() > 0 && !rbn_loop() ? dm_match_kind() : 0;
+    {   int dm_match_kind(void); int kind = rbn_on() > 0 && !rbn_loop() && !rbn_local_fight() ? dm_match_kind() : 0;
         if (!rv_mode_on(kind)) {
             if (!g_rv_skip) { printf("[rv] this match is not recorded (kind %d not in SSBU_REPLAY_MODES)\n", kind); fflush(stdout); }
             g_rv_skip = 1; return;
         }
         g_rv_skip = 0; }
+    g_rv_mrb = rv_match_rb();                           /* (0.2.11) this match: rollback (final frames) or every frame */
     g_rv_active = 1; g_rv_frames = 0; g_rv_len = 0; g_rv_last_final = 0; g_rv_direct_n = 0;
     g_rv_nlines = 0; g_rv_scan_x = 0; g_rv_scan_done = 0; g_rv_scan_final = 0; g_rv_cost_ticks = g_rv_cost_n = g_rv_cost_max = g_rv_scan_ticks = g_rv_lines_ticks = 0; memset(g_rv_cost_hist, 0, sizeof g_rv_cost_hist);
     memset(&g_rv_acc, 0, sizeof g_rv_acc);
@@ -437,14 +443,14 @@ static void rv_begin(void) {
     rv_head_start();
     memset(g_rv_head.slot_entry, 0xff, sizeof g_rv_head.slot_entry);
     {   int dm_match_kind(void); uint32_t rbn_match_id(void);
-        g_rv_head.kind = (uint8_t)(rbn_on() > 0 && !rbn_loop() ? dm_match_kind() : 0);
+        g_rv_head.kind = (uint8_t)(rbn_on() > 0 && !rbn_loop() && !rbn_local_fight() ? dm_match_kind() : 0);
         g_rv_head.match_id = g_rv_head.kind ? rbn_match_id() : 0;
         const char *n = getenv("SSBU_ONLINE_NAME"); if (!n || !*n) n = getenv("SSBU_NICKNAME");
         if (n) snprintf(g_rv_head.local_name, sizeof g_rv_head.local_name, "%.31s", n);
         if (n && *n && g_rv_head.kind && g_rv_head.local_player < g_rv_head.nfighters)
             snprintf(g_rv_head.fighter[g_rv_head.local_player].name, sizeof g_rv_head.fighter[0].name, "%.31s", n); }
     if (!g_rv_buf) { g_rv_cap = (size_t)8 << 20; g_rv_buf = malloc(g_rv_cap); if (!g_rv_buf) g_rv_cap = 0; }      /* (about 7 minutes: no growth on the main thread in most matches) */
-    printf("[rv] recording the match state (%s): %d fighters, stage %llx\n", g_rv_rb ? "final frames of the rollback session" : "every frame", g_rv_head.nfighters, (unsigned long long)g_rv_head.ui_stage);
+    printf("[rv] recording the match state (%s): %d fighters, stage %llx\n", g_rv_mrb ? "final frames of the rollback session" : "every frame", g_rv_head.nfighters, (unsigned long long)g_rv_head.ui_stage);
     fflush(stdout);
 }
 static int rv_enabled(void) {
@@ -502,7 +508,7 @@ static void rv_frame_line(Ctx *c, uint64_t boma, int k, long long ff) {
     if (!rv_fight_on()) return;                         /* the countdown and the end of the match are not recorded */
     LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
     rv_fns();
-    if (!g_rv_rb && !g_rv_active && !g_rv_skip) rv_begin();
+    if (!rv_match_rb() && !g_rv_active && !g_rv_skip) rv_begin();
     if (!g_rv_active) return;
     AcquireSRWLockExclusive(&g_rv_lock);
     Ctx saved = *c;
@@ -522,7 +528,7 @@ static void rv_frame_line(Ctx *c, uint64_t boma, int k, long long ff) {
             printf("[rv] shield work float: %s (area %d index %d)\n", g_rv_shield_idx >= 0 ? "found" : "not found", g_rv_shield_idx >> 12, g_rv_shield_idx & 0xfff);
         }
     }
-    if (!g_rv_rb && k == 0 && g_rv_acc.mask) {          /* offline: the next frame begins at fighter 0: the last one is final */
+    if (!g_rv_mrb && k == 0 && g_rv_acc.mask) {          /* offline: the next frame begins at fighter 0: the last one is final */
         if (g_rv_nlines) rv_lines_now(c, &g_rv_acc);
         rv_append(&g_rv_acc, ++g_rv_direct_n);
         g_rv_acc.mask = 0;
@@ -550,7 +556,7 @@ static void rv_frame_line(Ctx *c, uint64_t boma, int k, long long ff) {
             }
         }
     }
-    if (g_rv_rb && k == 0 && g_rv_nlines) { LARGE_INTEGER a, b; QueryPerformanceCounter(&a); rv_lines_now(c, &g_rv_acc); QueryPerformanceCounter(&b); g_rv_lines_ticks += b.QuadPart - a.QuadPart; }
+    if (g_rv_mrb && k == 0 && g_rv_nlines) { LARGE_INTEGER a, b; QueryPerformanceCounter(&a); rv_lines_now(c, &g_rv_acc); QueryPerformanceCounter(&b); g_rv_lines_ticks += b.QuadPart - a.QuadPart; }
     g_rv_acc.mask |= (uint8_t)(1 << k);
     *c = saved;
     ReleaseSRWLockExclusive(&g_rv_lock);
@@ -563,7 +569,7 @@ static void rv_frame_line(Ctx *c, uint64_t boma, int k, long long ff) {
 }
 /* rb_net.c rbn_pass_hash: the safe point after pass f (0 = the base state: a new match) */
 void rv_pass(long long f) {
-    if (!rv_enabled() || !g_rv_rb) return;
+    if (!rv_enabled() || !rv_match_rb()) return;
     AcquireSRWLockExclusive(&g_rv_lock);
     if (f == 0) { ReleaseSRWLockExclusive(&g_rv_lock); rv_begin(); AcquireSRWLockExclusive(&g_rv_lock); }
     else if (g_rv_active && g_rv_ring) { RvSlot *s = &g_rv_ring[f % RV_RING]; memcpy(s, &g_rv_acc, sizeof *s); s->frame = g_rv_acc.mask ? f : -1; }
@@ -572,7 +578,7 @@ void rv_pass(long long f) {
 }
 /* rb_net.c rbn_finalize: frame f is final (both pads known, no rollback can reach it any more) */
 void rv_final(long long f) {
-    if (!g_rv_on || !g_rv_rb || !g_rv_active || !g_rv_ring || f <= g_rv_last_final) return;
+    if (!g_rv_on || !g_rv_mrb || !g_rv_active || !g_rv_ring || f <= g_rv_last_final) return;
     AcquireSRWLockExclusive(&g_rv_lock);
     const RvSlot *s = &g_rv_ring[f % RV_RING];
     if (s->frame == f) rv_append(s, f);
