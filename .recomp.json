@@ -50,7 +50,7 @@
   "links": [
     {
       "label": "Source",
-      "url": "https://github.com/Acid236/ssbu-arena"
+      "url": "https://github.com/ssbuarena/ssbu-arena"
     },
     {
       "label": "Website",
@@ -58,7 +58,7 @@
     },
     {
       "label": "How to build",
-      "url": "https://github.com/Acid236/ssbu-arena/blob/main/BUILDING.md"
+      "url": "https://github.com/ssbuarena/ssbu-arena/blob/main/BUILDING.md"
     },
     {
       "label": "Based on",

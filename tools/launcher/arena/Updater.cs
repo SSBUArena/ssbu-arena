@@ -33,7 +33,7 @@ namespace Arena
 
     public static class Updater
     {
-        public const string GitHubRepo = "Acid236/ssbu-arena";
+        public const string GitHubRepo = "ssbuarena/ssbu-arena";
         static readonly string Mode = (Environment.GetEnvironmentVariable("SSBU_ARENA_UPDATE") ?? "").ToLowerInvariant();
 
         static Updater() { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12; }
