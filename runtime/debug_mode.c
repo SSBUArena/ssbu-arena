@@ -278,7 +278,13 @@ static uint64_t hash40(const char *s) {
  * name-tag profile state + 0x214 (table [[[[0x7105313510] + 0x58]]] + 0xf7d8 * profile + 0xc, default 0x7105313518).
  * Both games force + 0x454 = 1 with the agreed layout of each player, so a player's own controls are the same on both PCs. */
 #include "rb_hs.h"
-static int g_hs_wanted, g_hs_ok, g_hs_local, g_hs_lwr;      /* (R3 lwr) g_hs_lwr: a Local Wireless room's match played with rollback */
+static int g_hs_wanted, g_hs_ok, g_hs_local, g_hs_lwr;
+/* (0.2.15) a Local Wireless room's match is played as a local versus match (melee mode 1 -> 0, each player a local human on
+ * port i): after the fight the game went on as after a LOCAL match (the local character select, out of the room: "the game
+ * does not go back to the room"), and the joiner's own player still read port 2 (its pad is port 1) on the result screen.
+ * When the fight ends (rb_rollback.c rbg_fight_off) the room's mode and both players' panel states are given back. */
+static int g_room_mode_was = -1, g_room_saved_n;
+static struct { uint64_t st; uint8_t b450[6]; uint32_t slot, prof; uint8_t lay[22]; } g_room_saved[2];      /* (R3 lwr) g_hs_lwr: a Local Wireless room's match played with rollback */
 static int g_hs_quick;
 /* (Arena, online matchmaking) a quick match from the Arena menu's Online Ranked tile (competitive.c comp_quickplay): both games
  * play the same locked rules whatever the player's own ruleset: stock (rule kind 1), 3 stocks, no items, no hazards (the
@@ -287,6 +293,19 @@ static int g_hs_quick;
  * "rule kind here differs"). The time limit comes from the rule struct copies competitive.c forces while the flag is on. */
 /* (Arena, fighter_sdk/replay_state.c) the kind of the match set up last: 0 a local one, 1 matchmaking (a quick match from the
  * lobby's search), 2 a Local Wireless room over the relay, 3 another online match (host / join) */
+void dm_room_restore(void) {
+    if (g_room_mode_was < 0) return;
+    printf("[rbnet] room match over: melee mode %u -> %d (the room's), %d player panel state(s) given back\n", rd8(MELEE_INFO), g_room_mode_was, g_room_saved_n);
+    wr8(MELEE_INFO, (uint8_t)g_room_mode_was);
+    for (int i = 0; i < g_room_saved_n; i++) {
+        uint64_t st = g_room_saved[i].st; if (!st) continue;
+        for (int k = 0; k < 6; k++) wr8(st + 0x450 + (uint64_t)k, g_room_saved[i].b450[k]);
+        wr32(st + 0x210, g_room_saved[i].slot); wr32(st + 0x214, g_room_saved[i].prof);
+        for (int k = 0; k < 22; k++) wr8(st + 0x54 + (uint64_t)k, g_room_saved[i].lay[k]);
+    }
+    fflush(stdout);
+    g_room_mode_was = -1; g_room_saved_n = 0;
+}
 int dm_match_kind(void) { return !g_hs_wanted || !g_hs_ok || g_hs_local ? 0 : g_hs_lwr ? 2 : g_hs_quick ? 1 : 3; }
 #define QUICK_RULE_KIND 1
 #define QUICK_STOCKS 3
@@ -428,6 +447,7 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
              * the mode written (test), -1 = not changed. */
             if (g_hs_lwr) {
                 const char *e = getenv("SSBU_RB_NET_ROOM_MODE"); int to = e && *e ? atoi(e) : 0; uint8_t was = rd8(MELEE_INFO);
+                g_room_mode_was = was; g_room_saved_n = 0;      /* (0.2.15) given back when the fight ends (dm_room_restore) */
                 if (to >= 0) wr8(MELEE_INFO, (uint8_t)to);
                 printf("[rbnet] room match: melee mode (match block + 0) %u -> %u: played as a local versus match with rollback (room maker = player 1)\n", was, rd8(MELEE_INFO));
                 fflush(stdout);
@@ -467,6 +487,10 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
             if (!has) { uint64_t p = GA(0x7105313518ULL); for (int k = 0; k < 11; k++) lay[k] = rd16(p + 0xc + 2ull * k); }      /* (the game's default profile) */
             printf("[rbnet] room match: player %d (%s): ui_chara %016llx colour %u; panel state: name tag %d, network player %d, controller slot %d, profile %d -> controller slot %d, a local human\n", idx + 1,
                    idx == local ? "this game's player" : "the other game's player", (unsigned long long)rd64(st + 0x88), rd8(st + 0x90), rd8(st + 0x450), rd8(st + 0x451), (int)rd32(st + 0x210), (int)rd32(st + 0x214), idx);
+            if (idx >= 0 && idx < 2) {                  /* (0.2.15) the room's own panel state, given back when the fight ends */
+                g_room_saved[idx].st = st; safe_read(st + 0x450, g_room_saved[idx].b450, sizeof g_room_saved[idx].b450);
+                g_room_saved[idx].slot = rd32(st + 0x210); g_room_saved[idx].prof = rd32(st + 0x214); safe_read(st + 0x54, g_room_saved[idx].lay, sizeof g_room_saved[idx].lay);
+                if (g_room_saved_n < idx + 1) g_room_saved_n = idx + 1; }
             wr8(st + 0x450, 1); wr8(st + 0x451, 0); wr32(st + 0x210, (uint32_t)idx); wr32(st + 0x214, 0xffffffffu);
             wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, lay[k]);
             fflush(stdout);

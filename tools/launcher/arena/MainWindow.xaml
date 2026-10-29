@@ -683,7 +683,11 @@
                 <TextBlock Text="AUDIO" Style="{StaticResource SectionTitle}"/>
                 <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24" Text="The game's volume when it starts; the menu in the game (Home, or - and + held) changes it while you play."/>
                 <TextBlock Text="VOLUME" Style="{StaticResource FieldLabel}"/>
-                <ComboBox x:Name="VolBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed"/>
+                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                  <Slider x:Name="VolSlider" Width="300" Minimum="0" Maximum="100" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True"
+                          VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="Vol_Changed"/>
+                  <TextBlock x:Name="VolText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="15" Foreground="{StaticResource Text}"/>
+                </StackPanel>
               </StackPanel>
 
               <!-- saves -->
