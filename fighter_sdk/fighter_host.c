@@ -1150,6 +1150,7 @@ static void fd_hook(Ctx *c, void *user) {
     }
     g_fd_orig(c);
 }
+#include "replay_state.c"                              /* (Arena) per-frame match state for the launcher's replay viewer */
 /* ---------------------------------------------------------------- S11: SSBU_FIGHT_HASH / SSBU_DETERMINISTIC (test only)
  * SSBU_FIGHT_HASH=<file>|1: one line per fighter per FIGHT FRAME (frame = that fighter's count of calls of the frame
  * line sys_line_system_control_fighter since it was first seen; nothing to do with the time since process start),
@@ -1280,6 +1281,7 @@ static void fh_hook(Ctx *c, void *user) {
                        g_fh_poll_hist[0], g_fh_poll_hist[1], g_fh_poll_hist[2], g_fh_poll_hist[3], g_fh_frame_ends, g_fh_drop_calls, g_fh_drop_frames);
             }
         }
+        if (k < g_fh_n) rv_frame_line(c, boma, k, g_fh_f[k].frame);      /* (Arena) the replay viewer's per-frame state (replay_state.c) */
     }
     g_fh_orig(c);
 }
@@ -1307,6 +1309,7 @@ static void fh_frame_end(Ctx *c, void *user) {
 uint64_t hook_address(const char *name);
 int fight_seq_ticks(void) {
     static long long last;
+    rv_poll();                                          /* (Arena) the replay state: the match end (replay_state.c) */
     if (!g_fh_det || (g_fh_detoff & 2) || !g_fh_n) return 1;
     long long f = g_fh_f[0].frame, n = f - last;
     {   /* (R3 hs12, test sequences of two matches) after a fight has ended (the game's ready-go cleared) the sequence counts
@@ -1329,13 +1332,14 @@ static void fight_hash_start(void) {
     const char *h = getenv("SSBU_FIGHT_HASH"), *d = getenv("SSBU_DETERMINISTIC"), *o = getenv("SSBU_DET_OFF");
     g_fh_det = (d && d[0] && d[0] != '0') || rbn_handshake_wanted();      /* R3: a match between online players needs it (no extra logic frames; generators from the agreed seed) */
     g_fh_detoff = o ? atoi(o) : 0;
-    if ((!h || !h[0] || h[0] == '0') && !g_fh_det) return;
+    if ((!h || !h[0] || h[0] == '0') && !g_fh_det && !rv_enabled()) return;      /* (Arena) the replay state needs the frame line too */
     if (h && h[0] && h[0] != '0') g_fh_out = strcmp(h, "1") == 0 ? stdout : fopen(h, "w");
     int id = hook_install_name("_ZN7lua2cpp16L2CFighterCommon31sys_line_system_control_fighterEv", fh_hook, NULL, &g_fh_orig);
     printf("[fight] SSBU_FIGHT_HASH %s, SSBU_DETERMINISTIC %d (off mask %d); hook on the fighters' frame line: %s\n", g_fh_out ? "on" : "off", g_fh_det, g_fh_detoff, id ? "installed or waiting for lua2cpp_common" : hook_error());
     if (g_fh_det) printf("[fight] SSBU_DETERMINISTIC: hook on the frame end %llx (dropped refreshes -> extra logic frames): %s\n", (unsigned long long)GA(0x710386fc30ull),
                          hook_install(GA(0x710386fc30ull), fh_frame_end, NULL, &g_fh_orig_frame_end) ? "installed" : hook_error());
     atexit(fh_exit);
+    if (rv_enabled()) atexit(rv_exit);
 }
 static void fd_exit(void) { printf("[debug] %lld commands executed, %lld frames skipped because a differential recording was open\n", g_fd_done, g_fd_waited); fflush(stdout); }
 static void fighter_debug_start(void) {

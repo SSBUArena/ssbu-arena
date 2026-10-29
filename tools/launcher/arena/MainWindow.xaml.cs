@@ -49,7 +49,7 @@ namespace Arena
             poll.Tick += (s, e) => { int n = Core.XInputCount(); if (n != xinput) { xinput = n; SetPadState(); } };
             poll.Start();
             xinput = Core.XInputCount();
-            Loaded += (s, e) => { RunChecks(); FindPads(); OpenFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); };
+            Loaded += (s, e) => { RunChecks(); FindPads(); OpenFromArgs(); OpenReplayFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); };
             Scaled.SizeChanged += (s, e) => Rescale();
             SizeChanged += (s, e) => Rescale();
         }
@@ -444,6 +444,7 @@ namespace Arena
         {
             if (PageHome == null) return;
             ShowPage(sender == TabReplays ? PageReplays : sender == TabCommunity ? PageCommunity : sender == TabSettings ? (UIElement)PageSettings : PageHome);
+            if (sender == TabReplays) ReplaysShown();
         }
 
         void Section_Checked(object sender, RoutedEventArgs e)

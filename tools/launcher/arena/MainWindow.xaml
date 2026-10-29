@@ -345,17 +345,118 @@
         </Grid>
       </Grid>
 
-      <!-- ============================================================ REPLAYS -->
-      <Border x:Name="PageReplays" Visibility="Collapsed" Style="{StaticResource Panel}">
-        <Grid>
-          <Image Source="{StaticResource ArenaArt}" Opacity="0.18" Stretch="Uniform" Margin="80"/>
-          <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-            <Path Data="{StaticResource IcoFilm}" Stroke="{StaticResource Accent}" StrokeThickness="1.6" Width="56" Height="46" Stretch="Uniform" StrokeLineJoin="Round"/>
-            <TextBlock Text="REPLAYS" Style="{StaticResource SectionTitle}" FontSize="56" HorizontalAlignment="Center" Margin="0,18,0,0"/>
-            <TextBlock Text="Not available yet. Your matches will show up here." FontSize="18" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
-          </StackPanel>
+      <!-- ============================================================ REPLAYS (MainWindow.Replays.cs, ReplayView.cs) -->
+      <Grid x:Name="PageReplays" Visibility="Collapsed">
+        <!-- the list of this PC's matches -->
+        <Border x:Name="ReplaysListPanel" Style="{StaticResource Panel}" Padding="34,28">
+          <DockPanel>
+            <Grid DockPanel.Dock="Top" Margin="0,0,0,18">
+              <StackPanel>
+                <TextBlock Text="REPLAYS" Style="{StaticResource SectionTitle}" FontSize="40"/>
+                <TextBlock Text="Your matches, redrawn from what the game recorded frame by frame: positions, damage, hitboxes. No game start needed." Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,0"/>
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <Button Style="{StaticResource Outline}" Height="40" Click="ReplaysFolder_Click" Margin="0,0,10,0">
+                  <StackPanel Orientation="Horizontal"><Path Data="{StaticResource IcoFolder}" Fill="{StaticResource Muted}" Width="16" Height="14" Stretch="Uniform"/><TextBlock Text="Open folder" Margin="10,0,0,0" FontSize="15"/></StackPanel>
+                </Button>
+                <Button Style="{StaticResource Outline}" Height="40" Click="ReplaysRefresh_Click" Content="Refresh" FontSize="15"/>
+              </StackPanel>
+            </Grid>
+            <TextBlock DockPanel.Dock="Bottom" x:Name="ReplaysStatus" Style="{StaticResource Small}" Margin="0,14,0,0"/>
+            <Grid>
+              <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ItemsControl x:Name="ReplaysList">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Button Style="{StaticResource CardButton}" Margin="0,0,0,10" Padding="22,14" Tag="{Binding}" Click="ReplayOpen_Click">
+                        <Grid>
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="170"/><ColumnDefinition Width="*"/><ColumnDefinition Width="210"/><ColumnDefinition Width="90"/><ColumnDefinition Width="Auto"/>
+                          </Grid.ColumnDefinitions>
+                          <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{Binding WhenText}" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="{Binding Kind}" Style="{StaticResource Small}" Margin="0,2,0,0"/>
+                          </StackPanel>
+                          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border Width="4" Height="30" Background="#FF5F6B" CornerRadius="2" Margin="0,0,10,0"/>
+                            <StackPanel><TextBlock Text="{Binding P1Fighter}" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="{Binding P1Name}" Style="{StaticResource Small}"/></StackPanel>
+                            <TextBlock Text="VS" FontFamily="{StaticResource Display}" FontStyle="Italic" FontWeight="ExtraBold" FontSize="20" Foreground="{StaticResource Dim}" Margin="22,0" VerticalAlignment="Center"/>
+                            <Border Width="4" Height="30" Background="#4FA8FF" CornerRadius="2" Margin="0,0,10,0"/>
+                            <StackPanel><TextBlock Text="{Binding P2Fighter}" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="{Binding P2Name}" Style="{StaticResource Small}"/></StackPanel>
+                          </StackPanel>
+                          <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Stage}" FontSize="15"/>
+                            <TextBlock Text="{Binding Result}" Style="{StaticResource Small}" Margin="0,2,0,0"/>
+                          </StackPanel>
+                          <TextBlock Grid.Column="3" Text="{Binding Length}" FontSize="18" FontFamily="{StaticResource Display}" FontWeight="Bold" VerticalAlignment="Center" Foreground="{StaticResource Muted}"/>
+                          <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IcoPlay}" Fill="{StaticResource Accent}" Width="14" Height="14" Stretch="Uniform"/>
+                            <TextBlock Text="Watch" Foreground="{StaticResource Accent}" FontSize="15" FontWeight="SemiBold" Margin="8,0,0,0"/>
+                          </StackPanel>
+                        </Grid>
+                      </Button>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+              <StackPanel x:Name="ReplaysEmpty" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed">
+                <Path Data="{StaticResource IcoFilm}" Stroke="{StaticResource Accent}" StrokeThickness="1.6" Width="56" Height="46" Stretch="Uniform" StrokeLineJoin="Round"/>
+                <TextBlock Text="No matches recorded yet" Style="{StaticResource SectionTitle}" FontSize="34" HorizontalAlignment="Center" Margin="0,18,0,0"/>
+                <TextBlock Text="Play a match: the game records it and it shows up here." FontSize="17" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+              </StackPanel>
+            </Grid>
+          </DockPanel>
+        </Border>
+
+        <!-- the viewer -->
+        <Grid x:Name="ReplayViewer" Visibility="Collapsed">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="350"/></Grid.ColumnDefinitions>
+          <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <Border Style="{StaticResource Panel}" ClipToBounds="True" Background="#090E15">
+            <local:ReplayView x:Name="RvView"/>
+          </Border>
+          <!-- controls and timeline -->
+          <Border Grid.Row="1" Style="{StaticResource Panel}" Margin="0,12,0,0" Padding="16,12">
+            <StackPanel>
+              <Grid>
+                <StackPanel Orientation="Horizontal">
+                  <Button Style="{StaticResource Outline}" Width="44" Height="36" Padding="0" Click="RvStepBack_Click" ToolTip="One frame back (Left)"><Path Data="M14,6 L8,12 L14,18 M18,6 V18" Stroke="{StaticResource Text}" StrokeThickness="1.8" Width="14" Height="14" Stretch="Uniform"/></Button>
+                  <Button x:Name="RvPlay" Style="{StaticResource Primary}" Width="64" Height="36" Margin="8,0" Click="RvPlay_Click" ToolTip="Play / pause (Space)">
+                    <Path x:Name="RvPlayIcon" Data="{StaticResource IcoPlay}" Fill="#06121D" Width="14" Height="14" Stretch="Uniform"/>
+                  </Button>
+                  <Button Style="{StaticResource Outline}" Width="44" Height="36" Padding="0" Click="RvStepFwd_Click" ToolTip="One frame forward (Right)"><Path Data="M10,6 L16,12 L10,18 M6,6 V18" Stroke="{StaticResource Text}" StrokeThickness="1.8" Width="14" Height="14" Stretch="Uniform"/></Button>
+                  <Border Width="1" Height="26" Background="{StaticResource Line}" Margin="16,0"/>
+                  <StackPanel x:Name="RvSpeeds" Orientation="Horizontal"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                  <CheckBox x:Name="RvHit" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Hitboxes" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="14"/>
+                  <CheckBox x:Name="RvHurt" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Hurtboxes" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="14"/>
+                  <CheckBox x:Name="RvFollow" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Follow" Margin="8,0,0,0" VerticalAlignment="Center" FontSize="14"/>
+                </StackPanel>
+              </Grid>
+              <local:ReplayTimeline x:Name="RvTimeline" Height="54" Margin="0,12,0,0" Cursor="Hand"/>
+            </StackPanel>
+          </Border>
+          <!-- side panel: the match, the stats, the move data -->
+          <Border Grid.Column="2" Grid.RowSpan="2" Style="{StaticResource Panel}" Padding="22,20">
+            <DockPanel>
+              <Button DockPanel.Dock="Top" Style="{StaticResource Link}" HorizontalAlignment="Left" Click="RvBack_Click" Margin="0,0,0,14">
+                <StackPanel Orientation="Horizontal">
+                  <Path Data="{StaticResource IcoBack}" Style="{StaticResource Ico}" Width="16" Height="13"/>
+                  <TextBlock Text="All replays" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Margin="10,0,0,0" FontSize="15"/>
+                </StackPanel>
+              </Button>
+              <TextBlock DockPanel.Dock="Top" x:Name="RvTitle" Style="{StaticResource SectionTitle}" FontSize="28" TextWrapping="Wrap"/>
+              <TextBlock DockPanel.Dock="Top" x:Name="RvSub" Style="{StaticResource Small}" Margin="0,4,0,12"/>
+              <TextBlock DockPanel.Dock="Bottom" x:Name="RvCredit" Style="{StaticResource Small}" FontSize="11.5" Foreground="{StaticResource Dim}" Margin="0,12,0,0"
+                         Text="Hitboxes, hurtboxes, positions and damage: as the game reported them during the match. Move names and frame data: Ultimate Frame Data / MetalMusicMan; Smash Ultimate hitboxes: Zeckemyro (ultimateframedata.com)."/>
+              <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="RvStats"/>
+              </ScrollViewer>
+            </DockPanel>
+          </Border>
         </Grid>
-      </Border>
+      </Grid>
 
       <!-- ============================================================ COMMUNITY -->
       <Grid x:Name="PageCommunity" Visibility="Collapsed">

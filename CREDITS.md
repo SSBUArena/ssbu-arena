@@ -40,3 +40,7 @@ And those OpenSmash-Ultimate credits in turn:
 - The SSBU Arena launcher uses the **Barlow** and **Barlow Condensed** fonts by Jeremy Tribby, under the SIL Open Font
   License 1.1 (`tools/launcher/arena/Assets/Fonts/OFL.txt`), and the artwork of [ssbuarena.com](https://ssbuarena.com/).
 - The hero art is a study of hitboxes in the style of [Ultimate Frame Data](https://ultimateframedata.com/).
+- The replay viewer (launcher, Replays page) shows move names and frame data from
+  [Ultimate Frame Data](https://ultimateframedata.com/) (MetalMusicMan; Smash Ultimate hitboxes: Zeckemyro; the site credits
+  its further sources), kept in `tools/launcher/arena/Assets/ufd_moves.json` by `tools/replay/ufd_moves.py`. The hitboxes,
+  hurtboxes, positions and damage it draws come from the game itself during the match (`fighter_sdk/replay_state.c`).
