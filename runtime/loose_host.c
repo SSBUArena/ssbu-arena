@@ -48,7 +48,10 @@ __attribute__((constructor)) static void loose_host_start(void) {
     const char *e = getenv("SSBU_LOOSE_FILES"), *ch = getenv("SSBU_CHARACTERS");
     /* N6: the fighter registry (SSBU_CHARACTERS) switches the layer on too, unless SSBU_LOOSE_FILES=0 */
     if (e && e[0] == '0') return;
-    if (!(e && e[0]) && !(ch && ch[0])) return;
+    /* (0.2.12) SSBU_STAGE_BG=off|custom (detachable stage backgrounds, loose_files.c lf_scan_stages) switches it on too */
+    const char *bg = getenv("SSBU_STAGE_BG");
+    int bg_on = bg && (!_stricmp(bg, "off") || !_stricmp(bg, "custom"));
+    if (!(e && e[0]) && !(ch && ch[0]) && !bg_on) return;
     g_nm_stage2_has = loose_files_has;
     HANDLE h = CreateThread(NULL, 0, loose_host_wait, NULL, 0, NULL);
     if (h) CloseHandle(h);
