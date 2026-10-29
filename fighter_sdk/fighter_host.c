@@ -1166,6 +1166,7 @@ int rbn_handshake_wanted(void); uint64_t rbn_match_seed(void);   /* rb_net.c (R3
 static ImportFn g_fh_orig;
 static struct { uint64_t boma; int entry; long long frame; } g_fh_f[8];
 static int g_fh_n, g_fh_det, g_fh_detoff;
+static ULONGLONG g_fh_seen[8];                          /* (0.2.11) when each slot's frame line last ran */
 static uint64_t g_fh_seeded;                            /* the agreed match seed the generators were last set from */
 int rbn_match_cancelled(void);                          /* rb_net.c */
 static FILE *g_fh_out;
@@ -1193,6 +1194,14 @@ static void fh_hook(Ctx *c, void *user) {
         if (k == g_fh_n && g_fh_n && g_fh_det && rbn_match_seed() && rbn_match_seed() != g_fh_seeded && rbn_match_cancelled() != 2) {
             printf("[fight] a new rollback match (seed %016llx): its first battle frame\n", (unsigned long long)rbn_match_seed());
             g_fh_n = 0; k = 0;
+        }
+        /* (0.2.11) a new fighter of a fight without rollback (a local fight, a room fight on the game's netcode) while none of the
+         * known ones has run for a second: a new fight. The table is started again (the replay recorder counts frames from slot 0;
+         * without this the slots grew fight after fight: the second local fight was never recorded, and after 8 fighters none was) */
+        if (k == g_fh_n && g_fh_n && (rbn_match_cancelled() == 2 || !rbn_match_seed())) {
+            ULONGLONG now = GetTickCount64(); int live = 0;
+            for (int i = 0; i < g_fh_n; i++) if (now - g_fh_seen[i] < 1000) live = 1;
+            if (!live) { printf("[fight] a new fight: the fighter table started again\n"); g_fh_n = 0; k = 0; }
         }
         if (k == g_fh_n && g_fh_n < 8) {
             double id = 0;
@@ -1241,6 +1250,7 @@ static void fh_hook(Ctx *c, void *user) {
                 input_mark("fight");
             }
         }
+        if (k < g_fh_n) g_fh_seen[k] = GetTickCount64();
         if (k < g_fh_n && !g_fh_out) ++g_fh_f[k].frame;
         if (k < g_fh_n && g_fh_out) {
             long long f = ++g_fh_f[k].frame;

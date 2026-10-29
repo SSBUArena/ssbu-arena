@@ -441,6 +441,10 @@ static void rv_begin(void) {
     for (int k = 0; k < RV_MAXF; k++) { g_rv_boma[k] = 0; g_rv_slot_entry[k] = -1; }
     if (g_rv_ring) for (int i = 0; i < RV_RING; i++) g_rv_ring[i].frame = -1;
     rv_head_start();
+    if (g_rv_head.nfighters < 2) {                      /* (0.2.11) one fighter (the controls test, a menu): not a match */
+        printf("[rv] this fight is not recorded (%d fighter)\n", g_rv_head.nfighters); fflush(stdout);
+        g_rv_active = 0; g_rv_skip = 1; return;
+    }
     memset(g_rv_head.slot_entry, 0xff, sizeof g_rv_head.slot_entry);
     {   int dm_match_kind(void); uint32_t rbn_match_id(void);
         g_rv_head.kind = (uint8_t)(rbn_on() > 0 && !rbn_loop() && !rbn_local_fight() ? dm_match_kind() : 0);
