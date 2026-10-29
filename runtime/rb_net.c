@@ -689,7 +689,9 @@ static int auto_delay(void) {
     double one_way = rtt / 2000.0 / (1000.0 / 60.0);     /* frames */
     /* (Arena) one frame of delay per frame of one-way trip, rounded up past a quarter: 54 ms round trip -> 2 (was 1: 162
      * rollbacks in 2400 frames, each a load and re-run passes a 4-core PC could not afford); the rest is covered by rollback */
-    int d = (int)ceil(one_way - 0.25);
+    /* (0.2.14) plus 0.8 frame (13 ms) for the frame's own phase and the trip's jitter: 52 ms through the relay -> 3 (with
+     * 2: 384 rollbacks in 6370 frames of an LDN room, each a late frame on screen); the switch to 3 is at about 40 ms */
+    int d = (int)ceil(one_way + 0.8);
     return d < 1 ? 1 : d > 5 ? 5 : d;      /* 1..5 (delay 1 and 4 in sync since the agreed match gets no pad before its base) */
 }
 void rbn_start(long long f0) {

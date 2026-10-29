@@ -1590,6 +1590,10 @@ int net_ping_overlay(int *ms, int max) {
     if (rbn_started()) {                                  /* an online rollback match: players 1 and 2 */
         int me = rbn_local_player() ? 1 : 0;
         uint32_t other = nnldn_other_ip(); if (!other) other = g_rb_match_peer; if (!other) other = g_rb_peer;
+        /* (0.2.14) the round trip between the two games (rb_net.c's own pings, the number the input delay is chosen from) under
+         * both players: each one's ping to the lobby said little in a match (the relay's path is what the inputs take) */
+        int rbn_rtt_ms(void), rt = rbn_rtt_ms();
+        if (rt > 0) { ms[0] = ms[1] = rt; return 2; }
         ms[me] = (int)g_ping; ms[1 - me] = peer_rtt(other);
         return 2;
     }

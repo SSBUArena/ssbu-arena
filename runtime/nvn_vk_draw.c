@@ -3672,12 +3672,17 @@ static void overlay_draw(uint32_t index) {
     }
 }
 static int g_pic[4];          /* where vk_present2 put the game picture in the swapchain image (x, y, w, h): all of it, or the 16:9 part with aspect = keep */
-#ifdef SSBU_LDN_ONLINE
+/* (0.2.14) built always: it was under SSBU_LDN_ONLINE, which the release runtime (make_release.py) does not set, so the
+ * players' games never drew the ping of net_relay.c's online play; only ldn_ping_overlay below needs ldn_online.inc */
 /* Local wireless over the internet (ldn_online.inc): each player's ping to the room server, drawn over the picture while
  * in a network. In a fight with 2 players right of each player's stock icons (positions measured on the 2-player HUD,
  * as fractions of the picture); otherwise (room, character select, 3-4 players) a short list at the top left.
  * Dark copy one dot down-right under the light text, so it reads on any background. */
+#ifdef SSBU_LDN_ONLINE
 int ldn_ping_overlay(int *ms, int max);                 /* ldn_online.inc (nnnet.c) */
+#else
+static int ldn_ping_overlay(int *ms, int max) { (void)ms; (void)max; return 0; }
+#endif
 int net_ping_overlay(int *ms, int max);                 /* net_relay.c: the same values online through the lobby server */
 /* 2026-10-19: drawn the way fighting games show it next to the player (the owner's picture): a signal icon of four
  * bars and the number, both in the colour of the quality (green up to 60 ms, yellow up to 120, red above, or no answer),
@@ -3745,7 +3750,6 @@ static void ldn_ping_draw(uint32_t index) {
         ldn_ping_item(index, x + 3 * 6 * dot, y, dot, ms[i]);
     }
 }
-#endif
 static void vk_present2(void *arg, int progress);
 /* Session 14: THE KEPT PRESENT. vk_present2 has blitted and submitted the frame; when display.c says the frame is to be shown
  * at the next tick, vkQueuePresentKHR is not called there: what it needs is kept here and the vsync thread posts
@@ -4045,9 +4049,7 @@ swap: ;
         } else { VkClearColorValue z; memset(&z, 0, sizeof z); z.float32[3] = 1.0f; vkCmdClearColorImage(R.cmd, V.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &z, 1, &sr); }
         fl_capture(vt, fl_s4, frame, fl_layout);      /* session 13: 16x9 copy of what is presented, for the flash detector */
         overlay_draw(index);
-#ifdef SSBU_LDN_ONLINE
         if (!progress) ldn_ping_draw(index);
-#endif
         image_barrier(V.images[index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
         tp[3] = tk();
         cmd_submit(acq, rend);
