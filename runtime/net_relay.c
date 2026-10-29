@@ -223,6 +223,9 @@ static void mods_scan(void) {
         if (h != INVALID_HANDLE_VALUE) {
             do {
                 if (fd.cFileName[0] == '.' || !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                /* (0.2.13) the Arena menu (install.py's menu step) is the menus' look only, nothing a fight reads, and its
+                 * message file is made in each player's language: Italian and English players never shared a room */
+                if (!_stricmp(fd.cFileName, "arena_menu")) continue;
                 char sub[MAX_PATH * 2], mf[MAX_PATH * 2], js[4096] = "", name[64];
                 int files = 0;
                 snprintf(sub, sizeof sub, "%s\\%s", root, fd.cFileName);
