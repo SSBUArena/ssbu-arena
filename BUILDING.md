@@ -36,7 +36,7 @@ Nothing has to be installed first.
 3. Double-click **`Play SSBU.bat`** or the **SSBU native** shortcut (your saves go to `saves\` in the install location,
    `build\saves` by default).
 
-Online play (experimental: Local Wireless over a LAN, a room code or a lobby server): [docs/ONLINE.md](docs/ONLINE.md).
+Online play (rooms over our relay server, rollback netcode, the settings behind it): [docs/ONLINE.md](docs/ONLINE.md).
 
 The rest of this page is the same build done by hand, step by step.
 
