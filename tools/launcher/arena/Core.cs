@@ -76,6 +76,7 @@ namespace Arena
         public static int Aspect, WindowMode, Keyboard;
         public static string WindowSize = "1280x720";
         public static int Volume = 100;
+        public static int InputDelay;                                     // (0.2.14) launcher.ini input_delay: 0 automatic, 1..5 frames (SSBU_RB_NET_DELAY)
         public static bool Fps;                                           // graphics.ini stats_overlay: the FPS counter in the game                                   // graphics.ini volume (0..100), the game's start volume
         // (0.2.8) which controller button presses each game button ([type ...] map.* of controllers.ini, written for the
         // Xbox, PlayStation, Switch and other pads alike; GameCube controllers keep their own); the default is the
@@ -149,6 +150,7 @@ namespace Arena
             Online = Get(L, "online_choice") == "1" ? Get(L, "online") != "off" : true;      // (0.2.8) on by default; a choice made since is kept
             Server = Servers[ServerIndex(Get(L, "server") ?? DefaultServer)].Address;
             Ping = Get(L, "ping") != "off";
+            InputDelay = int.TryParse(Get(L, "input_delay"), out var idl) && idl >= 1 && idl <= 5 ? idl : 0;
             RecMatchmaking = Get(L, "replay_matchmaking") != "off"; RecLdn = Get(L, "replay_ldn") != "off"; RecArena = Get(L, "replay_arena") != "off";
             RecLocal = Get(L, "replay_local") != "off"; RecUpload = Get(L, "replay_upload") != "off"; RecPublic = Get(L, "replay_public") == "on";
             ShaderStamp = Get(L, "shaders") ?? "";
@@ -220,7 +222,7 @@ namespace Arena
             File.WriteAllLines(LauncherIni, new[] {
                 "# written by the launcher", "saves = " + Saves, "nickname = " + n,
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
-                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp,
+                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + (InputDelay >= 1 ? InputDelay.ToString() : "auto"),
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off"), "replay_upload = " + (RecUpload ? "on" : "off"), "replay_public = " + (RecPublic ? "on" : "off") }, Encoding.ASCII);
             var gfx = GfxValues();
@@ -595,12 +597,13 @@ namespace Arena
         static void GameEnv(System.Collections.Specialized.StringDictionary env)
         {
             foreach (var v in new[] { "SSBU_ONLINE", "SSBU_ONLINE_CODE", "SSBU_ONLINE_NAME", "SSBU_ONLINE_DIRECT", "SSBU_NICKNAME", "SSBU_RB_NET", "SSBU_R1_GAMEDLL", "SSBU_NRO_BIN", "SSBU_NET_PING", "SSBU_COMPETITIVE_UI",
-                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_TICKET" })
+                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_TICKET", "SSBU_RB_NET_DELAY" })
                 env.Remove(v);
             env["SSBU_ROMFS"] = RomFS ?? "";
             env["SSBU_USERDATA"] = Saves;
             env["SSBU_FONTS"] = Fonts;
             env["SSBU_LOOSE_FILES"] = Competitive ? "1" : "0";      // build\characters\competitive (runtime/loose_files.c)
+            if (InputDelay >= 1) env["SSBU_RB_NET_DELAY"] = InputDelay.ToString();      // (0.2.14) the player's choice; unset: from the round trip (rb_net.c auto_delay)
             env["SSBU_LATENCY"] = "normal";                          // wins over a latency = low / lowest written by hand in graphics.ini
             env["SSBU_COMPETITIVE"] = env["SSBU_LOOSE_FILES"];       // no FS meter, no random items (runtime/competitive.c)
             // the matches the game records for the Replays page (fighter_sdk/replay_state.c: local, mm, ldn, arena)

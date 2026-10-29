@@ -586,6 +586,17 @@
                       <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Next to each player in every online match: green up to 60 ms, yellow up to 120, red above. Also in the game's menu."/>
                     </StackPanel>
                   </CheckBox>
+                  <TextBlock Text="INPUT DELAY" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
+                  <ComboBox x:Name="DelayBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
+                    <ComboBoxItem Content="Automatic (from the ping)"/>
+                    <ComboBoxItem Content="1 frame"/>
+                    <ComboBoxItem Content="2 frames"/>
+                    <ComboBoxItem Content="3 frames"/>
+                    <ComboBoxItem Content="4 frames"/>
+                    <ComboBoxItem Content="5 frames"/>
+                  </ComboBox>
+                  <TextBlock Style="{StaticResource Small}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left"
+                             Text="How many frames your own inputs wait in online rollback matches. Fewer: more responsive, more rollbacks (the picture jumps). More: fewer rollbacks, a little more lag. Automatic: 2 up to about 40 ms of ping, 3 above."/>
                   <TextBlock Text="SERVER" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
                   <ComboBox x:Name="ServerBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Server_Changed"/>
                 </StackPanel>
