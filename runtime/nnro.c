@@ -459,6 +459,7 @@ static int attach_dll(NroModule *m) {
     if (!dll) return 0;
     NroBindFn bind = (NroBindFn)(void *)GetProcAddress(dll, "nro_bind");
     if (!bind) { FreeLibrary(dll); return 0; }
+    { void r1_module_loaded(void *, int); r1_module_loaded(dll, 0); }      /* (0.2.11) r1_state.c: its mark maps at once, no snapshot at the next base */
     NroTables t;
     memset(&t, 0, sizeof t);
     bind(&g_host, m, &t);

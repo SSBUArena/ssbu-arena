@@ -44,6 +44,7 @@ void r1_init(void) { r1_on(); }
 void r1_on_decommit(void *p, size_t n) { (void)p; (void)n; }
 void r1_on_commit(void *p, size_t n) { (void)p; (void)n; }
 void r1_wrote(uint64_t a, uint64_t n) { (void)a; (void)n; }
+void r1_module_loaded(void *h, int fighter) { (void)h; (void)fighter; }
 void r1_nosim(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void r1_read_retry_note(void) {}
 void r1_register_heap(void) { r1_on(); }
@@ -62,7 +63,7 @@ void os_r1_objs(void (*cb)(uint64_t key, int signaled, int count, uint64_t len, 
 
 #define PG 4096
 #define MAXR 8192
-typedef struct { uint8_t *a; size_t n; uint8_t *s; uint8_t *dirty; uint8_t *learn; uint8_t *async; } Rng;   /* dirty / learn: one byte per page */
+typedef struct { uint8_t *a; size_t n; uint8_t *s; uint8_t *dirty; uint8_t *learn; uint8_t *async; int xrw; } Rng;   /* dirty / learn: one byte per page; xrw: (0.2.11) some of it not plain PAGE_READWRITE */
 static Rng g_r[MAXR];
 static int g_nr;
 static int g_on = -1, g_n, g_k, g_p, g_c, g_cycle, g_phase;        /* phase 0 idle, 1 first pass, 2 re-run, 3 done */
@@ -118,10 +119,11 @@ int r1_on(void) {
 }
 
 /* ---------------------------------------------------------------- the ranges */
+static int g_add_xrw = 1;                               /* (0.2.11) what add_range gets now is not plain read-write (unknown: 1) */
 static void add_range(uint8_t *a, size_t n) {
     if (g_nr >= MAXR) return;
-    if (g_nr && g_r[g_nr - 1].a + g_r[g_nr - 1].n == a) { g_r[g_nr - 1].n += n; return; }
-    g_r[g_nr].a = a; g_r[g_nr].n = n; g_nr++;
+    if (g_nr && g_r[g_nr - 1].a + g_r[g_nr - 1].n == a) { g_r[g_nr - 1].n += n; g_r[g_nr - 1].xrw |= g_add_xrw; return; }
+    g_r[g_nr].a = a; g_r[g_nr].n = n; g_r[g_nr].xrw = g_add_xrw; g_nr++;
 }
 static int rw(DWORD p) { return (p & 0xff) == PAGE_READWRITE || (p & 0xff) == PAGE_EXECUTE_READWRITE; }
 /* the committed read-write parts of [lo, hi) */
@@ -132,7 +134,7 @@ static void add_span(uint8_t *lo, uint8_t *hi) {
             uint8_t *a = (uint8_t *)m.BaseAddress, *b = a + m.RegionSize;
             if (a < lo) a = lo;
             if (b > hi) b = hi;
-            add_range(a, (size_t)(b - a));
+            g_add_xrw = m.Protect != PAGE_READWRITE; add_range(a, (size_t)(b - a)); g_add_xrw = 1;
         }
     }
 }
@@ -140,8 +142,11 @@ static void add_alloc(void *inside) {
     MEMORY_BASIC_INFORMATION m;
     if (!VirtualQuery(inside, &m, sizeof m) || !m.AllocationBase) return;
     uint8_t *base = (uint8_t *)m.AllocationBase, *p = base;
-    while (VirtualQuery(p, &m, sizeof m) && m.AllocationBase == base) p = (uint8_t *)m.BaseAddress + m.RegionSize;
-    add_span(base, p);
+    /* (0.2.11) one walk (it walked the reservation twice: to find its end, then add_span over it): the committed read-write parts */
+    while (VirtualQuery(p, &m, sizeof m) && m.AllocationBase == base) {
+        if (m.State == MEM_COMMIT && rw(m.Protect) && !(m.Protect & PAGE_GUARD)) { g_add_xrw = m.Protect != PAGE_READWRITE; add_range((uint8_t *)m.BaseAddress, m.RegionSize); g_add_xrw = 1; }
+        p = (uint8_t *)m.BaseAddress + m.RegionSize;
+    }
 }
 static uint8_t *g_ar;
 /* (port of FrankyFromEarthBound e00c648) a reservation of the game's: one it asked for (nn::os::AllocateAddressRegion, nncxxrt.c
@@ -178,14 +183,34 @@ static void ex_cb(uint64_t key, int sig, int cnt, uint64_t len, uint64_t thread,
 static int cmp_rng(const void *x, const void *y) { const Rng *a = x, *b = y; return a->a < b->a ? -1 : a->a > b->a; }
 /* host DLLs that run fighter code (fighters_bin\*.dll, track S): their writable sections are simulation state too */
 #include <tlhelp32.h>
+/* (0.2.11) the modules the game loads (nnro.c: the script modules; fighter_host.c: the fighter DLLs), registered at the load:
+ * their mark maps are set at once once the marks are on, and the fighter DLLs' writable sections are listed from here; the
+ * ring's base used to take a module snapshot (CreateToolhelp32Snapshot) twice, ~30 ms each, with the game stopped. */
+static HMODULE g_lmod[1024]; static uint8_t g_lmod_f[1024]; static volatile LONG g_nlmod;
+static SRWLOCK g_lmod_lock = SRWLOCK_INIT;
+static uint8_t **pm1, **pm2; static uint64_t *plo1, *pn1, *pn2;
+static uint8_t *g_win1; static uint64_t g_wn1;
+static int lmod_maps(HMODULE h) {                     /* 1 = its maps were set now */
+    if (!pm1 || !*pm1) return 0;
+    uint8_t **a1 = (uint8_t **)GetProcAddress(h, "r1_m1"), **a2 = (uint8_t **)GetProcAddress(h, "r1_m2");
+    uint64_t *l1 = (uint64_t *)GetProcAddress(h, "r1_lo1"), *n1 = (uint64_t *)GetProcAddress(h, "r1_n1"), *n2 = (uint64_t *)GetProcAddress(h, "r1_n2");
+    if (!a1 || !a2 || !l1 || !n1 || !n2 || *a1 == *pm1) return 0;
+    *a1 = *pm1; *a2 = *pm2; *l1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); *n2 = 0x200000000ull; *n1 = g_wn1;      /* (WN2) */
+    return 1;
+}
+void r1_module_loaded(void *h, int fighter) {
+    if (!h) return;
+    AcquireSRWLockExclusive(&g_lmod_lock);
+    if (g_nlmod < 1024) { g_lmod[g_nlmod] = (HMODULE)h; g_lmod_f[g_nlmod] = (uint8_t)fighter; g_nlmod++; }
+    ReleaseSRWLockExclusive(&g_lmod_lock);
+    lmod_maps((HMODULE)h);
+}
 static void add_fighter_dlls(void) {
-    HANDLE sn = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
-    if (sn == INVALID_HANDLE_VALUE) return;
-    MODULEENTRY32 me; me.dwSize = sizeof me;
     int nmod = 0; size_t bytes = 0;
-    for (BOOL ok = Module32First(sn, &me); ok; ok = Module32Next(sn, &me)) {
-        if (!strstr(me.szExePath, "fighters_bin") || getenv("SSBU_R1_NO_DLLS")) continue;
-        uint8_t *b = me.modBaseAddr;
+    AcquireSRWLockShared(&g_lmod_lock);
+    for (LONG k = 0; k < g_nlmod; k++) {
+        if (!g_lmod_f[k] || getenv("SSBU_R1_NO_DLLS")) continue;
+        uint8_t *b = (uint8_t *)g_lmod[k];
         IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(b + ((IMAGE_DOS_HEADER *)b)->e_lfanew);
         IMAGE_SECTION_HEADER *sh = IMAGE_FIRST_SECTION(nt);
         for (int i = 0; i < nt->FileHeader.NumberOfSections; i++)
@@ -195,7 +220,7 @@ static void add_fighter_dlls(void) {
             }
         nmod++;
     }
-    CloseHandle(sn);
+    ReleaseSRWLockShared(&g_lmod_lock);
     if (g_cycle == 0 && g_phase == 0) LOG("r1: fighter DLLs: %d, writable sections %.1f KB\n", nmod, bytes / 1024.0);
 }
 /* (R3 hs13, tw1j) the full save's copy of every range (r->s, ~1.9 GB in a match) is page memory of its own, not CRT heap: the
@@ -216,6 +241,11 @@ static uint8_t *g_save_diff;                             /* (0.2.11) the full sa
 static void cp_init(void); static void cp_reserve(size_t n); static void cp_add(uint8_t *d, const uint8_t *s);
 static void cp_add_range(uint8_t *d, const uint8_t *s, size_t n); static void cp_run_big(void); static void cp_cmp_big(uint8_t *res);
 static void cp_clear(void); static int g_ncp_big;
+static int lb_wanted(void); static int lb_prepare(size_t np); static void lb_add(uint8_t *a, int xrw); static void lb_start(long long frame, double hold_t0);
+static size_t g_rg_n1, g_rg_n2; static int rgs_wanted(void);
+/* (0.2.11) g_lazy1: this first save is the ring's and lazy: the shadow is filled behind the game (r1_ring.c, the lazy base); no
+ * copy of the whole memory (r->s), no pause and compare (the "async" pages: only run-ahead's restore used them). SSBU_RB_LAZY=0: off */
+static int g_lazy1;
 static int g_rb_test_nomem = -1;                        /* SSBU_RB_NET_TEST_NOMEM (test only): 1 = the commit check says no, 2 = an allocation of the full save fails, 3 = the ring's own allocations fail, 4 = the shadow's commit fails */
 static int rb_test_nomem(void) { if (g_rb_test_nomem < 0) { const char *e = getenv("SSBU_RB_NET_TEST_NOMEM"); g_rb_test_nomem = e ? atoi(e) : 0; } return g_rb_test_nomem; }
 static double g_save_need_mb, g_save_avail_mb;          /* the last commit check (MB) */
@@ -659,6 +689,7 @@ static void save(Ctx *c) {
     collect(c);
     double t1 = now_ms();
     g_saved_bytes = 0;
+    g_lazy1 = g_rs_drop && g_mark > 0 && g_cycle == 0 && rgs_wanted() && lb_wanted();
     {   /* (hs13) the commit this needs, checked first: the copy below (decommitted again while the shadow takes it when
          * g_rs_drop) + the shadow (as much again) + the ring's maps and pool; 1 GB more is left for the game and the driver */
         size_t tot = 0; for (int i = 0; i < g_nr; i++) tot += g_r[i].n;
@@ -673,7 +704,7 @@ static void save(Ctx *c) {
     {   int bad = 0;
         for (int i = 0; i < g_nr && !bad; i++) {
             Rng *r = &g_r[i];
-            r->s = (rb_test_nomem() == 2 && i == g_nr / 2) ? NULL : rs_alloc(r->n);
+            r->s = (rb_test_nomem() == 2 && i == g_nr / 2) ? NULL : g_lazy1 ? (uint8_t *)1 : rs_alloc(r->n);      /* (0.2.11, lazy: no copy; 1 = "allocated") */
             r->dirty = calloc(r->n / PG, 1);
             r->async = calloc(r->n / PG, 1);
             if (!r->s || !r->dirty || !r->async) { bad = 1; LOG("r1: FULL SAVE NOT MADE: allocation of %.1f MB for range %d of %d FAILED%s\n", r->n / 1048576.0, i, g_nr, rb_test_nomem() == 2 ? " (TEST: SSBU_RB_NET_TEST_NOMEM=2)" : ""); }
@@ -693,13 +724,15 @@ static void save(Ctx *c) {
     if (g_ra > 0) { if (!ra_hold_quiet(200)) { LOG("r1: RA: first save: no quiet moment within 200 ms: not now (busy: %s)\n", g_ra_busy_first_save()); g_save_failed = 1; return; } } else park_quiet(0);
     fibers_save();
     double t1b = now_ms();
-    for (int i = 0; i < g_nr; i++) { cp_add_range(g_r[i].s, g_r[i].a, g_r[i].n); g_saved_bytes += g_r[i].n; }
-    cp_run_big();                                        /* (0.2.11) main + the helpers */
+    if (g_lazy1) { for (int i = 0; i < g_nr; i++) { g_r[i].s = NULL; g_saved_bytes += g_r[i].n; } }      /* (0.2.11) the lazy first save: nothing copied here */
+    else { for (int i = 0; i < g_nr; i++) { cp_add_range(g_r[i].s, g_r[i].a, g_r[i].n); g_saved_bytes += g_r[i].n; }
+           cp_run_big(); }                               /* (0.2.11) main + the helpers */
     double t2 = now_ms();
     {   /* pages the OTHER threads write while main is held here (audio, vsync counter, loaders, render threads): they are
          * not the simulation's; they are left out of restore and verify. SSBU_R1_PAUSE=<ms> (default 50, 0 = none) */
-        const char *pe = getenv("SSBU_R1_PAUSE"); int pause = pe ? atoi(pe) : 30;
+        const char *pe = getenv("SSBU_R1_PAUSE"); int pause = g_lazy1 ? 0 : pe ? atoi(pe) : 30;      /* (0.2.11) lazy: no pause, no compare */
         size_t np = 0; int shown = 0;
+        g_fs_t[0] = now_ms();                            /* (0.2.11: no compare when lazy) */
         if (pause > 0) {
             Sleep((DWORD)pause);
             g_fs_t[0] = now_ms();
@@ -977,8 +1010,7 @@ static void fast_check(void) {
 static int g_mark = -1, g_mcheck, g_prot_on, g_prot = -1;
 static void prot_all(int on); static void prot_report(void);
 static Ctx g_mctx;
-static uint8_t **pm1, **pm2; static uint64_t *plo1, *pn1, *pn2;
-static uint8_t *g_win1, *g_sh1, *g_sh1c, *g_sh2, *g_sh2c; static uint64_t g_wn1;
+static uint8_t *g_sh1, *g_sh1c, *g_sh2, *g_sh2c;      /* (0.2.11) pm1 .. pn2, g_win1, g_wn1: declared above (the module registry) */
 static uint8_t *g_dc;
 static uint8_t *g_ns1, *g_ns2; static int is_nosim(uint8_t *a);
 #define WIN2 0x7100000000ull
@@ -1131,6 +1163,11 @@ static int mark_setup(void) {
         g_x[i].b = malloc(g_x[i].n); g_xbytes += g_x[i].n;
         if (!g_x[i].b) { LOG("r1: MARK setup: allocation of %.1f KB for an extra FAILED: marks OFF\n", g_x[i].n / 1024.0); mark_undo(); return 0; }
     }
+    if (g_lazy1) {                                       /* (0.2.11) the lazy base's tables, now that the windows are known */
+        g_rg_n1 = (size_t)(g_wn1 >> 12); g_rg_n2 = (size_t)(WN2 >> 12);
+        size_t np = 0; for (int i = 0; i < g_nr; i++) np += g_r[i].n / PG;
+        if (!lb_prepare(np + np / 4 + 65536)) { LOG("r1: MARK setup: the lazy first save could not start: marks OFF\n"); mark_undo(); return 0; }
+    }
     {   /* the bytes of the save point into the shadow and the extras; with g_rs_drop the copy of the full save is given back 1 MB at a time behind */
         int cx = 0; size_t xo = 0; long long dropped = 0;
         for (int i = 0; i < g_nr; i++) {
@@ -1138,13 +1175,14 @@ static int mark_setup(void) {
             for (size_t p = 0; p < np; p++) {
                 uint8_t *a = r->a + p * PG, *cm; size_t pi; uint8_t *sh = in_shadow(a, &cm, &pi);
                 if (sh) {
-                    if (!sh_commit(sh, cm, pi)) { cp_clear(); LOG("r1: MARK setup: commit of the shadow FAILED after %.1f MB%s: marks OFF\n", shb / 1048576.0, rb_test_nomem() == 4 ? " (TEST: SSBU_RB_NET_TEST_NOMEM=4)" : ""); mark_undo(); return 0; }
-                    cp_add(sh, r->s + p * PG); shb += PG;      /* (0.2.11) queued: copied by main + the helpers at the end of the block */
+                    if (!g_lazy1 && !sh_commit(sh, cm, pi)) { cp_clear(); LOG("r1: MARK setup: commit of the shadow FAILED after %.1f MB%s: marks OFF\n", shb / 1048576.0, rb_test_nomem() == 4 ? " (TEST: SSBU_RB_NET_TEST_NOMEM=4)" : ""); mark_undo(); return 0; }
+                    if (g_lazy1) lb_add(a, r->xrw); else cp_add(sh, r->s + p * PG); shb += PG;      /* (0.2.11) pending (lazy) / queued: copied by main + the helpers at the end of the block */
                 } else {
                     if (cx < g_nx && xo == g_x[cx].n) { cx++; xo = 0; }
-                    if (cx < g_nx && g_x[cx].a + xo == a) { memcpy(g_x[cx].b + xo, r->s + p * PG, PG); xo += PG; }
+                    if (cx < g_nx && g_x[cx].a + xo == a) { memcpy(g_x[cx].b + xo, g_lazy1 ? a : r->s + p * PG, PG); xo += PG; }
                 }
-                if (p + 1 - d0 == 65536 || p + 1 == np) {     /* (0.2.11) blocks of 256 MB: copied, then (g_rs_drop) given back: peak commit ~one copy + 256 MB */
+                if (g_lazy1) { if (p + 1 == np) cp_run_big(); }      /* (0.2.11, lazy: only the pages of ranges not all plain read-write, copied now) */
+                else if (p + 1 - d0 == 65536 || p + 1 == np) {     /* (0.2.11) blocks of 256 MB: copied, then (g_rs_drop) given back: peak commit ~one copy + 256 MB */
                     cp_run_big();
                     if (g_rs_drop) { VirtualFree(r->s + d0 * PG, (p + 1 - d0) * PG, MEM_DECOMMIT); dropped += (long long)(p + 1 - d0); }
                     d0 = p + 1;
@@ -1177,6 +1215,7 @@ static int mark_setup(void) {
     LOG("r1: MARK on: window 1 = region at %p, %.1f GB (map %.1f MB), window 2 = %llx + %.0f GB (map %.1f MB); shadow filled with %.1f MB; extras %d ranges %.1f MB copied whole each time\n",
         (void *)g_win1, g_wn1 / 1073741824.0, (g_wn1 >> 12) / 1048576.0, WIN2, WN2 / 1073741824.0, (WN2 >> 12) / 1048576.0, shb / 1048576.0, g_nx, g_xbytes / 1048576.0);
     ls_after_setup();                                   /* R4: the learned-set save protects the windows (threads still held) */
+    if (g_lazy1) lb_start(g_ff, now_ms());               /* (0.2.11) the shadow filled behind the game from here */
     return 1;
 }
 /* every marked page: dir 0 memory -> shadow (save), 1 shadow -> memory (restore); marks cleared. Returns pages. */
@@ -2139,8 +2178,9 @@ static void dc_set(void *p, size_t n, int v) {
     if (i1 > (g_wn1 >> 12)) i1 = g_wn1 >> 12;
     memset(g_dc + i0, v, i1 - i0);
 }
-void r1_on_decommit(void *p, size_t n) { r1_mark_range((uint64_t)(uintptr_t)p, n); ls_range((uint64_t)(uintptr_t)p, n, 1); dc_set(p, n, 1); }
+void r1_on_decommit(void *p, size_t n) { lb_open((uint64_t)(uintptr_t)p, n); r1_mark_range((uint64_t)(uintptr_t)p, n); ls_range((uint64_t)(uintptr_t)p, n, 1); dc_set(p, n, 1); }
 void r1_on_commit(void *p, size_t n) {
+    lb_open((uint64_t)(uintptr_t)p, n);                  /* (0.2.11) the lazy base: pages taken before they change (rb lazy base, r1_ring.c) */
     dc_set(p, n, 0);
     ls_range((uint64_t)(uintptr_t)p, n, 2);              /* R4: new pages of a fight read-only (their first write faults) */
     uint8_t *a = (uint8_t *)p;
@@ -2148,7 +2188,7 @@ void r1_on_commit(void *p, size_t n) {
 }
 static void prot_open(uint64_t a, uint64_t n);
 void r1_read_retry_note(void) { InterlockedIncrement64(&g_read_retry); }      /* (R4) nnfs.c read_at: a read repeated after ERROR_NOACCESS */
-void r1_wrote(uint64_t a, uint64_t n) { r1_mark_range(a, n); ls_range(a, n, 0); if (g_prot_on) prot_open(a, n); }          /* host code that writes guest memory (nnhid.c, nnfs.c reads: the kernel's writes do not fault) */
+void r1_wrote(uint64_t a, uint64_t n) { lb_open(a, n); r1_mark_range(a, n); ls_range(a, n, 0); if (g_prot_on) prot_open(a, n); }          /* host code that writes guest memory (nnhid.c, nnfs.c reads: the kernel's writes do not fault) */
 /* "not simulation": pages written by audio decoding etc.: not rolled back, not checked */
 void r1_nosim(uint64_t a, uint64_t n) {
     if (!g_ns1 || !n) return;

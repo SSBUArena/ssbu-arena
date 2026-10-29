@@ -194,7 +194,9 @@ static void rbg_step_body(Ctx *c) {
             if (tl > 0 && g_ff - g_rbg_ff_first < tl) { LOG("r1: RB NET TEST_LATEBASE: no base state at fight frame %lld\n", g_ff); return; } }
         if (g_rbg_basefix) g_rgs_next = i = g_ff - g_rbg_ff_first;      /* (net3) the base's frame number: 0, or the passes it came late */
         if (g_rbg_rebase) { if (!g_rbg_basefix) g_rgs_next = i = 0; if (!r1_ring_rebase(i, c) && !g_rg_nomem) return; }
-        else { r1_ring_capture(i, c); if (g_rbg_wdfix) g_ra_wd_pause = 1; if (!g_rg_ready && !g_rg_nomem) return; }   /* (the full save sets the pause back to 0) */
+        else { r1_ring_capture(i, c); if (g_rbg_wdfix) g_ra_wd_pause = 1; if (!g_rg_ready && !g_rg_nomem) return;   /* (the full save sets the pause back to 0) */
+               { static int tr = -1; if (tr < 0) { const char *e = getenv("SSBU_RB_TEST_REBASE"); tr = e ? atoi(e) : 0; }      /* (0.2.11, TEST ONLY) the base made again at once: a rebase measured in one game */
+                 for (int k = 0; k < tr && g_rg_ready; k++) r1_ring_rebase(i, c); } }
         g_rbg_noring = g_rg_nomem != 0;
         rbn_set_lockstep(g_rbg_noring);
         if (g_rbg_noring) {

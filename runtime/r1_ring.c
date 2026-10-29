@@ -544,29 +544,196 @@ int r1_ring_capture(long long frame, Ctx *c) {
  * (their count may change), host stacks made since are left out, modules loaded since get the mark maps. Then slot 0 = this
  * frame (threads, fibers, command buffers as a capture). 1 = done; 0 = not now (a thread not at a wait: next pass). */
 static void rg_noop(uint32_t id, int w, size_t j) { (void)id; (void)w; (void)j; }
+/* (0.2.11) THE LAZY BASE: the match's base state without a stop. A rebase used to bring the shadow (the flat copy of the base
+ * state) up to date before the match's first frame: every simulation page of both windows compared with it (~1.9 GB) while
+ * the game waited (0.6-0.7 s even on 9 threads). Now the rebase only makes those pages PENDING and read-only (a few ms with
+ * the threads held), lets the game go, and copy threads bring the shadow up to date behind it:
+ *  - a pending page has not been written since the base (it is read-only): its bytes ARE the base's. A copy thread takes it
+ *    (pending -> busy), writes it into the shadow where it differs, makes it writable again (done);
+ *  - the first write of a pending page faults into lb_veh, which does the same for that page at once, then the write goes on;
+ *  - the host's own writes into guest memory that cannot fault (the kernel's: file reads, nnfs.c / nnalbum.c, compute
+ *    write-backs) and the game's commits / decommits go through r1_wrote / r1_on_commit / r1_on_decommit, which take the
+ *    pages first (lb_open) - a decommit before its pages go, so the shadow keeps their base value;
+ *  - a ring load or capture needs the shadow's value only of pages written since the base: those were taken when written.
+ * Pages of a region that is not plain PAGE_READWRITE are taken during the hold, as before. The next rebase (or anything that
+ * needs the shadow whole) first finishes the pass (lb_drain). SSBU_RB_LAZY=0: the shadow brought up to date during the hold
+ * (the parallel compare of 0.2.11's first step). SSBU_RB_LAZY_THREADS=<n> (default 4). */
+#define LB_PENDING 1
+#define LB_BUSY 2
+#define LB_DONE 3
+#define LB_CHUNK 64
+static void lb_drain(void);
+static int g_lb_on = -1, g_lb_nth;
+static volatile uint8_t *g_lb_st;                       /* per ring page id (window 1, then window 2) */
+static uint32_t *g_lb_list; static size_t g_lb_n, g_lb_cap;
+static volatile LONG64 g_lb_next, g_lb_left, g_lb_copied, g_lb_by_fault, g_lb_by_hook, g_lb_workers, g_lb_commit_fail;
+static volatile LONG g_lb_active;
+static HANDLE g_lb_go;
+static double g_lb_t0, g_lb_hold_ms; static long long g_lb_frame;
+static uint8_t *lb_page(uint32_t id) { return id < g_rg_n1 ? g_win1 + (size_t)id * PG : (uint8_t *)(uintptr_t)(WIN2 + (size_t)(id - g_rg_n1) * PG); }
+static uint8_t *lb_shadow(uint32_t id) { return id < g_rg_n1 ? g_sh1 + (size_t)id * PG : g_sh2 + (size_t)(id - g_rg_n1) * PG; }
+static int lb_id(const uint8_t *a, uint32_t *id) {
+    if (g_win1 && a >= g_win1 && a < g_win1 + g_wn1) { *id = (uint32_t)((size_t)(a - g_win1) >> 12); return 1; }
+    if ((uintptr_t)a >= WIN2 && (uintptr_t)a < WIN2 + WN2) { *id = (uint32_t)(g_rg_n1 + (((uintptr_t)a - WIN2) >> 12)); return 1; }
+    return 0;
+}
+/* the shadow page committed (64 KB at a time, as sh_commit; a commit of committed pages is harmless, so two threads may race) */
+static int lb_commit(uint32_t id) {
+    uint8_t *cm = id < g_rg_n1 ? g_sh1c : g_sh2c; size_t pi = id < g_rg_n1 ? id : id - g_rg_n1;
+    if (cm[pi]) return 1;
+    size_t c0 = pi & ~(size_t)15;
+    if (VirtualAlloc(lb_shadow(id) - (pi - c0) * PG, 16 * PG, MEM_COMMIT, PAGE_READWRITE)) { memset(cm + c0, 1, 16); return 1; }
+    InterlockedIncrement64(&g_lb_commit_fail);           /* out of memory: the page's base value is lost; lb_finished turns the ring off */
+    return 0;
+}
+static void lb_finished(void) {
+    if (g_lb_commit_fail && g_rg_nomem != 2) { g_rg_nomem = 2; LOG("r1: LAZY BASE: %lld shadow commits FAILED (out of memory): no rollback ring for the rest of this session\n", (long long)g_lb_commit_fail); }
+    if (InterlockedExchange(&g_lb_active, 0))
+        LOG("r1: LAZY BASE (frame %lld): the shadow complete %.1f ms after the base (hold %.1f ms): %zu pages, %lld copied (%.1f MB), %lld taken at their first write, %lld by host writes / commits\n",
+            g_lb_frame, now_ms() - g_lb_t0, g_lb_hold_ms, g_lb_n, (long long)g_lb_copied, g_lb_copied * (double)PG / 1048576.0, (long long)g_lb_by_fault, (long long)g_lb_by_hook);
+}
+/* one page: 1 = taken here, 0 = it was not pending (or another thread had it: waited until it is done) */
+static int lb_take(uint32_t id) {
+    if (g_lb_st[id] == LB_DONE || !g_lb_st[id]) return 0;
+    if (__sync_val_compare_and_swap((volatile char *)&g_lb_st[id], (char)LB_PENDING, (char)LB_BUSY) != LB_PENDING) {
+        while (g_lb_st[id] == LB_BUSY) YieldProcessor();
+        return 0;
+    }
+    uint8_t *a = lb_page(id), *sh = lb_shadow(id);
+    if (lb_commit(id) && memcmp(sh, a, PG)) { memcpy(sh, a, PG); InterlockedIncrement64(&g_lb_copied); }
+    DWORD old; VirtualProtect(a, PG, PAGE_READWRITE, &old);
+    MemoryBarrier(); g_lb_st[id] = LB_DONE;
+    if (InterlockedDecrement64(&g_lb_left) == 0) lb_finished();
+    return 1;
+}
+static LONG CALLBACK lb_veh(EXCEPTION_POINTERS *e) {
+    if (!g_lb_active || e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || e->ExceptionRecord->ExceptionInformation[0] != 1) return EXCEPTION_CONTINUE_SEARCH;
+    uint32_t id;
+    if (!lb_id((const uint8_t *)(uintptr_t)e->ExceptionRecord->ExceptionInformation[1], &id)) return EXCEPTION_CONTINUE_SEARCH;
+    uint8_t s = g_lb_st[id];
+    if (s != LB_PENDING && s != LB_BUSY) return EXCEPTION_CONTINUE_SEARCH;
+    if (lb_take(id)) InterlockedIncrement64(&g_lb_by_fault);
+    return EXCEPTION_CONTINUE_EXECUTION;                  /* the write again, on a writable page */
+}
+/* r1_wrote / r1_on_commit / r1_on_decommit: the pages of a range taken before the host or the kernel writes or drops them */
+static void lb_open(uint64_t a, uint64_t n) {
+    if (!g_lb_active || !n) return;
+    for (uint64_t p = a & ~(uint64_t)(PG - 1); p < a + n; p += PG) { uint32_t id; if (lb_id((const uint8_t *)(uintptr_t)p, &id) && lb_take(id)) InterlockedIncrement64(&g_lb_by_hook); }
+}
+/* a copy thread's share: chunks of the list; the pages it takes in a chunk are made writable together (fewer system calls) */
+static void lb_work(void) {
+    static __declspec(thread) uint8_t mine[LB_CHUNK];
+    for (;;) {
+        LONG64 k = InterlockedAdd64(&g_lb_next, LB_CHUNK) - LB_CHUNK;
+        if (k >= (LONG64)g_lb_n) break;
+        size_t e = (size_t)k + LB_CHUNK < g_lb_n ? (size_t)k + LB_CHUNK : g_lb_n;
+        for (size_t j = (size_t)k; j < e; j++) {
+            uint32_t id = g_lb_list[j]; mine[j - k] = 0;
+            if (g_lb_st[id] != LB_PENDING || __sync_val_compare_and_swap((volatile char *)&g_lb_st[id], (char)LB_PENDING, (char)LB_BUSY) != LB_PENDING) continue;
+            uint8_t *a = lb_page(id), *sh = lb_shadow(id);
+            if (lb_commit(id) && memcmp(sh, a, PG)) { memcpy(sh, a, PG); InterlockedIncrement64(&g_lb_copied); }
+            mine[j - k] = 1;
+        }
+        for (size_t j = (size_t)k; j < e; ) {               /* runs of consecutive pages taken here: writable in one call, then done */
+            if (!mine[j - k]) { j++; continue; }
+            size_t r = j + 1;
+            while (r < e && mine[r - k] && g_lb_list[r] == g_lb_list[r - 1] + 1 && (g_lb_list[r] < g_rg_n1) == (g_lb_list[j] < g_rg_n1)) r++;
+            DWORD old; VirtualProtect(lb_page(g_lb_list[j]), (r - j) * PG, PAGE_READWRITE, &old);
+            MemoryBarrier();
+            for (size_t q = j; q < r; q++) g_lb_st[g_lb_list[q]] = LB_DONE;
+            if (InterlockedAdd64(&g_lb_left, -(LONG64)(r - j)) == 0) lb_finished();
+            j = r;
+        }
+    }
+}
+static DWORD WINAPI lb_thread(void *p) {
+    (void)p;
+    for (;;) { WaitForSingleObject(g_lb_go, INFINITE); lb_work(); InterlockedDecrement64(&g_lb_workers); }
+    return 0;
+}
+static int lb_wanted(void) {
+    if (g_lb_on < 0) {
+        const char *e = getenv("SSBU_RB_LAZY"); g_lb_on = !(e && e[0] == '0');
+        e = getenv("SSBU_RB_LAZY_THREADS"); g_lb_nth = e ? atoi(e) : 4; if (g_lb_nth < 1) g_lb_nth = 1; if (g_lb_nth > 16) g_lb_nth = 16;
+    }
+    return g_lb_on;
+}
+/* before the rebase's hold: the previous pass finished; the state map and the list ready (no allocation while threads are held) */
+static int lb_prepare(size_t np) {
+    if (!lb_wanted()) return 0;
+    lb_drain();
+    if (!g_lb_st) {
+        g_lb_st = VirtualAlloc(NULL, g_rg_n1 + g_rg_n2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        g_lb_go = CreateSemaphoreA(NULL, 0, 64, NULL);
+        if (!g_lb_st || !g_lb_go) { g_lb_on = 0; LOG("r1: LAZY BASE: allocation FAILED: the shadow is brought up to date during the hold\n"); return 0; }
+        for (int k = 0; k < g_lb_nth; k++) { HANDLE t = CreateThread(NULL, 0, lb_thread, NULL, 0, NULL); if (t) CloseHandle(t); }
+        AddVectoredExceptionHandler(1, lb_veh);
+    }
+    if (g_lb_cap < np) { uint32_t *nl = realloc(g_lb_list, np * sizeof *nl); if (!nl) { g_lb_on = 0; return 0; } g_lb_list = nl; g_lb_cap = np; }
+    g_lb_n = 0;
+    return 1;
+}
+/* the rebase's loop, threads held: one simulation page of a window to bring into the shadow */
+static void lb_add(uint8_t *a, int xrw) {
+    uint32_t id; if (!lb_id(a, &id)) return;
+    if (xrw) { if (lb_commit(id)) cp_add(lb_shadow(id), a); else g_rg_nomem = 2; return; }        /* (a range not all plain read-write: taken during the hold) */
+    if (g_lb_n < g_lb_cap) { g_lb_list[g_lb_n++] = id; g_lb_st[id] = LB_PENDING; }
+    else cp_add(lb_shadow(id), a);                        /* (no room left in the list: taken during the hold) */
+}
+/* still in the hold: the listed pages read-only (plain read-write regions; the others are taken now), then the copy threads go */
+static void lb_start(long long frame, double hold_t0) {
+    double t0 = now_ms();
+    g_lb_next = 0; g_lb_left = (LONG64)g_lb_n; g_lb_copied = g_lb_by_fault = g_lb_by_hook = 0; g_lb_frame = frame;
+    size_t eager = 0, runs = 0, bad = 0;
+    for (size_t j = 0; j < g_lb_n; ) {                    /* runs of consecutive pages inside plain read-write ranges (collect): one call each */
+        size_t r = j + 1;
+        while (r < g_lb_n && g_lb_list[r] == g_lb_list[r - 1] + 1 && (g_lb_list[r] < g_rg_n1) == (g_lb_list[j] < g_rg_n1)) r++;
+        DWORD old;
+        if (!VirtualProtect(lb_page(g_lb_list[j]), (r - j) * PG, PAGE_READONLY, &old)) {      /* (should not happen) taken now */
+            bad++;
+            for (size_t q = j; q < r; q++) { uint32_t id = g_lb_list[q]; uint8_t *p = lb_page(id), *sh = lb_shadow(id); if (memcmp(sh, p, PG)) memcpy(sh, p, PG); g_lb_st[id] = LB_DONE; g_lb_left--; eager++; }
+        }
+        runs++; j = r;
+    }
+    double t1 = now_ms();
+    g_lb_t0 = t1; g_lb_hold_ms = t1 - hold_t0;
+    if (g_lb_left == 0) { LOG("r1: LAZY BASE (frame %lld): nothing pending (%zu pages taken during the hold)\n", frame, eager); return; }
+    g_lb_active = 1;
+    InterlockedExchange64(&g_lb_workers, g_lb_nth);
+    ReleaseSemaphore(g_lb_go, g_lb_nth, NULL);
+    LOG("r1: LAZY BASE (frame %lld): %lld pages pending (read-only in %.1f ms, %zu runs%s), %zu taken during the hold; %d copy threads behind the game\n", frame, (long long)g_lb_left, t1 - t0, runs, bad ? ", SOME REFUSED: taken" : "", eager, g_lb_nth);
+}
+/* the pass finished (main helps), every page writable and the shadow whole */
+static void lb_drain(void) {
+    if (!g_lb_st || !g_lb_active) { while (g_lb_workers > 0) YieldProcessor(); return; }
+    double t0 = now_ms();
+    lb_work();
+    while (g_lb_workers > 0 || g_lb_active) YieldProcessor();
+    if (now_ms() - t0 > 1) LOG("r1: LAZY BASE: the pass finished by main before the next base: %.1f ms\n", now_ms() - t0);
+}
 int r1_ring_rebase(long long frame, Ctx *c) {
     if (g_rg_nomem == 2) return 0;                        /* (hs13) the ring broke earlier: no rollback */
     if (!g_rg_ready) return r1_ring_capture(frame, c);
     double t0 = now_ms();
     r1_ring_let_go();
     r1_ring_release();
-    { size_t np = 0; for (int i = 0; i < g_nr; i++) np += g_r[i].n / PG; cp_init(); cp_reserve(np + np / 4 + 65536); }   /* (0.2.11) before the hold */
+    int lazy;
+    { size_t np = 0; for (int i = 0; i < g_nr; i++) np += g_r[i].n / PG; cp_init(); cp_reserve(np + np / 4 + 65536); lazy = lb_prepare(np + np / 4 + 65536); }   /* (0.2.11) before the hold */
     if (!ra_hold_quiet(200)) { LOG("r1: RING rebase (frame %lld): no quiet moment within 200 ms: next pass\n", frame); return 0; }
     double t1 = now_ms();
     hs_exclude_all();
     int nmod = 0;
-    {   HANDLE sn = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
-        MODULEENTRY32 me; me.dwSize = sizeof me;
-        for (BOOL ok = sn != INVALID_HANDLE_VALUE && Module32First(sn, &me); ok; ok = Module32Next(sn, &me)) {
-            uint8_t **a1 = (uint8_t **)GetProcAddress(me.hModule, "r1_m1"), **a2 = (uint8_t **)GetProcAddress(me.hModule, "r1_m2");
-            uint64_t *l1 = (uint64_t *)GetProcAddress(me.hModule, "r1_lo1"), *n1 = (uint64_t *)GetProcAddress(me.hModule, "r1_n1"), *n2 = (uint64_t *)GetProcAddress(me.hModule, "r1_n2");
-            if (!a1 || !a2 || !l1 || !n1 || !n2) continue;
-            if (*a1 != *pm1) { *a1 = *pm1; *a2 = *pm2; *l1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); *n2 = WN2; *n1 = g_wn1; nmod++; LOG("r1: RING rebase: mark maps set in %s (loaded after the first save)\n", me.szModule); }
-        }
-        if (sn != INVALID_HANDLE_VALUE) CloseHandle(sn); }
+    {   /* (0.2.11) the modules registered at their load (r1_module_loaded): any whose maps are not set yet (loaded before the marks
+         * were on: mark_setup set the ones it found); no module snapshot */
+        AcquireSRWLockShared(&g_lmod_lock);
+        for (LONG k = 0; k < g_nlmod; k++) if (lmod_maps(g_lmod[k])) { char mn[MAX_PATH] = "?"; GetModuleFileNameA(g_lmod[k], mn, MAX_PATH); nmod++; LOG("r1: RING rebase: mark maps set in %s (loaded after the first save)\n", mn); }
+        ReleaseSRWLockShared(&g_lmod_lock); }
+    double tq[8]; tq[0] = now_ms();
     rg_stack_ww(c); rg_sweep(rg_noop);                    /* marks since the last capture: the copy below takes everything */
     g_rg_ntl = 0;
+    tq[1] = now_ms();
     collect(c);
+    tq[2] = now_ms();
     size_t nwin = g_rg_n1 + g_rg_n2, copied = 0, dropped = 0, freed = 0;
     uint8_t *in = calloc(nwin, 1);
     static Extra nx[8192]; int nnx = 0;
@@ -580,7 +747,7 @@ int r1_ring_rebase(long long frame, Ctx *c) {
                 if (w2 ? g_ns2[pi] : g_ns1[pi]) continue;                    /* not simulation (a host stack) */
                 in[w2 ? g_rg_n1 + pi : pi] = 1;
                 if (!sh_commit(sh, cm, pi)) { cp_clear(); free(in); g_rg_nomem = 2; unpark(); LOG("r1: RING rebase: commit of the shadow FAILED (out of memory): no rollback ring for the rest of this session\n"); return 0; }
-                cp_add(sh, a); copied++;                  /* (0.2.11) compared and, where it differs, copied by main + the helpers below */
+                if (lazy) lb_add(a, r->xrw); else cp_add(sh, a); copied++;      /* (0.2.11) pending (the lazy base) / compared and copied below */
                 if (!w2) g_dc[pi] = 0;
             } else if (nnx < 8192) {
                 if (nnx && nx[nnx - 1].a + nx[nnx - 1].n == a) nx[nnx - 1].n += PG;
@@ -588,30 +755,51 @@ int r1_ring_rebase(long long frame, Ctx *c) {
             }
         }
     }
+    tq[3] = now_ms();
     long long wrote = 0;
-    {   /* (0.2.11) the rebase was a copy of every page (~1.9 GB) by main alone: 0.7-1.3 s at the first frame of each match after the
+    if (lazy) { if (g_ncj) cp_run_big(); lb_start(frame, t1); wrote = -1; }      /* (0.2.11) the lazy base: the copy threads bring the shadow up to date behind the game */
+    else {   /* (0.2.11) the rebase was a copy of every page (~1.9 GB) by main alone: 0.7-1.3 s at the first frame of each match after the
          * first one. The shadow already holds the previous base: only the pages that differ are written, by main + the helpers. */
         for (int k = 0; k < 9; k++) g_cp_wrote[k] = 0;
         g_cp_cond = 1; cp_run_big(); g_cp_cond = 0;
         for (int k = 0; k < 9; k++) wrote += g_cp_wrote[k];
     }
-    for (size_t id = 0; id < nwin; id++) {
-        if (g_rg_idx[id] != RG_FLAT) { if (g_rg_idx[id] >= 2) freed++; rg_pool_put(g_rg_idx[id]); g_rg_idx[id] = RG_FLAT; }
-        if (in[id]) continue;
-        int w2 = id >= g_rg_n1; size_t pi = w2 ? id - g_rg_n1 : id; uint8_t *cm = w2 ? g_sh2c : g_sh1c;
-        if (cm[pi]) { VirtualFree((w2 ? g_sh2 : g_sh1) + pi * PG, PG, MEM_DECOMMIT); cm[pi] = 0; dropped++; }
+    tq[4] = now_ms();
+    /* (0.2.11) the pool buffers given back and the shadow pages of pages no longer committed dropped: only the 8-byte words of the
+     * maps that hold something are looked at (it went through every one of the ~18 M page ids), and the drops go by runs */
+    for (size_t w = 0; w < nwin / 2; w++) {
+        if (!((uint64_t *)g_rg_idx)[w]) continue;
+        for (size_t id = w * 2; id < w * 2 + 2; id++) if (g_rg_idx[id] != RG_FLAT) { if (g_rg_idx[id] >= 2) freed++; rg_pool_put(g_rg_idx[id]); g_rg_idx[id] = RG_FLAT; }
+    }
+    for (size_t id = nwin & ~(size_t)1; id < nwin; id++) if (g_rg_idx[id] != RG_FLAT) { if (g_rg_idx[id] >= 2) freed++; rg_pool_put(g_rg_idx[id]); g_rg_idx[id] = RG_FLAT; }
+    for (int w2 = 0; w2 < 2; w2++) {
+        uint8_t *cm = w2 ? g_sh2c : g_sh1c, *shb = w2 ? g_sh2 : g_sh1; size_t np = w2 ? g_rg_n2 : g_rg_n1, off = w2 ? g_rg_n1 : 0;
+        size_t run0 = 0, runn = 0;
+        for (size_t pi = 0; pi < np; ) {
+            if (!(pi & 7) && pi + 8 <= np && !*(uint64_t *)(cm + pi)) { pi += 8; continue; }
+            if (cm[pi] && !in[off + pi]) {
+                if (runn && run0 + runn == pi) runn++;
+                else { if (runn) VirtualFree(shb + run0 * PG, runn * PG, MEM_DECOMMIT); run0 = pi; runn = 1; }
+                cm[pi] = 0; dropped++;
+            }
+            pi++;
+        }
+        if (runn) VirtualFree(shb + run0 * PG, runn * PG, MEM_DECOMMIT);
     }
     free(in);
+    tq[5] = now_ms();
     {   /* the extras again */
         size_t npg = 0; for (int i = 0; i < nnx; i++) npg += nx[i].n / PG;
         size_t tot = nwin + npg;
         for (size_t e = 0; e < g_rg_nx; e++) rg_pool_put(g_rg_idx[nwin + e]);
-        uint32_t *nidx = VirtualAlloc(NULL, tot * 4, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-        uint8_t *ntouch = VirtualAlloc(NULL, tot, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        static size_t s_idx_cap;                          /* (0.2.11) the tables reused when big enough (made again and copied, ~90 MB, every time) */
+        uint32_t *nidx; uint8_t *ntouch;
+        if (s_idx_cap >= tot) { nidx = g_rg_idx; ntouch = g_rg_touch; for (size_t e2 = nwin; e2 < tot; e2++) nidx[e2] = RG_FLAT; memset(ntouch, 0, tot); }
+        else { nidx = VirtualAlloc(NULL, (tot + 65536) * 4, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); ntouch = VirtualAlloc(NULL, tot + 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); }
         uint8_t **nxa = malloc((npg + 1) * sizeof *nxa), **nxb = malloc((npg + 1) * sizeof *nxb);
         if (!nidx || !ntouch || !nxa || !nxb) { LOG("r1: RING rebase: allocation FAILED (out of memory): no rollback ring for the rest of this session\n"); g_rg_nomem = 2; unpark(); return 0; }
-        memcpy(nidx, g_rg_idx, nwin * 4);
-        VirtualFree(g_rg_idx, 0, MEM_RELEASE); VirtualFree(g_rg_touch, 0, MEM_RELEASE); free(g_rg_xa); free(g_rg_xb);
+        if (nidx != g_rg_idx) { memcpy(nidx, g_rg_idx, nwin * 4); VirtualFree(g_rg_idx, 0, MEM_RELEASE); VirtualFree(g_rg_touch, 0, MEM_RELEASE); s_idx_cap = tot + 65536; }
+        free(g_rg_xa); free(g_rg_xb);
         for (int i = 0; i < g_nx; i++) free(g_x[i].b);
         g_rg_idx = nidx; g_rg_touch = ntouch; g_rg_xa = nxa; g_rg_xb = nxb;
         g_nx = nnx; g_xbytes = 0; size_t e = 0;
@@ -634,6 +822,8 @@ int r1_ring_rebase(long long frame, Ctx *c) {
     g_rg_caps++;
     LOG("r1: RING rebase: base state (frame %lld) made again in %.1f ms (hold %.1f, copy %.1f): %zu window pages compared with the shadow (%.1f MB), %lld differed and were copied (%.1f MB; main + %d helpers), %zu pool buffers freed, %zu shadow pages of pages not committed now dropped; extras %d ranges %.1f MB (%zu pages); %d modules got the mark maps\n",
         frame, now_ms() - t0, t1 - t0, t2 - t1, copied, copied * (double)PG / 1048576.0, wrote, wrote * (double)PG / 1048576.0, g_ncp_big, freed, dropped, g_nx, g_xbytes / 1048576.0, g_rg_nx, nmod);
+    LOG("r1: RING rebase parts (ms): modules %.1f, sweep %.1f, collect %.1f, page list %.1f, copy / lazy start %.1f, shadow drop %.1f, extras + maps %.1f, threads + fibers + meta %.1f\n",
+        tq[0] - t1, tq[1] - tq[0], tq[2] - tq[1], tq[3] - tq[2], tq[4] - tq[3], tq[5] - tq[4], t2 - tq[5], now_ms() - t2);
     return 1;
 }
 /* (R3 hs13: tl4 / nmr / le3a / lg2a / lh4, c00000ff in ntdll's unwinder at a lua2cpp L2CExceptionShutdown throw, about 1 loop
