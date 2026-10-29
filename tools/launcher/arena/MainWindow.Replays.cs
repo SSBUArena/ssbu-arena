@@ -103,7 +103,8 @@ namespace Arena
                     }
                 }
                 var a = r.Fighters.Count > 0 ? r.Fighters[0] : null; var b2 = r.Fighters.Count > 1 ? r.Fighters[1] : null;
-                RvTitle.Text = (a?.FighterName ?? "?") + " vs " + (b2?.FighterName ?? "?");
+                string t1 = a?.FighterName ?? "?", t2 = b2?.FighterName ?? "?";
+                RvTitle.Text = t1.Length + t2.Length > 18 ? t1 + "\nvs " + t2 : t1 + " vs " + t2;      // long names: "vs" starts the second line
                 RvSub.Text = r.StageName + "  ·  " + r.When.ToString("dd MMM yyyy HH:mm", CultureInfo.InvariantCulture) + "  ·  " + r.Length + "  ·  " + r.FrameList.Count + " frames"
                              + (r.Rollback ? "  ·  final frames of the rollback session" : "");
                 BuildStats(r);
@@ -199,7 +200,7 @@ namespace Arena
                 {
                     var b = new Button { Style = (Style)FindResource("Link"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(10, 2, 0, 0), Tag = ko };
                     int sec = ko.Frame / 60;
-                    b.Content = new TextBlock { Text = string.Format(CultureInfo.InvariantCulture, "KO at {0}:{1:00}, off the {2} ({3:0}, {4:0})", sec / 60, sec % 60, ko.Where, ko.X, ko.Y), FontSize = 13 };
+                    b.Content = new TextBlock { Text = string.Format(CultureInfo.InvariantCulture, "KO at {0}:{1:00}, off the {2}", sec / 60, sec % 60, ko.Where), FontSize = 13 };
                     b.Click += (s, e) => { var kk = (ReplayStats.Ko)((Button)s).Tag; int i = RvView.Replay.FrameList.FindIndex(x => x.Number >= kk.Frame); RvPause(true); RvSet(Math.Max(0, i - 90)); };
                     RvStats.Children.Add(b);
                 }
@@ -224,9 +225,7 @@ namespace Arena
                 var s = fr.F[k];
                 if (s == null) { rvMoveInfo[k].Text = ""; continue; }
                 string mv = ReplayNames.MoveName(s.Motion);
-                string mt = mv ?? ReplayNames.MotionText(s.Motion).Replace('_', ' ');
-                if (mt.StartsWith("0x")) mt = "action " + mt;
-                string text = "Now: " + mt + "  (animation frame " + (int)Math.Floor(s.MotionFrame + 1) + ")";
+                string text = mv != null ? "Now: " + mv + "  (frame " + (int)Math.Floor(s.MotionFrame + 1) + " of the move)" : "Now: " + ReplayNames.ActionText(s);
                 if (s.Hits.Length > 0) text += "\nHitboxes now: " + s.Hits.Length + ", radius " + string.Join(" / ", s.Hits.Select(h => h.R.ToString("0.0", CultureInfo.InvariantCulture)));
                 var u = mv != null ? UfdMove(r.Fighters[k].FighterKey, mv) : null;
                 if (u != null)
@@ -273,6 +272,10 @@ namespace Arena
             int f = j > 0 && j + 1 < args.Length && int.TryParse(args[j + 1], out int ff) ? ff : 0;
             TabReplays.IsChecked = true;
             OpenReplay(args[i + 1], f, Array.IndexOf(args, "--play") > 0);
+            int z = Array.IndexOf(args, "--zoom");          // --zoom <factor> [--zoomon <fighter>]
+            if (z > 0 && z + 1 < args.Length && double.TryParse(args[z + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out double zf)) RvView.Zoom = zf;
+            int zo = Array.IndexOf(args, "--zoomon");
+            if (zo > 0 && zo + 1 < args.Length && int.TryParse(args[zo + 1], out int zk)) RvView.zoomOn = zk;
         }
     }
 }

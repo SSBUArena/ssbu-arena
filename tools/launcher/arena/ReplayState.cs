@@ -24,13 +24,14 @@ namespace Arena
         public RvHurt[] Hurts;
         public bool Grounded => Situation == 0;
     }
-    public sealed class RvLine { public float X1, Y1, X2, Y2; public int Flags; public bool Floor => (Flags & 1) != 0; public bool Passable => (Flags & 2) != 0; public bool Wall => (Flags & 4) != 0; public bool Moves => (Flags & 16) != 0; }
+    public sealed class RvLine { public float X1, Y1, X2, Y2; public int Flags; public bool Floor => (Flags & 1) != 0; public bool Passable => (Flags & 2) != 0; public bool Wall => (Flags & 4) != 0; public bool Moves => (Flags & 16) != 0; public int FirstFrame => (int)((uint)Flags >> 8); }
     public sealed class RvFrame
     {
         public int Number;
         public RvFighterFrame[] F;                      // by fighter (its main slot; null: not in this frame)
         public List<KeyValuePair<int, RvFighterFrame>> Extra;   // a player's other bodies (Nana of the Ice Climbers): fighter index, state
         public float[][] Lines;                         // the stage lines' end points at this frame (shared arrays when unchanged)
+        public ulong LinesOn;                           // the lines that exist at this frame (bit per line)
     }
     public sealed class RvFighter
     {
@@ -73,7 +74,7 @@ namespace Arena
             if (f.Length < HeaderSize || Encoding.ASCII.GetString(f, 0, 4) != "SSBV") throw new Exception("not an SSBU Arena match state file");
             var r = new ReplayState { Path = path, FileSize = f.Length };
             r.Version = BitConverter.ToUInt16(f, 4);
-            if (r.Version != 1) throw new Exception("match state format " + r.Version + ": update SSBU Arena");
+            if (r.Version < 1 || r.Version > 2) throw new Exception("match state format " + r.Version + ": update SSBU Arena");
             int hs = BitConverter.ToUInt16(f, 6);
             r.Flags = (int)BitConverter.ToUInt32(f, 8); r.Frames = (int)BitConverter.ToUInt32(f, 0xc); r.UnixTime = BitConverter.ToInt64(f, 0x10);
             uint stored = BitConverter.ToUInt32(f, 0x18), raw = BitConverter.ToUInt32(f, 0x1c);
@@ -128,10 +129,11 @@ namespace Arena
                 o += 20;
             }
             int nf = Fighters.Count;
-            while (o + 8 <= b.Length)
+            int fh = Version >= 2 ? 16 : 8;                 // (version 1: no lines-on mask)
+            while (o + fh <= b.Length)
             {
-                var fr = new RvFrame { Number = (int)BitConverter.ToUInt32(b, o), F = new RvFighterFrame[Math.Max(nf, 4)] };
-                int mask = b[o + 4], moved = b[o + 5]; o += 8;
+                var fr = new RvFrame { Number = (int)BitConverter.ToUInt32(b, o), F = new RvFighterFrame[Math.Max(nf, 4)], LinesOn = fh == 16 ? BitConverter.ToUInt64(b, o + 8) : ulong.MaxValue };
+                int mask = b[o + 4], moved = b[o + 5]; o += fh;
                 if (moved > 0) { cur = (float[][])cur.Clone(); }
                 for (int m = 0; m < moved; m++)
                 {
@@ -392,6 +394,28 @@ namespace Arena
                 for (int i = 0; i < Moves.GetLength(0); i++) moveByHash[Hash40(Moves[i, 0])] = Moves[i, 1];
             }
             return moveByHash.TryGetValue(motion & 0xffffffffffUL, out var s) ? s : null;
+        }
+
+        /// <summary>what a fighter is doing when it is not one of the named moves: a few plain words, never a raw id</summary>
+        public static string ActionText(RvFighterFrame s)
+        {
+            string m = MotionText(s.Motion);
+            if (m.StartsWith("damage_fly") || m.StartsWith("damage_")) return "Hitstun";
+            if (m.StartsWith("guard")) return "Shield";
+            if (m.StartsWith("cliff")) return "On the ledge";
+            if (m.StartsWith("down_") || m.StartsWith("passive")) return "Knocked down / tech";
+            if (m.StartsWith("catch_wait") || m.StartsWith("catch_pull") || m.StartsWith("capture")) return "Grab";
+            if (m == "rebirth" || m.StartsWith("entry")) return "Respawn";
+            if (m.StartsWith("dead")) return "KO";
+            if (m.StartsWith("landing")) return "Landing";
+            if (m.StartsWith("jump")) return "Jump";
+            if (m.StartsWith("fall")) return "Falling";
+            if (m.StartsWith("dash") || m.StartsWith("run") || m.StartsWith("turn")) return "Running";
+            if (m.StartsWith("walk")) return "Walking";
+            if (m.StartsWith("wait") || m.StartsWith("squat")) return "Standing";
+            if (m.StartsWith("escape")) return "Dodge";
+            if (Math.Abs(s.X) > 400 || Math.Abs(s.Y) > 400) return "KO";
+            return s.Situation == 0 ? "On the ground" : s.Situation == 2 ? "In the air" : "On the ledge";
         }
 
         static Dictionary<ulong, string> motionNames;
