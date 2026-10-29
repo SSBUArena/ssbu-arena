@@ -6,7 +6,11 @@ using System.Windows.Data;
 
 namespace Arena
 {
-    public partial class App : Application { }
+    public partial class App : Application
+    {
+        /// <summary>(0.2.12) the update window first (UpdateWindow.cs); it opens the launcher</summary>
+        void OnStartup(object sender, StartupEventArgs e) { new UpdateWindow().Show(); }
+    }
 
     /// <summary>a length times the converter parameter (the hero art: a share of the card's width)</summary>
     public sealed class Scale : IValueConverter
