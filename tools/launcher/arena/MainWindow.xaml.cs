@@ -182,7 +182,7 @@ namespace Arena
             OnlineFields.IsEnabled = on;
             OnlineFields.Opacity = on ? 1 : 0.45;
             OnlineHelp.Text = !Core.HasOnline ? "This build of the game has no online." : !on ? "Online off: local play only."
-                            : "Online Ranked finds you an opponent; every online match plays with rollback.";
+                            : "Online Matchmaking finds you an opponent; every online match plays with rollback.";
         }
 
         void SetPadState()
@@ -263,7 +263,7 @@ namespace Arena
             OnlineBox.IsEnabled = Core.HasOnline;
             PingBox.IsChecked = Core.Ping;
             RecMmBox.IsChecked = Core.RecMatchmaking; RecLdnBox.IsChecked = Core.RecLdn; RecArenaBox.IsChecked = Core.RecArena;
-            RecLocalBox.IsChecked = Core.RecLocal; RecUploadBox.IsChecked = Core.RecUpload;
+            RecLocalBox.IsChecked = Core.RecLocal; RecUploadBox.IsChecked = Core.RecUpload; RecPublicBox.IsChecked = Core.RecPublic;
             ServerBox.Items.Clear();
             foreach (var s in Core.Servers) ServerBox.Items.Add(s.Name);
             ServerBox.SelectedIndex = Core.ServerIndex(Core.Server);
@@ -288,7 +288,7 @@ namespace Arena
             Core.Online = OnlineBox.IsChecked == true && Core.HasOnline;
             Core.Ping = PingBox.IsChecked == true;
             Core.RecMatchmaking = RecMmBox.IsChecked == true; Core.RecLdn = RecLdnBox.IsChecked == true; Core.RecArena = RecArenaBox.IsChecked == true;
-            Core.RecLocal = RecLocalBox.IsChecked == true; Core.RecUpload = RecUploadBox.IsChecked == true;
+            Core.RecLocal = RecLocalBox.IsChecked == true; Core.RecUpload = RecUploadBox.IsChecked == true; Core.RecPublic = RecPublicBox.IsChecked == true;
             Core.Server = Core.Servers[Math.Max(0, ServerBox.SelectedIndex)].Address;
             Core.WindowMode = Math.Max(0, WinBox.SelectedIndex);
             Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;
@@ -588,6 +588,7 @@ namespace Arena
             }
             RefreshPlayer();
             RefreshOnline();
+            if (PageReplays.Visibility == Visibility.Visible && ReplayViewer.Visibility != Visibility.Visible) LoadReplays();      // (0.2.11) the server's replays, the visibility buttons
         }
 
         void ShowLogin(string error = null)

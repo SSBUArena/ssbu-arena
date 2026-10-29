@@ -36,9 +36,13 @@ namespace Arena
         static string S(Dictionary<string, object> r, string k) => r.TryGetValue(k, out var v) && v != null ? Convert.ToString(v, CultureInfo.InvariantCulture) : null;
 
         /// <summary>the replays this player may read: its own matches and the public ones (newest first)</summary>
-        public static List<CloudReplay> List(int limit = 200)
+        /// <param name="player">(0.2.11) only the matches of a player whose name holds this text (the server's search: every public replay of
+        /// that player, not only the newest rows)</param>
+        public static List<CloudReplay> List(int limit = 200, string player = null)
         {
             string q = "/rest/v1/replays?select=id,match_id,played_at,p1_name,p2_name,p1_uid,p2_uid,ssbv_uid,p1_chara,p2_chara,stage,frames,flags,winner,is_public,path,ssbv_path&order=played_at.desc&limit=" + limit;
+            string p = new string((player ?? "").Where(ch => char.IsLetterOrDigit(ch) || ch == ' ' || ch == '_' || ch == '-' || ch == '.').ToArray()).Trim();
+            if (p.Length > 0) q += "&or=" + Uri.EscapeDataString("(p1_name.ilike.*" + p + "*,p2_name.ilike.*" + p + "*)");
             var rows = Json.Deserialize<List<Dictionary<string, object>>>(Account.Rest("GET", q, null));
             return rows.Select(r =>
             {
