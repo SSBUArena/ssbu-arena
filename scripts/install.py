@@ -1031,6 +1031,14 @@ def step_menu(cx):
         pass
     if stream(comp, cwd=REPO)[0] != 0:
         return 'skip', 'the competitive set-up was not made (the Arena menu and rules stay off); see the lines above'
+    # (0.2.12) detachable stage backgrounds (tools/stages/extract_backgrounds.py): the background parts of the six stages
+    # from this dump into build/stages (original/ copies, off/ blank meshes, custom/ left as the player has it), served
+    # only with SSBU_STAGE_BG=off|custom. Not needed to play: a failure is reported and the install goes on
+    bg = [sys.executable, os.path.join(REPO, 'tools', 'stages', 'extract_backgrounds.py'), '--out', os.path.join(BUILD, 'stages')]
+    if len(comp) > 4:
+        bg += ['--arc', comp[-1]]
+    if stream(bg, cwd=REPO)[0] != 0:
+        say('  the stage backgrounds were not extracted (SSBU_STAGE_BG stays without effect); see the lines above')
     # (0.2.8) the Kirby loading animation (runtime/loading_anim.c): its atlas is made on each PC from Ultimate Frame Data's
     # GIF (tools/ui/loading_inhale.py; game-derived, never in the repository) and goes beside the exe. No install made it
     art = os.path.join(REPO, 'media', 'loading_kirby.png')

@@ -88,6 +88,7 @@ typedef struct {
     int is_new;                     // stage 2: the row was added by us
     uint64_t donor_hash;            // stage 2: the archive file whose data rows the new row shares
     uint64_t name_hash;             // B3: hash40 of the file NAME when the folder file is named "0x<name hash>.<ext>", else 0
+    int strict;                     // (0.2.12) a stage background file: served only when its size is the archive copy's
 } LooseFile;
 typedef struct { char name[32], donor[32]; int files, new_files, renamed, private_rows, shared_rows; long served, donor_bytes_files; unsigned long long bytes; } LooseOwner;
 typedef struct { uint64_t hash, parent_hash, name_hash, donor_hash; int owner, exists; uint32_t fpos, ipos; } LooseFolder;
@@ -148,7 +149,36 @@ static uint64_t lf_hex_name(const char *base) {
 }
 /* hash40 of an archive path; a "0x<name hash>" last part is joined to its folder through the crc32 combination
  * (crc(A B) = shift(crc(A), len B) ^ crc(B)), so the path hash is the one of the real name */
+/* (0.2.12, stage backgrounds) a FOLDER may be hash-named too ("0x<10 hex digits>", the archive keeps only the hash of
+ * the stage's model part folders): the path is hashed part by part, text parts continuing the crc32, hash-named parts
+ * joined with the same combination. A path with no hash-named folder takes the old way below (unchanged result). */
+static uint64_t lf_path_hash_parts(const char *path) {
+    uint32_t c = 0; unsigned len = 0;
+    for (const char *p = path; ; ) {
+        const char *e = strchr(p, '/');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        uint64_t nh = 0;
+        if (n == 12 || (!e && n > 12 && p[12] == '.')) { char seg[16]; memcpy(seg, p, 12); seg[12] = 0; nh = lf_hex_name(seg); }
+        if (nh) { unsigned nl = (unsigned)(nh >> 32) & 0xff; c = lf_crc_shift(c, nl) ^ (uint32_t)nh; len += nl; }
+        else { uint32_t s = ~c; for (size_t k = 0; k < n; k++) { s ^= (uint8_t)p[k]; for (int b = 0; b < 8; b++) s = (s >> 1) ^ (0xedb88320u & (0u - (s & 1))); } c = ~s; len += (unsigned)n; }
+        if (!e) break;
+        { uint32_t s = ~c ^ (uint8_t)'/'; for (int b = 0; b < 8; b++) s = (s >> 1) ^ (0xedb88320u & (0u - (s & 1))); c = ~s; len++; }
+        p = e + 1;
+    }
+    return ((uint64_t)(len & 0xff) << 32) | c;
+}
+static int lf_has_hex_folder(const char *path) {
+    for (const char *p = path; (p = strstr(p, "0x")) != NULL; p += 2) {
+        if (p != path && p[-1] != '/') continue;
+        char seg[16]; size_t n = 0;
+        while (n < 12 && p[n] && p[n] != '/') { seg[n] = p[n]; n++; }
+        seg[n] = 0;
+        if (n == 12 && p[12] == '/' && lf_hex_name(seg)) return 1;
+    }
+    return 0;
+}
 static uint64_t lf_path_hash(const char *path) {
+    if (lf_has_hex_folder(path)) return lf_path_hash_parts(path);
     const char *base = strrchr(path, '/');
     uint64_t nh = base ? lf_hex_name(base + 1) : 0;
     if (!nh) return lf_hash40(path);
@@ -261,6 +291,7 @@ static uint64_t lf_folder_from_donor(int owner, uint64_t dfh, int k) {
     return lf_folder_put(nh, nparent, name, dfh, owner) >= 0 ? nh : 0;
 }
 // walk <dir>; `rel` = the archive path so far ("" at a fighter folder's top)
+static int g_lf_scan_strict, g_lf_stage_files, g_lf_stage_custom;
 static void lf_scan(const char *dir, const char *rel, int owner) {
     char pat[MAX_PATH * 2]; WIN32_FIND_DATAA fd;
     snprintf(pat, sizeof pat, "%s\\*", dir);
@@ -282,7 +313,8 @@ static void lf_scan(const char *dir, const char *rel, int owner) {
         memset(f, 0, sizeof *f);
         f->arc_path = _strdup(r); f->disk_path = _strdup(sub);
         f->hash = ((uint64_t)(n & 0xff) << 32) | lf_crc32(r);
-        { const char *bn = strrchr(r, '/'); f->name_hash = bn ? lf_hex_name(bn + 1) : 0; if (f->name_hash) f->hash = lf_path_hash(r); }   /* B3 */
+        { const char *bn = strrchr(r, '/'); f->name_hash = bn ? lf_hex_name(bn + 1) : 0; if (f->name_hash || lf_has_hex_folder(r)) f->hash = lf_path_hash(r); }   /* B3; (0.2.12) hash-named folders */
+        f->strict = g_lf_scan_strict;
         f->size = fd.nFileSizeLow; f->path_index = -1; f->owner = owner;
         if (owner >= 0) {
             char dp[MAX_PATH * 2];
@@ -1179,13 +1211,20 @@ static void lf_resolve(uint64_t fsinfo, uint64_t arc) {
         f->data_index = lf_r32(to_data + 12ull * itd + 4);
         uint64_t d = datas + 16ull * f->data_index;
         f->arc_size = lf_r32(d + 8);
+        if (f->strict && f->size != f->arc_size) {
+            /* (0.2.12) a stage background file of another size would change the game's buffer (and heap) on this PC
+             * only: two players with different backgrounds must keep the same memory layout (rollback) */
+            lf_logf("[loose] %s: size differs (%u bytes, the archive's copy %u): NOT served (a stage background file must keep the original size)", f->arc_path, f->size, f->arc_size);
+            f->path_index = -2;
+            continue;
+        }
         if (f->size > f->arc_size) lf_w32(d + 8, f->size);
         found++;
         lf_logf("[loose] %s: file path index 0x%x, file info 0x%x, data 0x%x: archive size %u (compressed %u), loose size %u%s",
                 f->arc_path, (unsigned)i, f->info_index, f->data_index, f->arc_size, lf_r32(d + 4), f->size, f->size > f->arc_size ? " (size in the table raised)" : "");
     }
     for (int k = 0; k < g_lf_count; k++) {
-        if (g_lf[k].path_index >= 0) continue;
+        if (g_lf[k].path_index >= 0 || g_lf[k].path_index == -2) continue;
         if (g_lf[k].owner >= 0) pending++;
         else lf_logf("[loose] %s (%u bytes): not in the archive, and its folder has no manifest: NOT served", g_lf[k].arc_path, g_lf[k].size);
     }
@@ -1409,6 +1448,51 @@ static void lf_rawcopy(Ctx *c, void *user) {
     lf_serve(fsinfo, lf_r32(service + 0x230) + (uint32_t)index, 1);
 }
 
+/* (0.2.12) DETACHABLE STAGE BACKGROUNDS (rollback\stage_backgrounds_design.md). tools\stages\extract_backgrounds.py
+ * writes, per stage, <stages>\<stage>\{original,off,custom}\stage\<stage>\normal\model\<part>\... from the player's
+ * own data.arc. SSBU_STAGE_BG picks the folder served for EVERY stage: "off" (the background meshes with their indices
+ * zeroed: nothing drawn) or "custom" (the player's own files); unset / "original" = the game as it is, nothing
+ * scanned. <stages> = SSBU_STAGES, default "<exe folder>\..\stages". The files are plain stage-1 loose files (paths
+ * the archive knows), STRICT: one whose size is not the archive copy's is not served, so the game's buffers and heap
+ * stay the same as those of a player with the original background (the background is local graphics only). */
+static const char *lf_stage_mode(void) {
+    const char *e = getenv("SSBU_STAGE_BG");
+    if (!e || !e[0]) return NULL;
+    if (!_stricmp(e, "off")) return "off";
+    if (!_stricmp(e, "custom")) return "custom";
+    return NULL;
+}
+static void lf_scan_stages(void) {
+    const char *mode = lf_stage_mode();
+    if (!mode) return;
+    char root[MAX_PATH * 2], pat[MAX_PATH * 2]; WIN32_FIND_DATAA fd;
+    const char *e = getenv("SSBU_STAGES");
+    if (e && e[0]) snprintf(root, sizeof root, "%s", e);
+    else {
+        DWORD n = GetModuleFileNameA(NULL, root, MAX_PATH);
+        while (n && root[n - 1] != '\\' && root[n - 1] != '/') n--;
+        snprintf(root + n, sizeof root - n, "..\\stages");
+    }
+    snprintf(pat, sizeof pat, "%s\\*", root);
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) { lf_logf("[loose] stage backgrounds: SSBU_STAGE_BG=%s but no folder %s (tools\\stages\\extract_backgrounds.py makes it): the original backgrounds", mode, root); return; }
+    int before = g_lf_count;
+    g_lf_scan_strict = 1;
+    do {
+        if (fd.cFileName[0] == '.' || !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        char sub[MAX_PATH * 2]; int b0 = g_lf_count;
+        snprintf(sub, sizeof sub, "%s\\%s\\%s", root, fd.cFileName, mode);
+        if (GetFileAttributesA(sub) == INVALID_FILE_ATTRIBUTES) continue;
+        lf_scan(sub, "", -1);
+        if (g_lf_count > b0) lf_logf("[loose] stage backgrounds: %s\\%s: %d files", fd.cFileName, mode, g_lf_count - b0);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    g_lf_scan_strict = 0;
+    g_lf_stage_files = g_lf_count - before;
+    g_lf_stage_custom = g_lf_stage_files > 0 && !strcmp(mode, "custom");
+    lf_logf("[loose] stage backgrounds: SSBU_STAGE_BG=%s, %d files under %s (served only when the size is the archive copy's)", mode, g_lf_stage_files, root);
+}
+
 // two steps for a caller that may have to wait for the hook table (the exe): scan once, then install until it works
 static int loose_files_scan(void (*log)(const char *)) {
     g_lf_log = log;
@@ -1420,10 +1504,11 @@ static int loose_files_scan(void (*log)(const char *)) {
         while (n && root[n - 1] != '\\' && root[n - 1] != '/') n--;
         snprintf(root + n, sizeof root - n, "..\\characters");
     }
-    if (GetFileAttributesA(root) == INVALID_FILE_ATTRIBUTES) { lf_logf("[loose] no folder %s: nothing installed", root); return 0; }
     char pat[MAX_PATH * 2]; WIN32_FIND_DATAA fd;
     snprintf(pat, sizeof pat, "%s\\*", root);
-    HANDLE h = FindFirstFileA(pat, &fd);
+    HANDLE h = INVALID_HANDLE_VALUE;
+    if (GetFileAttributesA(root) == INVALID_FILE_ATTRIBUTES) lf_logf("[loose] no folder %s: no character or mod files", root);
+    else h = FindFirstFileA(pat, &fd);
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if (fd.cFileName[0] == '.' || !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
@@ -1446,6 +1531,7 @@ static int loose_files_scan(void (*log)(const char *)) {
         } while (FindNextFileA(h, &fd));
         FindClose(h);
     }
+    lf_scan_stages();
     if (!g_lf_count) { lf_logf("[loose] %s holds no files: nothing installed", root); return 0; }
     InitializeCriticalSection(&g_lf_lock);
     g_lf_scanned = 1;
@@ -1461,7 +1547,8 @@ static int loose_files_install(int (*install)(uint64_t, HookFn, void *, HookOrig
                      * host's copy function, which every guest copy passes) */
         const char *re = getenv("SSBU_LOOSE_RAW"), *t3 = getenv("SSBU_LOOSE_TEMPLATE");
         /* N10: virtual records (SSBU_LOOSE_TEMPLATE=3) are filled at this hook: it comes with that switch */
-        if ((re && re[0] == '1') || ((!t3 || !t3[0] || t3[0] == '3') && g_lf_owner_count > 0 && !(re && re[0] == '0'))) {
+        /* (0.2.12) custom stage backgrounds: a part file may be stored uncompressed in the archive (raw copy) */
+        if ((re && re[0] == '1') || ((((!t3 || !t3[0] || t3[0] == '3') && g_lf_owner_count > 0) || g_lf_stage_custom) && !(re && re[0] == '0'))) {
             int ok2 = install(GA(0x71039bfb30ull), lf_rawcopy, NULL, &g_lf_orig_copy);
             lf_logf("[loose] hook on the copy function 0x71039bfb30 (the load thread's raw copy of uncompressed files): %s", ok2 ? "installed" : "FAILED (uncompressed files keep the archive's bytes)");
         }
