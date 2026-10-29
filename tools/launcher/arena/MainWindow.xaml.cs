@@ -27,6 +27,7 @@ namespace Arena
         public MainWindow()
         {
             InitializeComponent();
+            VersionText.Text = "v" + Updater.Current.ToString(3);      // (0.2.11) the release in use, in the status bar after the online state
             // (0.2.8, the user's choice) opens at its smallest size (MinWidth x MinHeight); the page is scaled to it (Rescale)
             Width = MinWidth; Height = MinHeight;
             // (0.2.8) resizing keeps the window's proportions (the page is laid out for one shape)
