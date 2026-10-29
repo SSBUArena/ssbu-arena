@@ -575,7 +575,7 @@ static void fight_shot_poll(int ticks) {
     if (n < 0) { const char *e = getenv("SSBU_SHOT_FIGHT"); n = 0; while (e && *e && n < 16) { list[n++] = atoi(e); e = strchr(e, ','); if (e) e++; } }
     if (next >= n || !mark_seen("fight")) return;
     ff += ticks;
-    if (ff >= list[next]) { printf("shot: fight frame %lld reached at poll %lld (wanted %d): the next queued present is saved\n", ff, (long long)g_seq_polls, list[next]); fflush(stdout); nvn_front_shot_fight(list[next]); next++; }
+    if (ff >= list[next]) { long long rbn_now(void); printf("shot: fight frame %lld reached at poll %lld (wanted %d; rollback frame %lld): the next queued present is saved\n", ff, (long long)g_seq_polls, list[next], rbn_now()); fflush(stdout); nvn_front_shot_fight(list[next]); next++; }
 }
 /* kind: 0 = a style the controller is not reported in (zeroed), 1 = NpadFullKeyState (Pro Controller, 0x28 bytes), 2 = NpadGcState (0x30 bytes:
  * the same first 0x24 bytes, then analog trigger L at +0x24 and R at +0x28, 0..0x7fff; the layout follows libnx / suyu, NOT VERIFIED on a console). */

@@ -64,6 +64,7 @@ int rbn_on(void) {
     return g_on;
 }
 int rbn_local_player(void) { return g_local; }
+long long rbn_now(void) { return g_cur; }                /* (Arena, tests) the frame this game is on (nnhid.c's fight screenshots name it) */
 int rbn_ahead(void) { return g_ahead; }
 
 /* ---------------------------------------------------------------- the test bot: a pure function of (seed, frame) */
@@ -872,7 +873,9 @@ static uint64_t hash_pads(uint64_t h) {
     }
     return h;
 }
+void rv_pass(long long f); void rv_final(long long f);     /* fighter_sdk/replay_state.c: the replay viewer's state of each final frame */
 void rbn_pass_hash(long long f) {
+    rv_pass(f);
     if (g_hlines && f > 0) { g_hash[f % HR] = hash_pads(g_hacc); g_hframe[f % HR] = f; }
     if (f > 0) { int x = (int)(f % HR2);
         for (int q = 0; q < 2; q++) { g_upad[x][q] = g_acc_pad[q]; g_un[x][q] = g_acc_n[q]; g_uvar[x][q] = g_acc_var[q]; }
@@ -907,6 +910,7 @@ void rbn_finalize(long long cur) {
     for (long long f = g_hfinal_upto + 1; f <= upto; f++) {
         if (g_hlog && g_hframe[f % HR] == f) fprintf(g_hlog, "f %lld h %016llx\n", f, (unsigned long long)g_hash[f % HR]);
         detail_frame(f);
+        rv_final(f);
         g_hfinal_upto = f;
     }
     if (g_hlog && (upto & 63) == 0) fflush(g_hlog);

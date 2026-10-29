@@ -600,6 +600,7 @@ static DWORD WINAPI dump_thread(LPVOID arg) {
         if (g_end_fired) {
             printf("debug end: %lld fight frames reached at presented frame %lld (SSBU_DEBUG_END): exit request, normal shutdown\n", (long long)g_end_fight_frames, (long long)g_end_fired);
             fflush(stdout);
+            { void rv_flush_now(void); rv_flush_now(); }      /* (Arena) the replay state of the match so far (fighter_sdk/replay_state.c) */
             if (!oe_exit_request()) report_and_exit(0);
             return 0;
         }
