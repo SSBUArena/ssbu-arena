@@ -278,9 +278,8 @@ namespace Arena
             AspectBox.SelectedIndex = Core.Aspect;
             FpsBox.IsChecked = Core.Fps;
             KbBox.SelectedIndex = Core.Keyboard;
-            VolBox.ItemsSource = Enumerable.Range(0, 11).Select(i => (i * 10) + " %").ToList();
-            VolBox.SelectedIndex = Math.Max(0, Math.Min(10, (Core.Volume + 5) / 10));
-            filledSize = SizeBox.SelectedIndex; filledVol = VolBox.SelectedIndex;
+            VolSlider.Value = Math.Max(0, Math.Min(100, Core.Volume)); VolText.Text = (int)VolSlider.Value + " %";      // (0.2.16) steps of 1
+            filledSize = SizeBox.SelectedIndex; filledVol = (int)VolSlider.Value;
             FillButtons();
             FillPads();
             RefreshSaves();
@@ -302,7 +301,7 @@ namespace Arena
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
             Core.Fps = FpsBox.IsChecked == true;
             Core.Keyboard = Math.Max(0, KbBox.SelectedIndex);
-            if (VolBox.SelectedIndex >= 0 && VolBox.SelectedIndex != filledVol) Core.Volume = VolBox.SelectedIndex * 10;      // (0.2.12) the game's own volume (any step) stays until changed here
+            if ((int)Math.Round(VolSlider.Value) != filledVol) Core.Volume = (int)Math.Round(VolSlider.Value);      // (0.2.12) the game's own volume stays until changed here
             foreach (var cb in btnBoxes) if (cb.SelectedIndex >= 0) Core.Buttons[(string)cb.Tag] = Core.PadSources[cb.SelectedIndex].Item1;
             if (P1Box.SelectedIndex >= 0) Core.Player1 = padGuids[P1Box.SelectedIndex];
             if (P2Box.SelectedIndex >= 0) Core.Player2 = padGuids[P2Box.SelectedIndex];
@@ -356,6 +355,12 @@ namespace Arena
             FillButtons();
             SaveQuiet();
             Status("Default buttons back", "good");
+        }
+
+        void Vol_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (VolText != null) VolText.Text = (int)Math.Round(e.NewValue) + " %";
+            Field_Changed(sender, e);
         }
 
         void Field_Changed(object sender, RoutedEventArgs e)
