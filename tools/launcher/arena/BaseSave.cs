@@ -2,7 +2,8 @@
 // (0.2.10) Every base-game fighter is playable from the first start. Before the game starts (a match or the shader
 // preparation), with the game closed:
 //  - no save yet: the base save is put in its place (Assets\base_save.zip, embedded: a save the game made at its first
-//    start, every base-game fighter unlocked in it; tools/save/make_base_save.py makes it and says how);
+//    start, every base-game fighter unlocked in it and the screens the game shows once for them already seen, so the
+//    first start goes from the title to the menu; tools/save/make_base_save.py makes it and says how);
 //  - a save of the known layout with a base-game fighter still locked: that fighter is unlocked, after a copy of the
 //    save is kept in <saves>\save-backups\.
 // The save layout (13.0.4 and 13.0.5 alike: system_data.bin of 0x5b4af8 bytes, format 0x1b at offset 4) after
