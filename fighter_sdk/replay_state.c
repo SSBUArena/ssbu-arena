@@ -191,13 +191,6 @@ static void rv_add_line(Ctx *c, uint64_t line) {
 static void rv_scan_step(Ctx *c, uint64_t boma) {
     static float st[4], dir[4], out[4];
     if (g_rv_scan_done || !g_rvf.ray) { g_rv_scan_done = 1; return; }
-    if (g_rv_scan_x == 0 && getenv("SSBU_RV_RESEARCH")) {
-        for (int x = -80; x <= 80; x += 20) for (int b = 0; b < 2; b++) {
-            st[0] = (float)x; st[1] = 200.0f; dir[0] = 0; dir[1] = -400.0f; out[0] = out[1] = 0;
-            uint64_t line = rv_call5(c, g_rvf.ray, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)out, (uint64_t)b, NULL);
-            printf("[rv] ray research x %d bool %d: line %llx hit %.2f %.2f passable %d\n", x, b, (unsigned long long)line, out[0], out[1], line ? (int)(rv_call(c, g_rvf.pas, line, 0, 0, 0, NULL) & 1) : -1);
-        }
-    }
     for (int n = 0; n < 2 && !g_rv_scan_done; n++) {
         int x = -258 + 6 * g_rv_scan_x++;
         if (x > 260) {                                  /* the sides: rays across, from far left / right at a few heights under the floor */
@@ -444,41 +437,12 @@ static void rv_lines_now(Ctx *c, RvSlot *sl) {
         sl->lines[i][0] = l[0].f[0]; sl->lines[i][1] = l[0].f[1]; sl->lines[i][2] = r[0].f[0]; sl->lines[i][3] = r[0].f[1];
         if (!g_rvf.valid || (rv_call(c, g_rvf.valid, g_rv_lineptr[i], 0, 0, 0, NULL) & 1)) sl->valid |= 1ull << i;
     }
-    static int research = -1; static long long n;
-    if (research < 0) research = getenv("SSBU_RV_RESEARCH") != NULL;
-    if (research && (++n % 30) == 0)
-        for (int i = 0; i < g_rv_nlines; i++) {
-            if (!(g_rv_lines[i].flags & 2)) continue;        /* (research: the platforms) */
-            uint64_t L = g_rv_lineptr[i], vp = rd64(L + 136);
-            static float st[4], dir[4], out[4]; float cx = (sl->lines[i][0] + sl->lines[i][2]) / 2;
-            st[0] = cx; st[1] = sl->lines[i][1] + 20; dir[0] = 0; dir[1] = -40; out[0] = out[1] = 0;
-            uint64_t hit = rv_call5(c, g_rvf.ray, g_rv_boma[0], (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)out, 1, NULL);
-            printf("[rv] research line %d (%llx) points %.2f %.2f -> %.2f %.2f, vertex ptr %llx, ray at x %.2f: line %llx hit %.2f %.2f\n", i, (unsigned long long)L, sl->lines[i][0], sl->lines[i][1], sl->lines[i][2], sl->lines[i][3], (unsigned long long)vp, cx, (unsigned long long)hit, out[0], out[1]);
-            static float q[4]; V128 v[3];
-            uint64_t np = rv_fn("_ZN3app6ground12get_near_posEPKNS_19GroundCollisionLineERKN3phx8Vector2fE"), mv = rv_fn("_ZN3app6ground19get_ground_move_vecEPKNS_19GroundCollisionLineERKN3phx8Vector2fE");
-            q[0] = -300; q[1] = sl->lines[i][1]; rv_call(c, np, L, (uint64_t)(uintptr_t)q, 0, 0, v); float lx = v[0].f[0], ly = v[0].f[1];
-            q[0] = 300; rv_call(c, np, L, (uint64_t)(uintptr_t)q, 0, 0, v); float rx = v[0].f[0], ry = v[0].f[1];
-            q[0] = cx; rv_call(c, mv, L, (uint64_t)(uintptr_t)q, 0, 0, v);
-            printf("[rv]   near pos left %.2f %.2f right %.2f %.2f, move vec %.3f %.3f\n", lx, ly, rx, ry, v[0].f[0], v[0].f[1]);
-            {   /* (research) the memory around the line: the floats that changed since the last look */
-                static float snap[RV_MAXLINE][6][96]; static int have[RV_MAXLINE];
-                uint64_t base[6] = {rd64(L), rd64(L + 8), rd64(L + 0x10), rd64(L + 0x18), L, rd64(L + 136)};
-                for (int r2 = 0; r2 < 6; r2++) {
-                    if (!rv_readable(base[r2], 96 * 4)) continue;
-                    float now[96]; memcpy(now, (void *)(uintptr_t)base[r2], sizeof now);
-                    if (have[i]) for (int w = 0; w < 96; w++) if (now[w] != snap[i][r2][w] && now[w] > -400 && now[w] < 400 && (now[w] > 0.001f || now[w] < -0.001f))
-                        printf("[rv]   changed: line %d region %d (%llx) +%03x: %.3f -> %.3f\n", i, r2, (unsigned long long)base[r2], w * 4, snap[i][r2][w], now[w]);
-                    memcpy(snap[i][r2], now, sizeof now);
-                }
-                have[i] = 1;
-            }
-        }
 }
 /* after the scan: one ray down every 20 frames at x -120 .. 120 in turn (a platform that appears later, Town and City) */
 static void rv_rescan_step(Ctx *c, uint64_t boma, long long ff) {
     static float st[4], dir[4], out[4];
     static int x;
-    if (ff % 20 != 0 || g_rv_nlines >= RV_MAXLINE) return;
+    if (ff % 8 != 0 || g_rv_nlines >= RV_MAXLINE) return;
     x = x >= 120 ? -120 : x + 8;
     float from = 200.0f;
     for (int k = 0; k < 3; k++) {
@@ -497,27 +461,6 @@ static void rv_rescan_step(Ctx *c, uint64_t boma, long long ff) {
         rv_add_line(c, line);
         from = out[1] - 0.5f;
         if (from < -20.0f) break;
-    }
-    static int research = -1;
-    if (research < 0) research = getenv("SSBU_RV_RESEARCH") != NULL;
-    if (research && ff % 120 == 0) {                    /* (research: Town and City's platforms) other ray kinds, and the line the fighter stands on */
-        uint64_t ta = rv_fn(RV_LB("56GroundModule__ray_check_get_line_hit_pos_target_any_impl") "RKN3phx8Vector2fES6_RS4_jb");
-        uint64_t nc = rv_fn(RV_LB("56GroundModule__ray_check_get_line_hit_pos_no_culling_impl") "RKN3phx8Vector2fES6_RS4_b");
-        uint64_t tl = rv_fn(RV_LB("37GroundModule__get_touch_line_raw_impl") "NS_13GroundTouchIDE");
-        for (int xx = -60; xx <= 60; xx += 15) {
-            float o2[4] = {0}, o3[4] = {0};
-            st[0] = (float)xx; st[1] = 150.0f; dir[0] = 0; dir[1] = -170.0f;
-            c->x[5] = 1; uint64_t a = rv_call5(c, ta, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)o2, 0xffffffffull, NULL);
-            uint64_t b = rv_call5(c, nc, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)o3, 1, NULL);
-            printf("[rv] ray research f %lld x %d: target_any %llx hit %.2f, no_culling %llx hit %.2f\n", ff, xx, (unsigned long long)a, o2[1], (unsigned long long)b, o3[1]);
-        }
-        for (int id = 0; id < 4; id++) {
-            uint64_t L = rv_call(c, tl, boma, (uint64_t)id, 0, 0, NULL);
-            V128 l[3], r[3];
-            if (L > 0x10000) { rv_call(c, g_rvf.lpt, L, 0, 0, 0, l); rv_call(c, g_rvf.rpt, L, 0, 0, 0, r); }
-            printf("[rv] touch line research f %lld id %d: %llx%s %.2f %.2f -> %.2f %.2f\n", ff, id, (unsigned long long)L, L > 0x10000 ? "" : " (none)", L > 0x10000 ? l[0].f[0] : 0, L > 0x10000 ? l[0].f[1] : 0, L > 0x10000 ? r[0].f[0] : 0, L > 0x10000 ? r[0].f[1] : 0);
-        }
-        fflush(stdout);
     }
 }
 
@@ -557,6 +500,26 @@ static void rv_frame_line(Ctx *c, uint64_t boma, int k, long long ff) {
     if (!g_rv_scan_done && k == 0) { LARGE_INTEGER a, b; QueryPerformanceCounter(&a); rv_scan_step(c, boma); QueryPerformanceCounter(&b); g_rv_scan_ticks += b.QuadPart - a.QuadPart; }
     else if (k == 0) rv_rescan_step(c, boma, ff);
     rv_sample(c, boma, k, ff);
+    {   /* a fighter on the ground where no known line is: the line under its feet, found now (Town and City's platforms) */
+        const RvFig *f = &g_rv_acc.s[k].f;
+        if (f->situation == 0 && g_rv_scan_final && g_rv_nlines < RV_MAXLINE && f->x > -400 && f->x < 400) {
+            int known = 0;
+            for (int i = 0; i < g_rv_nlines && !known; i++) {
+                const float *L = g_rv_acc.lines[i];
+                float lo = L[0] < L[2] ? L[0] : L[2], hi = L[0] < L[2] ? L[2] : L[0];
+                if (!(g_rv_lines[i].flags & 1) || f->x < lo - 1 || f->x > hi + 1) continue;
+                float t = hi > lo ? (f->x - L[0]) / (L[2] - L[0]) : 0; t = t < 0 ? 0 : t > 1 ? 1 : t;
+                float y = L[1] + (L[3] - L[1]) * t;
+                if (y - f->y < 1.0f && f->y - y < 1.0f) known = 1;
+            }
+            if (!known) {
+                static float st[4], dir[4], out[4];
+                st[0] = f->x; st[1] = f->y + 5; dir[0] = 0; dir[1] = -10; out[0] = out[1] = 0;
+                uint64_t line = rv_call5(c, g_rvf.raync ? g_rvf.raync : g_rvf.ray, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)out, 1, NULL);
+                if (line) { int was = g_rv_nlines; rv_add_line(c, line); if (g_rv_nlines > was) rv_lines_now(c, &g_rv_acc); }
+            }
+        }
+    }
     if (g_rv_rb && k == 0 && g_rv_nlines) { LARGE_INTEGER a, b; QueryPerformanceCounter(&a); rv_lines_now(c, &g_rv_acc); QueryPerformanceCounter(&b); g_rv_lines_ticks += b.QuadPart - a.QuadPart; }
     g_rv_acc.mask |= (uint8_t)(1 << k);
     *c = saved;
