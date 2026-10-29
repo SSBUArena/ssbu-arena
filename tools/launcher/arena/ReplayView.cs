@@ -48,22 +48,38 @@ namespace Arena
         static readonly Pen HurtXlu = RvPalette.P(RvPalette.Hex("#8899AA"), .6, 1.2, new DashStyle(new double[] { 3, 3 }, 0));
         static readonly Brush HurtFill = RvPalette.B(RvPalette.Hex("#9FC6DD"), .05);
         static readonly Brush TextB = RvPalette.B(RvPalette.Hex("#EEF3F7")), MutedB = RvPalette.B(RvPalette.Hex("#91A0B2")), DimB = RvPalette.B(RvPalette.Hex("#5D6B7C"));
-        Brush[] playerB, playerFill, hitFill; Pen[] playerP, hitP, hitInner;
+        Brush[] playerB, playerFill, hitFill; Pen[] playerP, hitP, hitInner, hurtP;
+        static readonly Color Hot = RvPalette.Hex("#FF8A1F"), HotPale = RvPalette.Hex("#FFD27A");
 
         Geometry stageBody; RvLine[] floorLines;
         float[] blast;
         Rect worldAll;
 
         public ReplayView() { ClipToBounds = true; Focusable = true; SnapsToDevicePixels = false; }
+        double zoom = 1; public int zoomOn = -1;
+        public double Zoom { get => zoom; set { zoom = Math.Max(1, Math.Min(8, value)); InvalidateVisual(); } }
+        protected override void OnMouseWheel(MouseWheelEventArgs e) { Zoom = zoom * (e.Delta > 0 ? 1.25 : 0.8); e.Handled = true; }
+        protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
+        {
+            Focus();
+            if (e.ClickCount == 2) { Zoom = 1; zoomOn = -1; return; }
+            // a click on a fighter: the zoom follows that one
+            if (r == null || r.FrameList.Count == 0) return;
+            var fr = r.FrameList[Math.Max(0, Math.Min((int)Math.Round(frame), r.FrameList.Count - 1))];
+            var p = e.GetPosition(this);
+            for (int k = 0; k < fr.F.Length; k++) { var s0 = fr.F[k]; if (s0 == null) continue; var q = S(s0.X, s0.Y + 8); if (Math.Abs(q.X - p.X) < 40 && Math.Abs(q.Y - p.Y) < 60) { zoomOn = k; if (zoom < 1.5) Zoom = 2.5; InvalidateVisual(); return; } }
+        }
 
         void Prepare()
         {
             playerB = RvPalette.Player.Select(c => (Brush)RvPalette.B(c)).ToArray();
-            playerFill = RvPalette.Player.Select(c => (Brush)RvPalette.B(c, .16)).ToArray();
+            playerFill = RvPalette.Player.Select(c => (Brush)RvPalette.B(c, .13)).ToArray();
+            hurtP = RvPalette.Player.Select(c => RvPalette.P(c, .55, 1.2)).ToArray();
             playerP = RvPalette.Player.Select(c => RvPalette.P(c, .95, 1.6)).ToArray();
-            hitFill = RvPalette.Player.Select(c => (Brush)RvPalette.B(Lighter(c), .14)).ToArray();
-            hitP = RvPalette.Player.Select(c => RvPalette.P(Lighter(c), .95, 2.1)).ToArray();
-            hitInner = RvPalette.Player.Select(c => RvPalette.P(Lighter(c), .42, 1.3)).ToArray();
+            // hitboxes: one hot colour for every player (the website's HitSphere drawing), clearly apart from the bodies
+            hitFill = RvPalette.Player.Select(c => (Brush)RvPalette.B(Hot, .22)).ToArray();
+            hitP = RvPalette.Player.Select(c => RvPalette.P(Hot, 1, 2.6)).ToArray();
+            hitInner = RvPalette.Player.Select(c => RvPalette.P(HotPale, .55, 1.3)).ToArray();
             stageBody = null; floorLines = new RvLine[0];
             if (r == null) return;
             blast = ReplayNames.Blast(r);
@@ -159,7 +175,24 @@ namespace Arena
         double sc, ox, oy;                                  // world -> screen
         Point S(double x, double y) => new Point(ox + x * sc, oy - y * sc);
 
+        // SSBU_ARENA_RV_STATS=1 (tests): the time OnRender takes and the frames drawn per second, top left
+        static readonly bool statsOn = Environment.GetEnvironmentVariable("SSBU_ARENA_RV_STATS") == "1";
+        readonly System.Diagnostics.Stopwatch statClock = System.Diagnostics.Stopwatch.StartNew();
+        double statMs, statMax, statFps; int statN; double statT0;
+        public string StatsText => string.Format(CultureInfo.InvariantCulture, "render {0:0.00} ms (max {1:0.00}), {2:0} frames drawn/s", statMs, statMax, statFps);
+
         protected override void OnRender(DrawingContext dc)
+        {
+            double t0 = statClock.Elapsed.TotalMilliseconds;
+            Render(dc);
+            double t1 = statClock.Elapsed.TotalMilliseconds;
+            if (!statsOn) return;
+            statN++; statMs = statMs * .95 + (t1 - t0) * .05; statMax = Math.Max(statMax * .995, t1 - t0);
+            if (t1 - statT0 >= 1000) { statFps = statN * 1000.0 / (t1 - statT0); statN = 0; statT0 = t1; }
+            dc.DrawText(Text(StatsText, 12, MutedB, Ui), new Point(16, 30));
+        }
+
+        void Render(DrawingContext dc)
         {
             double W = ActualWidth, H = ActualHeight;
             dc.DrawRectangle(BgB, null, new Rect(0, 0, W, H));
@@ -168,6 +201,13 @@ namespace Arena
             var fr = r.FrameList[Math.Max(0, Math.Min(fi, r.FrameList.Count - 1))];
             double hudH = 120;
             var view = ViewRect(fi);
+            if (zoom > 1.001)                               // mouse wheel: closer, centred on the fighters (double click: back)
+            {
+                double cx = view.Left + view.Width / 2, cy = view.Top + view.Height / 2;
+                foreach (var f0 in fr.F) if (f0 != null && InBlast(f0.X, f0.Y)) { cx = f0.X; cy = f0.Y + 10; break; }
+                if (zoomOn >= 0 && zoomOn < fr.F.Length && fr.F[zoomOn] != null) { cx = fr.F[zoomOn].X; cy = fr.F[zoomOn].Y + 10; }
+                view = new Rect(cx - view.Width / zoom / 2, cy - view.Height / zoom / 2, view.Width / zoom, view.Height / zoom);
+            }
             double aw = W, ah = H - hudH;
             sc = Math.Min(aw / view.Width, ah / view.Height);
             ox = aw / 2 - (view.Left + view.Width / 2) * sc; oy = ah / 2 + (view.Top + view.Height / 2) * sc;
@@ -194,18 +234,26 @@ namespace Arena
                 var fill = new LinearGradientBrush(RvPalette.Hex("#233C56"), RvPalette.Hex("#0B1B2A"), 90);
                 dc.DrawGeometry(fill, StageEdge, g);
             }
+            var plats = new List<float[]>();
             for (int i = 0; i < r.Lines.Count; i++)
             {
                 var L = r.Lines[i]; var p = fr.Lines != null && i < fr.Lines.Length ? fr.Lines[i] : new[] { L.X1, L.Y1, L.X2, L.Y2 };
+                if (fr.Number < L.FirstFrame || (i < 64 && (fr.LinesOn & (1UL << i)) == 0)) continue;      // not there (yet / now)
+                if (L.Passable) { plats.Add(new[] { Math.Min(p[0], p[2]), p[1], Math.Max(p[0], p[2]), p[3] }); continue; }
                 Point a = S(p[0], p[1]), b = S(p[2], p[3]);
-                if (L.Passable)
-                {
-                    var body = new Rect(new Point(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y)), new Point(Math.Max(a.X, b.X), Math.Max(a.Y, b.Y) + 2.4 * sc));
-                    dc.DrawRoundedRectangle(PlatFill, PlatUnder, body, 2, 2);
-                    dc.DrawLine(PlatP, a, b);
-                }
-                else if (L.Floor) dc.DrawLine(StageRail, a, b);
+                if (L.Floor) dc.DrawLine(StageRail, a, b);
                 else dc.DrawLine(StageDetail, a, b);
+            }
+            // platforms: the game keeps one as several touching segments; drawn as one (at this frame's positions)
+            plats.Sort((u, v) => u[0].CompareTo(v[0]));
+            for (int i = 0; i < plats.Count; i++)
+            {
+                var q = plats[i];
+                while (i + 1 < plats.Count && Math.Abs(plats[i + 1][0] - q[2]) < .1 && Math.Abs(plats[i + 1][1] - q[3]) < .1) { q = new[] { q[0], q[1], plats[i + 1][2], plats[i + 1][3] }; i++; }
+                Point a = S(q[0], q[1]), b = S(q[2], q[3]);
+                var body = new Rect(new Point(a.X, Math.Min(a.Y, b.Y)), new Point(b.X, Math.Max(a.Y, b.Y) + 2.4 * sc));
+                dc.DrawRoundedRectangle(PlatFill, PlatUnder, body, 2, 2);
+                dc.DrawLine(PlatP, a, b);
             }
 
             // fighters: hurt volumes, the body mark, then hitboxes on top
@@ -213,13 +261,13 @@ namespace Arena
             {
                 var s = fr.F[k]; if (s == null) continue;
                 int pc = k % 4;
-                if (ShowHurt) foreach (var u in s.Hurts) DrawCapsule(dc, u.X, u.Y, u.X2, u.Y2, u.R, u.Status == 1 ? HurtXlu : u.Status == 2 ? HurtInv : HurtP, HurtFill);
+                if (ShowHurt) foreach (var u in s.Hurts) DrawCapsule(dc, u.X, u.Y, u.X2, u.Y2, u.R, u.Status == 1 ? HurtXlu : u.Status == 2 ? HurtInv : hurtP[pc], null);
                 DrawFighter(dc, s, k, pc, true);
             }
             if (fr.Extra != null)
                 foreach (var e in fr.Extra)
                 {
-                    if (ShowHurt) foreach (var u in e.Value.Hurts) DrawCapsule(dc, u.X, u.Y, u.X2, u.Y2, u.R, HurtP, HurtFill);
+                    if (ShowHurt) foreach (var u in e.Value.Hurts) DrawCapsule(dc, u.X, u.Y, u.X2, u.Y2, u.R, hurtP[e.Key % 4], null);
                     DrawFighter(dc, e.Value, e.Key, e.Key % 4, false);
                 }
             if (ShowHit)

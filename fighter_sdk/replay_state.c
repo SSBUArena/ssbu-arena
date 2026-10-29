@@ -22,8 +22,9 @@
  *   SSBU_RV_TIMING=1              (test only) the main-thread cost of the recorder, printed at each match end
  *
  * File (.ssbv, little endian): header 0x200 bytes (RvHead), then the body (codec 0 raw; the launcher may store it deflated,
- * codec 1): RvLine[nlines] (the stage lines at the match start), then per final frame: u32 frame, u8 fighter mask,
- * u8 moved lines, u16 0, [moved * {u16 line, u16 0, float x1 y1 x2 y2}], then per fighter in the mask an RvFig followed by
+ * codec 1): RvLine[nlines] (the stage lines: found by rays at the match start and every half second after), then per final
+ * frame: u32 frame, u8 fighter mask, u8 moved lines, u16 0, u64 the lines that are on (app::ground::is_valid) at this frame,
+ * [moved * {u16 line, u16 0, float x1 y1 x2 y2}], then per fighter in the mask an RvFig followed by
  * its RvHit[nhit] and RvHurt[nhurt]. Positions of hit / hurt boxes in 1/16 game units. */
 #include <time.h>
 uint64_t rbn_match_seed(void); int rbn_on(void); int rbn_local_player(void); int rbn_loop(void); int rbn_match_number(void);   /* rb_net.c */
@@ -39,7 +40,8 @@ typedef struct {
     float shield;                   /* shield health (work float), -1 unknown */
     uint32_t ff;                    /* the fighter's own frame-line count (fighter_host.c), for screenshot matching */
 } RvFig;                            /* 44 B */
-typedef struct { float x1, y1, x2, y2; uint32_t flags; } RvLine;   /* flags 1 floor, 2 passable, 4 wall, 8 ceiling, 16 moves */
+typedef struct { float x1, y1, x2, y2; uint32_t flags; } RvLine;   /* flags 1 floor, 2 passable, 4 wall, 16 moves; bits 8..31: the first frame it is
+                                                                     * in the file (found by a later ray: platforms that come and go) */
 typedef struct {
     char magic[4]; uint16_t version, header_size; uint32_t flags, frames; int64_t unix_time; uint32_t body_size, body_raw;
     uint8_t codec, nfighters, rule_kind, stocks; uint32_t time_limit;
@@ -63,7 +65,7 @@ _Static_assert(sizeof(RvFig) == 44, "RvFig");
 #define RV_MAXLINE 64
 #define RV_RING 512
 typedef struct { RvFig f; RvHit hit[RV_MAXHIT]; RvHurt hurt[RV_MAXHURT]; } RvSample;
-typedef struct { long long frame; uint8_t mask; RvSample s[RV_MAXF]; float lines[RV_MAXLINE][4]; } RvSlot;
+typedef struct { long long frame; uint8_t mask; uint64_t valid; RvSample s[RV_MAXF]; float lines[RV_MAXLINE][4]; } RvSlot;
 
 static int g_rv_on = -1, g_rv_rb;                      /* on; this match runs in a rollback session */
 static RvSlot g_rv_acc;                                /* the pass now running */
@@ -72,6 +74,7 @@ static uint8_t *g_rv_buf; static size_t g_rv_len, g_rv_cap;
 static RvHead g_rv_head; static int g_rv_active; static long long g_rv_frames, g_rv_last_final = 0, g_rv_direct_n;
 static RvLine g_rv_lines[RV_MAXLINE]; static uint64_t g_rv_lineptr[RV_MAXLINE]; static int g_rv_nlines, g_rv_scan_x, g_rv_scan_done;
 static float g_rv_prev_lines[RV_MAXLINE][4];
+static int g_rv_scan_final;                            /* the start scan (rays down, sideways, up) is over */
 static uint64_t g_rv_boma[RV_MAXF]; static int g_rv_slot_entry[RV_MAXF];
 static int g_rv_shield_idx = -2;                       /* the work float that holds the shield (found at the first frames: 50.0) */
 static LARGE_INTEGER g_rv_qpf; static long long g_rv_cost_ticks, g_rv_cost_n, g_rv_cost_max, g_rv_scan_ticks, g_rv_lines_ticks, g_rv_cost_hist[4];      /* hist: lines under 20 / 50 / 100 us / more */
@@ -80,7 +83,7 @@ static SRWLOCK g_rv_lock = SRWLOCK_INIT;
 static uint64_t rv_fn(const char *name) { return fd_fn(name); }
 #define RV_LB(s) "_ZN3app8lua_bind" s "EPNS_26BattleObjectModuleAccessorE"
 /* game functions read through their exported names (the same on 13.0.4 and 13.0.5) */
-static struct { uint64_t posx, posy, lr, dmg, st, sit, mot, mf, isatk, atksize, atkcenter, atkdata, hitn, hitc, hitst, atkn, entry, dead, cam, ray, lpt, rpt, pas, floor, wall; } g_rvf;
+static struct { uint64_t posx, posy, lr, dmg, st, sit, mot, mf, isatk, atksize, atkcenter, atkdata, hitn, hitc, hitst, atkn, entry, dead, cam, ray, lpt, rpt, pas, floor, wall, valid; } g_rvf;
 static void rv_fns(void) {
     if (g_rvf.posx) return;
     g_rvf.posx = rv_fn(RV_LB("25PostureModule__pos_x_impl")); g_rvf.posy = rv_fn(RV_LB("25PostureModule__pos_y_impl")); g_rvf.lr = rv_fn(RV_LB("22PostureModule__lr_impl"));
@@ -97,6 +100,7 @@ static void rv_fns(void) {
     g_rvf.lpt = rv_fn("_ZN3app6ground14get_left_pointEPKNS_19GroundCollisionLineE"); g_rvf.rpt = rv_fn("_ZN3app6ground15get_right_pointEPKNS_19GroundCollisionLineE");
     g_rvf.pas = rv_fn("_ZN3app6ground11is_passableEPKNS_19GroundCollisionLineE"); g_rvf.floor = rv_fn("_ZN3app6ground8is_floorEPKNS_19GroundCollisionLineE");
     g_rvf.wall = rv_fn("_ZN3app6ground7is_wallEPKNS_19GroundCollisionLineE");
+    g_rvf.valid = rv_fn("_ZN3app6ground8is_validEPKNS_19GroundCollisionLineE");
 }
 /* one getter call on the game's context: x0..x4 in, x0 / v0..v2 out. The caller saves and restores the context once. */
 static inline uint64_t rv_call5(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, V128 *v);
@@ -138,7 +142,7 @@ static uint64_t rv_info_record(int entry) {             /* debug_mode.c fighter_
 static void rv_head_start(void) {
     RvHead *h = &g_rv_head;
     memset(h, 0, sizeof *h);
-    memcpy(h->magic, "SSBV", 4); h->version = 1; h->header_size = sizeof *h;
+    memcpy(h->magic, "SSBV", 4); h->version = 2;      /* 2: the frame header has the lines-on mask (1: test files of the first builds) */ h->header_size = sizeof *h;
     { FILETIME ft; GetSystemTimeAsFileTime(&ft); h->unix_time = (int64_t)((((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 10000000ull) - 11644473600ll; }
     h->game_build = (uint32_t)g_game_build;
     uint64_t mb = GA(0x71052c41b0ULL);                 /* the game's global match block (debug_mode.c MELEE_INFO) */
@@ -175,6 +179,11 @@ static void rv_add_line(Ctx *c, uint64_t line) {
     RvLine *L = &g_rv_lines[g_rv_nlines];
     L->x1 = l[0].f[0]; L->y1 = l[0].f[1]; L->x2 = r[0].f[0]; L->y2 = r[0].f[1];
     L->flags = ((rv_call(c, g_rvf.floor, line, 0, 0, 0, NULL) & 1) ? 1u : 0u) | ((rv_call(c, g_rvf.pas, line, 0, 0, 0, NULL) & 1) ? 2u : 0u) | ((rv_call(c, g_rvf.wall, line, 0, 0, 0, NULL) & 1) ? 4u : 0u);
+    if (g_rv_scan_final) {                              /* found after the match start: from the next frame written on */
+        L->flags |= (uint32_t)((g_rv_head.ended_frame + 1) & 0xffffff) << 8;
+        g_rv_prev_lines[g_rv_nlines][0] = L->x1; g_rv_prev_lines[g_rv_nlines][1] = L->y1; g_rv_prev_lines[g_rv_nlines][2] = L->x2; g_rv_prev_lines[g_rv_nlines][3] = L->y2;
+        printf("[rv] stage line %d found later (frame %u): %.2f %.2f -> %.2f %.2f flags %u\n", g_rv_nlines, g_rv_head.ended_frame + 1, L->x1, L->y1, L->x2, L->y2, L->flags & 0xff); fflush(stdout);
+    }
     g_rv_lineptr[g_rv_nlines++] = line;
 }
 static void rv_scan_step(Ctx *c, uint64_t boma) {
@@ -222,6 +231,7 @@ static void rv_scan_step(Ctx *c, uint64_t boma) {
         rv_call(c, g_rvf.cam, 0, 0, 0, 0, v); memcpy(g_rv_head.camera, v[0].f, 16);
         printf("[rv] blast zones (dead area) %.2f %.2f %.2f %.2f, camera range %.2f %.2f %.2f %.2f\n", g_rv_head.dead[0], g_rv_head.dead[1], g_rv_head.dead[2], g_rv_head.dead[3], g_rv_head.camera[0], g_rv_head.camera[1], g_rv_head.camera[2], g_rv_head.camera[3]);
         for (int i = 0; i < g_rv_nlines; i++) { g_rv_prev_lines[i][0] = g_rv_lines[i].x1; g_rv_prev_lines[i][1] = g_rv_lines[i].y1; g_rv_prev_lines[i][2] = g_rv_lines[i].x2; g_rv_prev_lines[i][3] = g_rv_lines[i].y2; }
+        g_rv_scan_final = 1;
         printf("[rv] stage scan: %d collision lines\n", g_rv_nlines);
         for (int i = 0; i < g_rv_nlines; i++) printf("[rv]   line %d: %.2f %.2f -> %.2f %.2f flags %u\n", i, g_rv_lines[i].x1, g_rv_lines[i].y1, g_rv_lines[i].x2, g_rv_lines[i].y2, g_rv_lines[i].flags);
         fflush(stdout);
@@ -330,7 +340,7 @@ static void rv_append(const RvSlot *sl, long long frame) {
     for (int i = 0; i < g_rv_nlines; i++)
         if (memcmp(sl->lines[i], g_rv_prev_lines[i], sizeof g_rv_prev_lines[i]) != 0 && (sl->lines[i][0] != 0 || sl->lines[i][2] != 0)) idx[moved++] = (uint16_t)i;
     uint32_t fr = (uint32_t)frame;
-    rv_put(&fr, 4); rv_put(&mask, 1); rv_put(&moved, 1); rv_put(&z, 2);
+    rv_put(&fr, 4); rv_put(&mask, 1); rv_put(&moved, 1); rv_put(&z, 2); rv_put(&sl->valid, 8);
     for (int m = 0; m < moved; m++) {
         int i = idx[m]; rv_put(&idx[m], 2); rv_put(&z, 2); rv_put(sl->lines[i], 16);
         memcpy(g_rv_prev_lines[i], sl->lines[i], 16); g_rv_lines[i].flags |= 16;
@@ -399,7 +409,7 @@ static void rv_end(const char *why, int sync) {
 static void rv_begin(void) {
     if (g_rv_active) rv_end("a new match", 0);
     g_rv_active = 1; g_rv_frames = 0; g_rv_len = 0; g_rv_last_final = 0; g_rv_direct_n = 0;
-    g_rv_nlines = 0; g_rv_scan_x = 0; g_rv_scan_done = 0; g_rv_cost_ticks = g_rv_cost_n = g_rv_cost_max = g_rv_scan_ticks = g_rv_lines_ticks = 0; memset(g_rv_cost_hist, 0, sizeof g_rv_cost_hist);
+    g_rv_nlines = 0; g_rv_scan_x = 0; g_rv_scan_done = 0; g_rv_scan_final = 0; g_rv_cost_ticks = g_rv_cost_n = g_rv_cost_max = g_rv_scan_ticks = g_rv_lines_ticks = 0; memset(g_rv_cost_hist, 0, sizeof g_rv_cost_hist);
     memset(&g_rv_acc, 0, sizeof g_rv_acc);
     for (int k = 0; k < RV_MAXF; k++) { g_rv_boma[k] = 0; g_rv_slot_entry[k] = -1; }
     if (g_rv_ring) for (int i = 0; i < RV_RING; i++) g_rv_ring[i].frame = -1;
@@ -421,11 +431,67 @@ static int rv_enabled(void) {
     return g_rv_on;
 }
 /* the moving lines: their end points read again (the left / right point getters: plain reads of the line) */
-static void rv_lines_now(Ctx *c, float (*out)[4]) {
+static void rv_lines_now(Ctx *c, RvSlot *sl) {
     V128 l[3], r[3];
+    sl->valid = 0;
     for (int i = 0; i < g_rv_nlines; i++) {
         rv_call(c, g_rvf.lpt, g_rv_lineptr[i], 0, 0, 0, l); rv_call(c, g_rvf.rpt, g_rv_lineptr[i], 0, 0, 0, r);
-        out[i][0] = l[0].f[0]; out[i][1] = l[0].f[1]; out[i][2] = r[0].f[0]; out[i][3] = r[0].f[1];
+        sl->lines[i][0] = l[0].f[0]; sl->lines[i][1] = l[0].f[1]; sl->lines[i][2] = r[0].f[0]; sl->lines[i][3] = r[0].f[1];
+        if (!g_rvf.valid || (rv_call(c, g_rvf.valid, g_rv_lineptr[i], 0, 0, 0, NULL) & 1)) sl->valid |= 1ull << i;
+    }
+    static int research = -1; static long long n;
+    if (research < 0) research = getenv("SSBU_RV_RESEARCH") != NULL;
+    if (research && (++n % 120) == 0)
+        for (int i = 0; i < g_rv_nlines; i++) {
+            if (!(g_rv_lines[i].flags & 2)) continue;        /* (research: the platforms) */
+            uint64_t L = g_rv_lineptr[i], vp = rd64(L + 136);
+            static float st[4], dir[4], out[4]; float cx = (sl->lines[i][0] + sl->lines[i][2]) / 2;
+            st[0] = cx; st[1] = sl->lines[i][1] + 20; dir[0] = 0; dir[1] = -40; out[0] = out[1] = 0;
+            uint64_t hit = rv_call5(c, g_rvf.ray, g_rv_boma[0], (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)out, 1, NULL);
+            printf("[rv] research line %d (%llx) points %.2f %.2f -> %.2f %.2f, vertex ptr %llx, ray at x %.2f: line %llx hit %.2f %.2f\n", i, (unsigned long long)L, sl->lines[i][0], sl->lines[i][1], sl->lines[i][2], sl->lines[i][3], (unsigned long long)vp, cx, (unsigned long long)hit, out[0], out[1]);
+            static float q[4]; V128 v[3];
+            uint64_t np = rv_fn("_ZN3app6ground12get_near_posEPKNS_19GroundCollisionLineERKN3phx8Vector2fE"), mv = rv_fn("_ZN3app6ground19get_ground_move_vecEPKNS_19GroundCollisionLineERKN3phx8Vector2fE");
+            q[0] = -300; q[1] = sl->lines[i][1]; rv_call(c, np, L, (uint64_t)(uintptr_t)q, 0, 0, v); float lx = v[0].f[0], ly = v[0].f[1];
+            q[0] = 300; rv_call(c, np, L, (uint64_t)(uintptr_t)q, 0, 0, v); float rx = v[0].f[0], ry = v[0].f[1];
+            q[0] = cx; rv_call(c, mv, L, (uint64_t)(uintptr_t)q, 0, 0, v);
+            printf("[rv]   near pos left %.2f %.2f right %.2f %.2f, move vec %.3f %.3f\n", lx, ly, rx, ry, v[0].f[0], v[0].f[1]);
+        }
+}
+/* after the scan: one ray down every 20 frames at x -120 .. 120 in turn (a platform that appears later, Town and City) */
+static void rv_rescan_step(Ctx *c, uint64_t boma, long long ff) {
+    static float st[4], dir[4], out[4];
+    static int x;
+    if (ff % 20 != 0 || g_rv_nlines >= RV_MAXLINE) return;
+    x = x >= 120 ? -120 : x + 8;
+    float from = 200.0f;
+    for (int k = 0; k < 3; k++) {
+        st[0] = (float)x; st[1] = from; dir[0] = 0; dir[1] = -200.0f - from; out[0] = out[1] = 0;
+        uint64_t line = rv_call5(c, g_rvf.ray, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)out, 1, NULL);
+        if (!line) break;
+        rv_add_line(c, line);
+        from = out[1] - 0.5f;
+        if (from < -20.0f) break;
+    }
+    static int research = -1;
+    if (research < 0) research = getenv("SSBU_RV_RESEARCH") != NULL;
+    if (research && ff % 120 == 0) {                    /* (research: Town and City's platforms) other ray kinds, and the line the fighter stands on */
+        uint64_t ta = rv_fn(RV_LB("56GroundModule__ray_check_get_line_hit_pos_target_any_impl") "RKN3phx8Vector2fES6_RS4_jb");
+        uint64_t nc = rv_fn(RV_LB("56GroundModule__ray_check_get_line_hit_pos_no_culling_impl") "RKN3phx8Vector2fES6_RS4_b");
+        uint64_t tl = rv_fn(RV_LB("37GroundModule__get_touch_line_raw_impl") "NS_13GroundTouchIDE");
+        for (int xx = -60; xx <= 60; xx += 15) {
+            float o2[4] = {0}, o3[4] = {0};
+            st[0] = (float)xx; st[1] = 150.0f; dir[0] = 0; dir[1] = -170.0f;
+            c->x[5] = 1; uint64_t a = rv_call5(c, ta, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)o2, 0xffffffffull, NULL);
+            uint64_t b = rv_call5(c, nc, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)o3, 1, NULL);
+            printf("[rv] ray research f %lld x %d: target_any %llx hit %.2f, no_culling %llx hit %.2f\n", ff, xx, (unsigned long long)a, o2[1], (unsigned long long)b, o3[1]);
+        }
+        for (int id = 0; id < 4; id++) {
+            uint64_t L = rv_call(c, tl, boma, (uint64_t)id, 0, 0, NULL);
+            V128 l[3], r[3];
+            if (L > 0x10000) { rv_call(c, g_rvf.lpt, L, 0, 0, 0, l); rv_call(c, g_rvf.rpt, L, 0, 0, 0, r); }
+            printf("[rv] touch line research f %lld id %d: %llx%s %.2f %.2f -> %.2f %.2f\n", ff, id, (unsigned long long)L, L > 0x10000 ? "" : " (none)", L > 0x10000 ? l[0].f[0] : 0, L > 0x10000 ? l[0].f[1] : 0, L > 0x10000 ? r[0].f[0] : 0, L > 0x10000 ? r[0].f[1] : 0);
+        }
+        fflush(stdout);
     }
 }
 
@@ -458,13 +524,14 @@ static void rv_frame_line(Ctx *c, uint64_t boma, int k, long long ff) {
         }
     }
     if (!g_rv_rb && k == 0 && g_rv_acc.mask) {          /* offline: the next frame begins at fighter 0: the last one is final */
-        if (g_rv_nlines) rv_lines_now(c, g_rv_acc.lines);
+        if (g_rv_nlines) rv_lines_now(c, &g_rv_acc);
         rv_append(&g_rv_acc, ++g_rv_direct_n);
         g_rv_acc.mask = 0;
     }
     if (!g_rv_scan_done && k == 0) { LARGE_INTEGER a, b; QueryPerformanceCounter(&a); rv_scan_step(c, boma); QueryPerformanceCounter(&b); g_rv_scan_ticks += b.QuadPart - a.QuadPart; }
+    else if (k == 0) rv_rescan_step(c, boma, ff);
     rv_sample(c, boma, k, ff);
-    if (g_rv_rb && k == 0 && g_rv_nlines) { LARGE_INTEGER a, b; QueryPerformanceCounter(&a); rv_lines_now(c, g_rv_acc.lines); QueryPerformanceCounter(&b); g_rv_lines_ticks += b.QuadPart - a.QuadPart; }
+    if (g_rv_rb && k == 0 && g_rv_nlines) { LARGE_INTEGER a, b; QueryPerformanceCounter(&a); rv_lines_now(c, &g_rv_acc); QueryPerformanceCounter(&b); g_rv_lines_ticks += b.QuadPart - a.QuadPart; }
     g_rv_acc.mask |= (uint8_t)(1 << k);
     *c = saved;
     ReleaseSRWLockExclusive(&g_rv_lock);

@@ -43,8 +43,13 @@ class Ssbv:
         self.frames = []
         o = 20 * self.nlines
         while o + 8 <= len(body):
-            fr, mask, moved = struct.unpack_from("<IBB", body, o)
-            o += 8
+            if self.version >= 2:
+                fr, mask, moved, _, valid = struct.unpack_from("<IBBHQ", body, o)
+                o += 16
+            else:
+                fr, mask, moved = struct.unpack_from("<IBB", body, o)
+                valid = (1 << 64) - 1
+                o += 8
             mv = []
             for _ in range(moved):
                 li = struct.unpack_from("<H", body, o)[0]
@@ -67,7 +72,7 @@ class Ssbv:
                     hurts.append(dict(x=ux / 16, y=uy / 16, x2=ux2 / 16, y2=uy2 / 16, r=ur / 16, part=part, status=ust))
                     o += 12
                 fs[k] = dict(x=x, y=y, dmg=dmg, mf=mf, motion=mot, status=st, lr=lr, situation=sit, stocks=stocks, shield=shield, ff=ff, hits=hits, hurts=hurts)
-            self.frames.append(dict(frame=fr, moved=mv, f=fs))
+            self.frames.append(dict(frame=fr, moved=mv, valid=valid, f=fs))
 
 
 def line(fr):
