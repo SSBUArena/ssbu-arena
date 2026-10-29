@@ -167,7 +167,20 @@ static void rbg_step_body(Ctx *c) {
     if (g_rbg_in_match == 3) return;                    /* (R3 lwr, run lwr2: both games crashed here) a room fight already running stays one until its fight-off:
                                                          * the room's match is set up (handshake, rbn_match_cancelled() 0 again) while the waiting-stage fight still runs */
     if (rbn_match_cancelled() == 2) {                   /* (R3 pub2) a Local Wireless room fight: the game's own netcode, no ring, pads untouched */
-        if (!g_rbg_in_match) { g_rbg_in_match = 3; LOG("r1: RB NET: a Local Wireless room fight: no rollback (the game's own netcode)\n"); }
+        if (!g_rbg_in_match) {
+            g_rbg_in_match = 3; LOG("r1: RB NET: a Local Wireless room fight: no rollback (the game's own netcode)\n");
+            /* (0.2.11) the ring's first full save (the long one: about 2 GB, shadow and marks) made now, at the room's waiting-stage
+             * fight, instead of at the first frame of the room's match: that match's base is then a rebase (only the pages that
+             * changed since). SSBU_RB_PREWARM=0: the old way. */
+            static int pw = -1; if (pw < 0) { const char *e = getenv("SSBU_RB_PREWARM"); pw = !(e && e[0] == '0'); }
+            if (pw && !g_rg_ready && !g_rg_nomem && !g_rbg_rebase) {
+                double t0 = now_ms();
+                r1_ring_capture(0, c);
+                if (g_rg_ready) { g_rbg_rebase = 1; LOG("r1: RB NET: the ring's first full save made at the room's waiting stage (%.1f ms): the match's base will be a rebase\n", now_ms() - t0); }
+                else LOG("r1: RB NET: the ring's first full save at the waiting stage was not made (%s): it will be made at the match\n", g_rg_nomem ? "not enough memory" : "not now");
+                if (g_rbg_wdfix) g_ra_wd_pause = 1;
+            }
+        }
         return;
     }
     if (rbn_match_cancelled()) {                        /* (hs12) not agreed with the other game: no rollback; rbg_pad leaves this match */

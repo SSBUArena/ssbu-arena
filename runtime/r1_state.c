@@ -207,6 +207,15 @@ static void *rs_alloc(size_t n) { return n ? VirtualAlloc(NULL, n, MEM_RESERVE |
 static void rs_free(void *p) { if (p) VirtualFree(p, 0, MEM_RELEASE); }
 static void release(void);
 static int g_rs_drop;                                   /* set by the first save's callers (the ring, run-ahead): r->s given back during mark_setup */
+static double g_fs_t[3];                                  /* (0.2.11) the first save's parts: compare start, compare end, mark setup end */
+static uint8_t *g_save_diff;                             /* (0.2.11) the full save's compare after the pause: 1 = the page differs */
+/* (Arena 0.2.11) the first full save's passes over the whole game memory (about 2 GB: the copy, the compare after the pause, the
+ * shadow's fill) ran on main alone, ~1.5 s at the first frame of a rollback match: the freeze players saw. They now go through
+ * the copy threads (cp_*, below) with as many helpers as the CPU allows (cp_run_big). Same bytes, same order of effects.
+ * SSBU_R1_BIG_THREADS=<n> (default: logical processors - 2, at most 8; 0 = main alone, the old way). */
+static void cp_init(void); static void cp_reserve(size_t n); static void cp_add(uint8_t *d, const uint8_t *s);
+static void cp_add_range(uint8_t *d, const uint8_t *s, size_t n); static void cp_run_big(void); static void cp_cmp_big(uint8_t *res);
+static void cp_clear(void); static int g_ncp_big;
 static int g_rb_test_nomem = -1;                        /* SSBU_RB_NET_TEST_NOMEM (test only): 1 = the commit check says no, 2 = an allocation of the full save fails, 3 = the ring's own allocations fail, 4 = the shadow's commit fails */
 static int rb_test_nomem(void) { if (g_rb_test_nomem < 0) { const char *e = getenv("SSBU_RB_NET_TEST_NOMEM"); g_rb_test_nomem = e ? atoi(e) : 0; } return g_rb_test_nomem; }
 static double g_save_need_mb, g_save_avail_mb;          /* the last commit check (MB) */
@@ -671,6 +680,12 @@ static void save(Ctx *c) {
         }
         if (!bad && !g_fpool) { g_fpool = malloc(g_fpool_cap); if (!g_fpool) { bad = 1; LOG("r1: FULL SAVE NOT MADE: fiber pool allocation FAILED\n"); } }
         if (!bad && g_ecap < 65536) { void *ne = realloc(g_e, 65536 * sizeof *g_e); if (ne) { g_e = ne; g_ecap = 65536; } else { bad = 1; LOG("r1: FULL SAVE NOT MADE: list allocation FAILED\n"); } }   /* no allocation while threads are held */
+        if (!bad) {                                      /* (0.2.11) the copy threads' job list and the compare results, before the hold */
+            size_t np = 0; for (int i = 0; i < g_nr; i++) np += g_r[i].n / PG;
+            cp_init(); cp_reserve(np + 64);
+            free(g_save_diff); g_save_diff = malloc(np + 64);
+            if (!g_save_diff) { bad = 1; LOG("r1: FULL SAVE NOT MADE: compare list allocation FAILED\n"); }
+        }
         if (bad) { release(); g_save_failed = 2; return; }
     }
     if (g_fast > 0 && g_cycle < g_learn) async_learn();
@@ -678,7 +693,8 @@ static void save(Ctx *c) {
     if (g_ra > 0) { if (!ra_hold_quiet(200)) { LOG("r1: RA: first save: no quiet moment within 200 ms: not now (busy: %s)\n", g_ra_busy_first_save()); g_save_failed = 1; return; } } else park_quiet(0);
     fibers_save();
     double t1b = now_ms();
-    for (int i = 0; i < g_nr; i++) { memcpy(g_r[i].s, g_r[i].a, g_r[i].n); g_saved_bytes += g_r[i].n; }
+    for (int i = 0; i < g_nr; i++) { cp_add_range(g_r[i].s, g_r[i].a, g_r[i].n); g_saved_bytes += g_r[i].n; }
+    cp_run_big();                                        /* (0.2.11) main + the helpers */
     double t2 = now_ms();
     {   /* pages the OTHER threads write while main is held here (audio, vsync counter, loaders, render threads): they are
          * not the simulation's; they are left out of restore and verify. SSBU_R1_PAUSE=<ms> (default 50, 0 = none) */
@@ -686,10 +702,14 @@ static void save(Ctx *c) {
         size_t np = 0; int shown = 0;
         if (pause > 0) {
             Sleep((DWORD)pause);
+            g_fs_t[0] = now_ms();
+            for (int i = 0; i < g_nr; i++) cp_add_range(g_r[i].a, g_r[i].s, g_r[i].n);
+            cp_cmp_big(g_save_diff);                         /* (0.2.11) the compare in parallel; the pages that differ, in order, below */
+            size_t q = 0;
             for (int i = 0; i < g_nr; i++) {
                 Rng *r = &g_r[i];
                 for (size_t p = 0; p < r->n / PG; p++)
-                    if (memcmp(r->a + p * PG, r->s + p * PG, PG)) {
+                    if (g_save_diff[q++]) {
                         r->async[p] = 1; np++; if (g_audio_free) async_add(r->a + p * PG);
                         memcpy(r->s + p * PG, r->a + p * PG, PG);
                         if (g_cycle == 0 && shown < 40) g_e[shown++].a = r->a + p * PG;
@@ -697,7 +717,9 @@ static void save(Ctx *c) {
             }
         }
         int mfail = 0;
-        if (g_mark > 0 && g_cycle == 0) { g_ctx_save = *c; mfail = !mark_setup(); }     /* round 5: the marks start while the threads are still held (no unmarked gap after this full save) */
+        g_fs_t[1] = now_ms();
+        if (g_mark > 0 && g_cycle == 0) { g_ctx_save = *c; mfail = !mark_setup(); }
+        g_fs_t[2] = now_ms();     /* round 5: the marks start while the threads are still held (no unmarked gap after this full save) */
         if (g_ra > 0 && !mfail) nvn_r1_cb_save();
         unpark();
         if (mfail) { release(); g_save_failed = 2; return; }
@@ -707,6 +729,8 @@ static void save(Ctx *c) {
     g_ctx_save = *c;
     g_nos = 0; os_r1_objs(os_cb); qsort(g_os, (size_t)g_nos, sizeof *g_os, cmp_os);
     LOG("r1: cycle %d SAVE at fight frame %lld: %d ranges, %.1f MB copied in %.2f ms (+ %.2f ms to list the ranges)\n", g_cycle, g_ff, g_nr, g_saved_bytes / 1048576.0, t2 - t1, t1 - t0);
+    if (g_cycle == 0) LOG("r1: first save parts (ms): list %.1f, hold %.1f, copy %.1f, pause + compare %.1f (compare %.1f), mark setup (shadow fill) %.1f, the rest %.1f; main + %d helpers\n",
+                          t1 - t0, t1b - tp0, t2 - t1b, g_fs_t[1] - t2, g_fs_t[1] - g_fs_t[0], g_fs_t[2] - g_fs_t[1], now_ms() - g_fs_t[2], g_ncp_big);
     if (g_cycle == 0) {
         for (int i = 0; i < g_nr; i++) if (g_r[i].n >= (4u << 20)) LOG("r1:   range %s + %.1f MB\n", where(g_r[i].a), g_r[i].n / 1048576.0);
         park_report("at the save");
@@ -1114,13 +1138,17 @@ static int mark_setup(void) {
             for (size_t p = 0; p < np; p++) {
                 uint8_t *a = r->a + p * PG, *cm; size_t pi; uint8_t *sh = in_shadow(a, &cm, &pi);
                 if (sh) {
-                    if (!sh_commit(sh, cm, pi)) { LOG("r1: MARK setup: commit of the shadow FAILED after %.1f MB%s: marks OFF\n", shb / 1048576.0, rb_test_nomem() == 4 ? " (TEST: SSBU_RB_NET_TEST_NOMEM=4)" : ""); mark_undo(); return 0; }
-                    memcpy(sh, r->s + p * PG, PG); shb += PG;
+                    if (!sh_commit(sh, cm, pi)) { cp_clear(); LOG("r1: MARK setup: commit of the shadow FAILED after %.1f MB%s: marks OFF\n", shb / 1048576.0, rb_test_nomem() == 4 ? " (TEST: SSBU_RB_NET_TEST_NOMEM=4)" : ""); mark_undo(); return 0; }
+                    cp_add(sh, r->s + p * PG); shb += PG;      /* (0.2.11) queued: copied by main + the helpers at the end of the block */
                 } else {
                     if (cx < g_nx && xo == g_x[cx].n) { cx++; xo = 0; }
                     if (cx < g_nx && g_x[cx].a + xo == a) { memcpy(g_x[cx].b + xo, r->s + p * PG, PG); xo += PG; }
                 }
-                if (g_rs_drop && (p + 1 - d0 == 256 || p + 1 == np)) { VirtualFree(r->s + d0 * PG, (p + 1 - d0) * PG, MEM_DECOMMIT); dropped += (long long)(p + 1 - d0); d0 = p + 1; }
+                if (p + 1 - d0 == 65536 || p + 1 == np) {     /* (0.2.11) blocks of 256 MB: copied, then (g_rs_drop) given back: peak commit ~one copy + 256 MB */
+                    cp_run_big();
+                    if (g_rs_drop) { VirtualFree(r->s + d0 * PG, (p + 1 - d0) * PG, MEM_DECOMMIT); dropped += (long long)(p + 1 - d0); }
+                    d0 = p + 1;
+                }
             }
         }
         if (g_rs_drop) LOG("r1: MARK setup: the copy of the full save given back while the shadow took it (%.1f MB): peak commit ~one copy\n", dropped * (double)PG / 1048576.0);
@@ -1193,7 +1221,7 @@ static void blk1_init(void) {                           /* mark_setup, threads h
  * helper threads (default 2; 0 = the main thread alone), in equal shares. The extras go the same way (cp_add_range). */
 typedef struct { uint8_t *d; const uint8_t *s; } CopyJob;
 static CopyJob *g_cj; static size_t g_ncj, g_cjcap;
-static int g_ncp = -1;
+static int g_ncp = -1, g_ncp_big;                    /* (0.2.11) g_ncp_big: the helpers of the whole-memory passes (cp_run_big) */
 static HANDLE g_cp_go[8], g_cp_done[8];
 static void cp_add(uint8_t *d, const uint8_t *s) { if (g_ncj >= g_cjcap) { g_cjcap = g_cjcap ? g_cjcap * 2 : 65536; g_cj = realloc(g_cj, g_cjcap * sizeof *g_cj); } g_cj[g_ncj].d = d; g_cj[g_ncj].s = s; g_ncj++; }
 static void cp_add_range(uint8_t *d, const uint8_t *s, size_t n) { for (size_t o = 0; o < n; o += PG) cp_add(d + o, s + o); }
@@ -1224,13 +1252,27 @@ static void cp_init(void) {
     if (g_ncp >= 0) return;
     const char *e = getenv("SSBU_RUNAHEAD_COPY_THREADS"); g_ncp = e ? atoi(e) : rgs_wanted() ? 3 : 2;      /* (R2 round 3: the ring, 6; Arena loop bench b4c3: 3 as fast, p99 rollback tick 49 -> 37 ms, less CPU) */ if (g_ncp > 8) g_ncp = 8; if (g_ncp < 0) g_ncp = 0;
     SYSTEM_INFO si; GetSystemInfo(&si); if (g_ncp > (int)si.dwNumberOfProcessors - 2) g_ncp = (int)si.dwNumberOfProcessors > 2 ? (int)si.dwNumberOfProcessors - 2 : 0;
-    for (int k = 0; k < g_ncp; k++) { g_cp_go[k] = CreateEventA(NULL, FALSE, FALSE, NULL); g_cp_done[k] = CreateEventA(NULL, FALSE, FALSE, NULL); HANDLE t = CreateThread(NULL, 0, cp_thread, (void *)(intptr_t)k, 0, NULL); SetThreadPriority(t, THREAD_PRIORITY_HIGHEST); CloseHandle(t); }
+    { const char *b = getenv("SSBU_R1_BIG_THREADS"); g_ncp_big = b ? atoi(b) : (int)si.dwNumberOfProcessors - 2;
+      if (g_ncp_big > 8) g_ncp_big = 8; if (g_ncp_big > (int)si.dwNumberOfProcessors - 2) g_ncp_big = (int)si.dwNumberOfProcessors > 2 ? (int)si.dwNumberOfProcessors - 2 : 0;
+      if (g_ncp_big < 0) g_ncp_big = 0; if (!b && g_ncp_big < g_ncp) g_ncp_big = g_ncp; }
+    for (int k = 0; k < (g_ncp_big > g_ncp ? g_ncp_big : g_ncp); k++) { g_cp_go[k] = CreateEventA(NULL, FALSE, FALSE, NULL); g_cp_done[k] = CreateEventA(NULL, FALSE, FALSE, NULL); HANDLE t = CreateThread(NULL, 0, cp_thread, (void *)(intptr_t)k, 0, NULL); SetThreadPriority(t, THREAD_PRIORITY_HIGHEST); CloseHandle(t); }
 }
 static void cp_run(void) {                            /* every queued page, then the queue is empty */
     if (g_ncp > 0 && g_ncj >= 64) { for (int k = 0; k < g_ncp; k++) SetEvent(g_cp_go[k]); cp_part(0); WaitForMultipleObjects((DWORD)g_ncp, g_cp_done, TRUE, INFINITE); }
     else { int keep = g_ncp; g_ncp = 0; cp_part(0); g_ncp = keep; }
     g_ncj = 0;
 }
+/* (0.2.11) the whole-memory passes (first save, shadow fill, ring rebase): every helper the CPU allows, a plain copy (or what the
+ * caller set: g_cp_cmp / g_cp_cond) whatever the ring's capture settings are */
+static void cp_run_big(void) {
+    cp_init();
+    int keep = g_ncp, nt = g_cp_nt; g_ncp = g_ncp_big; g_cp_nt = 0;
+    cp_run();
+    g_ncp = keep; g_cp_nt = nt;
+}
+static void cp_cmp_big(uint8_t *res) { g_cp_cmp = res; cp_run_big(); g_cp_cmp = NULL; }
+static void cp_reserve(size_t n) { if (g_cjcap < n) { CopyJob *nj = realloc(g_cj, n * sizeof *g_cj); if (nj) { g_cj = nj; g_cjcap = n; } } }
+static void cp_clear(void) { g_ncj = 0; }
 static int g_cp_defer;                                /* mark_sweep queues its copies (run-ahead) instead of doing them */
 static size_t mark_sweep(int dir) {
     size_t n = 0;
