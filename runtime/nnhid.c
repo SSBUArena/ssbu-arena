@@ -577,6 +577,11 @@ static void fight_shot_poll(int ticks) {
     ff += ticks;
     if (ff >= list[next]) { long long rbn_now(void); printf("shot: fight frame %lld reached at poll %lld (wanted %d; rollback frame %lld): the next queued present is saved\n", ff, (long long)g_seq_polls, list[next], rbn_now()); fflush(stdout); nvn_front_shot_fight(list[next]); next++; }
 }
+/* (0.2.15) after a room rollback match on the joiner's PC: port 2 reads port 1's devices too, for 45 s (the result screen) or
+ * until the next match is set up (nnhid_lwr_styles off) */
+static volatile LONG64 g_room_after_t0;
+void nnhid_room_after_start(void) { InterlockedExchange64(&g_room_after_t0, (LONG64)GetTickCount64()); printf("hid: after the room match: this PC's pad is player 2's too on the result screen (45 s)\n"); fflush(stdout); }
+static int nnhid_room_after(void) { LONG64 t = g_room_after_t0; return t && GetTickCount64() - (ULONGLONG)t < 45000; }
 /* kind: 0 = a style the controller is not reported in (zeroed), 1 = NpadFullKeyState (Pro Controller, 0x28 bytes), 2 = NpadGcState (0x30 bytes:
  * the same first 0x24 bytes, then analog trigger L at +0x24 and R at +0x28, 0..0x7fff; the layout follows libnx / suyu, NOT VERIFIED on a console). */
 static void fill_pad(uint64_t out, uint32_t id, int kind) {
@@ -593,6 +598,11 @@ static void fill_pad(uint64_t out, uint32_t id, int kind) {
                    fight_shot_poll(nt); if (mark_seen("fight")) l1_ticks += nt;
                    for (int n = nt; n > 0; n--) seq_tick(); }     /* S11: 1 per poll; SSBU_DETERMINISTIC in a fight: per fight frame (fighter_sdk\fighter_host.c) */
     if (!player_connected(id)) return;
+    /* (0.2.15) src: the port whose devices are read. The joiner of a Local Wireless room is player 2 in the room's rollback
+     * match (port 2, debug_mode.c); after it, on the result screen, the game still waits for player 2 while this PC's pad is
+     * port 1: it is given to port 2 as well for a while (nnhid_room_after) */
+    uint32_t src = id;
+    if (id == 1 && nnhid_room_after()) src = 0;
     static const struct { int vk, bit; } map[] = {
         {'Z', BTN_A}, {'X', BTN_B}, {'C', BTN_X}, {'V', BTN_Y}, {'Q', BTN_L}, {'E', BTN_R}, {'A', BTN_ZL}, {'S', BTN_ZR},
         {VK_RETURN, BTN_PLUS}, {VK_BACK, BTN_MINUS}, {'J', BTN_LEFT}, {'I', BTN_UP}, {'L', BTN_RIGHT}, {'K', BTN_DOWN},
@@ -601,16 +611,16 @@ static void fill_pad(uint64_t out, uint32_t id, int kind) {
     uint64_t buttons = 0;
     int lx = 0, ly = 0, rx = 0, ry = 0, wired = 1;
     if (!(g_x_synth == 1 && id == 0) && !(g_x_synth == 2 && id == 1) &&
-        ((int)id == g_keyboard_player || (id == 0 && scripted_run()))) {    /* keyboard, and the test scripts on player 1 */
-        for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) if (key_for(id, map[i].vk, map[i].bit)) buttons |= 1ull << map[i].bit;
-        lx = (key_for(id, VK_RIGHT, 18) - key_for(id, VK_LEFT, 16)) * STICK_MAX;
-        ly = (key_for(id, VK_UP, 17) - key_for(id, VK_DOWN, 19)) * STICK_MAX;
-        if (sdl_on()) { rx = (key_for(id, 0, 22) - key_for(id, 0, 20)) * STICK_MAX; ry = (key_for(id, 0, 21) - key_for(id, 0, 23)) * STICK_MAX; }
+        ((int)src == g_keyboard_player || (src == 0 && scripted_run()))) {    /* keyboard, and the test scripts on player 1 */
+        for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) if (key_for(src, map[i].vk, map[i].bit)) buttons |= 1ull << map[i].bit;
+        lx = (key_for(src, VK_RIGHT, 18) - key_for(src, VK_LEFT, 16)) * STICK_MAX;
+        ly = (key_for(src, VK_UP, 17) - key_for(src, VK_DOWN, 19)) * STICK_MAX;
+        if (sdl_on()) { rx = (key_for(src, 0, 22) - key_for(src, 0, 20)) * STICK_MAX; ry = (key_for(src, 0, 21) - key_for(src, 0, 23)) * STICK_MAX; }
     }
-    int slot = g_source[id];
+    int slot = g_source[src];
     if (sdl_on()) {
         NnPadState ps;
-        if (nnpad_get((int)id, &ps)) {
+        if (nnpad_get((int)src, &ps)) {
             wired = ps.wired;
             if (devices_live() && !menu_input_blocked()) {      /* U1: not while the settings menu is open (menu.cpp) */
                 buttons |= ps.buttons;
@@ -749,7 +759,7 @@ static void hid_SetSupportedNpadIdType(Ctx *c) {            /* (const NpadIdType
 /* (R3 lwr) a Local Wireless room rollback match: ports 1 / 2 are shown in the kind (GameCube or Pro) of each player's OWN
  * controller on its own PC (sent in the room handshake, debug_mode.c), so both PCs pick the same control set of each player */
 static int g_lwr_style_on, g_lwr_gc[2];
-void nnhid_lwr_styles(int on, int gc0, int gc1) { g_lwr_gc[0] = gc0; g_lwr_gc[1] = gc1; g_lwr_style_on = on; }
+void nnhid_lwr_styles(int on, int gc0, int gc1) { g_lwr_gc[0] = gc0; g_lwr_gc[1] = gc1; g_lwr_style_on = on; if (!on) InterlockedExchange64(&g_room_after_t0, 0); }
 int nnhid_native_gc0(void) { return sdl_on() && nnpad_is_gc(0) && nnpad_gc_native() && (g_supported_styles & STYLE_GC); }
 static uint32_t npad_style(uint32_t id) {
     if (!player_connected(id)) return 0;
