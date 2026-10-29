@@ -160,6 +160,7 @@ static RbhMsg g_hs_peer;  static int g_hs_have_peer;    /* host: the joiner's ne
 static RbhMsg g_hs_prop;  static int g_hs_have_prop;    /* host: the proposal sent; joiner: the proposal accepted (this wait) */
 static volatile LONG g_hs_accepted, g_hs_refused; static char g_hs_why[160];
 static uint64_t g_hs_seed; static uint32_t g_match_id;  /* the agreed match: its seed, and its id (tag of the pad and block messages) */
+uint32_t rbn_match_id(void) { return g_match_id; }      /* (Arena) the agreed match's id (seed ^ seed >> 32 | 1, the lobby's replay recorder uses the same) */
 static volatile LONG g_hs_cancelled;                    /* this match: 1 = no agreement: played locally and left at once; 2 = (pub2) set up
                                                            * inside a Local Wireless room: the game's own netcode plays it, no rollback, nothing changed */
 static int g_match_n;                                   /* (hs12) online matches of this session so far (1 = the first; rbn_start) */

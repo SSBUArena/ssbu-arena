@@ -36,6 +36,8 @@ class Ssbv:
             self.fighters.append(dict(ui_chara=ui, kind=kind, colour=colour, type=typ, entry=entry, slot=slot, name=cstr(data[o + 16:o + 48]), end_stocks=end_stocks, end_damage=end_damage))
         self.build = cstr(data[0x160:0x180])
         self.local_player, self.match_number, self.seed, self.first_ff, self.ended_frame, self.winner, self.rec_us = struct.unpack_from("<IIQIIiI", data, 0x180)
+        self.match_id, self.kind = struct.unpack_from("<IB", data, 0x1a4)
+        self.local_name = cstr(data[0x1ac:0x1cc])
         body = data[self.header_size:self.header_size + self.body_size]
         if self.codec == 1:
             body = zlib.decompress(body, -15)
@@ -93,6 +95,7 @@ def main():
     if sys.argv[1] == "info":
         print("version %d flags %x frames %d (%d in the body) codec %d build %s stage %x form %d id %x rules %d/%d" % (v.version, v.flags, v.nframes, len(v.frames), v.codec, v.build, v.ui_stage, v.stage_form, v.stage_id, v.rule_kind, v.stocks))
         print("blast zones (dead area) %s camera %s winner %d recorder %d us/line" % (v.dead, v.camera, v.winner, v.rec_us))
+        print("match id %08x kind %d (0 local, 1 matchmaking, 2 LDN room, 3 other online) local player %d name %r" % (v.match_id, v.kind, v.local_player, v.local_name))
         for f in v.fighters:
             print("fighter %s" % f)
         for i, l in enumerate(v.lines):

@@ -69,6 +69,8 @@ namespace Arena
         // settings (launcher.ini and the game's ini files)
         public static string Nickname = "", Server = DefaultServer, Saves;
         public static bool Online = true, Ping = true, Competitive = true;
+        // (replays) which matches the game records (runtime: SSBU_REPLAY_MODES), and whether online ones go to the Arena server
+        public static bool RecMatchmaking = true, RecLdn = true, RecArena = true, RecLocal = true, RecUpload = true;
         public static string ShaderStamp = "";
         public static string Ticket;                // the lobby ticket of this start (Account.LobbyTicket), signed in only      // launcher.ini shaders: what the last preparation was made for (ShaderKey)
         public static int Aspect, WindowMode, Keyboard;
@@ -147,6 +149,8 @@ namespace Arena
             Online = Get(L, "online_choice") == "1" ? Get(L, "online") != "off" : true;      // (0.2.8) on by default; a choice made since is kept
             Server = Servers[ServerIndex(Get(L, "server") ?? DefaultServer)].Address;
             Ping = Get(L, "ping") != "off";
+            RecMatchmaking = Get(L, "replay_matchmaking") != "off"; RecLdn = Get(L, "replay_ldn") != "off"; RecArena = Get(L, "replay_arena") != "off";
+            RecLocal = Get(L, "replay_local") != "off"; RecUpload = Get(L, "replay_upload") != "off";
             ShaderStamp = Get(L, "shaders") ?? "";
             Competitive = LightArc || HasCompetitive;      // (0.2.8) always: Arena is the competitive game
             if (!HasOnline) Online = false;
@@ -192,7 +196,9 @@ namespace Arena
             File.WriteAllLines(LauncherIni, new[] {
                 "# written by the launcher", "saves = " + Saves, "nickname = " + n,
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
-                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp }, Encoding.ASCII);
+                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp,
+                "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
+                "replay_local = " + (RecLocal ? "on" : "off"), "replay_upload = " + (RecUpload ? "on" : "off") }, Encoding.ASCII);
             var gfx = new Dictionary<string, string> {
                 { "aspect", Aspect == 1 ? "stretch" : "keep" },
                 { "window", new[] { "windowed", "borderless", "fullscreen" }[Math.Max(0, Math.Min(2, WindowMode))] },
@@ -578,6 +584,11 @@ namespace Arena
             env["SSBU_LOOSE_FILES"] = Competitive ? "1" : "0";      // build\characters\competitive (runtime/loose_files.c)
             env["SSBU_LATENCY"] = "normal";                          // wins over a latency = low / lowest written by hand in graphics.ini
             env["SSBU_COMPETITIVE"] = env["SSBU_LOOSE_FILES"];       // no FS meter, no random items (runtime/competitive.c)
+            // the matches the game records for the Replays page (fighter_sdk/replay_state.c: local, mm, ldn, arena)
+            var modes = new List<string>();
+            if (RecLocal) modes.Add("local"); if (RecMatchmaking) modes.Add("mm"); if (RecLdn) modes.Add("ldn"); if (RecArena) modes.Add("arena");
+            env["SSBU_REPLAY_MODES"] = string.Join(",", modes);
+            env["SSBU_REPLAY_STATE"] = modes.Count > 0 ? "1" : "0";
         }
 
         /// <summary>the shader preparation without the game's window (runtime/nvn_vk_draw.c, SSBU_PREPARE_ONLY): the game

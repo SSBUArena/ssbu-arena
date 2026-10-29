@@ -363,6 +363,12 @@
               </StackPanel>
             </Grid>
             <TextBlock DockPanel.Dock="Bottom" x:Name="ReplaysStatus" Style="{StaticResource Small}" Margin="0,14,0,0"/>
+            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,14">
+              <RadioButton x:Name="RvFilterAll" Style="{StaticResource RvSpeed}" Content="All" GroupName="rvfilter" IsChecked="True" Checked="ReplaysFilter_Checked"/>
+              <RadioButton x:Name="RvFilterMine" Style="{StaticResource RvSpeed}" Content="My matches" GroupName="rvfilter" Checked="ReplaysFilter_Checked"/>
+              <RadioButton x:Name="RvFilterPublic" Style="{StaticResource RvSpeed}" Content="Public" GroupName="rvfilter" Checked="ReplaysFilter_Checked"/>
+              <RadioButton x:Name="RvFilterPc" Style="{StaticResource RvSpeed}" Content="On this PC" GroupName="rvfilter" Checked="ReplaysFilter_Checked"/>
+            </StackPanel>
             <Grid>
               <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <ItemsControl x:Name="ReplaysList">
@@ -376,6 +382,7 @@
                           <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="{Binding WhenText}" FontSize="15" FontWeight="SemiBold"/>
                             <TextBlock Text="{Binding Kind}" Style="{StaticResource Small}" Margin="0,2,0,0"/>
+                            <TextBlock Text="{Binding Where}" Style="{StaticResource Small}" Foreground="{StaticResource Dim}" Margin="0,1,0,0"/>
                           </StackPanel>
                           <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Width="4" Height="30" Background="#FF5F6B" CornerRadius="2" Margin="0,0,10,0"/>
@@ -390,6 +397,9 @@
                           </StackPanel>
                           <TextBlock Grid.Column="3" Text="{Binding Length}" FontSize="18" FontFamily="{StaticResource Display}" FontWeight="Bold" VerticalAlignment="Center" Foreground="{StaticResource Muted}"/>
                           <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button Style="{StaticResource Link}" Tag="{Binding}" Click="ReplayPublic_Click" Visibility="{Binding PublicVisible}" Margin="0,0,22,0">
+                              <TextBlock Text="{Binding PublicText}" FontSize="14"/>
+                            </Button>
                             <Path Data="{StaticResource IcoPlay}" Fill="{StaticResource Accent}" Width="14" Height="14" Stretch="Uniform"/>
                             <TextBlock Text="Watch" Foreground="{StaticResource Accent}" FontSize="15" FontWeight="SemiBold" Margin="8,0,0,0"/>
                           </StackPanel>
@@ -501,6 +511,7 @@
             <StackPanel>
               <RadioButton x:Name="SecPlayer" Style="{StaticResource SideTab}" Content="Player" IsChecked="True" Checked="Section_Checked"/>
               <RadioButton x:Name="SecOnline" Style="{StaticResource SideTab}" Content="Online" Checked="Section_Checked"/>
+              <RadioButton x:Name="SecReplays" Style="{StaticResource SideTab}" Content="Replays" Checked="Section_Checked"/>
               <RadioButton x:Name="SecVideo" Style="{StaticResource SideTab}" Content="Video" Checked="Section_Checked"/>
               <RadioButton x:Name="SecAudio" Style="{StaticResource SideTab}" Content="Audio" Checked="Section_Checked"/>
               <RadioButton x:Name="SecPads" Style="{StaticResource SideTab}" Content="Controllers" Checked="Section_Checked"/>
@@ -558,6 +569,30 @@
                   <ComboBox x:Name="ServerBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Server_Changed"/>
                 </StackPanel>
                 <TextBlock x:Name="OnlineHelp" Style="{StaticResource Small}" Margin="0,20,0,0" Foreground="{StaticResource Accent}"/>
+              </StackPanel>
+
+              <!-- replays (MainWindow.Replays.cs) -->
+              <StackPanel x:Name="BoxReplays" Visibility="Collapsed">
+                <TextBlock Text="REPLAYS" Style="{StaticResource SectionTitle}"/>
+                <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24"
+                           Text="The game records your matches frame by frame, for the Replays page. This PC keeps the last 100; older ones are deleted."/>
+                <TextBlock Text="RECORD" Style="{StaticResource FieldLabel}"/>
+                <CheckBox x:Name="RecMmBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,4,0,0">
+                  <StackPanel><TextBlock Text="Matchmaking" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Matches found by the server's search (Online Ranked), and matches by code."/></StackPanel>
+                </CheckBox>
+                <CheckBox x:Name="RecLdnBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
+                  <StackPanel><TextBlock Text="Online LDN" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Local Wireless rooms played over the Arena server."/></StackPanel>
+                </CheckBox>
+                <CheckBox x:Name="RecArenaBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
+                  <StackPanel><TextBlock Text="Battle Arena" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Not available yet: the choice is kept for when it comes."/></StackPanel>
+                </CheckBox>
+                <CheckBox x:Name="RecLocalBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
+                  <StackPanel><TextBlock Text="Local matches" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Smash on this PC (against friends or CPUs). They stay on this PC."/></StackPanel>
+                </CheckBox>
+                <TextBlock Text="ARENA SERVER" Style="{StaticResource FieldLabel}" Margin="0,26,0,6"/>
+                <CheckBox x:Name="RecUploadBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed">
+                  <StackPanel><TextBlock Text="Upload my online replays" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="560" Text="After each online match, with your account (signed in). Only you and your opponent can watch it, unless one of you makes it public (every signed-in player)."/></StackPanel>
+                </CheckBox>
               </StackPanel>
 
               <!-- video -->

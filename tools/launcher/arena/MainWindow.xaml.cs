@@ -261,6 +261,8 @@ namespace Arena
             OnlineBox.IsChecked = Core.Online;
             OnlineBox.IsEnabled = Core.HasOnline;
             PingBox.IsChecked = Core.Ping;
+            RecMmBox.IsChecked = Core.RecMatchmaking; RecLdnBox.IsChecked = Core.RecLdn; RecArenaBox.IsChecked = Core.RecArena;
+            RecLocalBox.IsChecked = Core.RecLocal; RecUploadBox.IsChecked = Core.RecUpload;
             ServerBox.Items.Clear();
             foreach (var s in Core.Servers) ServerBox.Items.Add(s.Name);
             ServerBox.SelectedIndex = Core.ServerIndex(Core.Server);
@@ -284,6 +286,8 @@ namespace Arena
             Core.Nickname = NameBox.Text.Trim();
             Core.Online = OnlineBox.IsChecked == true && Core.HasOnline;
             Core.Ping = PingBox.IsChecked == true;
+            Core.RecMatchmaking = RecMmBox.IsChecked == true; Core.RecLdn = RecLdnBox.IsChecked == true; Core.RecArena = RecArenaBox.IsChecked == true;
+            Core.RecLocal = RecLocalBox.IsChecked == true; Core.RecUpload = RecUploadBox.IsChecked == true;
             Core.Server = Core.Servers[Math.Max(0, ServerBox.SelectedIndex)].Address;
             Core.WindowMode = Math.Max(0, WinBox.SelectedIndex);
             Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;
@@ -450,7 +454,7 @@ namespace Arena
         void Section_Checked(object sender, RoutedEventArgs e)
         {
             if (BoxPlayer == null) return;
-            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecVideo, BoxVideo }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles } };
+            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles } };
             foreach (var kv in map) kv.Value.Visibility = kv.Key == sender ? Visibility.Visible : Visibility.Collapsed;
         }
 
@@ -471,7 +475,7 @@ namespace Arena
             else if (parts[0] == "community") TabCommunity.IsChecked = true;
             else if (parts[0] == "settings")
             {
-                var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "video", SecVideo }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles } };
+                var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles } };
                 OpenSettings(parts.Length > 1 && secs.ContainsKey(parts[1]) ? secs[parts[1]] : SecPlayer);
             }
         }
@@ -951,6 +955,7 @@ namespace Arena
         void GameExited()
         {
             game = null;
+            ReplaysAfterGame();         // (MainWindow.Replays.cs) the cap on local files, the upload of new online matches
             HideTray();
             FromTray();
             SetState();
