@@ -83,7 +83,7 @@ static SRWLOCK g_rv_lock = SRWLOCK_INIT;
 static uint64_t rv_fn(const char *name) { return fd_fn(name); }
 #define RV_LB(s) "_ZN3app8lua_bind" s "EPNS_26BattleObjectModuleAccessorE"
 /* game functions read through their exported names (the same on 13.0.4 and 13.0.5) */
-static struct { uint64_t posx, posy, lr, dmg, st, sit, mot, mf, isatk, atksize, atkcenter, atkdata, hitn, hitc, hitst, atkn, entry, dead, cam, ray, lpt, rpt, pas, floor, wall, valid; } g_rvf;
+static struct { uint64_t posx, posy, lr, dmg, st, sit, mot, mf, isatk, atksize, atkcenter, atkdata, hitn, hitc, hitst, atkn, entry, dead, cam, ray, raync, lpt, rpt, pas, floor, wall, valid; } g_rvf;
 static void rv_fns(void) {
     if (g_rvf.posx) return;
     g_rvf.posx = rv_fn(RV_LB("25PostureModule__pos_x_impl")); g_rvf.posy = rv_fn(RV_LB("25PostureModule__pos_y_impl")); g_rvf.lr = rv_fn(RV_LB("22PostureModule__lr_impl"));
@@ -97,6 +97,8 @@ static void rv_fns(void) {
     g_rvf.entry = rv_fn("_ZN3app7fighter20get_fighter_entry_idEj");
     g_rvf.dead = rv_fn("_ZN3app6camera13get_dead_areaEv"); g_rvf.cam = rv_fn("_ZN3app6camera16get_camera_rangeEv");
     g_rvf.ray = rv_fn(RV_LB("45GroundModule__ray_check_get_line_hit_pos_impl") "RKN3phx8Vector2fES6_RS4_b");
+    /* the same without culling: also finds Town and City's platforms, which the plain ray never hits */
+    g_rvf.raync = rv_fn(RV_LB("56GroundModule__ray_check_get_line_hit_pos_no_culling_impl") "RKN3phx8Vector2fES6_RS4_b");
     g_rvf.lpt = rv_fn("_ZN3app6ground14get_left_pointEPKNS_19GroundCollisionLineE"); g_rvf.rpt = rv_fn("_ZN3app6ground15get_right_pointEPKNS_19GroundCollisionLineE");
     g_rvf.pas = rv_fn("_ZN3app6ground11is_passableEPKNS_19GroundCollisionLineE"); g_rvf.floor = rv_fn("_ZN3app6ground8is_floorEPKNS_19GroundCollisionLineE");
     g_rvf.wall = rv_fn("_ZN3app6ground7is_wallEPKNS_19GroundCollisionLineE");
@@ -209,6 +211,9 @@ static void rv_scan_step(Ctx *c, uint64_t boma) {
             float o1[4] = {0, 0, 0, 0};
             uint64_t line0 = rv_call5(c, g_rvf.ray, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)o1, 0, NULL);
             if (line0 && (!line || o1[1] > out[1])) { line = line0; out[0] = o1[0]; out[1] = o1[1]; }      /* (the flag's meaning is not known: the higher hit of the two) */
+            float o2[4] = {0, 0, 0, 0};
+            uint64_t line2 = rv_call5(c, g_rvf.raync, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)o2, 1, NULL);
+            if (line2) rv_add_line(c, line2);
             if (!line) break;
             rv_add_line(c, line);
             from = out[1] - 0.5f;
@@ -441,7 +446,7 @@ static void rv_lines_now(Ctx *c, RvSlot *sl) {
     }
     static int research = -1; static long long n;
     if (research < 0) research = getenv("SSBU_RV_RESEARCH") != NULL;
-    if (research && (++n % 120) == 0)
+    if (research && (++n % 30) == 0)
         for (int i = 0; i < g_rv_nlines; i++) {
             if (!(g_rv_lines[i].flags & 2)) continue;        /* (research: the platforms) */
             uint64_t L = g_rv_lineptr[i], vp = rd64(L + 136);
@@ -455,6 +460,18 @@ static void rv_lines_now(Ctx *c, RvSlot *sl) {
             q[0] = 300; rv_call(c, np, L, (uint64_t)(uintptr_t)q, 0, 0, v); float rx = v[0].f[0], ry = v[0].f[1];
             q[0] = cx; rv_call(c, mv, L, (uint64_t)(uintptr_t)q, 0, 0, v);
             printf("[rv]   near pos left %.2f %.2f right %.2f %.2f, move vec %.3f %.3f\n", lx, ly, rx, ry, v[0].f[0], v[0].f[1]);
+            {   /* (research) the memory around the line: the floats that changed since the last look */
+                static float snap[RV_MAXLINE][6][96]; static int have[RV_MAXLINE];
+                uint64_t base[6] = {rd64(L), rd64(L + 8), rd64(L + 0x10), rd64(L + 0x18), L, rd64(L + 136)};
+                for (int r2 = 0; r2 < 6; r2++) {
+                    if (!rv_readable(base[r2], 96 * 4)) continue;
+                    float now[96]; memcpy(now, (void *)(uintptr_t)base[r2], sizeof now);
+                    if (have[i]) for (int w = 0; w < 96; w++) if (now[w] != snap[i][r2][w] && now[w] > -400 && now[w] < 400 && (now[w] > 0.001f || now[w] < -0.001f))
+                        printf("[rv]   changed: line %d region %d (%llx) +%03x: %.3f -> %.3f\n", i, r2, (unsigned long long)base[r2], w * 4, snap[i][r2][w], now[w]);
+                    memcpy(snap[i][r2], now, sizeof now);
+                }
+                have[i] = 1;
+            }
         }
 }
 /* after the scan: one ray down every 20 frames at x -120 .. 120 in turn (a platform that appears later, Town and City) */
@@ -467,6 +484,15 @@ static void rv_rescan_step(Ctx *c, uint64_t boma, long long ff) {
     for (int k = 0; k < 3; k++) {
         st[0] = (float)x; st[1] = from; dir[0] = 0; dir[1] = -200.0f - from; out[0] = out[1] = 0;
         uint64_t line = rv_call5(c, g_rvf.ray, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)out, 1, NULL);
+        if (!line) break;
+        rv_add_line(c, line);
+        from = out[1] - 0.5f;
+        if (from < -20.0f) break;
+    }
+    from = 200.0f;
+    for (int k = 0; k < 3 && g_rvf.raync; k++) {       /* (no culling: Town and City's platforms) */
+        st[0] = (float)x; st[1] = from; dir[0] = 0; dir[1] = -200.0f - from; out[0] = out[1] = 0;
+        uint64_t line = rv_call5(c, g_rvf.raync, boma, (uint64_t)(uintptr_t)st, (uint64_t)(uintptr_t)dir, (uint64_t)(uintptr_t)out, 1, NULL);
         if (!line) break;
         rv_add_line(c, line);
         from = out[1] - 0.5f;

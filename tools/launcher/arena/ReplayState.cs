@@ -180,6 +180,13 @@ namespace Arena
                 FrameList.Add(fr);
             }
             Frames = FrameList.Count;
+            // the lines of the start scan are known only once the scan is over (its first frames): they were there before too
+            for (int i = 0; i < Lines.Count && i < 64; i++)
+            {
+                if (Lines[i].FirstFrame != 0) continue;
+                int on = FrameList.FindIndex(x => (x.LinesOn & (1UL << i)) != 0);
+                for (int j = 0; j < on; j++) FrameList[j].LinesOn |= 1UL << i;
+            }
         }
 
         /// <summary>a raw file (codec 0) rewritten with its body deflated (codec 1): about a tenth of the size</summary>
