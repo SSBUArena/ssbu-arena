@@ -30,7 +30,7 @@ import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GITHUB = 'Acid236/ssbu-arena'
+GITHUB = 'ssbuarena/ssbu-arena'
 DIST = os.path.join(REPO, 'dist')
 PROJ = os.path.join(REPO, 'tools', 'launcher', 'arena')
 

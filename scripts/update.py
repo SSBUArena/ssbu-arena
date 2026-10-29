@@ -39,7 +39,7 @@ import urllib.request
 import zipfile
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_REPO = 'Acid236/ssbu-arena'
+DEFAULT_REPO = 'ssbuarena/ssbu-arena'
 DEFAULT_BRANCH = 'main'
 MANIFEST = os.path.join('build', 'update_manifest.json')
 BACKUP = os.path.join('build', 'update_backup')
