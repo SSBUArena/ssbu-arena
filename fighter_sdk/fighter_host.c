@@ -555,6 +555,7 @@ static void fighter_attach(NroModule *m) {
     QueryPerformanceCounter(&q2);
     FsBindFn bind = dll ? (FsBindFn)(void *)GetProcAddress(dll, "fighter_bind") : NULL;
     if (!bind) { printf("fighter source: %s is not a fighter DLL\n", src); if (dll) FreeLibrary(dll); DeleteFileA(dst); return; }
+    { void r1_module_loaded(void *, int); r1_module_loaded(dll, 1); }      /* (0.2.11) r1_state.c: its writable sections are state; no snapshot at every base */
     FsMod *fm = calloc(1, sizeof *fm);
     fm->mod = m; fm->dll = dll; strcpy(fm->loaded_path, dst);
     bind(&g_fs_host, &fm->t);
