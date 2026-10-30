@@ -143,12 +143,13 @@
               <!-- the shader preparation (Core.StartPrepare): in place of the buttons while it runs -->
               <StackPanel x:Name="PrepPanel" Visibility="Collapsed" Width="400" HorizontalAlignment="Left">
                 <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                   <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock x:Name="PrepTitle" Text="PREPARING SHADERS" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="34"/>
-                    <TextBlock x:Name="PrepPct" Text="0%" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="34" Foreground="{StaticResource Accent}" Margin="16,0,0,0"/>
+                    <TextBlock x:Name="PrepTitle" Text="PREPARING SHADERS" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="28"/>
+                    <TextBlock x:Name="PrepPct" Text="0%" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="28" Foreground="{StaticResource Accent}" Margin="12,0,0,0"/>
                   </StackPanel>
                   <!-- stop: a square button with a thin cross, on the title's line -->
-                  <Button x:Name="PrepCancel" Style="{StaticResource Outline}" Width="28" Height="28" Padding="0" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,0,6" Click="PrepCancel_Click" ToolTip="Stop (it goes on from here next time)">
+                  <Button x:Name="PrepCancel" Grid.Column="1" Style="{StaticResource Outline}" Width="28" Height="28" Padding="0" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,0,6" Click="PrepCancel_Click" ToolTip="Stop (it goes on from here next time)">
                     <Path Data="M0,0 L12,12 M12,0 L0,12" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="9" Height="9" Stretch="Fill"/>
                   </Button>
                 </Grid>
