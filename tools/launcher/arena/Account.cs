@@ -17,7 +17,7 @@ namespace Arena
 {
     public sealed class Profile
     {
-        public string Id, Email, Username;
+        public string Id, Email, Username, Avatar;
         public int Tag, Elo;
         public string Display => Username + "#" + Tag.ToString("0000");
     }
@@ -162,9 +162,10 @@ namespace Arena
 
         static void LoadProfile()
         {
-            var rows = Json.Deserialize<List<Dictionary<string, object>>>(Http("GET", "/rest/v1/profiles?select=username,tag,elo&id=eq." + Me.Id, null, access));
+            var rows = Json.Deserialize<List<Dictionary<string, object>>>(Http("GET", "/rest/v1/profiles?select=username,tag,elo,avatar&id=eq." + Me.Id, null, access));
             if (rows.Count == 0) throw new Exception("This account has no Arena profile.");
             Me.Username = (string)rows[0]["username"];
+            Me.Avatar = rows[0].TryGetValue("avatar", out var av) ? av as string : null;
             Me.Tag = Convert.ToInt32(rows[0]["tag"]);
             Me.Elo = Convert.ToInt32(rows[0]["elo"]);
         }

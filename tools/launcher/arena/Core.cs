@@ -275,6 +275,23 @@ namespace Arena
             catch { }
         }
 
+        public static string AvatarsDir => Path.Combine(Build, "avatars");
+
+        /// <summary>(0.2.20) the profile pictures: each fighter's portrait from this player's data.arc (tools/ui/extract_fighter_icons.py,
+        /// game content, never in the repository or on the server). In the background, once, when they are missing.</summary>
+        public static void MakeAvatars()
+        {
+            try
+            {
+                if (File.Exists(Path.Combine(AvatarsDir, "done.txt")) || Repo == null || RomFS == null) return;
+                string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\ui\extract_fighter_icons.py"), arc = Path.Combine(RomFS, "data.arc");
+                if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return;
+                var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + AvatarsDir + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
+                using (var p = Process.Start(psi)) p.WaitForExit(120000);
+            }
+            catch { }
+        }
+
         /// <summary>(0.2.8) the Kirby loading animation's atlas beside the exe (runtime/loading_anim.c): made on this PC from
         /// Ultimate Frame Data's GIF by tools/ui/loading_inhale.py (game-derived, never in the repository; about 15 s with
         /// the download). No install made it, so the boot stayed black. In the background, once, when it is missing.</summary>

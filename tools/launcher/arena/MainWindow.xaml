@@ -201,12 +201,12 @@
             <StackPanel>
               <StackPanel Orientation="Horizontal">
                 <Grid Width="66" Height="66">
-                  <Ellipse Stroke="{StaticResource Accent}" StrokeThickness="2">
+                  <Ellipse x:Name="AvatarDisc" Stroke="{StaticResource Accent}" StrokeThickness="2">
                     <Ellipse.Fill>
                       <RadialGradientBrush><GradientStop Color="#16324B" Offset="0"/><GradientStop Color="#0E1B2A" Offset="1"/></RadialGradientBrush>
                     </Ellipse.Fill>
                   </Ellipse>
-                  <Path Data="{StaticResource IcoUser}" Width="30" Height="32" Stretch="Uniform" Margin="0,3,0,0">
+                  <Path x:Name="AvatarIcon" Data="{StaticResource IcoUser}" Width="30" Height="32" Stretch="Uniform" Margin="0,3,0,0">
                     <Path.Fill>
                       <LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#8AD5FF" Offset="0"/><GradientStop Color="#3FA9EE" Offset="1"/></LinearGradientBrush>
                     </Path.Fill>
@@ -571,6 +571,9 @@
                   <TextBlock Text="SIGNED IN AS" Style="{StaticResource FieldLabel}"/>
                   <TextBlock x:Name="AccountName" Style="{StaticResource SectionTitle}" FontSize="40" Foreground="{StaticResource Accent}"/>
                   <TextBlock x:Name="AccountEmail" Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,0"/>
+                  <TextBlock Text="PROFILE PICTURE" Style="{StaticResource FieldLabel}" Margin="0,22,0,4"/>
+                  <TextBlock x:Name="AvatarNote" Style="{StaticResource Small}" Margin="0,0,0,10" TextWrapping="Wrap" MaxWidth="700" HorizontalAlignment="Left"/>
+                  <WrapPanel x:Name="AvatarGrid"/>
                   <WrapPanel Margin="0,22,0,0">
                     <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="ManageAccount_Click" FontSize="16">Manage account</Button>
                     <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="SignOut_Click" FontSize="16">Sign out</Button>
