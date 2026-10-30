@@ -52,6 +52,8 @@ namespace Arena
             poll.Tick += (s, e) => { int n = Core.XInputCount(); if (n != xinput) { xinput = n; SetPadState(); } };
             poll.Start();
             xinput = Core.XInputCount();
+            if (Environment.GetEnvironmentVariable("SSBU_ARENA_CRASH_TEST") == "1")      // (test) the newest crash file sent as after a game
+                Task.Run(() => { for (int w = 0; w < 60 && !Account.SignedIn; w++) System.Threading.Thread.Sleep(500); bool sent = CrashReport.SendIfCrashed(DateTime.MinValue, out bool crashed); Updater.Log("crash test: crashed " + crashed + ", sent " + sent); });
             Loaded += (s, e) => { RunChecks(); FindPads(); OpenFromArgs(); OpenReplayFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); };
             Scaled.SizeChanged += (s, e) => Rescale();
             SizeChanged += (s, e) => Rescale();
@@ -269,6 +271,7 @@ namespace Arena
             OnlineBox.IsChecked = Core.Online;
             OnlineBox.IsEnabled = Core.HasOnline;
             PingBox.IsChecked = Core.Ping;
+            CrashBox.IsChecked = Core.CrashReports;
             DelayBox.SelectedIndex = Math.Max(0, Math.Min(5, Core.InputDelay));
             RecMmBox.IsChecked = Core.RecMatchmaking; RecLdnBox.IsChecked = Core.RecLdn; RecArenaBox.IsChecked = Core.RecArena;
             RecLocalBox.IsChecked = Core.RecLocal; RecUploadBox.IsChecked = Core.RecUpload; RecPublicBox.IsChecked = Core.RecPublic;
@@ -295,6 +298,7 @@ namespace Arena
             Core.Nickname = NameBox.Text.Trim();
             Core.Online = OnlineBox.IsChecked == true && Core.HasOnline;
             Core.Ping = PingBox.IsChecked == true;
+            Core.CrashReports = CrashBox.IsChecked == true;
             Core.InputDelay = Math.Max(0, DelayBox.SelectedIndex);
             Core.RecMatchmaking = RecMmBox.IsChecked == true; Core.RecLdn = RecLdnBox.IsChecked == true; Core.RecArena = RecArenaBox.IsChecked == true;
             Core.RecLocal = RecLocalBox.IsChecked == true; Core.RecUpload = RecUploadBox.IsChecked == true; Core.RecPublic = RecPublicBox.IsChecked == true;
@@ -937,6 +941,7 @@ namespace Arena
         void Start()
         {
             bool first = Core.FirstRun();
+            gameStarted = DateTime.UtcNow;
             try { game = Core.Launch(); }
             catch (Exception ex) { Show("Could not start the game", ex.Message, null, ("OK", null, true)); return; }
             game.Exited += (s, e) => Dispatcher.Invoke(GameExited);
@@ -975,9 +980,18 @@ namespace Arena
 
         void HideTray() { if (tray != null) { tray.Visible = false; tray.Dispose(); tray = null; } }
 
+        DateTime gameStarted;
+
         void GameExited()
         {
             game = null;
+            {   // (0.2.18) the game crashed: its report to the server (CrashReport.cs)
+                var started = gameStarted;
+                Task.Run(() => { bool sent = CrashReport.SendIfCrashed(started, out bool crashed); return Tuple.Create(crashed, sent); }).ContinueWith(t =>
+                {
+                    if (t.Exception == null && t.Result.Item1) Status(t.Result.Item2 ? "The game crashed: a report was sent to help fix it" : "The game crashed", "warn");
+                }, TaskScheduler.FromCurrentSynchronizationContext());
+            }
             // (0.2.12) the in-game menu (F1) writes graphics.ini: its choices shown here, and kept by the next PLAY
             try { Core.LoadGfx(); bool was = loading; loading = true; FillSettings(); loading = was; } catch { }
             ReplaysAfterGame();         // (MainWindow.Replays.cs) the cap on local files, the upload of new online matches

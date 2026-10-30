@@ -586,6 +586,12 @@
                       <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Next to each player in every online match: green up to 60 ms, yellow up to 120, red above. Also in the game's menu."/>
                     </StackPanel>
                   </CheckBox>
+                  <CheckBox x:Name="CrashBox" Style="{StaticResource Switch}" Margin="0,16,0,0" Checked="Field_Changed" Unchecked="Field_Changed">
+                    <StackPanel>
+                      <TextBlock Text="Send crash reports" FontSize="16"/>
+                      <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="620" Text="When the game crashes and you are signed in, its log goes to the Arena server to help fix it: your account, game version, graphics card and Windows version. Your user and PC names, folders and addresses are removed first."/>
+                    </StackPanel>
+                  </CheckBox>
                   <TextBlock Text="INPUT DELAY" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
                   <ComboBox x:Name="DelayBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
                     <ComboBoxItem Content="Automatic (from the ping)"/>
