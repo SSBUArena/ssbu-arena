@@ -138,18 +138,23 @@ static void rv_hex(const char *tag, uint64_t a, int n) {
 }
 /* (0.2.17) a ground line may be gone: Steve's blocks (and other things the game makes during a match) have lines of their own, and
  * when one goes its memory is used for something else. The getters read the line's two points through + 0x88 and + 0x90 and crashed
- * on what was there (run steve2: 1 + 0x10). A line is used only while both are pointers to memory that can be read. One query per
- * memory region and frame (g_rv_ok_frame): the lines live side by side. */
-static long long g_rv_ok_frame = -1; static uint64_t g_rv_ok_lo, g_rv_ok_hi;
+ * on what was there (run steve2: 1 + 0x10). A line is used only while both are pointers to memory that can be read. */
+static long long g_rv_ok_frame = -1;
+/* (0.2.22) a page that can be read, asked once per frame by reading one byte of it. It was VirtualQuery, which walks the whole region
+ * to say how long it is: with this game's memory 10 to 60 ms a frame, on the game's main thread, every frame of a recorded match. */
+static uint64_t g_rv_ok_page[16]; static int g_rv_ok_pages;
+static int rv_page_ok(uint64_t page) {
+    for (int i = 0; i < g_rv_ok_pages; i++) if (g_rv_ok_page[i] == page) return 1;
+    uint8_t b; SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), (const void *)(uintptr_t)page, &b, 1, &got) || got != 1) return 0;
+    if (g_rv_ok_pages < 16) g_rv_ok_page[g_rv_ok_pages++] = page;
+    return 1;
+}
 static int rv_ptr_ok(uint64_t a, size_t n, long long frame) {
     if (a < 0x10000 || a >> 47 || (a & 3)) return 0;
-    if (frame == g_rv_ok_frame && a >= g_rv_ok_lo && a + n <= g_rv_ok_hi) return 1;
-    MEMORY_BASIC_INFORMATION mi;
-    if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return 0;
-    uint64_t lo = (uint64_t)(uintptr_t)mi.BaseAddress, hi = lo + mi.RegionSize;
-    if (a + n > hi) return 0;
-    g_rv_ok_frame = frame; g_rv_ok_lo = lo; g_rv_ok_hi = hi;
-    return 1;
+    if (frame != g_rv_ok_frame) { g_rv_ok_frame = frame; g_rv_ok_pages = 0; }
+    uint64_t p0 = a & ~0xfffull, p1 = (a + n - 1) & ~0xfffull;
+    return rv_page_ok(p0) && (p1 == p0 || rv_page_ok(p1));
 }
 static int rv_line_ok(uint64_t line, long long frame) {
     if (!rv_ptr_ok(line, 0x98, frame)) return 0;
