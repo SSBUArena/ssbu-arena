@@ -717,8 +717,10 @@ static void panel_copy_hook(Ctx *c, void *user) {
         printf("debug panels: entry 1 copied as type %u: made none (SSBU_RB_NET_P2NONE)\n", rd32(e + 0x30));
         wr32(e + 0x30, 3); wr32(e + 0x34, 0xffffffffu); wr64(e + 0x38, 0xc1ffff0000000000ull); wr64(e + 0x40, 0xc1ffff0000000000ull);
     }
-    int nnldn_role(void);
-    if (g_autop2 > 0 && rd32(e + 0x30) == 3 && !nnldn_role()) {        /* the CPU panel a save brings (run pnB); (R3 pub2) never in a Local Wireless room: its fights are the game's own */
+    int nnldn_in_use(void);
+    /* (0.2.17) nnldn_in_use, not nnldn_role: the game opens the room's fighter select before it creates the room, so the room maker
+     * saw "CPU Lv. 3" in player 2's box and not the second player */
+    if (g_autop2 > 0 && rd32(e + 0x30) == 3 && !nnldn_in_use()) {        /* the CPU panel a save brings (run pnB); (R3 pub2) never in Local Wireless: its fights are the game's own */
         wr8(e, 0xff); wr32(e + 0x28, 2); wr32(e + 0x34, 0xffffffffu);
         wr64(e + 0x38, 0xc100000fd5f7fa78ull); wr64(e + 0x40, 0xc100000fd5f7fa78ull); wr8(e + 0x48, 0); wr8(e + 0x49, 3);
         wr32(e + 0x30, 1);

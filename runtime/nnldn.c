@@ -501,6 +501,7 @@ int nnldn_node_ips(uint32_t *ips, int max) {
     ReleaseSRWLockShared(&L.lock);
     return n;
 }
+int nnldn_in_use(void) { return L.state != 0; }      /* (0.2.17) nn::ldn initialized: the game is in Local Wireless, a room or not yet */
 int nnldn_role(void) { int s = L.state; return s == LS_AP_CREATED ? 1 : s == LS_STA_CONNECTED ? 2 : 0; }      /* (R3 pub1) 1 = this game made the room, 2 = it joined one, 0 = no room */
 int nnldn_has_node(uint32_t ip) {
     AcquireSRWLockShared(&L.lock);
