@@ -866,6 +866,51 @@ static int pad_test(int seconds) {
     return 0;
 }
 
+/* (0.2.20) --pad-live, for the launcher's controller page: what the game gets from each pad, read by the code the game uses (dead zone
+ * included), one line per pad when it changes (and every 500 ms), tab separated: pad, player, name, buttons (bits as g_pro), left x, y,
+ * right x, y, the left stick before the dead zone x, y (0..32767), dead zone. Ends when stdin closes (the launcher went away).
+ * SSBU_PAD_LIVE_VIRTUAL=1: a virtual pad that moves by itself (test). */
+static DWORD WINAPI live_stdin(void *u) { char b[64]; (void)u; while (fgets(b, sizeof b, stdin)) { } ExitProcess(0); return 0; }
+static int pad_live(void) {
+    uint64_t last[MAXDEV]; int ls[MAXDEV][6]; ULONGLONG at = 0;
+    memset(last, 0xff, sizeof last); memset(ls, 0, sizeof ls);
+    if (!tool_init()) return 1;
+    CloseHandle(CreateThread(NULL, 0, live_stdin, NULL, 0, NULL));
+    SDL_Joystick *vj = NULL;
+    if (getenv("SSBU_PAD_LIVE_VIRTUAL")) {
+        SDL_VirtualJoystickDesc d; SDL_INIT_INTERFACE(&d);
+        d.type = SDL_JOYSTICK_TYPE_GAMEPAD; d.vendor_id = 0x1209; d.product_id = 0x0777; d.naxes = SDL_GAMEPAD_AXIS_COUNT; d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT; d.name = "Virtual test pad";
+        SDL_JoystickID id = SDL_AttachVirtualJoystick(&d); Sleep(50); nnpad_poll(1); vj = id ? SDL_OpenJoystick(id) : NULL;
+    }
+    for (long long tick = 0;; tick++) {
+        if (vj) {
+            SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_SOUTH, (tick / 60) % 2 == 0);
+            SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_DPAD_LEFT, (tick / 90) % 2 == 1);
+            SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTX, (Sint16)(32000.0 * sin((double)tick / 90)));
+            SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTY, (Sint16)(32000.0 * cos((double)tick / 90) * ((tick / 300) % 2 ? 0.05 : 1.0)));
+            SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, (tick / 120) % 2 ? 32767 : -32768);
+        }
+        nnpad_poll(1);
+        lock();
+        ULONGLONG now = GetTickCount64(); int all = now - at >= 500; if (all) at = now;
+        for (int i = 0; i < MAXDEV; i++) {
+            const Dev *d = &g_dev[i];
+            NnPadState st;
+            if (!d->used || d->ignored) continue;
+            dev_state(d, &st);
+            int rx = d->gp ? SDL_GetGamepadAxis(d->gp, SDL_GAMEPAD_AXIS_LEFTX) : st.lx, ry = d->gp ? -SDL_GetGamepadAxis(d->gp, SDL_GAMEPAD_AXIS_LEFTY) : st.ly;
+            int cur[6] = {st.lx, st.ly, st.rx, st.ry, rx, ry};
+            if (all || last[i] != st.buttons || memcmp(cur, ls[i], sizeof cur)) {
+                printf("pad\t%d\t%s\t%llu\t%d\t%d\t%d\t%d\t%d\t%d\t%.3f\n", d->slot + 1, d->name, (unsigned long long)st.buttons, st.lx, st.ly, st.rx, st.ry, rx, ry, EFF(d, dz));
+                last[i] = st.buttons; memcpy(ls[i], cur, sizeof cur);
+            }
+        }
+        unlock();
+        fflush(stdout);
+        Sleep(16);
+    }
+}
+
 static void ini_replace_section(const char *path, const char *header, const char *body) {
     size_t len = 0;
     char *old = read_file(path, &len), *out = malloc(len + (body ? strlen(body) : 0) + strlen(header) + 64);
@@ -960,6 +1005,7 @@ int nnpad_tool(int argc, char **argv) {
     for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--seconds") && i + 1 < argc) secs = atoi(argv[i + 1]);
     for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--pad-map")) return pad_map(i + 1 < argc ? atoi(argv[i + 1]) : 1);
     if ((argc > 1 && !strcmp(argv[1], "--pad-test")) || getenv("SSBU_PAD_TEST")) return pad_test(secs);
+    if (argc > 1 && !strcmp(argv[1], "--pad-live")) return pad_live();
     if (argc > 1 && !strcmp(argv[1], "--pad-list")) {      /* for the launcher: one line per device, "pad<TAB>GUID<TAB>name", then exit */
         if (!tool_init()) return 1;
         lock();
