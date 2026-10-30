@@ -446,7 +446,11 @@
           <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="350"/></Grid.ColumnDefinitions>
           <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <Border Style="{StaticResource Panel}" ClipToBounds="True" Background="#090E15">
-            <local:ReplayView x:Name="RvView"/>
+            <Grid>
+              <Viewport3D x:Name="RvScene" IsHitTestVisible="False" ClipToBounds="True"/>
+              <local:ReplayView x:Name="RvView"/>
+              <TextBlock x:Name="RvSceneNote" Style="{StaticResource Small}" Margin="16,40,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False"/>
+            </Grid>
           </Border>
           <!-- controls and timeline -->
           <Border Grid.Row="1" Style="{StaticResource Panel}" Margin="0,12,0,0" Padding="16,12">
@@ -461,12 +465,13 @@
                   <Border Width="1" Height="26" Background="{StaticResource Line}" Margin="16,0"/>
                   <StackPanel x:Name="RvSpeeds" Orientation="Horizontal"/>
                 </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+              </Grid>
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                  <CheckBox x:Name="RvModels" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Game models" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="15"/>
                   <CheckBox x:Name="RvHit" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Hitboxes" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="15"/>
                   <CheckBox x:Name="RvHurt" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Hurtboxes" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="15"/>
                   <CheckBox x:Name="RvFollow" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Follow" Margin="8,0,0,0" VerticalAlignment="Center" FontSize="15"/>
                 </StackPanel>
-              </Grid>
               <local:ReplayTimeline x:Name="RvTimeline" Height="54" Margin="0,12,0,0" Cursor="Hand"/>
             </StackPanel>
           </Border>

@@ -29,6 +29,7 @@ namespace Arena
         double frame;
         public double Frame { get => frame; set { frame = Math.Max(0, Math.Min(value, (r?.FrameList.Count ?? 1) - 1)); InvalidateVisual(); } }
         public bool ShowHit = true, ShowHurt = true, Follow = true;
+        public ReplayScene Scene;                           // (0.2.21) the game's models, under this
 
         static readonly Typeface Ui = new Typeface(new FontFamily(new Uri("pack://application:,,,/"), "./Assets/Fonts/#Barlow"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
         static readonly Typeface UiBold = new Typeface(new FontFamily(new Uri("pack://application:,,,/"), "./Assets/Fonts/#Barlow Condensed"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
@@ -195,7 +196,9 @@ namespace Arena
         void Render(DrawingContext dc)
         {
             double W = ActualWidth, H = ActualHeight;
-            dc.DrawRectangle(BgB, null, new Rect(0, 0, W, H));
+            bool stageModel = Scene != null && Scene.StageShown;
+            if (!stageModel && !(Scene != null && Scene.On && Enumerable.Range(0, 4).Any(Scene.FighterShown))) dc.DrawRectangle(BgB, null, new Rect(0, 0, W, H));
+            else dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, W, H));      // (clicks)
             if (r == null || r.FrameList.Count == 0 || W < 10 || H < 10) return;
             int fi = (int)Math.Round(frame);
             var fr = r.FrameList[Math.Max(0, Math.Min(fi, r.FrameList.Count - 1))];
@@ -211,7 +214,10 @@ namespace Arena
             double aw = W, ah = H - hudH;
             sc = Math.Min(aw / view.Width, ah / view.Height);
             ox = aw / 2 - (view.Left + view.Width / 2) * sc; oy = ah / 2 + (view.Top + view.Height / 2) * sc;
+            Scene?.Update(r, fr, W, H, sc, ox, oy);
 
+            if (!stageModel)
+            {
             // halo and grid
             var halo = new RadialGradientBrush(Color.FromArgb(28, 0x16, 0x89, 0xE8), Color.FromArgb(0, 0x16, 0x89, 0xE8)) { Center = new Point(.5, .55), GradientOrigin = new Point(.5, .55), RadiusX = .6, RadiusY = .6 };
             dc.DrawRectangle(halo, null, new Rect(0, 0, W, H));
@@ -220,6 +226,8 @@ namespace Arena
             for (double x = o0.X % step; x < W; x += step) dc.DrawLine(GridP, new Point(x, 0), new Point(x, ah));
             for (double y = o0.Y % step; y < ah; y += step) dc.DrawLine(GridP, new Point(0, y), new Point(W, y));
 
+            }
+
             // blast zones
             var bz = new Rect(S(blast[0], blast[2]), S(blast[1], blast[3]));
             var outside = new CombinedGeometry(GeometryCombineMode.Exclude, new RectangleGeometry(new Rect(-10, -10, W + 20, H + 20)), new RectangleGeometry(bz));
@@ -227,7 +235,7 @@ namespace Arena
             dc.DrawRectangle(null, BlastP, bz);
 
             // the stage
-            if (stageBody != null)
+            if (stageBody != null && !stageModel)
             {
                 var tg = new MatrixTransform(sc, 0, 0, -sc, ox, oy);
                 var g = stageBody.Clone(); g.Transform = tg;
@@ -239,6 +247,7 @@ namespace Arena
             {
                 var L = r.Lines[i]; var p = fr.Lines != null && i < fr.Lines.Length ? fr.Lines[i] : new[] { L.X1, L.Y1, L.X2, L.Y2 };
                 if (fr.Number < L.FirstFrame || (i < 64 && (fr.LinesOn & (1UL << i)) == 0)) continue;      // not there (yet / now)
+                if (stageModel && !(Scene.MovingAsLines && L.Passable)) continue;
                 if (L.Passable) { plats.Add(new[] { Math.Min(p[0], p[2]), p[1], Math.Max(p[0], p[2]), p[3] }); continue; }
                 Point a = S(p[0], p[1]), b = S(p[2], p[3]);
                 if (L.Floor) dc.DrawLine(StageRail, a, b);
@@ -314,15 +323,17 @@ namespace Arena
         void DrawFighter(DrawingContext dc, RvFighterFrame s, int k, int pc, bool tagged)
         {
             Point feet = S(s.X, s.Y);
+            bool model = Scene != null && Scene.FighterShown(k) && tagged;
             // body: the hurt volumes' extent (else a capsule of a typical size), filled in the player's colour
             double x0 = s.X - 4, x1 = s.X + 4, y0 = s.Y, y1 = s.Y + 14;
             foreach (var u in s.Hurts) { x0 = Math.Min(x0, Math.Min(u.X, u.X2) - u.R); x1 = Math.Max(x1, Math.Max(u.X, u.X2) + u.R); y0 = Math.Min(y0, Math.Min(u.Y, u.Y2) - u.R); y1 = Math.Max(y1, Math.Max(u.Y, u.Y2) + u.R); }
-            if (s.Hurts.Length > 0)
+            if (model) { }
+            else if (s.Hurts.Length > 0)
                 foreach (var u in s.Hurts) DrawCapsule(dc, u.X, u.Y, u.X2, u.Y2, u.R, null, playerFill[pc]);
             else DrawCapsule(dc, s.X, s.Y + 4, s.X, s.Y + 10, 4, playerP[pc], playerFill[pc]);
             // ground shadow, feet point, facing mark
-            if (s.Grounded) dc.DrawEllipse(RvPalette.B(RvPalette.Player[pc], .22), null, feet, 7 * sc, 1.6 * sc);
-            dc.DrawEllipse(playerB[pc], null, feet, 3, 3);
+            if (s.Grounded && !model) dc.DrawEllipse(RvPalette.B(RvPalette.Player[pc], .22), null, feet, 7 * sc, 1.6 * sc);
+            if (!model) dc.DrawEllipse(playerB[pc], null, feet, 3, 3);
             Point head = S(s.X, y1);
             double fx = feet.X, fy = S(0, (y0 + y1) / 2).Y, dir = s.Lr;
             var tri = new StreamGeometry();

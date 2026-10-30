@@ -275,6 +275,7 @@ namespace Arena
         }
 
         /// <summary>a match file in the viewer (also: --replay &lt;file&gt; [--frame n] on the command line, for screenshots)</summary>
+        ReplayScene rvScene;
         void OpenReplay(string path, int frame = 0, bool play = false)
         {
             ReplaysStatus.Text = "Opening " + Path.GetFileName(path) + " ...";
@@ -285,6 +286,8 @@ namespace Arena
                 if (r.FrameList.Count == 0) { ReplaysStatus.Text = "This replay has no frames."; return; }
                 ReplaysListPanel.Visibility = Visibility.Collapsed; ReplayViewer.Visibility = Visibility.Visible;
                 RvView.Replay = r;
+                if (rvScene == null) { rvScene = new ReplayScene(RvScene); RvView.Scene = rvScene; }
+                rvScene.Load(r, t2 => { RvSceneNote.Text = t2; RvView.InvalidateVisual(); });
                 RvTimeline.Replay = r; RvTimeline.Stats = rvStats; RvTimeline.Prepare();
                 if (!rvHooked)
                 {
@@ -355,6 +358,7 @@ namespace Arena
         void RvToggle_Changed(object sender, RoutedEventArgs e)
         {
             if (RvView == null || RvHit == null || RvHurt == null || RvFollow == null) return;
+            if (rvScene != null) rvScene.On = RvModels.IsChecked == true;
             RvView.ShowHit = RvHit.IsChecked == true; RvView.ShowHurt = RvHurt.IsChecked == true; RvView.Follow = RvFollow.IsChecked == true;
             RvView.InvalidateVisual();
         }
