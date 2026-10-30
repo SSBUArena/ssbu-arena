@@ -298,6 +298,20 @@ namespace Arena
             catch { return false; }
         }
 
+        /// <summary>(0.2.21) what the replay viewer draws of this replay, from the player's data.arc (tools/replay/replay_assets.py): the
+        /// list of its files, made if missing; null if it cannot be made.</summary>
+        public static string MakeReplayAssets(string replay)
+        {
+            string dir = Path.Combine(Build, "replay_assets"), list = Path.Combine(dir, "replays", Path.GetFileName(replay) + ".txt");
+            if (File.Exists(list)) return list;
+            if (Repo == null || RomFS == null) return null;
+            string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\replay\replay_assets.py"), arc = Path.Combine(RomFS, "data.arc");
+            if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return null;
+            var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + dir + "\" --replay \"" + replay + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
+            using (var p = Process.Start(psi)) p.WaitForExit(300000);
+            return File.Exists(list) ? list : null;
+        }
+
         public static string AvatarsDir => Path.Combine(Build, "avatars");
 
         /// <summary>the fighter's number among the game's own profile icons (avatars\icons.txt, ui_profile_icon_db); -1: none</summary>
