@@ -285,6 +285,7 @@ namespace Arena
             SizeBox.IsEnabled = Core.WindowMode == 0;
             AspectBox.SelectedIndex = Core.Aspect;
             ShaderBox.SelectedIndex = Core.ShaderLoad;
+            BgBox.SelectedIndex = Core.StageBg; BgFolder.Visibility = Core.StageBg == 2 ? Visibility.Visible : Visibility.Collapsed;
             FpsBox.IsChecked = Core.Fps;
             KbBox.SelectedIndex = Core.Keyboard;
             DeadZoneSlider.Value = Math.Round(Core.DeadZone * 100); DeadZoneText.Text = (int)DeadZoneSlider.Value + " %";
@@ -311,6 +312,7 @@ namespace Arena
             if (SizeBox.SelectedIndex != filledSize) Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;      // (0.2.12) a size set in the game, not in this list, stays
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
             Core.ShaderLoad = Math.Max(0, ShaderBox.SelectedIndex);
+            Core.StageBg = Math.Max(0, BgBox.SelectedIndex);
             Core.Fps = FpsBox.IsChecked == true;
             Core.Keyboard = Math.Max(0, KbBox.SelectedIndex);
             if ((int)Math.Round(VolSlider.Value) != filledVol) Core.Volume = (int)Math.Round(VolSlider.Value);      // (0.2.12) the game's own volume stays until changed here
@@ -373,6 +375,25 @@ namespace Arena
         {
             if (VolText != null) VolText.Text = (int)Math.Round(e.NewValue) + " %";
             Field_Changed(sender, e);
+        }
+
+        /// <summary>(0.2.20) the files of a background are made from the game's the first time one is chosen</summary>
+        void Bg_Changed(object sender, SelectionChangedEventArgs e)
+        {
+            BgFolder.Visibility = BgBox.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+            if (loading) return;
+            Field_Changed(sender, e);
+            if (BgBox.SelectedIndex <= 0 || Core.StagesReady()) return;
+            Status("Preparing the stage backgrounds from your game files", "busy");
+            Task.Run(() => Core.MakeStages()).ContinueWith(t =>
+            {
+                Status(t.Result ? "Stage backgrounds ready: used from the next start of the game" : "The stage backgrounds could not be prepared", t.Result ? "good" : "warn");
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        void BgFolder_Click(object sender, RoutedEventArgs e)
+        {
+            try { System.IO.Directory.CreateDirectory(Core.StagesDir); Process.Start("explorer.exe", "\"" + Core.StagesDir + "\""); } catch { }
         }
 
         void Field_Changed(object sender, RoutedEventArgs e)

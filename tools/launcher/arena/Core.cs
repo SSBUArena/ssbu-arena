@@ -77,6 +77,7 @@ namespace Arena
         public static int Aspect, WindowMode, Keyboard;
         public static string WindowSize = "1280x720";
         public static int Volume = 100;
+        public static int StageBg;                                        // (0.2.20) launcher.ini stage_bg: 0 original, 1 black, 2 custom (SSBU_STAGE_BG)
         public static double DeadZone = 0.10;                             // (0.2.20) controllers.ini [general] deadzone
         public static int ShaderLoad;                                     // (0.2.19) launcher.ini shader_load: 0 automatic, 1 all at the start, 2 per match (graphics.ini shader_load)
         public static bool CrashReports = true;                           // (0.2.18) launcher.ini crash_reports (CrashReport.cs)
@@ -154,6 +155,7 @@ namespace Arena
             Online = Get(L, "online_choice") == "1" ? Get(L, "online") != "off" : true;      // (0.2.8) on by default; a choice made since is kept
             Server = Servers[ServerIndex(Get(L, "server") ?? DefaultServer)].Address;
             Ping = Get(L, "ping") != "off";
+            StageBg = Get(L, "stage_bg") == "off" ? 1 : Get(L, "stage_bg") == "custom" ? 2 : 0;
             ShaderLoad = Get(L, "shader_load") == "start" ? 1 : Get(L, "shader_load") == "loading" ? 2 : 0;
             CrashReports = Get(L, "crash_reports") != "off";
             InputDelay = int.TryParse(Get(L, "input_delay"), out var idl) && idl >= 1 && idl <= 5 ? idl : 0;
@@ -246,7 +248,7 @@ namespace Arena
             File.WriteAllLines(LauncherIni, new[] {
                 "# written by the launcher", "saves = " + Saves, "nickname = " + n,
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
-                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + (InputDelay >= 1 ? InputDelay.ToString() : "auto"), "crash_reports = " + (CrashReports ? "on" : "off"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad],
+                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + (InputDelay >= 1 ? InputDelay.ToString() : "auto"), "crash_reports = " + (CrashReports ? "on" : "off"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off"), "replay_upload = " + (RecUpload ? "on" : "off"), "replay_public = " + (RecPublic ? "on" : "off") }, Encoding.ASCII);
             var gfx = GfxValues();
@@ -273,6 +275,27 @@ namespace Arena
                 using (var p = Process.Start(psi)) p.WaitForExit(60000);
             }
             catch { }
+        }
+
+        public static string StagesDir => Path.Combine(Build, "stages");
+        public static bool StagesReady() { return File.Exists(Path.Combine(StagesDir, "done_v2.txt")); }
+
+        /// <summary>(0.2.20) the stage backgrounds from this player's data.arc (tools/stages/extract_backgrounds.py, about 240 MB, game
+        /// content: never in the repository or on the server). When a player first chooses a background that needs them.</summary>
+        public static bool MakeStages()
+        {
+            try
+            {
+                if (StagesReady()) return true;
+                if (Repo == null || RomFS == null) return false;
+                string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\stages\extract_backgrounds.py"), arc = Path.Combine(RomFS, "data.arc");
+                if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return false;
+                var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + StagesDir + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
+                using (var p = Process.Start(psi)) { p.WaitForExit(300000); if (p.ExitCode != 0) return false; }
+                File.WriteAllText(Path.Combine(StagesDir, "done_v2.txt"), "ok");
+                return true;
+            }
+            catch { return false; }
         }
 
         public static string AvatarsDir => Path.Combine(Build, "avatars");
@@ -638,13 +661,14 @@ namespace Arena
         static void GameEnv(System.Collections.Specialized.StringDictionary env)
         {
             foreach (var v in new[] { "SSBU_ONLINE", "SSBU_ONLINE_CODE", "SSBU_ONLINE_NAME", "SSBU_ONLINE_DIRECT", "SSBU_NICKNAME", "SSBU_RB_NET", "SSBU_R1_GAMEDLL", "SSBU_NRO_BIN", "SSBU_NET_PING", "SSBU_COMPETITIVE_UI",
-                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_TICKET", "SSBU_RB_NET_DELAY" })
+                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_TICKET", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG" })
                 env.Remove(v);
             env["SSBU_ROMFS"] = RomFS ?? "";
             env["SSBU_USERDATA"] = Saves;
             env["SSBU_FONTS"] = Fonts;
             env["SSBU_LOOSE_FILES"] = Competitive ? "1" : "0";      // build\characters\competitive (runtime/loose_files.c)
             if (InputDelay >= 1) env["SSBU_RB_NET_DELAY"] = InputDelay.ToString();      // (0.2.14) the player's choice; unset: from the round trip (rb_net.c auto_delay)
+            if (StageBg > 0 && StagesReady()) env["SSBU_STAGE_BG"] = StageBg == 1 ? "off" : "custom";      // (0.2.20) runtime/loose_files.c: local graphics only
             env["SSBU_LATENCY"] = "normal";                          // wins over a latency = low / lowest written by hand in graphics.ini
             env["SSBU_COMPETITIVE"] = env["SSBU_LOOSE_FILES"];       // no FS meter, no random items (runtime/competitive.c)
             // the matches the game records for the Replays page (fighter_sdk/replay_state.c: local, mm, ldn, arena)
