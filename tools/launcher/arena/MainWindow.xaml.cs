@@ -282,6 +282,7 @@ namespace Arena
             SizeBox.SelectedIndex = Math.Max(0, SizeBox.Items.Cast<ComboBoxItem>().ToList().FindIndex(i => (string)i.Content == Core.WindowSize.Replace(" ", "")));      // (0.2.8) our sizes only
             SizeBox.IsEnabled = Core.WindowMode == 0;
             AspectBox.SelectedIndex = Core.Aspect;
+            ShaderBox.SelectedIndex = Core.ShaderLoad;
             FpsBox.IsChecked = Core.Fps;
             KbBox.SelectedIndex = Core.Keyboard;
             VolSlider.Value = Math.Max(0, Math.Min(100, Core.Volume)); VolText.Text = (int)VolSlider.Value + " %";      // (0.2.16) steps of 1
@@ -306,6 +307,7 @@ namespace Arena
             Core.WindowMode = Math.Max(0, WinBox.SelectedIndex);
             if (SizeBox.SelectedIndex != filledSize) Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;      // (0.2.12) a size set in the game, not in this list, stays
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
+            Core.ShaderLoad = Math.Max(0, ShaderBox.SelectedIndex);
             Core.Fps = FpsBox.IsChecked == true;
             Core.Keyboard = Math.Max(0, KbBox.SelectedIndex);
             if ((int)Math.Round(VolSlider.Value) != filledVol) Core.Volume = (int)Math.Round(VolSlider.Value);      // (0.2.12) the game's own volume stays until changed here

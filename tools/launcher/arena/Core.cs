@@ -76,6 +76,7 @@ namespace Arena
         public static int Aspect, WindowMode, Keyboard;
         public static string WindowSize = "1280x720";
         public static int Volume = 100;
+        public static int ShaderLoad;                                     // (0.2.19) launcher.ini shader_load: 0 automatic, 1 all at the start, 2 per match (graphics.ini shader_load)
         public static bool CrashReports = true;                           // (0.2.18) launcher.ini crash_reports (CrashReport.cs)
         public static int InputDelay;                                     // (0.2.14) launcher.ini input_delay: 0 automatic, 1..5 frames (SSBU_RB_NET_DELAY)
         public static bool Fps;                                           // graphics.ini stats_overlay: the FPS counter in the game                                   // graphics.ini volume (0..100), the game's start volume
@@ -151,6 +152,7 @@ namespace Arena
             Online = Get(L, "online_choice") == "1" ? Get(L, "online") != "off" : true;      // (0.2.8) on by default; a choice made since is kept
             Server = Servers[ServerIndex(Get(L, "server") ?? DefaultServer)].Address;
             Ping = Get(L, "ping") != "off";
+            ShaderLoad = Get(L, "shader_load") == "start" ? 1 : Get(L, "shader_load") == "loading" ? 2 : 0;
             CrashReports = Get(L, "crash_reports") != "off";
             InputDelay = int.TryParse(Get(L, "input_delay"), out var idl) && idl >= 1 && idl <= 5 ? idl : 0;
             RecMatchmaking = Get(L, "replay_matchmaking") != "off"; RecLdn = Get(L, "replay_ldn") != "off"; RecArena = Get(L, "replay_arena") != "off";
@@ -166,7 +168,7 @@ namespace Arena
                 if (Get(o2, "nickname") != null) Nickname = o2["nickname"];
             }
 
-            LoadGfx();
+            LoadGfx(false);
             Buttons = new Dictionary<string, string>(DefaultButtons);
             foreach (var kv in ReadIniSection(PadIni, "type xbox"))
                 if (kv.Key.StartsWith("map.") && DefaultButtons.ContainsKey(kv.Key.Substring(4).ToUpperInvariant()) && PadSources.Any(x => x.Item1 == kv.Value.Trim().ToLowerInvariant()))
@@ -184,9 +186,11 @@ namespace Arena
         static Dictionary<string, string> gfxSeen = new Dictionary<string, string>();
 
         /// <summary>(0.2.12) graphics.ini read (Load, and again when the game ends: the in-game menu writes it)</summary>
-        public static void LoadGfx()
+        public static void LoadGfx(bool afterGame = true)
         {
             var G = ReadIni(GfxIni);
+            // (0.2.19) the in-game menu changed it: that choice stays (at the launcher's start the file may only hold the old default)
+            if (afterGame && Get(G, "shader_load") != null && Get(G, "shader_load") != ShaderLoadValue()) ShaderLoad = Get(G, "shader_load") == "loading" ? 2 : 1;
             Aspect = Get(G, "aspect") == "stretch" ? 1 : 0;
             WindowMode = Get(G, "window") == "borderless" ? 1 : Get(G, "window") == "fullscreen" ? 2 : 0;
             if (Get(G, "width") != null && Get(G, "height") != null) WindowSize = G["width"] + "x" + G["height"];
@@ -194,6 +198,18 @@ namespace Arena
             Fps = Get(G, "stats_overlay") == "on";
             if (Get(G, "ping_overlay") != null) Ping = Get(G, "ping_overlay") != "off";      // (0.2.8) the in-game menu's choice wins: one switch in both places
             gfxSeen = GfxValues().Where(kv => Get(G, kv.Key) != null).ToDictionary(kv => kv.Key, kv => kv.Value);      // a key not in the file yet is written
+            if (Get(G, "shader_load") != null) gfxSeen["shader_load"] = Get(G, "shader_load");      // (0.2.19) as it is in the file: automatic may want another value
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern bool GetPhysicallyInstalledSystemMemory(out long kb);
+
+        /// <summary>(0.2.19) automatic: every shader in memory at the start on a PC with more than 16 GB of RAM, else only the match's
+        /// (measured 2026-10-30: 2.9 GB less at the peak, the same frame times in the fight, one pause of about 1.3 s as the match loads)</summary>
+        static string ShaderLoadValue()
+        {
+            if (ShaderLoad != 0) return ShaderLoad == 2 ? "loading" : "start";
+            try { if (GetPhysicallyInstalledSystemMemory(out long kb)) return kb > 16L * 1024 * 1024 ? "start" : "loading"; } catch { }
+            return "start";
         }
 
         static Dictionary<string, string> GfxValues()
@@ -202,7 +218,7 @@ namespace Arena
                 { "aspect", Aspect == 1 ? "stretch" : "keep" },
                 { "window", new[] { "windowed", "borderless", "fullscreen" }[Math.Max(0, Math.Min(2, WindowMode))] },
                 { "latency", "normal" },        // input latency: always normal (the option is gone)
-                { "volume", Volume.ToString() }, { "stats_overlay", Fps ? "on" : "off" }, { "ping_overlay", Ping ? "on" : "off" } };
+                { "shader_load", ShaderLoadValue() }, { "volume", Volume.ToString() }, { "stats_overlay", Fps ? "on" : "off" }, { "ping_overlay", Ping ? "on" : "off" } };
             var m = Regex.Match(WindowSize.Trim(), @"^(\d{3,5})\s*[xX*]\s*(\d{3,5})$");
             if (m.Success) { gfx["width"] = m.Groups[1].Value; gfx["height"] = m.Groups[2].Value; }
             return gfx;
@@ -224,7 +240,7 @@ namespace Arena
             File.WriteAllLines(LauncherIni, new[] {
                 "# written by the launcher", "saves = " + Saves, "nickname = " + n,
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
-                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + (InputDelay >= 1 ? InputDelay.ToString() : "auto"), "crash_reports = " + (CrashReports ? "on" : "off"),
+                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + (InputDelay >= 1 ? InputDelay.ToString() : "auto"), "crash_reports = " + (CrashReports ? "on" : "off"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad],
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off"), "replay_upload = " + (RecUpload ? "on" : "off"), "replay_public = " + (RecPublic ? "on" : "off") }, Encoding.ASCII);
             var gfx = GfxValues();
