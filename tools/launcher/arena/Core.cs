@@ -300,13 +300,53 @@ namespace Arena
 
         public static string AvatarsDir => Path.Combine(Build, "avatars");
 
+        /// <summary>the fighter's number among the game's own profile icons (avatars\icons.txt, ui_profile_icon_db); -1: none</summary>
+        public static int ProfileIconOf(string fighter)
+        {
+            try
+            {
+                string f = Path.Combine(AvatarsDir, "icons.txt");
+                if (string.IsNullOrEmpty(fighter) || !File.Exists(f)) return -1;
+                foreach (var l in File.ReadAllLines(f))
+                    if (l.StartsWith(fighter + "=", StringComparison.Ordinal) && int.TryParse(l.Substring(fighter.Length + 1), out int n)) return n;
+            }
+            catch { }
+            return -1;
+        }
+
+        const long SaveSize = 5982968, SaveProfileIcon = 0x424080;      // 13.0.4's system_data.bin and where the player's profile icon is in it (u16)
+
+        /// <summary>(0.2.20) the picture of the account as the game's own profile icon: the game shows it in its rooms and sends it to the
+        /// other players itself. In the save, before the game starts; a save not yet made by the game stays as it is.</summary>
+        public static bool WriteProfileIcon(string fighter)
+        {
+            try
+            {
+                int n = ProfileIconOf(fighter);
+                string save = Path.Combine(Saves, "save", "save_data", "system_data.bin");
+                if (n < 0 || !File.Exists(save)) return false;
+                using (var fs = new FileStream(save, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    if (fs.Length != SaveSize) return false;
+                    var around = new byte[16];
+                    fs.Position = SaveProfileIcon - 8;
+                    fs.Read(around, 0, 16);
+                    if (around.All(b => b == 0)) return false;
+                    fs.Position = SaveProfileIcon;
+                    fs.WriteByte((byte)n); fs.WriteByte((byte)(n >> 8));
+                }
+                return true;
+            }
+            catch (Exception e) { Updater.Log("profile icon: " + e.Message); return false; }
+        }
+
         /// <summary>(0.2.20) the profile pictures: each fighter's portrait from this player's data.arc (tools/ui/extract_fighter_icons.py,
         /// game content, never in the repository or on the server). In the background, once, when they are missing.</summary>
         public static void MakeAvatars()
         {
             try
             {
-                if (File.Exists(Path.Combine(AvatarsDir, "done.txt")) || Repo == null || RomFS == null) return;
+                if (File.Exists(Path.Combine(AvatarsDir, "icons.txt")) || Repo == null || RomFS == null) return;
                 string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\ui\extract_fighter_icons.py"), arc = Path.Combine(RomFS, "data.arc");
                 if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return;
                 var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + AvatarsDir + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
@@ -714,6 +754,7 @@ namespace Arena
         /// cmd.exe (whose exit code is the game's)</summary>
         public static Process Launch()
         {
+            if (Account.SignedIn) WriteProfileIcon(Account.Me.Avatar);
             Directory.CreateDirectory(Saves);
             Directory.CreateDirectory(Path.Combine(Build, "cache"));
             PrepareSave();

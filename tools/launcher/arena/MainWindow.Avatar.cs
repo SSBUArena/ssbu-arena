@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // (0.2.20) the profile picture: a fighter's portrait from this player's own game files (Core.MakeAvatars). The account stores only the
-// fighter's name (public.profiles.avatar, rpc set_my_avatar); no game content goes to the server.
+// fighter's name (public.profiles.avatar, rpc set_my_avatar); no game content goes to the server. In the game it is the fighter's own
+// profile icon (Core.WriteProfileIcon): the game has no way to show other images, so only fighters that have one can be chosen.
 using System;
 using System.IO;
 using System.Linq;
@@ -46,9 +47,9 @@ namespace Arena
         {
             AvatarGrid.Children.Clear();
             string[] files = { };
-            try { if (Directory.Exists(Core.AvatarsDir)) files = Directory.GetFiles(Core.AvatarsDir, "*.png").OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray(); } catch { }
+            try { if (Directory.Exists(Core.AvatarsDir)) files = Directory.GetFiles(Core.AvatarsDir, "*.png").Where(f => Core.ProfileIconOf(Path.GetFileNameWithoutExtension(f)) >= 0).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray(); } catch { }
             AvatarNote.Text = files.Length == 0 ? "The pictures come from your game files: they appear here once they are ready."
-                                                : "Your picture, in the launcher. It comes from your own game files: your account stores only the fighter's name.";
+                                                : "Your picture, in the launcher and in the game's rooms, where the other players see it too. Used from the next start of the game. It comes from your own game files: your account stores only the fighter's name.";
             if (files.Length > 0) AvatarGrid.Children.Add(AvatarButton("", null));
             foreach (var f in files) AvatarGrid.Children.Add(AvatarButton(Path.GetFileNameWithoutExtension(f), AvatarImage(Path.GetFileNameWithoutExtension(f), 96)));
             ShowAvatar();
