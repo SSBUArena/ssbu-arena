@@ -28,7 +28,7 @@
     <Grid Grid.Row="0" Background="#080C12">
       <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
         <Path Data="{StaticResource BrandMarkGeometry}" Fill="{StaticResource Accent}" Width="20" Height="17" Stretch="Uniform"/>
-        <TextBlock Text="SSBU ARENA" Margin="10,0,0,0" FontSize="13" FontWeight="Medium" Foreground="#C9D3DD" VerticalAlignment="Center"/>
+        <TextBlock Text="SSBU ARENA" Margin="10,0,0,0" FontSize="14" FontWeight="Medium" Foreground="#C9D3DD" VerticalAlignment="Center"/>
       </StackPanel>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
         <Button Style="{StaticResource Caption}" Click="Minimize_Click" ToolTip="Minimize">
@@ -60,7 +60,7 @@
           <StackPanel Orientation="Horizontal">
             <Path Data="{StaticResource BrandMarkGeometry}" Fill="{StaticResource Accent}" Width="62" Height="53" Stretch="Uniform"/>
             <StackPanel Margin="18,2,0,0" VerticalAlignment="Center">
-              <TextBlock Tag="sp" Text="SSBU" FontSize="11" FontWeight="Bold" Foreground="{StaticResource Text}" Margin="2,0,0,4"/>
+              <TextBlock Tag="sp" Text="SSBU" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Text}" Margin="2,0,0,4"/>
               <Path Data="{StaticResource WordmarkGeometry}" Fill="{StaticResource Text}" Width="150" Height="27" Stretch="Uniform" HorizontalAlignment="Left"/>
             </StackPanel>
           </StackPanel>
@@ -85,12 +85,12 @@
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="20"/>
-          <ColumnDefinition Width="382"/>
+          <ColumnDefinition Width="330"/>
         </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
           <RowDefinition Height="*"/>
           <RowDefinition Height="Auto"/>
-          <RowDefinition Height="112"/>
+          <RowDefinition Height="88"/>
         </Grid.RowDefinitions>
 
         <!-- hero -->
@@ -104,7 +104,7 @@
               </RadialGradientBrush>
             </Grid.Background>
             <!-- the big mark behind the scene -->
-            <Path Data="{StaticResource BrandMarkGeometry}" Stretch="Uniform" Width="560" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,-10,90,40">
+            <Path Data="{StaticResource BrandMarkGeometry}" Stretch="Uniform" Width="400" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,-10,60,30">
               <Path.Fill>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                   <GradientStop Color="#2865C7FF" Offset="0"/>
@@ -124,23 +124,23 @@
               <Ellipse Canvas.Right="110" Canvas.Top="120" Width="2" Height="2" Fill="#6065C7FF"/>
               <Ellipse Canvas.Right="300" Canvas.Top="30" Width="2" Height="2" Fill="#5065C7FF"/>
             </Canvas>
-            <Image Source="{StaticResource ArenaArt}" Stretch="Uniform" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-44,26" MaxWidth="760">
+            <Image Source="{StaticResource ArenaArt}" Stretch="Uniform" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-44,26" MaxWidth="520">
               <Image.Width>
-                <Binding Path="ActualWidth" RelativeSource="{RelativeSource AncestorType=Grid}" Converter="{x:Static local:Scale.Instance}" ConverterParameter="0.64"/>
+                <Binding Path="ActualWidth" RelativeSource="{RelativeSource AncestorType=Grid}" Converter="{x:Static local:Scale.Instance}" ConverterParameter="0.56"/>
               </Image.Width>
             </Image>
 
-            <StackPanel Margin="46,0,0,8" HorizontalAlignment="Left" VerticalAlignment="Center">
+            <StackPanel Margin="34,0,0,4" HorizontalAlignment="Left" VerticalAlignment="Center">
               <StackPanel Orientation="Horizontal">
                 <Ellipse x:Name="StateDot" Width="11" Height="11" Fill="{StaticResource Accent}" VerticalAlignment="Center"/>
-                <TextBlock x:Name="StateText" Tag="sp" Text="READY TO PLAY" Style="{StaticResource Kicker}" FontSize="14" Margin="20,0,0,0" VerticalAlignment="Center"/>
+                <TextBlock x:Name="StateText" Tag="sp" Text="READY TO PLAY" Style="{StaticResource Kicker}" FontSize="15" Margin="20,0,0,0" VerticalAlignment="Center"/>
               </StackPanel>
-              <TextBlock Text="ULTIMATE." FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="136" Margin="-6,22,0,0" LineHeight="112" LineStackingStrategy="BlockLineHeight"/>
-              <TextBlock Text="ON PC." FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="136" Foreground="{StaticResource Accent}" Margin="-6,6,0,0" LineHeight="112" LineStackingStrategy="BlockLineHeight"/>
-              <TextBlock Text="Your next match starts here." FontSize="26" Foreground="#AEBBCA" Margin="0,30,0,0"/>
-              <Grid Margin="0,44,0,0">
+              <TextBlock Text="ULTIMATE." FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="98" Margin="-4,12,0,0" LineHeight="80" LineStackingStrategy="BlockLineHeight"/>
+              <TextBlock Text="ON PC." FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="98" Foreground="{StaticResource Accent}" Margin="-4,4,0,0" LineHeight="80" LineStackingStrategy="BlockLineHeight"/>
+              <TextBlock Text="Your next match starts here." FontSize="21" Foreground="#AEBBCA" Margin="0,16,0,0"/>
+              <Grid Margin="0,22,0,0">
               <!-- the shader preparation (Core.StartPrepare): in place of the buttons while it runs -->
-              <StackPanel x:Name="PrepPanel" Visibility="Collapsed" Width="470" HorizontalAlignment="Left">
+              <StackPanel x:Name="PrepPanel" Visibility="Collapsed" Width="400" HorizontalAlignment="Left">
                 <Grid>
                   <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock x:Name="PrepTitle" Text="PREPARING SHADERS" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="34"/>
@@ -162,20 +162,20 @@
                   <TextBlock x:Name="PrepDetail" Text="Starting..." FontSize="16" Foreground="#C9D3DD"/>
                   <TextBlock x:Name="PrepEta" HorizontalAlignment="Right" FontSize="16" Foreground="{StaticResource Muted}"/>
                 </Grid>
-                <TextBlock x:Name="PrepNote" Margin="0,18,0,0" Style="{StaticResource Small}" FontSize="14"/>
+                <TextBlock x:Name="PrepNote" Margin="0,18,0,0" Style="{StaticResource Small}" FontSize="15"/>
               </StackPanel>
               <StackPanel x:Name="PlayButtons" Orientation="Horizontal">
-                <Button x:Name="PlayButton" AutomationProperties.Name="Play" Style="{StaticResource Primary}" Width="256" Height="86" Click="Play_Click">
+                <Button x:Name="PlayButton" AutomationProperties.Name="Play" Style="{StaticResource Primary}" Width="200" Height="64" Click="Play_Click">
                   <StackPanel Orientation="Horizontal">
-                    <Path Data="{StaticResource IcoPlay}" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Width="30" Height="34" Stretch="Uniform" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="PlayText" Text="PLAY" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="46" Margin="26,0,0,2"
+                    <Path Data="{StaticResource IcoPlay}" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Width="22" Height="25" Stretch="Uniform" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="PlayText" Text="PLAY" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="36" Margin="18,0,0,2"
                                Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" VerticalAlignment="Center"/>
                   </StackPanel>
                 </Button>
-                <Button Style="{StaticResource Outline}" Height="74" Margin="18,0,0,0" Click="Configure_Click" VerticalAlignment="Center">
+                <Button Style="{StaticResource Outline}" Height="56" Margin="14,0,0,0" Click="Configure_Click" VerticalAlignment="Center">
                   <StackPanel Orientation="Horizontal">
                     <Path Data="{StaticResource IcoSliders}" Style="{StaticResource Ico}" Width="24" Height="20"/>
-                    <TextBlock Text="Configure" FontSize="18" FontWeight="Medium" Margin="16,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock Text="Configure" FontSize="16" FontWeight="Medium" Margin="12,0,0,0" VerticalAlignment="Center"/>
                   </StackPanel>
                 </Button>
               </StackPanel>
@@ -185,40 +185,40 @@
         </Border>
 
         <!-- right column -->
-        <Grid Grid.Row="0" Grid.RowSpan="3" Grid.Column="2" Margin="0,0,0,130">
+        <Grid Grid.Row="0" Grid.RowSpan="3" Grid.Column="2" Margin="0,0,0,104">
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="18"/>
+            <RowDefinition Height="12"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="18"/>
+            <RowDefinition Height="12"/>
             <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
 
           <!-- player -->
-          <Border Grid.Row="0" Style="{StaticResource Panel}" Padding="28,26,28,18">
+          <Border Grid.Row="0" Style="{StaticResource Panel}" Padding="20,14,20,8">
             <StackPanel>
               <StackPanel Orientation="Horizontal">
-                <Grid Width="104" Height="104">
+                <Grid Width="66" Height="66">
                   <Ellipse Stroke="{StaticResource Accent}" StrokeThickness="2">
                     <Ellipse.Fill>
                       <RadialGradientBrush><GradientStop Color="#16324B" Offset="0"/><GradientStop Color="#0E1B2A" Offset="1"/></RadialGradientBrush>
                     </Ellipse.Fill>
                   </Ellipse>
-                  <Path Data="{StaticResource IcoUser}" Width="46" Height="50" Stretch="Uniform" Margin="0,4,0,0">
+                  <Path Data="{StaticResource IcoUser}" Width="30" Height="32" Stretch="Uniform" Margin="0,3,0,0">
                     <Path.Fill>
                       <LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#8AD5FF" Offset="0"/><GradientStop Color="#3FA9EE" Offset="1"/></LinearGradientBrush>
                     </Path.Fill>
                   </Path>
                 </Grid>
-                <StackPanel Margin="28,0,0,0" VerticalAlignment="Center">
-                  <TextBlock x:Name="PlayerName" Text="PLAYER 01" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="38" TextTrimming="CharacterEllipsis" MaxWidth="190"/>
-                  <TextBlock x:Name="PlayerTag" Tag="sp" Text="ARENA#----" FontSize="15" FontWeight="Medium" Foreground="#C9D3DD" Margin="0,6,0,0"/>
+                <StackPanel Margin="16,0,0,0" VerticalAlignment="Center">
+                  <TextBlock x:Name="PlayerName" Text="PLAYER 01" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="30" TextTrimming="CharacterEllipsis" MaxWidth="190"/>
+                  <TextBlock x:Name="PlayerTag" Tag="sp" Text="ARENA#----" FontSize="16" FontWeight="Medium" Foreground="#C9D3DD" Margin="0,6,0,0"/>
                 </StackPanel>
               </StackPanel>
-              <Border Height="1" Background="{StaticResource Line}" Margin="0,20,0,16"/>
+              <Border Height="1" Background="{StaticResource Line}" Margin="0,10,0,8"/>
               <StackPanel Orientation="Horizontal">
                 <!-- the rank badge, unranked: a hexagon in steel with an empty diamond (no rank yet) -->
-                <Canvas Width="56" Height="62">
+                <Canvas Width="56" Height="62"><Canvas.LayoutTransform><ScaleTransform ScaleX="0.68" ScaleY="0.68"/></Canvas.LayoutTransform>
                   <Path Data="M28,1 L54,16 L54,46 L28,61 L2,46 L2,16 Z" StrokeThickness="2" StrokeLineJoin="Round">
                     <Path.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#22344A" Offset="0"/><GradientStop Color="#0D1724" Offset="1"/></LinearGradientBrush></Path.Fill>
                     <Path.Stroke><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#C3CEDA" Offset="0"/><GradientStop Color="#56657A" Offset="1"/></LinearGradientBrush></Path.Stroke>
@@ -227,11 +227,11 @@
                   <Path Data="M28,18 L39,31 L28,44 L17,31 Z" Stroke="#AAB6C4" StrokeThickness="2" StrokeLineJoin="Round" Fill="#14FFFFFF"/>
                   <Path Data="M28,26 L32.5,31 L28,36 L23.5,31 Z" Fill="#7D8C9E"/>
                 </Canvas>
-                <TextBlock x:Name="RankText" Tag="sp" Text="UNRANKED" FontSize="17" FontWeight="SemiBold" Margin="30,0,0,0" VerticalAlignment="Center"/>
+                <TextBlock x:Name="RankText" Tag="sp" Text="UNRANKED" FontSize="16" FontWeight="SemiBold" Margin="16,0,0,0" VerticalAlignment="Center"/>
               </StackPanel>
-              <Button Style="{StaticResource Link}" HorizontalAlignment="Right" Margin="0,6,0,0" Click="Profile_Click">
+              <Button Style="{StaticResource Link}" HorizontalAlignment="Right" Margin="0,0,0,0" Click="Profile_Click">
                 <StackPanel Orientation="Horizontal">
-                  <TextBlock Text="View profile" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="15"/>
+                  <TextBlock Text="View profile" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="16"/>
                   <Path Data="{StaticResource IcoArrow}" Style="{StaticResource Ico}" Width="16" Height="13" Margin="12,1,0,0"/>
                 </StackPanel>
               </Button>
@@ -239,33 +239,33 @@
           </Border>
 
           <!-- setup -->
-          <Border Grid.Row="2" Style="{StaticResource Panel}" Padding="28,22,28,6">
+          <Border Grid.Row="2" Style="{StaticResource Panel}" Padding="20,12,20,2">
             <Grid>
               <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-              <TextBlock Tag="sp" Text="YOUR SETUP" Style="{StaticResource Kicker}" FontSize="14"/>
-              <Border Grid.Row="1" Height="1" Background="{StaticResource Line}" Margin="0,18,0,0"/>
-              <Button Grid.Row="2" Style="{StaticResource Bare}" Click="Controller_Click" Padding="0,12" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Center">
+              <TextBlock Tag="sp" Text="YOUR SETUP" Style="{StaticResource Kicker}" FontSize="15"/>
+              <Border Grid.Row="1" Height="1" Background="{StaticResource Line}" Margin="0,10,0,0"/>
+              <Button Grid.Row="2" Style="{StaticResource Bare}" Click="Controller_Click" Padding="0,6" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Center">
                 <Grid>
-                  <Grid.ColumnDefinitions><ColumnDefinition Width="58"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                   <Path Data="{StaticResource IcoPad}" Fill="#DCE6EF" Width="40" Height="28" Stretch="Uniform" HorizontalAlignment="Left"/>
                   <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock Text="Controller" FontSize="17" FontWeight="SemiBold"/>
-                    <TextBlock x:Name="PadSub" Text="Looking..." FontSize="15" Foreground="{StaticResource Muted}" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="PadSub" Text="Looking..." FontSize="16" Foreground="{StaticResource Muted}" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
                   </StackPanel>
                   <ContentControl x:Name="PadMark" Grid.Column="2" VerticalAlignment="Center"/>
                 </Grid>
               </Button>
               <Border Grid.Row="3" Height="1" Background="{StaticResource Line}"/>
-              <Button Grid.Row="4" Style="{StaticResource Bare}" Click="Files_Click" Padding="0,12" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Center">
+              <Button Grid.Row="4" Style="{StaticResource Bare}" Click="Files_Click" Padding="0,6" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Center">
                 <Grid>
-                  <Grid.ColumnDefinitions><ColumnDefinition Width="58"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                   <Grid Width="38" Height="32" HorizontalAlignment="Left">
                     <Path Data="{StaticResource IcoFolder}" Fill="#AEBBC8" Stretch="Uniform"/>
                     <Path Data="{StaticResource IcoFolderTab}" Fill="#E3EBF2" Stretch="Uniform" VerticalAlignment="Bottom" Height="24.4"/>
                   </Grid>
                   <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock Text="Game files" FontSize="17" FontWeight="SemiBold"/>
-                    <TextBlock x:Name="FilesSub" Text="Checking..." FontSize="15" Foreground="{StaticResource Muted}" Margin="0,3,0,0"/>
+                    <TextBlock x:Name="FilesSub" Text="Checking..." FontSize="16" Foreground="{StaticResource Muted}" Margin="0,3,0,0"/>
                   </StackPanel>
                   <ContentControl x:Name="FilesMark" Grid.Column="2" VerticalAlignment="Center"/>
                 </Grid>
@@ -274,15 +274,15 @@
           </Border>
 
           <!-- community -->
-          <Button Grid.Row="4" Style="{StaticResource CardButton}" Padding="28,22" Click="Community_Click">
+          <Button Grid.Row="4" Style="{StaticResource CardButton}" Padding="20,12" Click="Community_Click">
             <Grid>
               <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-              <Path Data="{StaticResource IcoPeople}" Width="48" Height="40" Stretch="Uniform" VerticalAlignment="Center">
+              <Path Data="{StaticResource IcoPeople}" Width="38" Height="32" Stretch="Uniform" VerticalAlignment="Center">
                 <Path.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#8AD5FF" Offset="0"/><GradientStop Color="#3FA9EE" Offset="1"/></LinearGradientBrush></Path.Fill>
               </Path>
-              <StackPanel Grid.Column="1" Margin="24,0,0,0" VerticalAlignment="Center">
+              <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
                 <TextBlock Text="Join the community" FontSize="18" FontWeight="SemiBold"/>
-                <TextBlock Text="Find players. Follow the project." FontSize="14.5" Foreground="{StaticResource Muted}" Margin="0,4,0,0"/>
+                <TextBlock Text="Find players. Follow the project." FontSize="15.5" Foreground="{StaticResource Muted}" Margin="0,4,0,0"/>
               </StackPanel>
               <Path Grid.Column="2" Data="{StaticResource IcoExternal}" Stroke="{StaticResource Accent}" StrokeThickness="1.8" Width="18" Height="18" Stretch="Uniform" VerticalAlignment="Center"
                     StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
@@ -291,11 +291,11 @@
         </Grid>
 
         <!-- latest -->
-        <Grid Grid.Row="1" Grid.Column="0" Margin="6,26,0,14">
-          <TextBlock Tag="sp" Text="LATEST FROM ARENA" Style="{StaticResource Kicker}" FontSize="15" VerticalAlignment="Center"/>
+        <Grid Grid.Row="1" Grid.Column="0" Margin="6,14,0,8">
+          <TextBlock Tag="sp" Text="LATEST FROM ARENA" Style="{StaticResource Kicker}" FontSize="16" VerticalAlignment="Center"/>
           <Button Style="{StaticResource Link}" HorizontalAlignment="Right" Margin="0,0,18,0" Click="Site_Click">
             <StackPanel Orientation="Horizontal">
-              <TextBlock Text="View all" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="15"/>
+              <TextBlock Text="View all" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="16"/>
               <Path Data="{StaticResource IcoArrow}" Style="{StaticResource Ico}" Width="16" Height="13" Margin="12,1,0,0"/>
             </StackPanel>
           </Button>
@@ -308,7 +308,7 @@
           </Grid.ColumnDefinitions>
           <Button Style="{StaticResource CardButton}" Click="Project_Click">
             <Grid>
-              <Grid.ColumnDefinitions><ColumnDefinition Width="208"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="130"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <Rectangle Margin="-1">
                 <Rectangle.Fill><ImageBrush ImageSource="{StaticResource ArenaArt}" Viewbox="0.3,0.12,0.42,0.5" Stretch="UniformToFill"/></Rectangle.Fill>
                 <Rectangle.OpacityMask><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="#FF000000" Offset="0.6"/><GradientStop Color="#00000000" Offset="1"/></LinearGradientBrush></Rectangle.OpacityMask>
@@ -316,8 +316,8 @@
               <Rectangle Margin="-1" IsHitTestVisible="False">
                 <Rectangle.Fill><RadialGradientBrush Center="0.4,0.5" RadiusX="0.7" RadiusY="0.8"><GradientStop Color="#2A1689E8" Offset="0"/><GradientStop Color="#001689E8" Offset="1"/></RadialGradientBrush></Rectangle.Fill>
               </Rectangle>
-              <StackPanel Grid.Column="1" Margin="26,0,0,0" VerticalAlignment="Center">
-                <TextBlock Text="Project update" FontSize="22" FontWeight="SemiBold"/>
+              <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+                <TextBlock Text="Project update" FontSize="19" FontWeight="SemiBold"/>
                 <TextBlock Text="What's next for Arena." FontSize="16" Foreground="#AEBBCA" Margin="0,6,0,0"/>
               </StackPanel>
               <Path Grid.Column="2" Data="{StaticResource IcoArrow}" Stroke="{StaticResource Accent}" StrokeThickness="2" Width="20" Height="16" Stretch="Uniform" Margin="0,0,30,0"
@@ -326,7 +326,7 @@
           </Button>
           <Button Grid.Column="2" Style="{StaticResource CardButton}" Click="Started_Click">
             <Grid>
-              <Grid.ColumnDefinitions><ColumnDefinition Width="248"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <Rectangle Margin="-1">
                 <Rectangle.Fill><ImageBrush ImageSource="{StaticResource ArenaArt}" Viewbox="0.1,0.72,0.62,0.22" Stretch="UniformToFill"/></Rectangle.Fill>
                 <Rectangle.OpacityMask><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="#FF000000" Offset="0.6"/><GradientStop Color="#00000000" Offset="1"/></LinearGradientBrush></Rectangle.OpacityMask>
@@ -334,8 +334,8 @@
               <Path Data="{StaticResource BrandMarkGeometry}" Width="120" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,8,30,0" Opacity="0.25" IsHitTestVisible="False">
                 <Path.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#8065C7FF" Offset="0"/><GradientStop Color="#0065C7FF" Offset="1"/></LinearGradientBrush></Path.Fill>
               </Path>
-              <StackPanel Grid.Column="1" Margin="26,0,0,0" VerticalAlignment="Center">
-                <TextBlock Text="Getting started" FontSize="22" FontWeight="SemiBold"/>
+              <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+                <TextBlock Text="Getting started" FontSize="19" FontWeight="SemiBold"/>
                 <TextBlock Text="Set up your first session." FontSize="16" Foreground="#AEBBCA" Margin="0,6,0,0"/>
               </StackPanel>
               <Path Grid.Column="2" Data="{StaticResource IcoArrow}" Stroke="{StaticResource Accent}" StrokeThickness="2" Width="20" Height="16" Stretch="Uniform" Margin="0,0,30,0"
@@ -353,13 +353,13 @@
             <Grid DockPanel.Dock="Top" Margin="0,0,0,18">
               <StackPanel>
                 <TextBlock Text="REPLAYS" Style="{StaticResource SectionTitle}" FontSize="40"/>
-                <TextBlock Text="Your matches, redrawn from what the game recorded frame by frame: positions, damage, hitboxes. No game start needed." Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,0"/>
+                <TextBlock Text="Your matches, redrawn from what the game recorded frame by frame: positions, damage, hitboxes. No game start needed." Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,0"/>
               </StackPanel>
               <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                 <Button Style="{StaticResource Outline}" Height="40" Click="ReplaysFolder_Click" Margin="0,0,10,0">
-                  <StackPanel Orientation="Horizontal"><Path Data="{StaticResource IcoFolder}" Fill="{StaticResource Muted}" Width="16" Height="14" Stretch="Uniform"/><TextBlock Text="Open folder" Margin="10,0,0,0" FontSize="15"/></StackPanel>
+                  <StackPanel Orientation="Horizontal"><Path Data="{StaticResource IcoFolder}" Fill="{StaticResource Muted}" Width="16" Height="14" Stretch="Uniform"/><TextBlock Text="Open folder" Margin="10,0,0,0" FontSize="16"/></StackPanel>
                 </Button>
-                <Button Style="{StaticResource Outline}" Height="40" Click="ReplaysRefresh_Click" Content="Refresh" FontSize="15"/>
+                <Button Style="{StaticResource Outline}" Height="40" Click="ReplaysRefresh_Click" Content="Refresh" FontSize="16"/>
               </StackPanel>
             </Grid>
             <TextBlock DockPanel.Dock="Bottom" x:Name="ReplaysStatus" Style="{StaticResource Small}" Margin="0,14,0,0"/>
@@ -367,7 +367,7 @@
               <Grid Width="340" HorizontalAlignment="Left">
                 <TextBox x:Name="RvSearch" Padding="22,0,30,0" TextChanged="ReplaysSearch_Changed" ToolTip="A player's name, a fighter or a stage. Signed in: also every public replay of that player on the Arena server."/>
                 <Path Data="{StaticResource IcoSearch}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="15" Height="15" Stretch="Uniform" HorizontalAlignment="Left" Margin="13,0,0,0" IsHitTestVisible="False" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-                <TextBlock x:Name="RvSearchHint" Text="Search a player, a fighter, a stage" Foreground="{StaticResource Dim}" FontSize="15" VerticalAlignment="Center" Margin="37,0,0,0" IsHitTestVisible="False"/>
+                <TextBlock x:Name="RvSearchHint" Text="Search a player, a fighter, a stage" Foreground="{StaticResource Dim}" FontSize="16" VerticalAlignment="Center" Margin="37,0,0,0" IsHitTestVisible="False"/>
                 <Button x:Name="RvSearchClear" Style="{StaticResource Bare}" HorizontalAlignment="Right" Margin="0,0,8,0" Padding="4" Click="ReplaysSearchClear_Click" Visibility="Collapsed" ToolTip="Clear">
                   <Path Data="{StaticResource IcoCross}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="10" Height="10" Stretch="Uniform"/>
                 </Button>
@@ -390,7 +390,7 @@
                             <ColumnDefinition Width="170"/><ColumnDefinition Width="*"/><ColumnDefinition Width="210"/><ColumnDefinition Width="80"/><ColumnDefinition Width="290"/>
                           </Grid.ColumnDefinitions>
                           <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="{Binding WhenText}" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="{Binding WhenText}" FontSize="16" FontWeight="SemiBold"/>
                             <TextBlock Text="{Binding Kind}" Style="{StaticResource Small}" Margin="0,2,0,0"/>
                             <TextBlock Text="{Binding Where}" Style="{StaticResource Small}" Foreground="{StaticResource Dim}" Margin="0,1,0,0"/>
                           </StackPanel>
@@ -402,7 +402,7 @@
                             <StackPanel><TextBlock Text="{Binding P2Fighter}" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="{Binding P2Name}" Style="{StaticResource Small}"/></StackPanel>
                           </StackPanel>
                           <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding Stage}" FontSize="15"/>
+                            <TextBlock Text="{Binding Stage}" FontSize="16"/>
                             <TextBlock Text="{Binding Result}" Style="{StaticResource Small}" Margin="0,2,0,0"/>
                           </StackPanel>
                           <TextBlock Grid.Column="3" Text="{Binding Length}" FontSize="18" FontFamily="{StaticResource Display}" FontWeight="Bold" VerticalAlignment="Center" Foreground="{StaticResource Muted}"/>
@@ -411,7 +411,7 @@
                               <Border CornerRadius="13" BorderThickness="1" BorderBrush="{Binding VisBrush}" Padding="10,4,12,4" MinWidth="92">
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                   <Path Data="{Binding VisIcon}" Stroke="{Binding VisBrush}" StrokeThickness="1.6" Width="13" Height="13" Stretch="Uniform" StrokeLineJoin="Round"/>
-                                  <TextBlock Text="{Binding VisText}" Foreground="{Binding VisBrush}" FontSize="13.5" FontWeight="SemiBold" Margin="7,0,0,0"/>
+                                  <TextBlock Text="{Binding VisText}" Foreground="{Binding VisBrush}" FontSize="14.5" FontWeight="SemiBold" Margin="7,0,0,0"/>
                                 </StackPanel>
                               </Border>
                             </Button>
@@ -422,7 +422,7 @@
                               <Path Data="{StaticResource IcoTrash}" Stroke="{StaticResource Muted}" StrokeThickness="1.7" Width="15" Height="15" Stretch="Uniform" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
                             </Button>
                             <Path Data="{StaticResource IcoPlay}" Fill="{StaticResource Accent}" Width="14" Height="14" Stretch="Uniform"/>
-                            <TextBlock Text="Watch" Foreground="{StaticResource Accent}" FontSize="15" FontWeight="SemiBold" Margin="8,0,0,0"/>
+                            <TextBlock Text="Watch" Foreground="{StaticResource Accent}" FontSize="16" FontWeight="SemiBold" Margin="8,0,0,0"/>
                           </StackPanel>
                         </Grid>
                       </Button>
@@ -460,9 +460,9 @@
                   <StackPanel x:Name="RvSpeeds" Orientation="Horizontal"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                  <CheckBox x:Name="RvHit" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Hitboxes" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="14"/>
-                  <CheckBox x:Name="RvHurt" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Hurtboxes" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="14"/>
-                  <CheckBox x:Name="RvFollow" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Follow" Margin="8,0,0,0" VerticalAlignment="Center" FontSize="14"/>
+                  <CheckBox x:Name="RvHit" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Hitboxes" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="15"/>
+                  <CheckBox x:Name="RvHurt" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Hurtboxes" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="15"/>
+                  <CheckBox x:Name="RvFollow" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Follow" Margin="8,0,0,0" VerticalAlignment="Center" FontSize="15"/>
                 </StackPanel>
               </Grid>
               <local:ReplayTimeline x:Name="RvTimeline" Height="54" Margin="0,12,0,0" Cursor="Hand"/>
@@ -474,12 +474,12 @@
               <Button DockPanel.Dock="Top" Style="{StaticResource Link}" HorizontalAlignment="Left" Click="RvBack_Click" Margin="0,0,0,14">
                 <StackPanel Orientation="Horizontal">
                   <Path Data="{StaticResource IcoBack}" Style="{StaticResource Ico}" Width="16" Height="13"/>
-                  <TextBlock Text="All replays" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Margin="10,0,0,0" FontSize="15"/>
+                  <TextBlock Text="All replays" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Margin="10,0,0,0" FontSize="16"/>
                 </StackPanel>
               </Button>
               <TextBlock DockPanel.Dock="Top" x:Name="RvTitle" Style="{StaticResource SectionTitle}" FontSize="28" TextWrapping="Wrap"/>
               <TextBlock DockPanel.Dock="Top" x:Name="RvSub" Style="{StaticResource Small}" Margin="0,4,0,12"/>
-              <TextBlock DockPanel.Dock="Bottom" x:Name="RvCredit" Style="{StaticResource Small}" FontSize="11.5" Foreground="{StaticResource Dim}" Margin="0,12,0,0"
+              <TextBlock DockPanel.Dock="Bottom" x:Name="RvCredit" Style="{StaticResource Small}" FontSize="12.5" Foreground="{StaticResource Dim}" Margin="0,12,0,0"
                          Text="Hitboxes, hurtboxes, positions and damage: as the game reported them during the match. Move names and frame data: Ultimate Frame Data / MetalMusicMan; Smash Ultimate hitboxes: Zeckemyro (ultimateframedata.com)."/>
               <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel x:Name="RvStats"/>
@@ -497,21 +497,21 @@
             <StackPanel>
               <Path Data="{StaticResource IcoGlobe}" Stroke="{StaticResource Accent}" StrokeThickness="1.6" Width="34" Height="34" Stretch="Uniform" HorizontalAlignment="Left"/>
               <TextBlock Text="SSBU Arena" FontSize="21" FontWeight="SemiBold" Margin="0,18,0,0"/>
-              <TextBlock Text="The project's home: where Arena is going." Style="{StaticResource Small}" FontSize="15" Margin="0,6,0,0"/>
+              <TextBlock Text="The project's home: where Arena is going." Style="{StaticResource Small}" FontSize="16" Margin="0,6,0,0"/>
             </StackPanel>
           </Button>
           <Button Style="{StaticResource CardButton}" Margin="8,0" Padding="28,26" Click="Recomp_Click">
             <StackPanel>
               <Path Data="{StaticResource IcoCode}" Stroke="{StaticResource Accent}" StrokeThickness="1.8" Width="36" Height="30" Stretch="Uniform" HorizontalAlignment="Left" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
               <TextBlock Text="ssbu-recomp" FontSize="21" FontWeight="SemiBold" Margin="0,18,0,0"/>
-              <TextBlock Text="The PC foundation Arena builds on." Style="{StaticResource Small}" FontSize="15" Margin="0,6,0,0"/>
+              <TextBlock Text="The PC foundation Arena builds on." Style="{StaticResource Small}" FontSize="16" Margin="0,6,0,0"/>
             </StackPanel>
           </Button>
           <Button Style="{StaticResource CardButton}" Margin="8,0" Padding="28,26" Click="FrameData_Click">
             <StackPanel>
               <Path Data="{StaticResource IcoFilm}" Stroke="{StaticResource Accent}" StrokeThickness="1.6" Width="36" Height="30" Stretch="Uniform" HorizontalAlignment="Left" StrokeLineJoin="Round"/>
               <TextBlock Text="Ultimate Frame Data" FontSize="21" FontWeight="SemiBold" Margin="0,18,0,0"/>
-              <TextBlock Text="Hitboxes and frame data of every fighter." Style="{StaticResource Small}" FontSize="15" Margin="0,6,0,0"/>
+              <TextBlock Text="Hitboxes and frame data of every fighter." Style="{StaticResource Small}" FontSize="16" Margin="0,6,0,0"/>
             </StackPanel>
           </Button>
         </UniformGrid>
@@ -526,7 +526,7 @@
             <Button DockPanel.Dock="Bottom" Style="{StaticResource Link}" Margin="16,0,0,4" HorizontalAlignment="Left" Click="Home_Click">
               <StackPanel Orientation="Horizontal">
                 <Path Data="{StaticResource IcoBack}" Style="{StaticResource Ico}" Width="16" Height="13"/>
-                <TextBlock Text="Back to home" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Margin="10,0,0,0" FontSize="15"/>
+                <TextBlock Text="Back to home" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Margin="10,0,0,0" FontSize="16"/>
               </StackPanel>
             </Button>
             <StackPanel>
@@ -550,20 +550,20 @@
               <!-- player -->
               <StackPanel x:Name="BoxPlayer">
                 <TextBlock Text="PLAYER" Style="{StaticResource SectionTitle}"/>
-                <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,26" Text="Your SSBU Arena account: its name is the one other players see online."/>
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,26" Text="Your SSBU Arena account: its name is the one other players see online."/>
                 <!-- signed in -->
                 <StackPanel x:Name="AccountBox">
                   <TextBlock Text="SIGNED IN AS" Style="{StaticResource FieldLabel}"/>
                   <TextBlock x:Name="AccountName" Style="{StaticResource SectionTitle}" FontSize="40" Foreground="{StaticResource Accent}"/>
-                  <TextBlock x:Name="AccountEmail" Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,0"/>
+                  <TextBlock x:Name="AccountEmail" Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,0"/>
                   <WrapPanel Margin="0,22,0,0">
-                    <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="ManageAccount_Click" FontSize="15">Manage account</Button>
-                    <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="SignOut_Click" FontSize="15">Sign out</Button>
+                    <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="ManageAccount_Click" FontSize="16">Manage account</Button>
+                    <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="SignOut_Click" FontSize="16">Sign out</Button>
                   </WrapPanel>
                 </StackPanel>
                 <!-- offline: a local name for local play only -->
                 <StackPanel x:Name="OfflineBox">
-                  <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,0,0,14" Text="Not signed in: online play is off. This name is used for local play only."/>
+                  <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,0,0,14" Text="Not signed in: online play is off. This name is used for local play only."/>
                   <TextBlock Text="LOCAL NAME" Style="{StaticResource FieldLabel}"/>
                   <TextBox x:Name="NameBox" Width="360" HorizontalAlignment="Left" MaxLength="32" TextChanged="Name_Changed"/>
                   <TextBlock x:Name="UidText" Style="{StaticResource Small}" Margin="0,10,0,0"/>
@@ -576,13 +576,13 @@
               <!-- online -->
               <StackPanel x:Name="BoxOnline" Visibility="Collapsed">
                 <TextBlock Text="ONLINE" Style="{StaticResource SectionTitle}"/>
-                <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24"
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,24"
                            Text="Everything goes through the Arena server: no player ever sees another player's address."/>
                 <CheckBox x:Name="OnlineBox" Style="{StaticResource Switch}" Content="Play online" Checked="Online_Changed" Unchecked="Online_Changed"/>
                 <StackPanel x:Name="OnlineFields" Margin="0,22,0,0">
                   <CheckBox x:Name="PingBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed">
                     <StackPanel>
-                      <TextBlock Text="Show ping on screen" FontSize="15"/>
+                      <TextBlock Text="Show ping on screen" FontSize="16"/>
                       <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Next to each player in every online match: green up to 60 ms, yellow up to 120, red above. Also in the game's menu."/>
                     </StackPanel>
                   </CheckBox>
@@ -606,34 +606,34 @@
               <!-- replays (MainWindow.Replays.cs) -->
               <StackPanel x:Name="BoxReplays" Visibility="Collapsed">
                 <TextBlock Text="REPLAYS" Style="{StaticResource SectionTitle}"/>
-                <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24"
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,24"
                            Text="The game records your matches frame by frame, for the Replays page. This PC keeps the last 100; older ones are deleted."/>
                 <TextBlock Text="RECORD" Style="{StaticResource FieldLabel}"/>
                 <CheckBox x:Name="RecMmBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,4,0,0">
-                  <StackPanel><TextBlock Text="Matchmaking" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Online Matchmaking (the server finds you an opponent), and matches by code."/></StackPanel>
+                  <StackPanel><TextBlock Text="Matchmaking" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Online Matchmaking (the server finds you an opponent), and matches by code."/></StackPanel>
                 </CheckBox>
                 <CheckBox x:Name="RecLdnBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
-                  <StackPanel><TextBlock Text="Online LDN" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Local Wireless rooms played over the Arena server."/></StackPanel>
+                  <StackPanel><TextBlock Text="Online LDN" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Local Wireless rooms played over the Arena server."/></StackPanel>
                 </CheckBox>
                 <CheckBox x:Name="RecArenaBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
-                  <StackPanel><TextBlock Text="Battle Arena" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Not available yet: the choice is kept for when it comes."/></StackPanel>
+                  <StackPanel><TextBlock Text="Battle Arena" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Not available yet: the choice is kept for when it comes."/></StackPanel>
                 </CheckBox>
                 <CheckBox x:Name="RecLocalBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
-                  <StackPanel><TextBlock Text="Local matches" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Smash on this PC (against friends or CPUs). They stay on this PC."/></StackPanel>
+                  <StackPanel><TextBlock Text="Local matches" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Smash on this PC (against friends or CPUs). They stay on this PC."/></StackPanel>
                 </CheckBox>
                 <TextBlock Text="ARENA SERVER" Style="{StaticResource FieldLabel}" Margin="0,26,0,6"/>
                 <CheckBox x:Name="RecUploadBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed">
-                  <StackPanel><TextBlock Text="Upload my online replays" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="560" Text="After each online match, with your account (signed in). Only you and your opponent can watch it, unless one of you makes it public (every signed-in player)."/></StackPanel>
+                  <StackPanel><TextBlock Text="Upload my online replays" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="560" Text="After each online match, with your account (signed in). Only you and your opponent can watch it, unless one of you makes it public (every signed-in player)."/></StackPanel>
                 </CheckBox>
                 <CheckBox x:Name="RecPublicBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
-                  <StackPanel><TextBlock Text="Make my uploaded replays public" FontSize="15"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="560" Text="Every signed-in player can find them by your name in Replays. Each replay can still be made private there."/></StackPanel>
+                  <StackPanel><TextBlock Text="Make my uploaded replays public" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="560" Text="Every signed-in player can find them by your name in Replays. Each replay can still be made private there."/></StackPanel>
                 </CheckBox>
               </StackPanel>
 
               <!-- video -->
               <StackPanel x:Name="BoxVideo" Visibility="Collapsed">
                 <TextBlock Text="VIDEO" Style="{StaticResource SectionTitle}"/>
-                <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24" Text="How the game's window looks."/>
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,24" Text="How the game's window looks."/>
                 <TextBlock Text="WINDOW" Style="{StaticResource FieldLabel}"/>
                 <ComboBox x:Name="WinBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Win_Changed">
                   <ComboBoxItem>Windowed</ComboBoxItem><ComboBoxItem>Borderless</ComboBoxItem><ComboBoxItem>Fullscreen</ComboBoxItem>
@@ -649,7 +649,7 @@
                 </ComboBox>
                 <CheckBox x:Name="FpsBox" Style="{StaticResource Switch}" Margin="0,26,0,0" Checked="Field_Changed" Unchecked="Field_Changed">
                   <StackPanel>
-                    <TextBlock Text="FPS counter" FontSize="15"/>
+                    <TextBlock Text="FPS counter" FontSize="16"/>
                     <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="A small counter at the top right of the game. Also in the game's menu (Home, or - and + held)."/>
                   </StackPanel>
                 </CheckBox>
@@ -658,7 +658,7 @@
               <!-- controllers -->
               <StackPanel x:Name="BoxPads" Visibility="Collapsed">
                 <TextBlock Text="CONTROLLERS" Style="{StaticResource SectionTitle}"/>
-                <TextBlock x:Name="PadsHelp" Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24" Text="Automatic: the first controller that connects."/>
+                <TextBlock x:Name="PadsHelp" Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,24" Text="Automatic: the first controller that connects."/>
                 <TextBlock Text="PLAYER 1" Style="{StaticResource FieldLabel}"/>
                 <ComboBox x:Name="P1Box" Width="360" HorizontalAlignment="Left" SelectionChanged="Field_Changed"/>
                 <TextBlock Text="PLAYER 2" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
@@ -668,71 +668,71 @@
                   <ComboBoxItem>Automatic</ComboBoxItem><ComboBoxItem>Player 1</ComboBoxItem><ComboBoxItem>Player 2</ComboBoxItem><ComboBoxItem>None</ComboBoxItem>
                 </ComboBox>
                 <TextBlock Style="{StaticResource Small}" Margin="0,8,0,0" Text="Automatic: the keyboard is the first free player after the controllers connected at start."/>
-                <Button Style="{StaticResource Outline}" Height="42" HorizontalAlignment="Left" Margin="0,24,0,0" Click="FindPads_Click" FontSize="15">Find controllers</Button>
+                <Button Style="{StaticResource Outline}" Height="42" HorizontalAlignment="Left" Margin="0,24,0,0" Click="FindPads_Click" FontSize="16">Find controllers</Button>
                 <TextBlock Text="BUTTONS" Style="{StaticResource FieldLabel}" Margin="0,30,0,6"/>
                 <TextBlock Style="{StaticResource Small}" Margin="0,0,0,14" TextWrapping="Wrap"
                            Text="Which button of your controller presses each button of the game (Xbox, PlayStation and other controllers). Smash's own Options > Controls can still change what each button does."/>
                 <ItemsControl x:Name="BtnMap">
                   <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="2"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                 </ItemsControl>
-                <Button Style="{StaticResource Outline}" Height="42" HorizontalAlignment="Left" Margin="0,16,0,0" Click="BtnReset_Click" FontSize="15">Back to the default buttons</Button>
+                <Button Style="{StaticResource Outline}" Height="42" HorizontalAlignment="Left" Margin="0,16,0,0" Click="BtnReset_Click" FontSize="16">Back to the default buttons</Button>
               </StackPanel>
 
               <!-- audio -->
               <StackPanel x:Name="BoxAudio" Visibility="Collapsed">
                 <TextBlock Text="AUDIO" Style="{StaticResource SectionTitle}"/>
-                <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24" Text="The game's volume when it starts; the menu in the game (Home, or - and + held) changes it while you play."/>
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,24" Text="The game's volume when it starts; the menu in the game (Home, or - and + held) changes it while you play."/>
                 <TextBlock Text="VOLUME" Style="{StaticResource FieldLabel}"/>
                 <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                   <Slider x:Name="VolSlider" Width="300" Minimum="0" Maximum="100" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True"
                           VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="Vol_Changed"/>
-                  <TextBlock x:Name="VolText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="15" Foreground="{StaticResource Text}"/>
+                  <TextBlock x:Name="VolText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
                 </StackPanel>
               </StackPanel>
 
               <!-- saves -->
               <StackPanel x:Name="BoxSaves" Visibility="Collapsed">
                 <TextBlock Text="SAVES" Style="{StaticResource SectionTitle}"/>
-                <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24" Text="Saves from Ryujinx, yuzu and similar, or from the console, work: the folder with save_data."/>
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,24" Text="Saves from Ryujinx, yuzu and similar, or from the console, work: the folder with save_data."/>
                 <TextBlock Text="FOLDER" Style="{StaticResource FieldLabel}"/>
-                <TextBlock x:Name="SavesPath" FontSize="15" TextWrapping="Wrap"/>
+                <TextBlock x:Name="SavesPath" FontSize="16" TextWrapping="Wrap"/>
                 <TextBlock x:Name="SavesState" Style="{StaticResource Small}" Margin="0,4,0,0"/>
                 <WrapPanel Margin="0,20,0,0">
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="OpenSaves_Click" FontSize="15">Open folder</Button>
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="ChangeSaves_Click" FontSize="15">Change folder</Button>
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Ryujinx_Click" FontSize="15">Import from Ryujinx</Button>
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="ImportFolder_Click" FontSize="15">Import from folder</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="OpenSaves_Click" FontSize="16">Open folder</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="ChangeSaves_Click" FontSize="16">Change folder</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Ryujinx_Click" FontSize="16">Import from Ryujinx</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="ImportFolder_Click" FontSize="16">Import from folder</Button>
                 </WrapPanel>
               </StackPanel>
 
               <!-- DLC -->
               <StackPanel x:Name="BoxDlc" Visibility="Collapsed">
                 <TextBlock Text="DLC" Style="{StaticResource SectionTitle}"/>
-                <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,24" Text="Your own DLC, from the file names of your dumps."/>
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,24" Text="Your own DLC, from the file names of your dumps."/>
                 <TextBlock x:Name="DlcText" FontSize="16"/>
                 <WrapPanel Margin="0,14,0,26">
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Dlc_Click" FontSize="15">Activate from your DLC folder</Button>
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="DlcOff_Click" FontSize="15">Turn off</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Dlc_Click" FontSize="16">Activate from your DLC folder</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="DlcOff_Click" FontSize="16">Turn off</Button>
                 </WrapPanel>
               </StackPanel>
 
               <!-- game files -->
               <StackPanel x:Name="BoxFiles" Visibility="Collapsed">
                 <TextBlock Text="GAME FILES" Style="{StaticResource SectionTitle}"/>
-                <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,4,0,20" Text="What the game needs before a match."/>
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,20" Text="What the game needs before a match."/>
                 <ItemsControl x:Name="CheckList"/>
                 <WrapPanel Margin="0,20,0,0">
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Recheck_Click" FontSize="15">Check again</Button>
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="PrepareNow_Click" FontSize="15">Prepare shaders now</Button>
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="DeleteShaders_Click" FontSize="15">Delete the shaders</Button>
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="OpenLog_Click" FontSize="15">Open game log</Button>
-                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Reinstall_Click" FontSize="15">Run the setup again</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Recheck_Click" FontSize="16">Check again</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="PrepareNow_Click" FontSize="16">Prepare shaders now</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="DeleteShaders_Click" FontSize="16">Delete the shaders</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="OpenLog_Click" FontSize="16">Open game log</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Reinstall_Click" FontSize="16">Run the setup again</Button>
                 </WrapPanel>
                 <TextBlock Text="CHECK AND REPAIR" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
                 <TextBlock Style="{StaticResource Small}" Margin="0,0,0,12" TextWrapping="Wrap"
                            Text="Every file of the game against the list made when it was built: a missing or damaged one is made again by the setup (only that one)."/>
                 <WrapPanel>
-                  <Button x:Name="FileCheckButton" Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="FileCheck_Click" FontSize="15">Check and repair</Button>
+                  <Button x:Name="FileCheckButton" Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="FileCheck_Click" FontSize="16">Check and repair</Button>
                   <CheckBox x:Name="FileCheckFull" Style="{StaticResource Switch}" VerticalAlignment="Center" Margin="6,0,0,10" Content="Full check (reads every file: a few minutes)"/>
                 </WrapPanel>
                 <TextBlock x:Name="FileCheckText" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,4,0,0"/>
@@ -748,13 +748,13 @@
       <Border VerticalAlignment="Top" Height="1" Background="{StaticResource LineSoft}"/>
       <StackPanel Orientation="Horizontal" Margin="26,0,0,0" VerticalAlignment="Center">
         <ContentControl x:Name="StatusMark" VerticalAlignment="Center"/>
-        <TextBlock x:Name="StatusText" Text="Checking game files..." FontSize="15" Foreground="#C9D3DD" Margin="14,0,0,0" VerticalAlignment="Center"/>
+        <TextBlock x:Name="StatusText" Text="Checking game files..." FontSize="16" Foreground="#C9D3DD" Margin="14,0,0,0" VerticalAlignment="Center"/>
       </StackPanel>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,28,0" VerticalAlignment="Center">
         <Ellipse x:Name="NetDot" Width="10" Height="10" Fill="{StaticResource Good}" VerticalAlignment="Center"/>
-        <TextBlock x:Name="NetText" Text="Offline" FontSize="15" Foreground="#C9D3DD" Margin="12,0,0,0" VerticalAlignment="Center"/>
+        <TextBlock x:Name="NetText" Text="Offline" FontSize="16" Foreground="#C9D3DD" Margin="12,0,0,0" VerticalAlignment="Center"/>
         <Border Width="1" Height="14" Background="{StaticResource LineSoft}" Margin="16,0,16,0" VerticalAlignment="Center"/>
-        <TextBlock x:Name="VersionText" FontSize="15" Foreground="{StaticResource Dim}" VerticalAlignment="Center" ToolTip="The SSBU Arena release this launcher belongs to"/>
+        <TextBlock x:Name="VersionText" FontSize="16" Foreground="{StaticResource Dim}" VerticalAlignment="Center" ToolTip="The SSBU Arena release this launcher belongs to"/>
       </StackPanel>
     </Grid>
 
@@ -777,7 +777,7 @@
           </StackPanel>
           <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,10,0,28" TextWrapping="Wrap"
                      Text="Your SSBU Arena account, the same as on ssbuarena.com. Online play needs it. You sign in on ssbuarena.com in your browser (it checks that you are not a bot), then come back here."/>
-          <TextBlock x:Name="LoginError" Foreground="{StaticResource Bad}" FontSize="14" TextWrapping="Wrap" Margin="0,0,0,12" Visibility="Collapsed"/>
+          <TextBlock x:Name="LoginError" Foreground="{StaticResource Bad}" FontSize="15" TextWrapping="Wrap" Margin="0,0,0,12" Visibility="Collapsed"/>
           <Button x:Name="LoginButton" Style="{StaticResource Primary}" Height="58" Margin="0,4,0,0" Click="Login_Click" AutomationProperties.Name="Sign in in the browser">
             <StackPanel Orientation="Horizontal">
               <TextBlock x:Name="LoginButtonText" Text="SIGN IN" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="28"
@@ -786,17 +786,17 @@
                     Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
             </StackPanel>
           </Button>
-          <TextBlock x:Name="LoginWaiting" Style="{StaticResource Small}" FontSize="14" Margin="0,12,0,0" TextWrapping="Wrap" Visibility="Collapsed"
+          <TextBlock x:Name="LoginWaiting" Style="{StaticResource Small}" FontSize="15" Margin="0,12,0,0" TextWrapping="Wrap" Visibility="Collapsed"
                      Text="Waiting for the browser: sign in there, then come back. Press the button again to open the page once more."/>
           <Grid Margin="0,20,0,0">
-            <Button Style="{StaticResource Link}" HorizontalAlignment="Left" Click="CreateAccount_Click" FontSize="15">
+            <Button Style="{StaticResource Link}" HorizontalAlignment="Left" Click="CreateAccount_Click" FontSize="16">
               <StackPanel Orientation="Horizontal">
                 <TextBlock Text="Create account" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
                 <Path Data="{StaticResource IcoExternal}" Style="{StaticResource Ico}" Width="14" Height="14" Margin="8,1,0,0"/>
               </StackPanel>
             </Button>
             <Button Style="{StaticResource Bare}" HorizontalAlignment="Right" Click="PlayOffline_Click" Foreground="{StaticResource Muted}">
-              <TextBlock Text="Play offline" FontSize="15" Foreground="{StaticResource Muted}" TextDecorations="Underline"/>
+              <TextBlock Text="Play offline" FontSize="16" Foreground="{StaticResource Muted}" TextDecorations="Underline"/>
             </Button>
           </Grid>
         </StackPanel>
@@ -821,11 +821,11 @@
               <TextBlock Text="SET UP SSBU ARENA" Style="{StaticResource SectionTitle}" FontSize="46" Margin="18,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-              <TextBlock x:Name="SetupStage1" Text="1  TOOLS" FontSize="14" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
+              <TextBlock x:Name="SetupStage1" Text="1  TOOLS" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
               <Border Width="34" Height="1" Background="{StaticResource Line}" Margin="14,0" VerticalAlignment="Center"/>
-              <TextBlock x:Name="SetupStage2" Text="2  GAME FILES" FontSize="14" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
+              <TextBlock x:Name="SetupStage2" Text="2  GAME FILES" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
               <Border Width="34" Height="1" Background="{StaticResource Line}" Margin="14,0" VerticalAlignment="Center"/>
-              <TextBlock x:Name="SetupStage3" Text="3  INSTALL" FontSize="14" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
+              <TextBlock x:Name="SetupStage3" Text="3  INSTALL" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
             </StackPanel>
           </Grid>
           <TextBlock x:Name="SetupIntro" Style="{StaticResource Small}" FontSize="16" Margin="0,12,0,26" TextWrapping="Wrap"/>
@@ -838,8 +838,8 @@
               <Border Grid.ColumnSpan="2" Background="{StaticResource Line}" CornerRadius="3"/>
               <Border x:Name="SetupBusyFill" Background="{StaticResource Accent}" CornerRadius="3"/>
             </Grid>
-            <TextBlock x:Name="SetupBusyDetail" Style="{StaticResource Small}" FontSize="15" Margin="0,14,0,0" TextWrapping="Wrap"/>
-            <TextBlock x:Name="SetupBusyLog" FontFamily="Consolas" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,8,0,0" TextTrimming="CharacterEllipsis"/>
+            <TextBlock x:Name="SetupBusyDetail" Style="{StaticResource Small}" FontSize="16" Margin="0,14,0,0" TextWrapping="Wrap"/>
+            <TextBlock x:Name="SetupBusyLog" FontFamily="Consolas" FontSize="14" Foreground="{StaticResource Dim}" Margin="0,8,0,0" TextTrimming="CharacterEllipsis"/>
             <StackPanel x:Name="SetupBusyButtons" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,26,0,0" Visibility="Collapsed">
               <Button Style="{StaticResource Primary}" Height="48" Click="SetupRetry_Click">
                 <TextBlock Text="TRY AGAIN" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="22" Margin="26,0"
@@ -854,8 +854,8 @@
             <StackPanel>
               <TextBlock Text="YOUR GAME" Style="{StaticResource FieldLabel}"/>
               <DockPanel>
-                <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="8,0,0,0" FontSize="14" Click="SetupGameFolder_Click" ToolTip="A dump folder (exefs and romfs inside)">Folder</Button>
-                <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="14" Click="SetupGameFile_Click">File</Button>
+                <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="8,0,0,0" FontSize="15" Click="SetupGameFolder_Click" ToolTip="A dump folder (exefs and romfs inside)">Folder</Button>
+                <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="15" Click="SetupGameFile_Click">File</Button>
                 <TextBox x:Name="SetupGame" Height="40" VerticalContentAlignment="Center" TextChanged="SetupField_Changed"/>
               </DockPanel>
               <StackPanel Orientation="Horizontal" Margin="0,7,0,0"><ContentControl x:Name="SetupGameMark"/><TextBlock x:Name="SetupGameText" Style="{StaticResource Small}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="640"/></StackPanel>
@@ -863,21 +863,21 @@
               <StackPanel x:Name="SetupPackageFields">
                 <TextBlock Text="UPDATE 13.0.4 OR 13.0.5" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
                 <DockPanel>
-                  <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="14" Click="SetupUpdateFile_Click">File</Button>
+                  <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="15" Click="SetupUpdateFile_Click">File</Button>
                   <TextBox x:Name="SetupUpdate" Height="40" VerticalContentAlignment="Center" TextChanged="SetupField_Changed"/>
                 </DockPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,7,0,0"><ContentControl x:Name="SetupUpdateMark"/><TextBlock x:Name="SetupUpdateText" Style="{StaticResource Small}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="640"/></StackPanel>
 
                 <TextBlock Text="PROD.KEYS" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
                 <DockPanel>
-                  <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="14" Click="SetupKeysFile_Click">File</Button>
+                  <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="15" Click="SetupKeysFile_Click">File</Button>
                   <TextBox x:Name="SetupKeys" Height="40" VerticalContentAlignment="Center" TextChanged="SetupField_Changed"/>
                 </DockPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,7,0,0"><ContentControl x:Name="SetupKeysMark"/><TextBlock x:Name="SetupKeysText" Style="{StaticResource Small}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="640"/></StackPanel>
 
                 <CheckBox x:Name="SetupDlc" Style="{StaticResource Switch}" Margin="0,20,0,0" Checked="SetupField_Changed" Unchecked="SetupField_Changed">
                   <StackPanel>
-                    <TextBlock x:Name="SetupDlcTitle" Text="Your DLC" FontSize="15"/>
+                    <TextBlock x:Name="SetupDlcTitle" Text="Your DLC" FontSize="16"/>
                     <TextBlock x:Name="SetupDlcText" Style="{StaticResource Small}" Margin="0,3,0,0"/>
                   </StackPanel>
                 </CheckBox>
@@ -885,14 +885,14 @@
 
               <TextBlock Text="FIRMWARE (OPTIONAL)" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
               <DockPanel>
-                <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="14" Click="SetupFirmware_Click">Folder</Button>
+                <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="15" Click="SetupFirmware_Click">Folder</Button>
                 <TextBox x:Name="SetupFirmware" Height="40" VerticalContentAlignment="Center" TextChanged="SetupField_Changed"/>
               </DockPanel>
               <StackPanel Orientation="Horizontal" Margin="0,7,0,0"><ContentControl x:Name="SetupFirmwareMark"/><TextBlock x:Name="SetupFirmwareText" Style="{StaticResource Small}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="640"/></StackPanel>
 
               <TextBlock Text="INSTALL LOCATION" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
               <DockPanel>
-                <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="14" Click="SetupLocation_Click">Folder</Button>
+                <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="15" Click="SetupLocation_Click">Folder</Button>
                 <TextBox x:Name="SetupLocation" Height="40" VerticalContentAlignment="Center" TextChanged="SetupLocation_Changed"/>
               </DockPanel>
             </StackPanel>
@@ -900,7 +900,7 @@
             <StackPanel Grid.Column="2">
               <TextBlock Text="THIS PC" Style="{StaticResource FieldLabel}"/>
               <ItemsControl x:Name="SetupPc" Margin="0,4,0,0"/>
-              <Button Style="{StaticResource Link}" HorizontalAlignment="Left" Margin="0,14,0,0" FontSize="14" Click="SetupRescan_Click">Look for the files again</Button>
+              <Button Style="{StaticResource Link}" HorizontalAlignment="Left" Margin="0,14,0,0" FontSize="15" Click="SetupRescan_Click">Look for the files again</Button>
             </StackPanel>
 
           </Grid>
@@ -922,24 +922,24 @@
                 <Border Background="{StaticResource Accent}" CornerRadius="3"/>
               </Grid>
               <Grid Margin="0,12,0,0">
-                <TextBlock x:Name="SetupRunDetail" Style="{StaticResource Small}" FontSize="15" TextTrimming="CharacterEllipsis" Margin="0,0,180,0"/>
-                <TextBlock x:Name="SetupEta" Style="{StaticResource Small}" FontSize="15" HorizontalAlignment="Right"/>
+                <TextBlock x:Name="SetupRunDetail" Style="{StaticResource Small}" FontSize="16" TextTrimming="CharacterEllipsis" Margin="0,0,180,0"/>
+                <TextBlock x:Name="SetupEta" Style="{StaticResource Small}" FontSize="16" HorizontalAlignment="Right"/>
               </Grid>
-              <TextBlock x:Name="SetupError" Foreground="{StaticResource Bad}" FontSize="15" TextWrapping="Wrap" Margin="0,16,0,0" Visibility="Collapsed"/>
-              <TextBox x:Name="SetupLog" Height="230" Margin="0,18,0,0" IsReadOnly="True" FontFamily="Consolas" FontSize="12" Foreground="{StaticResource Muted}"
+              <TextBlock x:Name="SetupError" Foreground="{StaticResource Bad}" FontSize="16" TextWrapping="Wrap" Margin="0,16,0,0" Visibility="Collapsed"/>
+              <TextBox x:Name="SetupLog" Height="230" Margin="0,18,0,0" IsReadOnly="True" FontFamily="Consolas" FontSize="13" Foreground="{StaticResource Muted}"
                        TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" VerticalContentAlignment="Top"/>
             </StackPanel>
           </Grid>
 
           <!-- the buttons of stages 2 and 3 -->
           <Grid x:Name="SetupFooter" Margin="0,30,0,0" Visibility="Collapsed">
-            <Button x:Name="SetupLogButton" Style="{StaticResource Link}" HorizontalAlignment="Left" VerticalAlignment="Center" FontSize="14" Click="SetupOpenLog_Click">Open the log</Button>
-            <Button x:Name="SetupExisting" Style="{StaticResource Link}" HorizontalAlignment="Left" VerticalAlignment="Center" FontSize="14" Click="SetupExisting_Click"
+            <Button x:Name="SetupLogButton" Style="{StaticResource Link}" HorizontalAlignment="Left" VerticalAlignment="Center" FontSize="15" Click="SetupOpenLog_Click">Open the log</Button>
+            <Button x:Name="SetupExisting" Style="{StaticResource Link}" HorizontalAlignment="Left" VerticalAlignment="Center" FontSize="15" Click="SetupExisting_Click"
                     ToolTip="A folder where SSBU Arena was already built: it has work\ssbu_native.exe and state.json (or a build folder with them inside)">Already built? Use that install folder</Button>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-              <Button x:Name="SetupBack" Style="{StaticResource Outline}" Height="52" MinWidth="130" FontSize="15" Margin="0,0,12,0" Click="SetupBack_Click">Change files</Button>
-              <Button x:Name="SetupTools" Style="{StaticResource Outline}" Height="52" MinWidth="130" FontSize="15" Margin="0,0,12,0" Click="SetupBuildTools_Click" Visibility="Collapsed">Install Build Tools</Button>
-              <Button x:Name="SetupStop" Style="{StaticResource Outline}" Height="52" MinWidth="130" FontSize="15" Margin="0,0,12,0" Click="SetupStop_Click">Stop</Button>
+              <Button x:Name="SetupBack" Style="{StaticResource Outline}" Height="52" MinWidth="130" FontSize="16" Margin="0,0,12,0" Click="SetupBack_Click">Change files</Button>
+              <Button x:Name="SetupTools" Style="{StaticResource Outline}" Height="52" MinWidth="130" FontSize="16" Margin="0,0,12,0" Click="SetupBuildTools_Click" Visibility="Collapsed">Install Build Tools</Button>
+              <Button x:Name="SetupStop" Style="{StaticResource Outline}" Height="52" MinWidth="130" FontSize="16" Margin="0,0,12,0" Click="SetupStop_Click">Stop</Button>
               <Button x:Name="SetupGo" Style="{StaticResource Primary}" Height="52" MinWidth="190" Click="SetupGo_Click">
                 <TextBlock x:Name="SetupGoText" Text="INSTALL" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="26" Margin="30,0"
                            Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>

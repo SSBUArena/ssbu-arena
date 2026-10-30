@@ -217,8 +217,8 @@ namespace Arena
                     var sp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 6) };
                     sp.Children.Add(Mark(p.Level == "ok" ? "ok" : p.Level == "warn" ? "warn" : "bad", 20));
                     var txt = new StackPanel { Margin = new Thickness(12, 0, 0, 0) };
-                    txt.Children.Add(new TextBlock { Text = p.What, FontSize = 14, FontWeight = FontWeights.SemiBold });
-                    txt.Children.Add(new TextBlock { Text = p.Msg, FontSize = 13, Foreground = Res("Muted"), TextWrapping = TextWrapping.Wrap, MaxWidth = 280 });
+                    txt.Children.Add(new TextBlock { Text = p.What, FontSize = 15, FontWeight = FontWeights.SemiBold });
+                    txt.Children.Add(new TextBlock { Text = p.Msg, FontSize = 14, Foreground = Res("Muted"), TextWrapping = TextWrapping.Wrap, MaxWidth = 280 });
                     sp.Children.Add(txt);
                     rows.Add(sp);
                     // the memory check suggests the compiler jobs this PC can hold ("--jobs 10")
@@ -386,7 +386,7 @@ namespace Arena
                 sp.Children.Add(new TextBlock
                 {
                     Text = s.Title + (s.State == "skip" ? "  (already done)" : s.Secs >= 1 && s.State == "done" ? "  " + Dur(s.Secs) : ""),
-                    FontSize = 15, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                    FontSize = 16, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
                     Foreground = s.State == "wait" ? Res("Dim") : s.State == "fail" ? Res("Bad") : Res("Text"),
                     FontWeight = s.State == "run" ? FontWeights.SemiBold : FontWeights.Normal,
                 });

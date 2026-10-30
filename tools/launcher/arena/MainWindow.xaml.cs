@@ -28,9 +28,9 @@ namespace Arena
         {
             InitializeComponent();
             VersionText.Text = "v" + Updater.Current.ToString(3);      // (0.2.11) the release in use, in the status bar after the online state
-            // (0.2.15) opens at the design size (1586 x 956 under the title bar) when the screen has room, else at 88 % of the work
-            // area in the same shape: at its smallest size (0.2.8) the page was scaled to 0.6 and its text was small and blurred
-            {   var wa = SystemParameters.WorkArea; double dw = 1586, dh = 956 + 36, k = Math.Min(1.0, Math.Min(wa.Width * 0.88 / dw, wa.Height * 0.88 / dh));
+            // (0.2.18) opens at the design size (DesignW x DesignH under the title bar: the page is not scaled, its text is sharp) when
+            // the screen has room, else at 88 % of the work area in the same shape
+            {   var wa = SystemParameters.WorkArea; double dw = DesignW, dh = DesignH + 36, k = Math.Min(1.0, Math.Min(wa.Width * 0.88 / dw, wa.Height * 0.88 / dh));
                 Width = Math.Max(MinWidth, Math.Round(dw * k)); Height = Math.Max(MinHeight, Math.Round(dh * k)); }
             // (0.2.8) resizing keeps the window's proportions (the page is laid out for one shape)
             SourceInitialized += (s0, e0) => System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(this).Handle).AddHook(KeepAspect);
@@ -76,15 +76,18 @@ namespace Arena
         }
 
         // ---------------------------------------------------------------- look
-        /// <summary>the page is designed at 1586 x 956 (the mockup's size under the title bar): scale it to the window,
-        /// the longer side keeps the extra room</summary>
+        /// <summary>(0.2.18) the size the page is laid out for under the title bar (was the mockup's 1586 x 956: at the window's
+        /// smallest size that scaled the text to 0.59, small and blurred; now 0.75)</summary>
+        const double DesignW = 1280, DesignH = 748;
+
+        /// <summary>the page scaled to the window, the longer side keeps the extra room</summary>
         void Rescale()
         {
             var host = (FrameworkElement)Scaled.Parent;
             double w = host.ActualWidth - Root.Margin.Left - Root.Margin.Right, h = host.ActualHeight - 36 - Root.Margin.Top - Root.Margin.Bottom;
             if (w <= 0 || h <= 0) return;
-            double z = Math.Max(0.55, Math.Min(1.6, Math.Min(w / 1586, h / 956)));
-            if (z > 1 && z < 1.08) z = 1;             // a little larger than the design size: exactly 1 (sharp text), the rest is margin
+            double z = Math.Max(0.55, Math.Min(2.0, Math.Min(w / DesignW, h / DesignH)));
+            if (z > 0.97 && z < 1.08) z = 1;          // about the design size: exactly 1 (sharp text), the rest is margin
             if (Math.Abs(z - Zoom.ScaleX) < 0.001) return;
             Zoom.ScaleX = Zoom.ScaleY = z;
             // at zoom 1 the glyphs snap to the pixel grid (Display); scaled, the layout stays even (Ideal)
@@ -223,7 +226,7 @@ namespace Arena
         {
             var sp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 5) };
             sp.Children.Add(Mark(kind ?? (ok ? "ok" : "bad"), 22));
-            sp.Children.Add(new TextBlock { Text = text, FontSize = 15, Margin = new Thickness(14, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, MaxWidth = 560 });
+            sp.Children.Add(new TextBlock { Text = text, FontSize = 16, Margin = new Thickness(14, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, MaxWidth = 560 });
             return sp;
         }
 
@@ -337,7 +340,7 @@ namespace Arena
             foreach (var b in Core.GameButtons)
             {
                 var sp = new StackPanel { Margin = new Thickness(0, 0, 18, 12) };
-                sp.Children.Add(new TextBlock { Text = b.Item2, FontSize = 14, Foreground = Res("Muted"), Margin = new Thickness(0, 0, 0, 4) });
+                sp.Children.Add(new TextBlock { Text = b.Item2, FontSize = 15, Foreground = Res("Muted"), Margin = new Thickness(0, 0, 0, 4) });
                 var cb = new ComboBox { Tag = b.Item1, Width = 330, HorizontalAlignment = HorizontalAlignment.Left, ItemsSource = Core.PadSources.Select(x => x.Item2).ToList() };
                 cb.SelectedIndex = Math.Max(0, Core.PadSources.FindIndex(x => x.Item1 == (Core.Buttons.TryGetValue(b.Item1, out var v) ? v : "")));
                 cb.SelectionChanged += (s, e) => Field_Changed(s, e);
@@ -521,11 +524,11 @@ namespace Arena
             DialogButtons.Children.Clear();
             foreach (var b in buttons)
             {
-                var btn = new Button { Content = b.label, Height = 44, Margin = new Thickness(10, 0, 0, 0), MinWidth = 110, FontSize = 15, Padding = new Thickness(22, 0, 22, 0) };
+                var btn = new Button { Content = b.label, Height = 44, Margin = new Thickness(10, 0, 0, 0), MinWidth = 110, FontSize = 16, Padding = new Thickness(22, 0, 22, 0) };
                 if (b.primary)
                 {
                     btn.Style = (Style)Application.Current.Resources["Primary"];
-                    btn.Content = new TextBlock { Text = b.label, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromRgb(6, 18, 29)), Margin = new Thickness(22, 0, 22, 0) };
+                    btn.Content = new TextBlock { Text = b.label, FontSize = 16, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromRgb(6, 18, 29)), Margin = new Thickness(22, 0, 22, 0) };
                 }
                 else btn.Style = (Style)Application.Current.Resources["Outline"];
                 var act = b.act;
