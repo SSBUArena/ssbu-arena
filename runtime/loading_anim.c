@@ -204,10 +204,14 @@ static void la_hold(int on) {
 /* wndproc: WM_PAINT and the timer while the animation runs; returns 1 when it handled the message */
 static int la_wndproc(HWND h, UINT msg, WPARAM w) {
     if (msg == LA_RESUME) {
-        if (!g_la_off && LA.ready && !LA.on) { LA.on = 1; SetTimer(h, LA_TIMER, 16, NULL); InvalidateRect(h, NULL, FALSE); }
+        if (!g_la_off && LA.ready && !LA.on) { LA.on = 1; SetTimer(h, LA_TIMER, 16, NULL); InvalidateRect(h, NULL, TRUE); }
         return 1;
     }
     if (!LA.on) return 0;
+    /* (0.2.17) the window's size changed: all of it erased and painted again. The class has no CS_HREDRAW / CS_VREDRAW, so the part
+     * that was there stays as it is, and a picture painted at the old corner stayed on screen under the new one ("two Kirbys"). The
+     * wndproc goes on with this message. (No clip region here: with CS_OWNDC it would stay on the window's DC.) */
+    if (msg == WM_SIZE) { InvalidateRect(h, NULL, TRUE); return 0; }
     if (msg == WM_TIMER && w == LA_TIMER) {
         if (g_la_off) { KillTimer(h, LA_TIMER); LA.on = 0; return 1; }
         InvalidateRect(h, LA.last.right ? &LA.last : NULL, FALSE);      /* the bottom-right part painted last (a resize repaints it all) */

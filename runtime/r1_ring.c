@@ -608,13 +608,22 @@ static int lb_take(uint32_t id) {
     return 1;
 }
 static LONG CALLBACK lb_veh(EXCEPTION_POINTERS *e) {
-    if (!g_lb_active || e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || e->ExceptionRecord->ExceptionInformation[0] != 1) return EXCEPTION_CONTINUE_SEARCH;
+    if (!g_lb_st || e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || e->ExceptionRecord->ExceptionInformation[0] != 1) return EXCEPTION_CONTINUE_SEARCH;
     uint32_t id;
     if (!lb_id((const uint8_t *)(uintptr_t)e->ExceptionRecord->ExceptionInformation[1], &id)) return EXCEPTION_CONTINUE_SEARCH;
     uint8_t s = g_lb_st[id];
-    if (s != LB_PENDING && s != LB_BUSY) return EXCEPTION_CONTINUE_SEARCH;
-    if (lb_take(id)) InterlockedIncrement64(&g_lb_by_fault);
-    return EXCEPTION_CONTINUE_EXECUTION;                  /* the write again, on a writable page */
+    if (g_lb_active && (s == LB_PENDING || s == LB_BUSY)) {
+        if (lb_take(id)) InterlockedIncrement64(&g_lb_by_fault);
+        return EXCEPTION_CONTINUE_EXECUTION;              /* the write again, on a writable page */
+    }
+    /* (0.2.17) the crashes of the render dispatch threads at the start of a fight (2 runs in 6): this thread's write faulted on a
+     * read-only page, a copy thread finished that page (or the whole pass) before this handler read its state, and the fault was
+     * taken for someone else's. A page that is writable by now: the write again. */
+    if (s == LB_DONE) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (VirtualQuery((const void *)(uintptr_t)e->ExceptionRecord->ExceptionInformation[1], &mi, sizeof mi) && mi.State == MEM_COMMIT && (mi.Protect & 0xff) == PAGE_READWRITE) return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 /* r1_wrote / r1_on_commit / r1_on_decommit: the pages of a range taken before the host or the kernel writes or drops them */
 static void lb_open(uint64_t a, uint64_t n) {

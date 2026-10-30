@@ -293,10 +293,26 @@ static int g_hs_quick;
  * "rule kind here differs"). The time limit comes from the rule struct copies competitive.c forces while the flag is on. */
 /* (Arena, fighter_sdk/replay_state.c) the kind of the match set up last: 0 a local one, 1 matchmaking (a quick match from the
  * lobby's search), 2 a Local Wireless room over the relay, 3 another online match (host / join) */
+/* (0.2.17) the fight scene's clean-up 0x710134c690 (when the result screen is over): for a room's mode it uses the object at
+ * 0x71052c3d08, which the scene's set-up makes only in such a mode; the set-up saw the local mode (below), so there is none and
+ * the game crashed reading it (x8 null, + 8). The clean-up of a room's match that was played as a local one runs as a local one. */
+static ImportFn g_orig_scene_clean;
+static volatile int g_room_clean;
+static void scene_clean_hook(Ctx *c, void *user) {
+    (void)user;
+    if (!g_room_clean) { g_orig_scene_clean(c); return; }
+    g_room_clean = 0;
+    uint8_t mode = rd8(MELEE_INFO);
+    wr8(MELEE_INFO, 0);
+    g_orig_scene_clean(c);
+    wr8(MELEE_INFO, mode);
+    printf("[rbnet] room match: the fight scene's clean-up ran as a local match's (melee mode %u kept for what follows)\n", mode); fflush(stdout);
+}
 void dm_room_restore(void) {
     if (g_room_mode_was < 0) return;
     printf("[rbnet] room match over: melee mode %u -> %d (the room's), %d player panel state(s) given back\n", rd8(MELEE_INFO), g_room_mode_was, g_room_saved_n);
     wr8(MELEE_INFO, (uint8_t)g_room_mode_was);
+    g_room_clean = 1;
     for (int i = 0; i < g_room_saved_n; i++) {
         uint64_t st = g_room_saved[i].st; if (!st) continue;
         for (int k = 0; k < 6; k++) wr8(st + 0x450 + (uint64_t)k, g_room_saved[i].b450[k]);
@@ -762,6 +778,7 @@ void debug_mode_init(void) {
     if (getenv("SSBU_DEBUG_MATCH") || g_dm_list || g_hs_wanted) {
         if (getenv("SSBU_DEBUG_MATCH")) parse_match(getenv("SSBU_DEBUG_MATCH"));
         printf("debug match: hook on the player record builder %llx: id %d\n", FN_PLAYER_RECORD, hook_install(FN_PLAYER_RECORD, match_player_hook, NULL, &g_orig_player_record));
+        if (g_hs_wanted) printf("debug match: hook on the fight scene's clean-up: id %d\n", hook_install(GA(0x710134c690ULL), scene_clean_hook, NULL, &g_orig_scene_clean));
         if (g_hs_wanted) printf("debug match: hook on the match controls set-up %llx: id %d (R3 lwr: Local Wireless room matches, each player's own controls)\n", (unsigned long long)GA(0x7101780440ULL), hook_install(GA(0x7101780440ULL), controls_fill_hook, NULL, &g_orig_controls_fill));
     }
     if (getenv("SSBU_DEBUG_RESEARCH")) printf("debug research: hook on the entry set-up: id %d\n", hook_install(FN_ENTRY_SETUP, research_entry_setup, NULL, &g_orig_entry_setup));

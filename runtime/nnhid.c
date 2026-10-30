@@ -577,6 +577,18 @@ static void fight_shot_poll(int ticks) {
     ff += ticks;
     if (ff >= list[next]) { long long rbn_now(void); printf("shot: fight frame %lld reached at poll %lld (wanted %d; rollback frame %lld): the next queued present is saved\n", ff, (long long)g_seq_polls, list[next], rbn_now()); fflush(stdout); nvn_front_shot_fight(list[next]); next++; }
 }
+/* (0.2.17) a room's rollback match is played as a local match, so on EACH PC its result screen waits for both players: player 1
+ * on port 1 and player 2 on port 2, where nobody is (the panel of player 2 stayed on "OK" for ever, the game never left it). From
+ * the match's end until the fighters' modules are unloaded (the screen is over) port 1's A also presses A on port 2: only A, only
+ * then, so no other player joins from port 2 (0.2.15 gave it the whole pad for 45 s, which made a player 3 in the next menus). */
+static volatile LONG64 g_room_after_t0;
+static uint64_t g_port1_buttons;
+void nnhid_room_after(int on) {
+    if (!on && !g_room_after_t0) return;
+    InterlockedExchange64(&g_room_after_t0, on ? (LONG64)GetTickCount64() : 0);
+    printf("hid: room match: port 1's A on port 2 too: %s\n", on ? "on (the result screen)" : "off"); fflush(stdout);
+}
+static int room_after_on(void) { LONG64 t = g_room_after_t0; return t && GetTickCount64() - (ULONGLONG)t < 300000; }
 /* kind: 0 = a style the controller is not reported in (zeroed), 1 = NpadFullKeyState (Pro Controller, 0x28 bytes), 2 = NpadGcState (0x30 bytes:
  * the same first 0x24 bytes, then analog trigger L at +0x24 and R at +0x28, 0..0x7fff; the layout follows libnx / suyu, NOT VERIFIED on a console). */
 static void fill_pad(uint64_t out, uint32_t id, int kind) {
@@ -639,6 +651,8 @@ static void fill_pad(uint64_t out, uint32_t id, int kind) {
     if (id == 0) record_or_replay(&buttons, &lx, &ly);
     if (id == 0 && r1_on()) r1_pad(&buttons, &lx, &ly, &rx, &ry);
     if (id == 1 && r1_on()) { void r1_pad_id(int id, uint64_t *b, int *lx, int *ly, int *rx, int *ry); r1_pad_id(1, &buttons, &lx, &ly, &rx, &ry); }      /* R3: port 2 in an online rollback match */
+    if (id == 0) g_port1_buttons = buttons;
+    if (id == 1 && room_after_on()) buttons |= g_port1_buttons & (1ull << BTN_A);      /* (0.2.17) the result screen's second player */
     if (lx < -STICK_MAX / 2) buttons |= 1ull << BTN_SL_LEFT;
     if (lx > STICK_MAX / 2) buttons |= 1ull << BTN_SL_RIGHT;
     if (ly > STICK_MAX / 2) buttons |= 1ull << BTN_SL_UP;
@@ -749,7 +763,7 @@ static void hid_SetSupportedNpadIdType(Ctx *c) {            /* (const NpadIdType
 /* (R3 lwr) a Local Wireless room rollback match: ports 1 / 2 are shown in the kind (GameCube or Pro) of each player's OWN
  * controller on its own PC (sent in the room handshake, debug_mode.c), so both PCs pick the same control set of each player */
 static int g_lwr_style_on, g_lwr_gc[2];
-void nnhid_lwr_styles(int on, int gc0, int gc1) { g_lwr_gc[0] = gc0; g_lwr_gc[1] = gc1; g_lwr_style_on = on; }
+void nnhid_lwr_styles(int on, int gc0, int gc1) { g_lwr_gc[0] = gc0; g_lwr_gc[1] = gc1; g_lwr_style_on = on; if (!on) nnhid_room_after(0); }
 int nnhid_native_gc0(void) { return sdl_on() && nnpad_is_gc(0) && nnpad_gc_native() && (g_supported_styles & STYLE_GC); }
 static uint32_t npad_style(uint32_t id) {
     if (!player_connected(id)) return 0;
