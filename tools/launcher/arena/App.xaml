@@ -64,13 +64,13 @@
       <Style x:Key="Kicker" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
-        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontSize" Value="14"/>
         <Setter Property="Foreground" Value="{StaticResource Text}"/>
         <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
       </Style>
       <Style x:Key="Small" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
-        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontSize" Value="14"/>
         <Setter Property="Foreground" Value="{StaticResource Muted}"/>
         <Setter Property="TextWrapping" Value="Wrap"/>
       </Style>
@@ -106,7 +106,7 @@
       <Style x:Key="Link" TargetType="Button" BasedOn="{StaticResource Bare}">
         <Setter Property="Foreground" Value="{StaticResource Accent}"/>
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
-        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontSize" Value="15"/>
         <Setter Property="FontWeight" Value="Medium"/>
         <Style.Triggers>
           <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{StaticResource AccentHover}"/></Trigger>
@@ -287,7 +287,7 @@
       <Style x:Key="SideTab" TargetType="RadioButton">
         <Setter Property="Foreground" Value="{StaticResource Muted}"/>
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontSize" Value="16"/>
         <Setter Property="FontWeight" Value="Medium"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
@@ -323,7 +323,7 @@
         <Setter Property="CaretBrush" Value="{StaticResource Accent}"/>
         <Setter Property="SelectionBrush" Value="{StaticResource AccentDeep}"/>
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontSize" Value="16"/>
         <Setter Property="Height" Value="40"/>
         <Setter Property="Padding" Value="10,0"/>
         <Setter Property="VerticalContentAlignment" Value="Center"/>
@@ -350,7 +350,7 @@
         <Setter Property="CaretBrush" Value="{StaticResource Accent}"/>
         <Setter Property="SelectionBrush" Value="{StaticResource AccentDeep}"/>
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontSize" Value="16"/>
         <Setter Property="Height" Value="40"/>
         <Setter Property="Padding" Value="10,0"/>
         <Setter Property="VerticalContentAlignment" Value="Center"/>
@@ -375,7 +375,7 @@
         <Setter Property="CaretBrush" Value="{StaticResource Accent}"/>
         <Setter Property="SelectionBrush" Value="{StaticResource AccentDeep}"/>
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontSize" Value="16"/>
         <Setter Property="VerticalContentAlignment" Value="Center"/>
         <Setter Property="Template">
           <Setter.Value>
@@ -388,7 +388,7 @@
       <Style x:Key="Switch" TargetType="CheckBox">
         <Setter Property="Foreground" Value="{StaticResource Text}"/>
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontSize" Value="16"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Template">
@@ -436,7 +436,7 @@
       <Style TargetType="ComboBox">
         <Setter Property="Foreground" Value="{StaticResource Text}"/>
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontSize" Value="16"/>
         <Setter Property="Height" Value="40"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Template">
@@ -469,7 +469,7 @@
       <Style TargetType="ComboBoxItem">
         <Setter Property="Foreground" Value="{StaticResource Text}"/>
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontSize" Value="16"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Template">
           <Setter.Value>
@@ -512,7 +512,7 @@
         <Setter Property="Foreground" Value="{StaticResource Muted}"/>
         <Setter Property="FontFamily" Value="{StaticResource Condensed}"/>
         <Setter Property="FontWeight" Value="Bold"/>
-        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontSize" Value="16"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Template">
@@ -542,7 +542,7 @@
       </Style>
       <Style x:Key="FieldLabel" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource Body}"/>
-        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontSize" Value="14"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Foreground" Value="{StaticResource Muted}"/>
         <Setter Property="Margin" Value="0,0,0,6"/>
