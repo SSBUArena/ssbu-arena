@@ -136,6 +136,26 @@ static void rv_hex(const char *tag, uint64_t a, int n) {
         printf("%s +%03x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x | %g %g %g %g\n", tag, k, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], f[0], f[1], f[2], f[3]);
     }
 }
+/* (0.2.17) a ground line may be gone: Steve's blocks (and other things the game makes during a match) have lines of their own, and
+ * when one goes its memory is used for something else. The getters read the line's two points through + 0x88 and + 0x90 and crashed
+ * on what was there (run steve2: 1 + 0x10). A line is used only while both are pointers to memory that can be read. One query per
+ * memory region and frame (g_rv_ok_frame): the lines live side by side. */
+static long long g_rv_ok_frame = -1; static uint64_t g_rv_ok_lo, g_rv_ok_hi;
+static int rv_ptr_ok(uint64_t a, size_t n, long long frame) {
+    if (a < 0x10000 || a >> 47 || (a & 3)) return 0;
+    if (frame == g_rv_ok_frame && a >= g_rv_ok_lo && a + n <= g_rv_ok_hi) return 1;
+    MEMORY_BASIC_INFORMATION mi;
+    if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return 0;
+    uint64_t lo = (uint64_t)(uintptr_t)mi.BaseAddress, hi = lo + mi.RegionSize;
+    if (a + n > hi) return 0;
+    g_rv_ok_frame = frame; g_rv_ok_lo = lo; g_rv_ok_hi = hi;
+    return 1;
+}
+static int rv_line_ok(uint64_t line, long long frame) {
+    if (!rv_ptr_ok(line, 0x98, frame)) return 0;
+    uint64_t p0 = rd64(line + 0x88), p1 = rd64(line + 0x90);
+    return rv_ptr_ok(p0, 0x20, frame) && rv_ptr_ok(p1, 0x20, frame);
+}
 static inline int16_t rv_q(float v) { float q = v * 16.0f; return (int16_t)(q > 32767 ? 32767 : q < -32768 ? -32768 : q); }
 
 /* ---------------------------------------------------------------- the match's fixed data (header) */
@@ -184,6 +204,7 @@ static void rv_head_start(void) {
 static void rv_add_line(Ctx *c, uint64_t line) {
     for (int i = 0; i < g_rv_nlines; i++) if (g_rv_lineptr[i] == line) return;
     if (g_rv_nlines >= RV_MAXLINE) return;
+    if (!rv_line_ok(line, g_rv_ok_frame)) return;      /* (0.2.17) */
     V128 l[3], r[3];
     rv_call(c, g_rvf.lpt, line, 0, 0, 0, l); rv_call(c, g_rvf.rpt, line, 0, 0, 0, r);
     RvLine *L = &g_rv_lines[g_rv_nlines];
@@ -472,7 +493,9 @@ static int rv_enabled(void) {
 static void rv_lines_now(Ctx *c, RvSlot *sl) {
     V128 l[3], r[3];
     sl->valid = 0;
+    static long long now; now++;
     for (int i = 0; i < g_rv_nlines; i++) {
+        if (!rv_line_ok(g_rv_lineptr[i], now)) { sl->lines[i][0] = sl->lines[i][1] = sl->lines[i][2] = sl->lines[i][3] = 0; continue; }      /* (0.2.17) the line is gone: not valid in this frame */
         rv_call(c, g_rvf.lpt, g_rv_lineptr[i], 0, 0, 0, l); rv_call(c, g_rvf.rpt, g_rv_lineptr[i], 0, 0, 0, r);
         sl->lines[i][0] = l[0].f[0]; sl->lines[i][1] = l[0].f[1]; sl->lines[i][2] = r[0].f[0]; sl->lines[i][3] = r[0].f[1];
         if (!g_rvf.valid || (rv_call(c, g_rvf.valid, g_rv_lineptr[i], 0, 0, 0, NULL) & 1)) sl->valid |= 1ull << i;
