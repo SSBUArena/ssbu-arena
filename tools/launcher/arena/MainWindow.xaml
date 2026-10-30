@@ -695,6 +695,15 @@
                 </ComboBox>
                 <TextBlock Style="{StaticResource Small}" Margin="0,8,0,0" Text="Automatic: the keyboard is the first free player after the controllers connected at start."/>
                 <Button Style="{StaticResource Outline}" Height="42" HorizontalAlignment="Left" Margin="0,24,0,0" Click="FindPads_Click" FontSize="16">Find controllers</Button>
+                <TextBlock Text="TEST" Style="{StaticResource FieldLabel}" Margin="0,30,0,6"/>
+                <TextBlock x:Name="PadLiveNote" Style="{StaticResource Small}" Margin="0,0,0,12" TextWrapping="Wrap"/>
+                <StackPanel x:Name="PadLiveList"/>
+                <TextBlock Text="STICK DEAD ZONE" Style="{StaticResource FieldLabel}" Margin="0,8,0,6"/>
+                <StackPanel Orientation="Horizontal">
+                  <Slider x:Name="DeadZoneSlider" Width="300" Minimum="0" Maximum="40" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="DeadZone_Changed"/>
+                  <TextBlock x:Name="DeadZoneText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
+                </StackPanel>
+                <TextBlock Style="{StaticResource Small}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="How far a stick moves before the game sees it. In the test the gray dot is the real stick, the blue one what the game gets, and the dashed circle the dead zone. Raise it if your character moves by itself. It applies in the game within a second, also while it runs. A value set for one controller in the game's menu wins over this one."/>
                 <TextBlock Text="BUTTONS" Style="{StaticResource FieldLabel}" Margin="0,30,0,6"/>
                 <TextBlock Style="{StaticResource Small}" Margin="0,0,0,14" TextWrapping="Wrap"
                            Text="Which button of your controller presses each button of the game (Xbox, PlayStation and other controllers). Smash's own Options > Controls can still change what each button does."/>

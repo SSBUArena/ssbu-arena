@@ -45,6 +45,7 @@ namespace Arena
             Closing += (s, e) =>
             {
                 SaveQuiet();
+                PadLiveStop();
                 if (prep != null) { prepCancelled = true; try { prep.Kill(); } catch { } }
                 if (setupProc != null) SetupStop_Click(null, null);      // install.py is resumable
             };
@@ -285,6 +286,7 @@ namespace Arena
             ShaderBox.SelectedIndex = Core.ShaderLoad;
             FpsBox.IsChecked = Core.Fps;
             KbBox.SelectedIndex = Core.Keyboard;
+            DeadZoneSlider.Value = Math.Round(Core.DeadZone * 100); DeadZoneText.Text = (int)DeadZoneSlider.Value + " %";
             VolSlider.Value = Math.Max(0, Math.Min(100, Core.Volume)); VolText.Text = (int)VolSlider.Value + " %";      // (0.2.16) steps of 1
             filledSize = SizeBox.SelectedIndex; filledVol = (int)VolSlider.Value;
             FillButtons();
@@ -463,7 +465,8 @@ namespace Arena
         void ShowPage(UIElement page)
         {
             foreach (var p in new UIElement[] { PageHome, PageReplays, PageCommunity, PageChanges, PageSettings }) p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
-            if (page != PageSettings) SaveQuiet();
+            if (page != PageSettings) { SaveQuiet(); PadLiveStop(); }
+            else if (SecPads.IsChecked == true) PadLiveStart();
         }
 
         void Tab_Checked(object sender, RoutedEventArgs e)
@@ -479,6 +482,7 @@ namespace Arena
             if (BoxPlayer == null) return;
             var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles } };
             foreach (var kv in map) kv.Value.Visibility = kv.Key == sender ? Visibility.Visible : Visibility.Collapsed;
+            if (sender == SecPads && PageSettings.Visibility == Visibility.Visible) PadLiveStart(); else PadLiveStop();
         }
 
         void OpenSettings(RadioButton section)
@@ -945,6 +949,7 @@ namespace Arena
         void Start()
         {
             bool first = Core.FirstRun();
+            PadLiveStop();
             gameStarted = DateTime.UtcNow;
             try { game = Core.Launch(); }
             catch (Exception ex) { Show("Could not start the game", ex.Message, null, ("OK", null, true)); return; }

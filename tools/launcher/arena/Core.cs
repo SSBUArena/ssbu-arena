@@ -6,6 +6,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -76,6 +77,7 @@ namespace Arena
         public static int Aspect, WindowMode, Keyboard;
         public static string WindowSize = "1280x720";
         public static int Volume = 100;
+        public static double DeadZone = 0.10;                             // (0.2.20) controllers.ini [general] deadzone
         public static int ShaderLoad;                                     // (0.2.19) launcher.ini shader_load: 0 automatic, 1 all at the start, 2 per match (graphics.ini shader_load)
         public static bool CrashReports = true;                           // (0.2.18) launcher.ini crash_reports (CrashReport.cs)
         public static int InputDelay;                                     // (0.2.14) launcher.ini input_delay: 0 automatic, 1..5 frames (SSBU_RB_NET_DELAY)
@@ -174,6 +176,7 @@ namespace Arena
                 if (kv.Key.StartsWith("map.") && DefaultButtons.ContainsKey(kv.Key.Substring(4).ToUpperInvariant()) && PadSources.Any(x => x.Item1 == kv.Value.Trim().ToLowerInvariant()))
                     Buttons[kv.Key.Substring(4).ToUpperInvariant()] = kv.Value.Trim().ToLowerInvariant();
             var P = ReadIni(PadIni);
+            { var gen = ReadIniSection(PadIni, "general"); if (gen.TryGetValue("deadzone", out var dz) && double.TryParse(dz, NumberStyles.Float, CultureInfo.InvariantCulture, out var dzv)) DeadZone = Math.Max(0, Math.Min(0.4, dzv)); }
             Player1 = (Get(P, "player1") ?? "auto").ToLowerInvariant();
             Player2 = (Get(P, "player2") ?? "auto").ToLowerInvariant();
             string kb = Get(P, "player");
@@ -223,6 +226,9 @@ namespace Arena
             if (m.Success) { gfx["width"] = m.Groups[1].Value; gfx["height"] = m.Groups[2].Value; }
             return gfx;
         }
+
+        /// <summary>(0.2.20) the game reloads controllers.ini within a second</summary>
+        public static void SaveDeadZone() { SetIniValues(PadIni, "general", new Dictionary<string, string> { { "deadzone", DeadZone.ToString("0.00", CultureInfo.InvariantCulture) } }); }
 
         public static void Save()
         {
