@@ -667,6 +667,11 @@
                 <ComboBox x:Name="AspectBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
                   <ComboBoxItem>16:9 (black bars)</ComboBoxItem><ComboBoxItem>Stretched (fill)</ComboBoxItem>
                 </ComboBox>
+                <TextBlock Text="SHADER LOADING" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
+                <ComboBox x:Name="ShaderBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
+                  <ComboBoxItem>Automatic (from your RAM)</ComboBoxItem><ComboBoxItem>All at the start (more RAM)</ComboBoxItem><ComboBoxItem>For each match (less RAM)</ComboBoxItem>
+                </ComboBox>
+                <TextBlock Style="{StaticResource Small}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="For each match: only the shaders of the match's fighters and stage are loaded, as it loads. About 3 GB less RAM, and a short pause on the loading screen. Automatic: for each match on a PC with 16 GB of RAM or less. Used from the next start of the game."/>
                 <CheckBox x:Name="FpsBox" Style="{StaticResource Switch}" Margin="0,26,0,0" Checked="Field_Changed" Unchecked="Field_Changed">
                   <StackPanel>
                     <TextBlock Text="FPS counter" FontSize="16"/>
