@@ -69,6 +69,7 @@
         <RadioButton x:Name="TabHome" Style="{StaticResource NavTab}" Content="Home" IsChecked="True" Checked="Tab_Checked"/>
         <RadioButton x:Name="TabReplays" Style="{StaticResource NavTab}" Content="Replays" Checked="Tab_Checked"/>
         <RadioButton x:Name="TabCommunity" Style="{StaticResource NavTab}" Content="Community" Checked="Tab_Checked"/>
+        <RadioButton x:Name="TabChanges" Style="{StaticResource NavTab}" Content="What's new" Checked="Tab_Checked"/>
         <RadioButton x:Name="TabSettings" Style="{StaticResource NavTab}" Content="Settings" Checked="Tab_Checked" Visibility="Collapsed"/>
       </StackPanel>
       <Button x:Name="GearButton" Style="{StaticResource IconButton}" HorizontalAlignment="Right" VerticalAlignment="Center" Padding="8" Click="Gear_Click" ToolTip="Settings">
@@ -490,6 +491,19 @@
       </Grid>
 
       <!-- ============================================================ COMMUNITY -->
+      <!-- (0.2.18) the changes of each version: the website's /changelog.json (MainWindow.Changelog.cs) -->
+      <Grid x:Name="PageChanges" Visibility="Collapsed">
+        <Border Style="{StaticResource Panel}" Padding="34,28">
+          <DockPanel>
+            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,14">
+              <TextBlock Text="WHAT'S NEW" Style="{StaticResource SectionTitle}" FontSize="40"/>
+              <TextBlock x:Name="ChangesNote" Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,0" Text="Every version of SSBU Arena and what it brought."/>
+            </StackPanel>
+            <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="ChangesList" Margin="0,0,16,0"/></ScrollViewer>
+          </DockPanel>
+        </Border>
+      </Grid>
+
       <Grid x:Name="PageCommunity" Visibility="Collapsed">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <UniformGrid Grid.Row="0" Columns="3" Margin="-8,0,-8,0">
@@ -589,7 +603,7 @@
                   <CheckBox x:Name="CrashBox" Style="{StaticResource Switch}" Margin="0,16,0,0" Checked="Field_Changed" Unchecked="Field_Changed">
                     <StackPanel>
                       <TextBlock Text="Send crash reports" FontSize="16"/>
-                      <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="620" Text="When the game crashes and you are signed in, its log goes to the Arena server to help fix it: your account, game version, graphics card and Windows version. Your user and PC names, folders and addresses are removed first."/>
+                      <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="When the game crashes and you are signed in, its log goes to the Arena server to help fix it: your account, game version, graphics card and Windows version. Your user and PC names, folders and addresses are removed first."/>
                     </StackPanel>
                   </CheckBox>
                   <TextBlock Text="INPUT DELAY" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>

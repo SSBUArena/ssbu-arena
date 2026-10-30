@@ -46,7 +46,7 @@ namespace Arena
         public static bool Installed => Core.Repo != null;
         static string Python => Core.Repo == null ? null : Path.Combine(Core.Repo, @"deps\python\python.exe");
 
-        static byte[] Get(string url, string accept = null, int timeoutMs = 15000)
+        internal static byte[] Get(string url, string accept = null, int timeoutMs = 15000)
         {
             var rq = WebRequest.Create(url);              // https, or file:// (SSBU_ARENA_RELEASE)
             rq.Timeout = timeoutMs;
