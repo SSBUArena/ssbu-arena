@@ -108,7 +108,9 @@ namespace Arena
             catch { return null; }
         }
 
-        public static bool GameOutdated(Release r) => r?.Commit != null && Installed && !DevCopy && InstalledCommit() != r.Commit;
+        // (0.2.23) update.py writes the commit before the build: an update that stopped after it (a file in use) looked done and the old game stayed
+        static string UpdatePending => Path.Combine(Core.Repo, @"build\update_pending.txt");
+        public static bool GameOutdated(Release r) => r?.Commit != null && Installed && !DevCopy && (InstalledCommit() != r.Commit || File.Exists(UpdatePending));
 
         /// <summary>what the update check found and did, in build\launcher_update.log (the last start's only)</summary>
         public static void Log(string s)
@@ -187,11 +189,12 @@ namespace Arena
             var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
             string log = Path.Combine(Core.Repo, @"build\update_last.log");
             Directory.CreateDirectory(Path.GetDirectoryName(log));
+            if (dry == "") File.WriteAllText(UpdatePending, "an update of the game began and has not ended well yet\n");
             var w = new StreamWriter(log, false, Encoding.UTF8) { AutoFlush = true };
             DataReceivedEventHandler on = (s, e) => { if (e.Data == null) return; lock (w) w.WriteLine(e.Data); line(e.Data); };
             p.OutputDataReceived += on;
             p.ErrorDataReceived += on;
-            p.Exited += (s, e) => { p.WaitForExit(); lock (w) w.Dispose(); exited(p.ExitCode); };
+            p.Exited += (s, e) => { p.WaitForExit(); lock (w) w.Dispose(); if (p.ExitCode == 0 && dry == "") try { File.Delete(UpdatePending); } catch { } exited(p.ExitCode); };
             p.Start();
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
