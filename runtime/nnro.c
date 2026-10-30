@@ -789,6 +789,7 @@ static void ro_UnloadModule(Ctx *c) {            /* (Module *) */
     ReleaseSRWLockExclusive(&g_ro_lock);
     wr32(g + 8, 0);
     printf("nn::ro::UnloadModule: %s\n", m->info->name);
+    { void nnhid_room_after(int on); if (!strncmp(m->info->name, "lua2cpp_", 8)) nnhid_room_after(0); }      /* (0.2.17) a fighter module unloaded: the result screen is over */
     trace_printf("nn::ro::UnloadModule: %s\n", m->info->name);
 }
 

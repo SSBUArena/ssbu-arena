@@ -493,7 +493,8 @@ static void rbg_fight_off(void) {
     if (g_rbg_in_match == 1) { rbg_report(); r1_ring_let_go(); if (g_rg_ready) r1_ring_release(); g_rbg_rebase = 1; }
     else if (g_rbg_in_match == 3) LOG("r1: RB NET: the Local Wireless room fight is over\n");
     else LOG("r1: RB NET: the match that was not agreed is over after %.1f s (player 1 walked off)\n", (now_ms() - g_rbg_quit_t0) / 1000.0);
-    {   void dm_room_restore(void); dm_room_restore(); }      /* (0.2.15) a room's match: the room's mode and panel states back (debug_mode.c) */
+    if (g_rbg_in_match == 1 && rbn_room_rollback()) { void nnhid_room_after(int on); nnhid_room_after(1); }      /* (0.2.17) the result screen's second player (nnhid.c) */
+    if (g_rbg_in_match == 1) { void dm_room_restore(void); dm_room_restore(); }      /* (0.2.17) a room's match: the room's mode and panel states back (debug_mode.c); not at the end of the waiting-stage fight, which comes after the match's set-up (0.2.16 gave them back before the match) */
     if (g_rg_nomem == 1) g_rg_nomem = 0;                /* (hs13) nothing was kept: the next match tries the ring again */
     g_rbg_noring = 0;
     LOG("r1: RB NET: match %d over: ring emptied, session reset for the next match\n", rbn_match_number());
