@@ -164,6 +164,60 @@ def label(info):
     return s + (', ...' if len(info['names']) > 4 else '')
 
 
+# (0.2.20) the fog of the stage's render parameters (render/*.prc), as "path of the float in the file": with the background gone it
+# turned everything behind the stage white. Black here: the "off" background is black. Found by trying them on Battlefield (run bg3).
+FOG_OFF = {'10dcd9f838.101d41b76', '10dcd9f838.16c09ff9d', '10dcd9f838.171beeff9',
+           'b45840531.101d41b76', 'b45840531.16c09ff9d', 'b45840531.171beeff9',
+           'e1b3ef638.16b643b84', 'ed3deb9b1.f09c31ed4'}
+
+
+def prc_zero(data, wanted):
+    """the floats at these paths of a paracobn file set to 0 (same size); how many were found"""
+    d = bytearray(data)
+    if d[:8] != b'paracobn':
+        return d, 0
+    hs, rs = struct.unpack_from('<II', d, 8)
+    hashes = [struct.unpack_from('<Q', d, 16 + i * 8)[0] & M40 for i in range(hs // 8)]
+    base, pb, found = 16 + hs, 16 + hs + rs, [0]
+
+    def walk(p, pre):
+        t = d[pb + p]
+        if t == 12:
+            n, ref = struct.unpack_from('<II', d, pb + p + 1)
+            for i in range(n):
+                h, off = struct.unpack_from('<II', d, base + ref + i * 8)
+                walk(p + off, (pre + '.' if pre else '') + '%x' % hashes[h])
+        elif t == 11:
+            n = struct.unpack_from('<I', d, pb + p + 1)[0]
+            for i in range(n):
+                walk(p + struct.unpack_from('<I', d, pb + p + 5 + i * 4)[0], pre + '[%d]' % i)
+        elif t == 8 and pre in wanted:
+            struct.pack_into('<f', d, pb + p + 1, 0.0)
+            found[0] += 1
+    walk(0, '')
+    return d, found[0]
+
+
+def fog_off(A, tree, stage, out):
+    top = tree.dirinfo(tree.dirs[hash40('stage/%s/normal' % stage)])
+    render = next((c for c in tree.children(top) if c['name'] == hash40('render')), None)
+    if render is None:
+        return 0
+    n = 0
+    for f in tree.files(render):
+        if f['ext'] != 'prc' or path_hash(['stage', stage, 'normal', 'render', f['name']]) != f['path']:
+            continue
+        data, found = prc_zero(A.read(A.file_record(f['pi'])), FOG_OFF)
+        if not found:
+            continue
+        d = os.path.join(out, stage, 'off', 'stage', stage, 'normal', 'render')
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, '0x%010x.prc' % f['name']), 'wb') as fp:
+            fp.write(data)
+        n += found
+    return n
+
+
 def do_stage(A, tree, stage, out):
     top = tree.dirs.get(hash40('stage/%s/normal' % stage))
     if top is None:
@@ -218,6 +272,7 @@ def do_stage(A, tree, stage, out):
                 fp.write(blank_mesh(data[mesh['pi']]))
             n_off += 1
     os.makedirs(os.path.join(base, 'custom'), exist_ok=True)
+    print('%s: fog: %d values off' % (stage, fog_off(A, tree, stage, out)))
     with open(os.path.join(base, 'parti.txt'), 'w', encoding='utf-8') as fp:
         fp.write('Stage %s: parti del modello (stage/%s/normal/model/<cartella>)\n' % (stage, stage))
         fp.write('Classificazione %s.\n' % ('verificata in gioco' if stage in CHECKED else 'DA VERIFICARE in gioco (parti messe in scena dai giunti dello stage)'))
@@ -247,13 +302,14 @@ Per ogni stage:
   parti.txt   elenco delle parti del modello: "gioco" (piano e piattaforme: non si toccano) o "sfondo".
   original/   le parti di sfondo come le ha il gioco. Non vengono mai caricate da qui: sono la copia di
               riferimento da cui partire.
-  off/        le stesse mesh "svuotate" (tutti gli indici a zero: non si disegna niente). Generate.
+  off/        le stesse mesh "svuotate" (tutti gli indici a zero: non si disegna niente) e la nebbia spenta:
+              lo sfondo diventa nero. Generate.
   custom/     vuota. I file che metti qui sostituiscono quelli del gioco.
 
-Quale cartella usa il gioco: variabile SSBU_STAGE_BG all'avvio.
-  (non impostata) o original   il gioco com'e'
-  off                          sfondo spento: si vedono solo piano di gioco, piattaforme, personaggi, effetti
-  custom                       i tuoi file in custom/
+Quale cartella usa il gioco: launcher, Settings > Video > Stage background (vale dal prossimo avvio del gioco).
+  Original   il gioco com'e'
+  Black      sfondo spento e nero: si vedono solo piano di gioco, piattaforme, personaggi, effetti
+  Custom     i tuoi file in custom/
 
 Come sostituire un file:
   1. trova la parte in parti.txt (cartella 0x...; le mesh danno un'idea di cosa sia: sky, cloud, sun, ...)

@@ -671,6 +671,14 @@
                 <ComboBox x:Name="AspectBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
                   <ComboBoxItem>16:9 (black bars)</ComboBoxItem><ComboBoxItem>Stretched (fill)</ComboBoxItem>
                 </ComboBox>
+                <TextBlock Text="STAGE BACKGROUND" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
+                <StackPanel Orientation="Horizontal">
+                  <ComboBox x:Name="BgBox" Width="300" SelectionChanged="Bg_Changed">
+                    <ComboBoxItem>Original</ComboBoxItem><ComboBoxItem>Black (no background)</ComboBoxItem><ComboBoxItem>Custom (your files)</ComboBoxItem>
+                  </ComboBox>
+                  <Button x:Name="BgFolder" Style="{StaticResource Outline}" Height="38" Margin="10,0,0,0" Click="BgFolder_Click" FontSize="15">Open folder</Button>
+                </StackPanel>
+                <TextBlock x:Name="BgNote" Style="{StaticResource Small}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="On the six competitive stages. Only you see it: the other player keeps theirs, and online play is not affected. Custom: your files in the folder's custom\ (LEGGIMI.txt explains how). Used from the next start of the game."/>
                 <TextBlock Text="SHADER LOADING" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
                 <ComboBox x:Name="ShaderBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
                   <ComboBoxItem>Automatic (from your RAM)</ComboBoxItem><ComboBoxItem>All at the start (more RAM)</ComboBoxItem><ComboBoxItem>For each match (less RAM)</ComboBoxItem>
