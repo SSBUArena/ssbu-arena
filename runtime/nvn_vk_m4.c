@@ -119,11 +119,26 @@ static uint64_t ssrc_hb(const SSrc *o) {
     if (o->stage == 1 && RS_ON) h = fnv(h, "rs1", 3);      /* track O: the fragment stages of a run with an internal resolution scale are another translation (MxIn.screen_scale); at 1.0 the hash is the one it always was */
     return fnv(h, &ver, 4);
 }
+#include "nvn_vk_pack.inc"                         /* (0.2.21) the small files joined into one */
 static VkShaderModule module_from_spv(uint64_t h) {              /* any thread; NULL when the file is not there */
     char path[128];
     VkShaderModule mod = NULL;
-    snprintf(path, sizeof path, "%s/spv/%016llx.spv", vkc_dir(), (unsigned long long)h);
     LONG64 pt = g_pw_profile ? tk() : 0;           /* PR #33: SSBU_VK_PREWARM_PROFILE=1, history workers only */
+    size_t pn;
+    const uint32_t *pw = vkp_get(0x100, h, &pn);
+    if (pw) {
+        if (g_offline) return (VkShaderModule)(uintptr_t)1;
+        if (pn > 20 && pn % 4 == 0 && pw[0] == 0x07230203) {
+            LONG64 pm = g_pw_profile ? tk() : 0;
+            if (g_pw_profile) { g_pw_profile->spv_ticks += pm - pt; g_pw_profile->spvs++; g_pw_profile->bytes += (long)pn; }
+            VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            ci.codeSize = pn; ci.pCode = pw;
+            if (vkCreateShaderModule(V.device, &ci, NULL, &mod) != VK_SUCCESS) mod = NULL;
+            if (g_pw_profile) { g_pw_profile->module_ticks += tk() - pm; g_pw_profile->modules++; }
+            return mod;
+        }
+    }
+    snprintf(path, sizeof path, "%s/spv/%016llx.spv", vkc_dir(), (unsigned long long)h);
     FILE *fp = fopen(path, "rb");
     if (!fp) { if (g_pw_profile) { g_pw_profile->spv_ticks += tk() - pt; g_pw_profile->spvs++; } return NULL; }
     if (g_offline) { fclose(fp); return (VkShaderModule)(uintptr_t)1; }      /* --prepare-shaders: no device; the file being there is all that is asked */
@@ -162,6 +177,12 @@ static VkShaderModule module_from_glsl(int stage, const char *glsl, const char *
 }
 static int stage_rec_read(int s, uint64_t vh, StageRec *r) {
     char path[128];
+    size_t pn;
+    const void *pr = vkp_get(0x200u | (uint32_t)s, vh, &pn);
+    if (pr && pn == sizeof *r) {
+        memcpy(r, pr, sizeof *r);
+        if (r->magic == STAGEREC_MAGIC && r->stage == s && r->nsmp >= 0 && r->nsmp <= 64) return 1;
+    }
     snprintf(path, sizeof path, "%s/stage/%d_%016llx.st", vkc_dir(), s, (unsigned long long)vh);
     LONG64 pt = g_pw_profile ? tk() : 0;           /* PR #33: SSBU_VK_PREWARM_PROFILE=1, history workers only */
     FILE *fp = fopen(path, "rb");
@@ -204,8 +225,16 @@ static void vstage_build(VStage *v, const SSrc *src) {
     int s = v->stage, done = 0;
     char path[128];
     StageRec r;
+    size_t pn = 0;
+    const VarRec *pv = vkp_get(0x300u | (uint32_t)s, v->hb, &pn);
+    for (size_t pi = 0; pv && !done && pi < pn / sizeof *pv; pi++) {
+        VarRec e = pv[pi];
+        VkShaderModule mod;
+        if (e.magic != STAGEREC_MAGIC || e.fo != v->fo || !key_fits(s, v->key, e.key, e.dep, e.tex)) continue;
+        if (stage_rec_read(s, e.vh, &r) && (mod = module_from_spv(r.spv)) != NULL) { vstage_from_rec(v, &r, e.vh, mod); v->from_rec = 1; InterlockedIncrement64(&R.modules); done = 1; }
+    }
     snprintf(path, sizeof path, "%s/stage/%d_%016llx.var", vkc_dir(), s, (unsigned long long)v->hb);
-    FILE *fp = fopen(path, "rb");
+    FILE *fp = done ? NULL : fopen(path, "rb");
     if (fp) {
         VarRec e;
         while (!done && fread(&e, 1, sizeof e, fp) == sizeof e) {
@@ -1237,12 +1266,14 @@ static void m4_barrier(LONG64 frame, LONG64 draws) {
 static void variants_known(const SSrc *src, uint64_t hb) {
     char path[300];
     VarRec e[32];
-    int n, how;
+    int n = 0, how;
+    size_t pn = 0;
+    const VarRec *pv = vkp_get(0x300u | (uint32_t)src->stage, hb, &pn);
+    if (pv) { n = (int)(pn / sizeof *pv); if (n > 32) n = 32; memcpy(e, pv, (size_t)n * sizeof *pv); }
     snprintf(path, sizeof path, "%s/stage/%d_%016llx.var", vkc_dir(), src->stage, (unsigned long long)hb);
     FILE *fp = fopen(path, "rb");
-    if (!fp) return;
-    n = (int)fread(e, sizeof e[0], 32, fp);
-    fclose(fp);
+    if (fp) { n += (int)fread(e + n, sizeof e[0], (size_t)(32 - n), fp); fclose(fp); }
+    if (!n) return;
     for (int i = 0; i < n; i++) {
         if (e[i].magic != STAGEREC_MAGIC || !(e[i].key[0] | e[i].key[1] | e[i].key[2] | e[i].key[3] | e[i].fo)) continue;
         stage_ensure(src, hb, e[i].key, e[i].fo, &how);
@@ -1635,7 +1666,7 @@ static void prewarm_start(void) {
     if (getenv("SSBU_PREPARE_ONLY") && atoi(getenv("SSBU_PREPARE_ONLY"))) cache_wipe_stale();
     InitializeCriticalSection(&g_sh_lock); InitializeCriticalSection(&g_gpl_lock);
     InitializeConditionVariable(&g_sh_cv); InitializeConditionVariable(&g_jq_cv);
-    CreateDirectoryA(vkc_dir(), NULL); CreateDirectoryA(vkc_file("spv"), NULL); CreateDirectoryA(vkc_file("stage"), NULL);
+    CreateDirectoryA(vkc_dir(), NULL); CreateDirectoryA(vkc_file("spv"), NULL); CreateDirectoryA(vkc_file("stage"), NULL); vkp_open();
     if (getenv("SSBU_VK_CACHE")) printf("nvn_vk: cache folder %s (SSBU_VK_CACHE)\n", vkc_dir());
     {   HMODULE m = LoadLibraryA("ssbu_glslang.dll");
         g_glsl_to_spirv = m ? (void *)GetProcAddress(m, "ssbu_glsl_to_spirv") : NULL; g_spirv_free = m ? (void *)GetProcAddress(m, "ssbu_spirv_free") : NULL;
@@ -2512,7 +2543,7 @@ static DWORD WINAPI prep_main(void *arg) {
     printf("nvn_vk_prep: into the cache only: %lld stage variants (%lld read from a record of an earlier run, the others translated now), %lld stage libraries compiled and released, %lld met again in a later variation, %lld left to the game's own path (already handed over); worker time: %.0f s stages, %.0f s libraries; at most %d workers at a time (%d in a fight)\n",
            (long long)g_prep_stages, (long long)g_prep_fromrec, (long long)g_prep_libs, (long long)g_prep_dup, (long long)g_prep_had, (double)g_prep_tr_tk / (double)fq.QuadPart, (double)g_prep_lib_tk / (double)fq.QuadPart, g_prep_cap, g_prep_fight_cap);
     if (g_prep_loadall) g_prep_urgent = 0;
-    if (whole && g_prep_marked) { g_prep_state = 2; prep_line(g_prep_loadall ? "FINISHED: every container of the game's data is in memory (shader_load = start)" : "FINISHED (the containers kept in memory; the rest was prepared by an earlier run)"); }
+    if (whole && g_prep_marked) { g_prep_state = 2; vkp_after_load(); prep_line(g_prep_loadall ? "FINISHED: every container of the game's data is in memory (shader_load = start)" : "FINISHED (the containers kept in memory; the rest was prepared by an earlier run)"); }
     else if (whole) {
         g_prep_state = 2;
         prep_line("FINISHED: every stage of every container of the game's data is made");
@@ -2619,6 +2650,7 @@ static void prep_start(void) {
         printf("nvn_vk_prep: every container of the game's data was prepared for this GPU and driver by an earlier run (%s): %s (SSBU_VK_PREP=2 does everything again)\n", g_prep_marker,
                g_prep_loadall ? "shader_load = start: ALL of them are made into memory now, from their records, before the game's first frame" : g_prep_keep > 0 ? "only the container(s) kept in memory (SSBU_VK_PREP_KEEP) are made again, from their records" : "shader_load = loading: each is made at its loading screen");
         g_prep_marked = 1;
+        if (g_prep_loadall) vkp_prefetch();
         /* session 11: the thread still runs: it makes the INDEX (hashing, under a second), so that a container is announced
          * whole at its loading screen on every start; it queues nothing (before: no thread, so no index, on a marked start) */
     }
@@ -2668,7 +2700,7 @@ static void cache_wipe_stale(void) {
         return;
     }
     int a = wipe_glob("pipelines_*.bin"), b = wipe_glob("pipes.bin") + wipe_glob("pipes_novi.bin"), c = wipe_glob("prepared_*.txt") + wipe_glob("started_*.txt"),
-        d = wipe_glob("stage/*"), e = wipe_glob("spv/*");
+        d = wipe_glob("stage/*") + wipe_glob("shaders_*.pack"), e = wipe_glob("spv/*");
     printf("nvn_vk_prep: no marker of shader version %u%s here: older records removed before the preparation (%d pipeline caches, %d pipeline lists, %d markers, %d stage records, %d SPIR-V files)\n",
            MX_VK_VERSION, kv, a, b, c, d, e);
     fflush(stdout);
@@ -2691,7 +2723,7 @@ int nvn_vk_prepare_shaders(const char *dir) {
     g_offline = 1; g_game_tables = 0; g_cpredict = 0;
     InitializeCriticalSection(&g_sh_lock); InitializeCriticalSection(&g_gpl_lock);
     InitializeConditionVariable(&g_sh_cv); InitializeConditionVariable(&g_jq_cv);
-    CreateDirectoryA("../cache", NULL); CreateDirectoryA(vkc_dir(), NULL); CreateDirectoryA(vkc_file("spv"), NULL); CreateDirectoryA(vkc_file("stage"), NULL);
+    CreateDirectoryA("../cache", NULL); CreateDirectoryA(vkc_dir(), NULL); CreateDirectoryA(vkc_file("spv"), NULL); CreateDirectoryA(vkc_file("stage"), NULL); vkp_open();
     {   HMODULE m = LoadLibraryA("ssbu_glslang.dll");
         g_glsl_to_spirv = m ? (void *)GetProcAddress(m, "ssbu_glsl_to_spirv") : NULL; g_spirv_free = m ? (void *)GetProcAddress(m, "ssbu_spirv_free") : NULL;
         if (!g_glsl_to_spirv || !g_spirv_free) { printf("prepare-shaders: ssbu_glslang.dll cannot be loaded (build_glslang.bat makes it)\n"); return 2; }
