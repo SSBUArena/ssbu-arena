@@ -1525,6 +1525,8 @@ static LONG CALLBACK r1_veh(EXCEPTION_POINTERS *e) {
     { HMODULE m = NULL; char mn[MAX_PATH] = "?"; if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)(uintptr_t)e->ContextRecord->Rip, &m)) GetModuleFileNameA(m, mn, MAX_PATH);
       LOG("r1: CRASH module %s +%llx; rcx %llx rdx %llx; TEB fiber data %p; [rsp] %llx %llx %llx %llx\n", mn, (unsigned long long)(e->ContextRecord->Rip - (uint64_t)(uintptr_t)m), (unsigned long long)e->ContextRecord->Rcx, (unsigned long long)e->ContextRecord->Rdx, GetCurrentFiber(),
           (unsigned long long)((uint64_t *)(uintptr_t)g_veh_rsp)[0], (unsigned long long)((uint64_t *)(uintptr_t)g_veh_rsp)[1], (unsigned long long)((uint64_t *)(uintptr_t)g_veh_rsp)[2], (unsigned long long)((uint64_t *)(uintptr_t)g_veh_rsp)[3]); }
+    { MEMORY_BASIC_INFORMATION mi; memset(&mi, 0, sizeof mi); VirtualQuery((void *)(uintptr_t)e->ExceptionRecord->ExceptionInformation[1], &mi, sizeof mi);
+      LOG("r1: CRASH address: region %p size %llx state %lx protect %lx allocation base %p; window 1 %p + %llx\n", mi.BaseAddress, (unsigned long long)mi.RegionSize, (unsigned long)mi.State, (unsigned long)mi.Protect, mi.AllocationBase, (void *)g_win1, (unsigned long long)g_wn1); }
     os_r1_fibers(veh_fib_cb);
     if (!g_veh_hits) LOG("r1: CRASH rsp is on no fiber's host stack\n");
     return EXCEPTION_CONTINUE_SEARCH;
