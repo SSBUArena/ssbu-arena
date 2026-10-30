@@ -460,15 +460,16 @@ namespace Arena
         // ---------------------------------------------------------------- navigation
         void ShowPage(UIElement page)
         {
-            foreach (var p in new UIElement[] { PageHome, PageReplays, PageCommunity, PageSettings }) p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
+            foreach (var p in new UIElement[] { PageHome, PageReplays, PageCommunity, PageChanges, PageSettings }) p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
             if (page != PageSettings) SaveQuiet();
         }
 
         void Tab_Checked(object sender, RoutedEventArgs e)
         {
             if (PageHome == null) return;
-            ShowPage(sender == TabReplays ? PageReplays : sender == TabCommunity ? PageCommunity : sender == TabSettings ? (UIElement)PageSettings : PageHome);
+            ShowPage(sender == TabReplays ? PageReplays : sender == TabCommunity ? PageCommunity : sender == TabChanges ? PageChanges : sender == TabSettings ? (UIElement)PageSettings : PageHome);
             if (sender == TabReplays) ReplaysShown();
+            if (sender == TabChanges) ChangesShown();
         }
 
         void Section_Checked(object sender, RoutedEventArgs e)
@@ -493,6 +494,7 @@ namespace Arena
             var parts = args[i + 1].Split(':');
             if (parts[0] == "replays") TabReplays.IsChecked = true;
             else if (parts[0] == "community") TabCommunity.IsChecked = true;
+            else if (parts[0] == "changes") TabChanges.IsChecked = true;
             else if (parts[0] == "settings")
             {
                 var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles } };
