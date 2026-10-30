@@ -170,6 +170,7 @@ static DWORD WINAPI vkp_build_thread(LPVOID a) {
         if (!WriteFile(out, head, 8, &w, NULL) || !WriteFile(out, &pos, 8, &w, NULL) || !WriteFile(out, ix, k * (DWORD)sizeof *ix, &w, NULL) || w != k * sizeof *ix) bad = 1;
         free(ix);
     }
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);      /* (the last part at normal priority: at background priority, during a fight, it did not end in minutes) */
     FlushFileBuffers(out);
     CloseHandle(out);
     if (bad || !MoveFileExA(tmp, fin, MOVEFILE_REPLACE_EXISTING)) {
