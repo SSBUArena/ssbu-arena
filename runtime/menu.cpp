@@ -1836,13 +1836,35 @@ static int q_rep(int bit) {                        /* a d-pad direction: once at
     return 0;
 }
 static int q_volume(void) { int cur = nnaudio_volume(); return S.volume < 0 ? (cur >= 0 ? cur : 100) : S.volume; }
+static void q_set_volume(int v, int save) {
+    v = v < 0 ? 0 : v > 100 ? 100 : v;
+    S.volume = v; nnaudio_set_volume(v);
+    if (save) { char t[8]; snprintf(t, sizeof t, "%d", v); ini("volume", t); }
+}
+/* (0.2.20) left / right on the volume: 1 at the press, then faster the longer it is held: after 350 ms 10 a second, 60 a second
+ * after about 1.6 s. Saved at the press, twice a second while held and at the release. */
+static void q_volume_keys(float dt) {
+    static int dir;                                /* the direction held */
+    static ULONGLONG t0, saved;
+    static float acc;
+    int l = (g_q_held & BIT(B_LEFT)) || ImGui::IsKeyDown(ImGuiKey_LeftArrow), r = (g_q_held & BIT(B_RIGHT)) || ImGui::IsKeyDown(ImGuiKey_RightArrow);
+    int d = l == r ? 0 : l ? -1 : +1;
+    ULONGLONG now = GetTickCount64();
+    if (d != dir) {
+        if (dir) q_set_volume(q_volume(), 1);
+        dir = d; t0 = saved = now; acc = 0;
+        if (d) q_set_volume(q_volume() + d, 1);
+        return;
+    }
+    if (!d || now - t0 < 350) return;
+    float rate = 10.0f + 40.0f * (float)(now - t0 - 350) / 1000.0f;
+    acc += (rate > 60.0f ? 60.0f : rate) * dt;
+    int n = (int)acc;
+    if (n) { acc -= n; q_set_volume(q_volume() + d * n, now - saved >= 500); if (now - saved >= 500) saved = now; }
+}
 static void q_change(int row, int dir) {           /* dir -1 / +1: left / right; 0: A */
-    if (row == Q_VOLUME) {
-        int v = q_volume() + (dir ? dir : 1) * 10;
-        v = v < 0 ? 0 : v > 100 ? 100 : v;
-        S.volume = v; nnaudio_set_volume(v);
-        char t[8]; snprintf(t, sizeof t, "%d", v); ini("volume", t);
-    } else if (row == Q_WINDOW) {
+    if (row == Q_VOLUME) q_set_volume(q_volume() + (dir ? dir : 1), 1);
+    else if (row == Q_WINDOW) {
         int m = (display_window_mode() + (dir < 0 ? 2 : 1)) % 3;
         S.window = m; display_set_window_mode(m); ini("window", k_window[m]);
     } else if (row == Q_FPS) apply_stats(!S.stats);
@@ -1922,8 +1944,8 @@ static void draw_quick(void) {
     int lf = q_rep(B_LEFT) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow), rt = q_rep(B_RIGHT) || ImGui::IsKeyPressed(ImGuiKey_RightArrow);
     int a = (g_q_down & BIT(B_A)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false);
     if (up || dn) g_q_sel = (g_q_sel + (up ? Q_N - 1 : 1)) % Q_N;
-    if (lf) q_change(g_q_sel, -1);
-    if (rt) q_change(g_q_sel, +1);
+    if (g_q_sel == Q_VOLUME) q_volume_keys(io.DeltaTime);
+    else { if (lf) q_change(g_q_sel, -1); if (rt) q_change(g_q_sel, +1); }
     if (a) q_change(g_q_sel, 0);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     q_dim(dl, W, H);
