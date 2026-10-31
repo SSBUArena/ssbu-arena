@@ -777,6 +777,13 @@ static void fib_switch(Ctx *c) {
     DWORD tid = GetCurrentThreadId();
     if (next) obj(next)->tp = c->tpidr;               /* the thread block (errno, ...) belongs to the host thread, not to the fiber */
     fiber_set_cur(next);
+    /* (0.2.23) crash reports: a job's fiber object with no host fiber (SwitchToFiber(NULL)). A wrong object: said, and no switch */
+    if (next && !obj(next)->fiber) {
+        static volatile LONG said;
+        if (InterlockedIncrement(&said) <= 20) { printf("nn::os: SwitchToFiber to %llx, which has no host fiber (from %llx, caller %llx): stays on this one\n", (unsigned long long)next, (unsigned long long)self, (unsigned long long)c->x[30]); fflush(stdout); }
+        fiber_set_cur(self);
+        return;
+    }
     if (g_r1_keep_fibers) { if (self) { obj(self)->run_tid = 0; if (g_r1_fls_idx != 0xFFFFFFFF) { obj(self)->fls = FlsGetValue(g_r1_fls_idx); obj(self)->fls_fiber = GetCurrentFiber(); } } if (next) obj(next)->run_tid = GetCurrentThreadId(); }
     SwitchToFiber(next ? obj(next)->fiber : own);
     if (!self && GetCurrentThreadId() != tid) {        /* a thread's own context must come back on its own thread (see fiber_cur) */
