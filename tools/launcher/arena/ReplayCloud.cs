@@ -80,7 +80,7 @@ namespace Arena
             if (h.Kind == 0 || h.MatchId == 0) throw new Exception("Only online matches go to the Arena server.");
             if (h.Codec == 0) { ReplayState.Pack(h.Path); h = ReplayState.ReadHeader(h.Path); }
             byte[] data = File.ReadAllBytes(h.Path);
-            if (data.Length > 4 * 1024 * 1024) throw new Exception("This replay is too large for the server (4 MB).");
+            if (data.Length > 6 * 1024 * 1024) throw new Exception("This replay is too large for the server (6 MB).");
             string name = "state/" + Account.Me.Id + "/" + DateTimeOffset.FromUnixTimeSeconds(h.UnixTime).UtcDateTime.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture)
                           + "-" + h.MatchId.ToString("x8") + ".ssbv";
             var rq = (HttpWebRequest)WebRequest.Create(Account.Url + "/storage/v1/object/replays/" + name);
