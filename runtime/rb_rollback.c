@@ -225,7 +225,8 @@ static void rbg_step_body(Ctx *c) {
         {   /* start barrier: both games begin frame 1 together (the one that finished loading first waits here, at frame 0,
              * instead of stalling seconds at frame 8 with states it might have to roll back to: rnh2 / rnh3 hung after that) */
             double tb = now_ms(), lastx = 0;
-            while (!rbn_peer_started() && now_ms() - tb < 120000) {
+            /* (0.2.23) not 120 s of a still picture: the other game may be slower to load, but it is given up when it is silent (it crashed) */
+            while (!rbn_peer_started() && now_ms() - tb < 45000 && !rbn_peer_gone()) {
                 if (now_ms() - lastx >= 50) { lastx = now_ms(); rbn_hello(); }
                 rbn_drain(i);
                 rbg_wait_until(now_ms() + 1.0);
