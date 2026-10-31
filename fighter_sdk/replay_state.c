@@ -20,13 +20,19 @@
  *   SSBU_REPLAY_STATE_DIR=<dir>   where the files go (default <SSBU_USERDATA>\replays)
  *   SSBU_RV_RESEARCH=1            (test only) print the raw values the recorder reads, every 2 frames
  *   SSBU_RV_TIMING=1              (test only) the main-thread cost of the recorder, printed at each match end
+ *   SSBU_RV_NO_OBJECTS=1          (test only) the frames have no objects: the cost of the recorder without them
  *
  * File (.ssbv, little endian): header 0x200 bytes (RvHead), then the body (codec 0 raw; the launcher may store it deflated,
  * codec 1): RvLine[nlines] (the stage lines: found by rays at the match start and every half second after), then per final
- * frame: u32 frame, u8 fighter mask, u8 moved lines, u16 0, u64 the lines that are on (app::ground::is_valid) at this frame,
+ * frame: u32 frame, u8 fighter mask, u8 moved lines, u16 objects (version 2: 0), u64 the lines that are on (app::ground::is_valid) at this frame,
  * [moved * {u16 line, u16 0, float x1 y1 x2 y2}], then per fighter in the mask an RvFig followed by
- * its RvHit[nhit] and RvHurt[nhurt]. Positions of hit / hurt boxes in 1/16 game units. */
+ * its RvHit[nhit] and RvHurt[nhurt], then (version 3) per object an RvObj followed by its RvHit[nhit]. Positions of hit / hurt boxes in 1/16 game units.
+ *
+ * Objects (version 3): the game's weapons, enemies, gimmicks and items that are active at the start of the frame, read from the battle
+ * object tables (rv_objects). They go the same way as the fighters' samples: into g_rv_acc, so a frame simulated again replaces its entry, and to
+ * the file only when the frame is final. */
 #include <time.h>
+#include <xmmintrin.h>
 uint64_t rbn_match_seed(void); int rbn_on(void); int rbn_local_player(void); int rbn_loop(void); int rbn_match_number(void);   /* rb_net.c */
 #pragma pack(push, 1)
 typedef struct { int16_t x, y, x2, y2; uint16_t r; uint8_t id, flags; uint16_t dmg10; int16_t angle; uint16_t kbg, bkb; } RvHit;   /* 20 B; flags 1 = capsule, 2 = bkb holds the fixed knockback */
@@ -40,6 +46,9 @@ typedef struct {
     float shield;                   /* shield health (work float), -1 unknown */
     uint32_t ff;                    /* the fighter's own frame-line count (fighter_host.c), for screenshot matching */
 } RvFig;                            /* 44 B */
+typedef struct { uint32_t id; uint16_t kind; uint8_t cat; int8_t lr; int16_t x, y; uint16_t mf8; int16_t rot10; uint32_t motion; uint8_t motion_hi, owner, nhit, scale32; } RvObj;   /* 24 B; id: the
+                                     * game's object id (cat in its top bits); x, y 1/16 units; mf8 motion frame * 8; rot10 rotation z * 10; motion: low bits of the hash40, motion_hi its top; owner: entry of the
+                                     * founding fighter, 0xff none; scale32 scale * 32 */
 typedef struct { float x1, y1, x2, y2; uint32_t flags; } RvLine;   /* flags 1 floor, 2 passable, 4 wall, 16 moves; bits 8..31: the first frame it is
                                                                      * in the file (found by a later ray: platforms that come and go) */
 typedef struct {
@@ -61,14 +70,18 @@ typedef struct {
 #pragma pack(pop)
 _Static_assert(sizeof(RvHead) == 0x200, "RvHead");
 _Static_assert(sizeof(RvFig) == 44, "RvFig");
+_Static_assert(sizeof(RvObj) == 24, "RvObj");
 
 #define RV_MAXF 4
 #define RV_MAXHIT 16
 #define RV_MAXHURT 32
 #define RV_MAXLINE 64
 #define RV_RING 512
+#define RV_MAXOBJ 48
+#define RV_MAXOHIT 64
+#define RV_OBJHIT 8                                    /* one object's hitboxes */
 typedef struct { RvFig f; RvHit hit[RV_MAXHIT]; RvHurt hurt[RV_MAXHURT]; } RvSample;
-typedef struct { long long frame; uint8_t mask; uint64_t valid; RvSample s[RV_MAXF]; float lines[RV_MAXLINE][4]; } RvSlot;
+typedef struct { long long frame; uint8_t mask; uint64_t valid; RvSample s[RV_MAXF]; float lines[RV_MAXLINE][4]; uint16_t nobj, nohit; RvObj obj[RV_MAXOBJ]; RvHit ohit[RV_MAXOHIT]; } RvSlot;
 
 static int g_rv_on = -1, g_rv_rb;                      /* on; this match runs in a rollback session */
 /* (0.2.11) per match: g_rv_mrb = this match goes through the rollback session (final frames from rv_final). A LOCAL fight in a
@@ -85,13 +98,14 @@ static float g_rv_prev_lines[RV_MAXLINE][4];
 static int g_rv_scan_final;                            /* the start scan (rays down, sideways, up) is over */
 static uint64_t g_rv_boma[RV_MAXF]; static int g_rv_slot_entry[RV_MAXF];
 static int g_rv_shield_idx = -2;                       /* the work float that holds the shield (found at the first frames: 50.0) */
+static long long g_rv_obj_ticks, g_rv_obj_max, g_rv_obj_frames, g_rv_obj_sum, g_rv_obj_lost; static int g_rv_obj_peak;
 static LARGE_INTEGER g_rv_qpf; static long long g_rv_cost_ticks, g_rv_cost_n, g_rv_cost_max, g_rv_scan_ticks, g_rv_lines_ticks, g_rv_cost_hist[4];      /* hist: lines under 20 / 50 / 100 us / more */
 static SRWLOCK g_rv_lock = SRWLOCK_INIT;
 
 static uint64_t rv_fn(const char *name) { return fd_fn(name); }
 #define RV_LB(s) "_ZN3app8lua_bind" s "EPNS_26BattleObjectModuleAccessorE"
 /* game functions read through their exported names (the same on 13.0.4 and 13.0.5) */
-static struct { uint64_t posx, posy, lr, dmg, st, sit, mot, mf, isatk, atksize, atkcenter, atkdata, hitn, hitc, hitst, atkn, entry, dead, cam, ray, raync, lpt, rpt, pas, floor, wall, valid; } g_rvf;
+static struct { uint64_t posx, posy, lr, dmg, st, sit, mot, mf, isatk, atksize, atkcenter, atkdata, hitn, hitc, hitst, atkn, entry, dead, cam, ray, raync, lpt, rpt, pas, floor, wall, valid, rotz, scale; } g_rvf;
 static void rv_fns(void) {
     if (g_rvf.posx) return;
     g_rvf.posx = rv_fn(RV_LB("25PostureModule__pos_x_impl")); g_rvf.posy = rv_fn(RV_LB("25PostureModule__pos_y_impl")); g_rvf.lr = rv_fn(RV_LB("22PostureModule__lr_impl"));
@@ -111,6 +125,7 @@ static void rv_fns(void) {
     g_rvf.pas = rv_fn("_ZN3app6ground11is_passableEPKNS_19GroundCollisionLineE"); g_rvf.floor = rv_fn("_ZN3app6ground8is_floorEPKNS_19GroundCollisionLineE");
     g_rvf.wall = rv_fn("_ZN3app6ground7is_wallEPKNS_19GroundCollisionLineE");
     g_rvf.valid = rv_fn("_ZN3app6ground8is_validEPKNS_19GroundCollisionLineE");
+    g_rvf.rotz = rv_fn(RV_LB("25PostureModule__rot_z_impl") "i"); g_rvf.scale = rv_fn(RV_LB("25PostureModule__scale_impl"));
 }
 /* one getter call on the game's context: x0..x4 in, x0 / v0..v2 out. The caller saves and restores the context once. */
 static inline uint64_t rv_call5(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, V128 *v);
@@ -142,12 +157,12 @@ static void rv_hex(const char *tag, uint64_t a, int n) {
 static long long g_rv_ok_frame = -1;
 /* (0.2.22) a page that can be read, asked once per frame by reading one byte of it. It was VirtualQuery, which walks the whole region
  * to say how long it is: with this game's memory 10 to 60 ms a frame, on the game's main thread, every frame of a recorded match. */
-static uint64_t g_rv_ok_page[16]; static int g_rv_ok_pages;
+static uint64_t g_rv_ok_page[64]; static int g_rv_ok_pages;
 static int rv_page_ok(uint64_t page) {
     for (int i = 0; i < g_rv_ok_pages; i++) if (g_rv_ok_page[i] == page) return 1;
     uint8_t b; SIZE_T got = 0;
     if (!ReadProcessMemory(GetCurrentProcess(), (const void *)(uintptr_t)page, &b, 1, &got) || got != 1) return 0;
-    if (g_rv_ok_pages < 16) g_rv_ok_page[g_rv_ok_pages++] = page;
+    if (g_rv_ok_pages < 64) g_rv_ok_page[g_rv_ok_pages++] = page;
     return 1;
 }
 static int rv_ptr_ok(uint64_t a, size_t n, long long frame) {
@@ -157,8 +172,10 @@ static int rv_ptr_ok(uint64_t a, size_t n, long long frame) {
     return rv_page_ok(p0) && (p1 == p0 || rv_page_ok(p1));
 }
 static int rv_line_ok(uint64_t line, long long frame) {
-    if (!rv_ptr_ok(line, 0x98, frame)) return 0;
-    uint64_t p0 = rd64(line + 0x88), p1 = rd64(line + 0x90);
+    if (!rv_ptr_ok(line, 0x108, frame)) return 0;
+    uint64_t p0 = rd64(line + 0x88), p1 = rd64(line + 0x90), owner = rd64(line + 0x10);
+    /* (the fix for a crash seen with Steve: app::ground::is_valid reads + 0x100 and the object at + 0x10, which held the text of what took the line's memory) */
+    if (owner && !rv_ptr_ok(owner, 0xe8, frame)) return 0;
     return rv_ptr_ok(p0, 0x20, frame) && rv_ptr_ok(p1, 0x20, frame);
 }
 static inline int16_t rv_q(float v) { float q = v * 16.0f; return (int16_t)(q > 32767 ? 32767 : q < -32768 ? -32768 : q); }
@@ -177,7 +194,7 @@ static uint64_t rv_info_record(int entry) {             /* debug_mode.c fighter_
 static void rv_head_start(void) {
     RvHead *h = &g_rv_head;
     memset(h, 0, sizeof *h);
-    memcpy(h->magic, "SSBV", 4); h->version = 2;      /* 2: the frame header has the lines-on mask (1: test files of the first builds) */ h->header_size = sizeof *h;
+    memcpy(h->magic, "SSBV", 4); h->version = 3;      /* 3: the objects; 2: the frame header has the lines-on mask (1: test files of the first builds) */ h->header_size = sizeof *h;
     { FILETIME ft; GetSystemTimeAsFileTime(&ft); h->unix_time = (int64_t)((((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 10000000ull) - 11644473600ll; }
     h->game_build = (uint32_t)g_game_build;
     uint64_t mb = GA(0x71052c41b0ULL);                 /* the game's global match block (debug_mode.c MELEE_INFO) */
@@ -355,6 +372,102 @@ static void rv_sample(Ctx *c, uint64_t boma, int slot, long long ff) {
     f->nhurt = (uint8_t)nu;
 }
 
+/* ---------------------------------------------------------------- the other objects of the match (weapons, items ...)
+ * The game's lookup of an object id (main 0x71003ac560): a global (main 0x71052b7548) -> 5 tables by category (id >> 28: 0 fighter, then the others); a table:
+ * + 8 its array, + 0x18 its length; the entries have these sizes; id = category << 28 | index << 16 | ...; an entry: + 8 id, + 0xc kind, + 0x20 module accessor,
+ * + 0x3a state (app::sv_battle_object::is_active: over 3). Those sv_battle_object functions are not called: on an empty id they build a static object.
+ * Everything here is read: the tables and entries directly, the modules through the same getters as a fighter's. Nothing is written. A table's two ends are checked
+ * once when it is new; a pointer read from an active object each frame (rv_ptr_ok: it may be gone). An entry whose id does not fit its place, on a game build
+ * with other sizes for example, is not used. */
+#define RV_OBJCATS 5
+static const uint32_t g_rv_obj_size[RV_OBJCATS] = {0xf940, 0x3c30, 0x60c0, 0x300, 0x2b0};
+static struct { uint64_t base; uint32_t n; int ok; } g_rv_obj_tab[RV_OBJCATS];
+static struct { uint32_t id; uint8_t owner; } g_rv_obj_owner[64];
+static int rv_module_ok(uint64_t module, long long frame) { return rv_ptr_ok(module, 8, frame) && rv_ptr_ok(rd64(module), 0x400, frame); }
+static uint8_t rv_obj_owner(Ctx *c, uint64_t o, uint32_t id, long long frame) {
+    unsigned h = (id >> 16 ^ id) & 63;
+    if (g_rv_obj_owner[h].id == id) return g_rv_obj_owner[h].owner;
+    uint8_t own = 0xff;
+    if (rv_ptr_ok(rd64(o), 0x3f0, frame)) {              /* (the virtual call of app::sv_battle_object::get_founder_id) */
+        uint32_t f = (uint32_t)rv_call(c, rd64(rd64(o) + 0x3e8), o, 0, 0, 0, NULL);
+        if (f >> 28 == 0 && g_rvf.entry) { int e = (int)rv_call(c, g_rvf.entry, f, 0, 0, 0, NULL); if (e >= 0 && e < 8) own = (uint8_t)e; }
+    }
+    g_rv_obj_owner[h].id = id; g_rv_obj_owner[h].owner = own;
+    return own;
+}
+static int rv_obj_hits(Ctx *c, uint64_t boma, RvSlot *sl, long long frame) {
+    uint64_t am = rd64(boma + 0xa0);
+    if (!rv_module_ok(am, frame) || !rv_ptr_ok(am, 0x70, frame)) return 0;
+    int na = (int)rv_call(c, g_rvf.atkn, boma, 0, 0, 0, NULL), nh = 0;
+    if (na <= 0) return 0;
+    if (na > 16) na = 16;
+    uint64_t ents = rd64(am + 104), tab = rd64(am + 40);
+    if (!rv_ptr_ok(ents, 0x130ull * (uint64_t)na, frame) || !rv_ptr_ok(tab, 8, frame)) return 0;
+    for (int id = 0; id < na && nh < RV_OBJHIT && sl->nohit < RV_MAXOHIT; id++) {
+        if (!(rv_call(c, g_rvf.isatk, boma, (uint64_t)id, 0, 0, NULL) & 1)) continue;
+        uint64_t ent = ents + 0x130ull * (uint64_t)id, at = tab + 0x2d0ull * (uint64_t)(int64_t)(int32_t)rd32(ent + 272) + 8ull * (uint64_t)id + 48;
+        if (!rv_ptr_ok(at, 8, frame)) continue;
+        uint64_t obj = rd64(at);
+        if (!rv_ptr_ok(obj, 0xc0, frame)) continue;
+        RvHit *h = &sl->ohit[sl->nohit];
+        float p0[3], dv[3], r, pw;
+        memset(h, 0, sizeof *h);
+        memcpy(p0, (void *)(uintptr_t)(obj + 0x10), 12); memcpy(dv, (void *)(uintptr_t)(obj + 0xb0), 12); memcpy(&r, (void *)(uintptr_t)(obj + 0xa0), 4); memcpy(&pw, (void *)(uintptr_t)(ent + 0x20), 4);
+        h->x = rv_q(p0[0]); h->y = rv_q(p0[1]); h->x2 = rv_q(p0[0] + dv[0]); h->y2 = rv_q(p0[1] + dv[1]);
+        if (dv[0] != 0 || dv[1] != 0) h->flags |= 1;
+        h->r = (uint16_t)(r > 0 ? (r * 16.0f > 65535 ? 65535 : r * 16.0f) : 0);
+        h->id = (uint8_t)id; h->dmg10 = (uint16_t)(pw > 0 && pw < 6000 ? pw * 10.0f + 0.5f : 0);
+        h->angle = (int16_t)rd32(ent + 0x28); h->kbg = (uint16_t)rd32(ent + 0x2c);
+        if (rd32(ent + 0x30)) { h->bkb = (uint16_t)rd32(ent + 0x30); h->flags |= 2; } else h->bkb = (uint16_t)rd32(ent + 0x34);
+        sl->nohit++; nh++;
+    }
+    return nh;
+}
+static void rv_objects(Ctx *c, RvSlot *sl) {
+    static long long now; long long frame = ++now;
+    static uint64_t got; if (!got) got = GA(0x71052b7548ULL);
+    sl->nobj = sl->nohit = 0;
+    uint64_t mgr = rd64(got);
+    if (!rv_ptr_ok(mgr, 8 * RV_OBJCATS, frame)) return;
+    for (int cat = 1; cat < RV_OBJCATS; cat++) {
+        uint64_t t = rd64(mgr + 8ull * (uint64_t)cat);
+        if (!rv_ptr_ok(t, 0x20, frame)) continue;
+        uint64_t base = rd64(t + 8); uint32_t n = rd32(t + 0x18), sz = g_rv_obj_size[cat];
+        if (g_rv_obj_tab[cat].base != base || g_rv_obj_tab[cat].n != n) {
+            int ok = n > 0 && n <= 4096 && rv_ptr_ok(base, 8, frame) && rv_ptr_ok(base + (uint64_t)n * sz - 8, 8, frame);      /* (one allocation: its ends) */
+            g_rv_obj_tab[cat].base = base; g_rv_obj_tab[cat].n = n; g_rv_obj_tab[cat].ok = ok;
+            printf("[rv] object table %d: %u entries of 0x%x %s\n", cat, n, sz, ok ? "" : "(not readable: not used)"); fflush(stdout);
+            frame = ++now;                                  /* (those pages were one look; the cache starts again) */
+        }
+        if (!g_rv_obj_tab[cat].ok) continue;
+        for (uint32_t i = 0; i < n; i++) {
+            uint64_t o = base + (uint64_t)i * sz;
+            if (i + 8 < n) _mm_prefetch((const char *)(uintptr_t)(o + 8ull * sz + 0x3a), _MM_HINT_T0);      /* (a page each: a walk over the table costs its cache misses) */
+            if (rd8(o + 0x3a) <= 3) continue;
+            uint32_t id = rd32(o + 8);
+            if ((int)(id >> 28) != cat || ((id >> 16) & 0xfff) != i) continue;
+            if (sl->nobj >= RV_MAXOBJ) { g_rv_obj_lost++; break; }
+            uint64_t boma = rd64(o + 0x20);
+            if (!rv_ptr_ok(boma, 0xc0, frame) || !rv_module_ok(rd64(boma + 0x38), frame) || !rv_module_ok(rd64(boma + 0x88), frame)) continue;
+            RvObj *r = &sl->obj[sl->nobj];
+            V128 v[3];
+            memset(r, 0, sizeof *r);
+            r->id = id; r->kind = (uint16_t)rd32(o + 0xc); r->cat = (uint8_t)cat;
+            rv_call(c, g_rvf.posx, boma, 0, 0, 0, v); r->x = rv_q(v[0].f[0]);
+            rv_call(c, g_rvf.posy, boma, 0, 0, 0, v); r->y = rv_q(v[0].f[0]);
+            rv_call(c, g_rvf.lr, boma, 0, 0, 0, v); r->lr = v[0].f[0] < 0 ? -1 : 1;
+            rv_call(c, g_rvf.mf, boma, 0, 0, 0, v); { float m = v[0].f[0] * 8.0f; r->mf8 = (uint16_t)(m > 0 ? (m > 65535 ? 65535 : m) : 0); }
+            uint64_t mot = rv_call(c, g_rvf.mot, boma, 0, 0, 0, NULL); r->motion = (uint32_t)mot; r->motion_hi = (uint8_t)(mot >> 32);
+            if (g_rvf.rotz) { rv_call(c, g_rvf.rotz, boma, 0, 0, 0, v); float a = v[0].f[0] * 10.0f; r->rot10 = (int16_t)(a > 32767 ? 32767 : a < -32768 ? -32768 : a); }
+            if (g_rvf.scale) { rv_call(c, g_rvf.scale, boma, 0, 0, 0, v); float s = v[0].f[0] * 32.0f; r->scale32 = (uint8_t)(s > 0 ? (s > 255 ? 255 : s) : 0); }
+            r->owner = rv_obj_owner(c, o, id, frame);
+            r->nhit = (uint8_t)rv_obj_hits(c, boma, sl, frame);
+            sl->nobj++;
+        }
+    }
+    g_rv_obj_frames++; g_rv_obj_sum += sl->nobj; if (sl->nobj > g_rv_obj_peak) g_rv_obj_peak = sl->nobj;
+}
+
 /* ---------------------------------------------------------------- the recording buffer and the writer thread */
 static void rv_put(const void *p, size_t n) {
     if (g_rv_len + n > g_rv_cap) {
@@ -367,12 +480,12 @@ static void rv_put(const void *p, size_t n) {
     memcpy(g_rv_buf + g_rv_len, p, n); g_rv_len += n;
 }
 static void rv_append(const RvSlot *sl, long long frame) {
-    uint8_t mask = sl->mask, moved = 0; uint16_t z = 0;
+    uint8_t mask = sl->mask, moved = 0; uint16_t z = 0, nobj = sl->nobj;
     uint16_t idx[RV_MAXLINE];
     for (int i = 0; i < g_rv_nlines; i++)
         if (memcmp(sl->lines[i], g_rv_prev_lines[i], sizeof g_rv_prev_lines[i]) != 0 && (sl->lines[i][0] != 0 || sl->lines[i][2] != 0)) idx[moved++] = (uint16_t)i;
     uint32_t fr = (uint32_t)frame;
-    rv_put(&fr, 4); rv_put(&mask, 1); rv_put(&moved, 1); rv_put(&z, 2); rv_put(&sl->valid, 8);
+    rv_put(&fr, 4); rv_put(&mask, 1); rv_put(&moved, 1); rv_put(&nobj, 2); rv_put(&sl->valid, 8);
     for (int m = 0; m < moved; m++) {
         int i = idx[m]; rv_put(&idx[m], 2); rv_put(&z, 2); rv_put(sl->lines[i], 16);
         memcpy(g_rv_prev_lines[i], sl->lines[i], 16); g_rv_lines[i].flags |= 16;
@@ -383,6 +496,7 @@ static void rv_append(const RvSlot *sl, long long frame) {
         rv_put(&s->f, sizeof s->f); rv_put(s->hit, sizeof(RvHit) * s->f.nhit); rv_put(s->hurt, sizeof(RvHurt) * s->f.nhurt);
         for (int i = 0; i < g_rv_head.nfighters; i++) if (g_rv_head.fighter[i].slot == k) { g_rv_head.fighter[i].end_stocks = s->f.stocks; g_rv_head.fighter[i].end_damage = s->f.dmg; }
     }
+    for (int i = 0, oh = 0; i < nobj; i++) { rv_put(&sl->obj[i], sizeof sl->obj[i]); rv_put(&sl->ohit[oh], sizeof(RvHit) * sl->obj[i].nhit); oh += sl->obj[i].nhit; }
     g_rv_frames++;
     g_rv_head.ended_frame = (uint32_t)frame;
 }
@@ -430,6 +544,8 @@ static void rv_end(const char *why, int sync) {
         printf("[rv] recorder cost: %lld fighter frame lines: %.2f us each on average (%.2f without the stage scan, %.2f of it the moving lines), the stage scan %.1f ms in all, the slowest line after the scan %.1f us\n",
                g_rv_cost_n, g_rv_cost_n ? g_rv_cost_ticks * us / (double)g_rv_cost_n : 0.0, g_rv_cost_n ? (g_rv_cost_ticks - g_rv_scan_ticks) * us / (double)g_rv_cost_n : 0.0,
                g_rv_cost_n ? g_rv_lines_ticks * us / (double)g_rv_cost_n : 0.0, g_rv_scan_ticks * us / 1000.0, g_rv_cost_max * us);
+        printf("[rv] objects: %.3f us per frame on average, the slowest %.1f us; %.2f objects on average, %d at most, %lld frames lost some (more than %d)\n", g_rv_obj_frames ? g_rv_obj_ticks * us / (double)g_rv_obj_frames : 0.0, g_rv_obj_max * us,
+               g_rv_obj_frames ? (double)g_rv_obj_sum / (double)g_rv_obj_frames : 0.0, g_rv_obj_peak, g_rv_obj_lost, RV_MAXOBJ);
         printf("[rv] recorder cost per line after the scan: under 20 us %lld, 20-50 us %lld, 50-100 us %lld, over 100 us %lld\n", g_rv_cost_hist[0], g_rv_cost_hist[1], g_rv_cost_hist[2], g_rv_cost_hist[3]);
     }
     j->body = g_rv_buf; j->len = g_rv_len;              /* the buffer goes to the writer; a new one is made for the next match */
@@ -463,6 +579,7 @@ static void rv_begin(void) {
     g_rv_mrb = rv_match_rb();                           /* (0.2.11) this match: rollback (final frames) or every frame */
     g_rv_active = 1; g_rv_frames = 0; g_rv_len = 0; g_rv_last_final = 0; g_rv_direct_n = 0;
     g_rv_nlines = 0; g_rv_scan_x = 0; g_rv_scan_done = 0; g_rv_scan_final = 0; g_rv_cost_ticks = g_rv_cost_n = g_rv_cost_max = g_rv_scan_ticks = g_rv_lines_ticks = 0; memset(g_rv_cost_hist, 0, sizeof g_rv_cost_hist);
+    g_rv_obj_ticks = g_rv_obj_max = g_rv_obj_frames = g_rv_obj_sum = g_rv_obj_lost = 0; g_rv_obj_peak = 0; memset(g_rv_obj_owner, 0, sizeof g_rv_obj_owner);
     memset(&g_rv_acc, 0, sizeof g_rv_acc);
     for (int k = 0; k < RV_MAXF; k++) { g_rv_boma[k] = 0; g_rv_slot_entry[k] = -1; }
     if (g_rv_ring) for (int i = 0; i < RV_RING; i++) g_rv_ring[i].frame = -1;
@@ -589,6 +706,12 @@ static void rv_frame_line(Ctx *c, uint64_t boma, int k, long long ff) {
         }
     }
     if (g_rv_mrb && k == 0 && g_rv_nlines) { LARGE_INTEGER a, b; QueryPerformanceCounter(&a); rv_lines_now(c, &g_rv_acc); QueryPerformanceCounter(&b); g_rv_lines_ticks += b.QuadPart - a.QuadPart; }
+    static int objs_on = -1; if (objs_on < 0) objs_on = getenv("SSBU_RV_NO_OBJECTS") == NULL;
+    if (k == 0 && objs_on) {                            /* the objects: once per frame, in the pass's sample like the fighters */
+        LARGE_INTEGER a, b; QueryPerformanceCounter(&a);
+        rv_objects(c, &g_rv_acc);
+        QueryPerformanceCounter(&b); g_rv_obj_ticks += b.QuadPart - a.QuadPart; if (b.QuadPart - a.QuadPart > g_rv_obj_max) g_rv_obj_max = b.QuadPart - a.QuadPart;
+    }
     g_rv_acc.mask |= (uint8_t)(1 << k);
     *c = saved;
     ReleaseSRWLockExclusive(&g_rv_lock);
@@ -605,7 +728,7 @@ void rv_pass(long long f) {
     AcquireSRWLockExclusive(&g_rv_lock);
     if (f == 0) { ReleaseSRWLockExclusive(&g_rv_lock); rv_begin(); AcquireSRWLockExclusive(&g_rv_lock); }
     else if (g_rv_active && g_rv_ring) { RvSlot *s = &g_rv_ring[f % RV_RING]; memcpy(s, &g_rv_acc, sizeof *s); s->frame = g_rv_acc.mask ? f : -1; }
-    g_rv_acc.mask = 0;
+    g_rv_acc.mask = 0; g_rv_acc.nobj = g_rv_acc.nohit = 0;
     ReleaseSRWLockExclusive(&g_rv_lock);
 }
 /* rb_net.c rbn_finalize: frame f is final (both pads known, no rollback can reach it any more) */

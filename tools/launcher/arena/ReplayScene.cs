@@ -81,6 +81,12 @@ namespace Arena
 
     public sealed class ReplayScene
     {
+        /// <summary>the model of a kind of object (weapon, item), one instance per object on the screen; the names come with it. No model: ReplayView draws a shape</summary>
+        sealed class ObjectKind { public string Name; public RvModel Source; public string Folder; public double Scale = 1; public Dictionary<ulong, RvMotion> Motions = new Dictionary<ulong, RvMotion>(); public List<Fighter> Pool = new List<Fighter>(); public int Used; public Dictionary<int, Material> Mats = new Dictionary<int, Material>(); }
+        readonly Dictionary<int, ObjectKind> objectKinds = new Dictionary<int, ObjectKind>();      // cat * 65536 + kind
+        static readonly RvMotion NoMotion = new RvMotion();
+        readonly RvFighterFrame objectPose = new RvFighterFrame();
+
         sealed class Fighter { public RvModel Model; public double Scale = 1; public string Folder; public Dictionary<ulong, RvMotion> Motions = new Dictionary<ulong, RvMotion>(); public Model3DGroup Group; public int Seen = -1; public double SeenFrame = -1; public ulong SeenMotion; public float[] World, Skin; }
 
         readonly Viewport3D view;
@@ -107,13 +113,16 @@ namespace Arena
         public bool StageShown => On && stageOn;
         public bool FighterShown(int k) => On && k < fighters.Length && fighters[k] != null;
         public bool OtherShown(int slot) => On && others.ContainsKey(slot);
+        readonly HashSet<uint> objectsDrawn = new HashSet<uint>();      // this frame's objects whose model shows a mesh (Steve's blocks: all of it hidden until a script says which)
+        public bool ObjectShown(RvObject o) => On && objectsDrawn.Contains(o.Id);
+        public string ObjectName(RvObject o) => objectKinds.TryGetValue(o.Cat * 65536 + o.Kind, out var k) ? k.Name : null;
 
         public static string AssetsDir => Path.Combine(Core.Build, "replay_assets");
 
         public void Clear()
         {
             loadId++;
-            fighters = new Fighter[0]; others.Clear(); platforms.Clear(); stageForms.Clear(); stageOn = false; moveFirst = -1; moveGroup = null; root.Children.Clear();
+            fighters = new Fighter[0]; others.Clear(); objectKinds.Clear(); platforms.Clear(); stageForms.Clear(); stageOn = false; moveFirst = -1; moveGroup = null; root.Children.Clear();
         }
 
         /// <summary>the files of this replay (made if missing), then the scene. status: what the page says meanwhile; "" when done.</summary>
@@ -138,7 +147,7 @@ namespace Arena
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
-        sealed class Loaded { public Fighter[] F; public Dictionary<int, Fighter> Others = new Dictionary<int, Fighter>(); public RvModel Stage; public string StageDir; public Dictionary<string, BitmapSource> Tex = new Dictionary<string, BitmapSource>(); }
+        sealed class Loaded { public Fighter[] F; public Dictionary<int, Fighter> Others = new Dictionary<int, Fighter>(); public Dictionary<int, ObjectKind> Objects = new Dictionary<int, ObjectKind>(); public RvModel Stage; public string StageDir; public Dictionary<string, BitmapSource> Tex = new Dictionary<string, BitmapSource>(); }
 
         static BitmapSource Png(string f)
         {
@@ -162,6 +171,17 @@ namespace Arena
                     if (p.Length >= 5) slots[k] = ReadFighter(res, p[2], p[3], p[4]);
                 }
                 else if (p[0] == "extra" && p.Length >= 6) res.Others[int.Parse(p[2])] = ReadFighter(res, p[3], p[4], p[5]);
+                else if (p[0] == "object" && p.Length >= 4)
+                {
+                    // object <cat> <kind> <name> [<model folder> <motions folder> <scale>]
+                    var k = new ObjectKind { Name = p[3].Replace('_', ' ') };
+                    if (p.Length >= 7 && File.Exists(Path.Combine(AssetsDir, p[4], "model.rvm")))
+                    {
+                        var f = ReadFighter(res, p[4], p[5], p[6]);
+                        k.Source = f.Model; k.Folder = f.Folder; k.Scale = f.Scale; k.Motions = f.Motions;
+                    }
+                    res.Objects[int.Parse(p[1]) * 65536 + int.Parse(p[2])] = k;
+                }
             }
             res.F = slots.ToArray();
             return res;
@@ -173,7 +193,7 @@ namespace Arena
             if (!File.Exists(Path.Combine(dir, "model.rvm"))) return null;
             var f = new Fighter { Model = RvModel.Read(dir), Folder = dir, Scale = double.Parse(scale, System.Globalization.CultureInfo.InvariantCulture) };
             foreach (var t in Textures(f.Model, dir)) res.Tex[t.Key] = t.Value;
-            foreach (var file in Directory.GetFiles(motions, "*.rva"))
+            if (Directory.Exists(motions)) foreach (var file in Directory.GetFiles(motions, "*.rva"))
             {
                 var m = RvMotion.Read(file);
                 if (m != null) f.Motions[Convert.ToUInt64(Path.GetFileNameWithoutExtension(file), 16)] = m;
@@ -277,6 +297,7 @@ namespace Arena
             }
             fighters = l.F;
             foreach (var o in l.Others) if (o.Value != null) others[o.Key] = o.Value;
+            foreach (var o in l.Objects) { objectKinds[o.Key] = o.Value; if (o.Value.Source != null) for (int t = 0; t < o.Value.Source.Tex.Count; t++) { var tx = TexOf(l, o.Value.Folder, t); if (tx != null) o.Value.Mats[t] = Mat(tx); } }
         }
 
         static BitmapSource TexOf(Loaded l, string dir, int i)
@@ -288,7 +309,7 @@ namespace Arena
         /// <summary>this frame, with the view's scale (pixels per game unit) and origin</summary>
         public void Update(ReplayState r, RvFrame fr, double W, double H, double sc, double ox, double oy)
         {
-            bool on = On && (stageOn || others.Count > 0 || fighters.Any(x => x != null));
+            bool on = On && (stageOn || others.Count > 0 || objectKinds.Count > 0 || fighters.Any(x => x != null));
             view.Visibility = on ? Visibility.Visible : Visibility.Hidden;
             if (!on) return;
             cam.Width = W / sc;
@@ -321,6 +342,48 @@ namespace Arena
                 if (fr.Extra != null) foreach (var e in fr.Extra) if (e.Value.Slot == o.Key) s = e.Value;
                 Show(o.Value, s);
             }
+            ShowObjects(r, fr);
+        }
+
+        /// <summary>the objects of this frame only (nothing is kept between frames, so going back on the timeline is the same as going forward): an instance of its
+        /// kind's model for each, the unused instances empty</summary>
+        void ShowObjects(ReplayState r, RvFrame fr)
+        {
+            foreach (var k in objectKinds.Values) k.Used = 0;
+            objectsDrawn.Clear();
+            if (fr.Objects != null)
+                foreach (var o in fr.Objects)
+                {
+                    int key = o.Cat * 65536 + o.Kind;
+                    if (r.HelperKinds.Contains(key) || !objectKinds.TryGetValue(key, out var k) || k.Source == null) continue;
+                    if (k.Used == k.Pool.Count) k.Pool.Add(NewInstance(k));
+                    var f = k.Pool[k.Used++];
+                    objectPose.X = o.X; objectPose.Y = o.Y; objectPose.Lr = o.Lr; objectPose.MotionFrame = o.MotionFrame; objectPose.Motion = o.Motion;
+                    f.Scale = k.Scale * (o.Scale > 0 ? o.Scale : 1);
+                    Pose(f, objectPose, k.Motions.TryGetValue(o.Motion & 0xffffffffffUL, out var m) ? m : NoMotion);
+                    if (f.Model.Meshes.Any(q => q.Model.Geometry != null)) objectsDrawn.Add(o.Id);
+                }
+            foreach (var k in objectKinds.Values)
+                for (int i = k.Used; i < k.Pool.Count; i++) foreach (var m in k.Pool[i].Model.Meshes) m.Model.Geometry = null;
+        }
+
+        Fighter NewInstance(ObjectKind k)
+        {
+            // (the meshes' data shared, each instance with its own drawn geometry)
+            var model = new RvModel { Bones = k.Source.Bones, Vis = k.Source.Vis };
+            var f = new Fighter { Model = model, Folder = k.Folder, Group = new Model3DGroup() };
+            foreach (var m in k.Source.Meshes)
+            {
+                var c = new RvMesh { Tex = m.Tex, Vis = m.Vis, Default = m.Default, Pos = m.Pos, Nor = m.Nor, SkinB = m.SkinB, SkinW = m.SkinW, Idx = m.Idx, Uv = m.Uv };
+                k.Mats.TryGetValue(m.Tex, out var mat);
+                if (mat == null) mat = Mat(null);
+                c.Model = new GeometryModel3D { Material = mat, BackMaterial = mat };
+                f.Group.Children.Add(c.Model);
+                model.Meshes.Add(c);
+            }
+            f.World = new float[model.Bones.Length * 12]; f.Skin = new float[model.Bones.Length * 12];
+            root.Children.Add(f.Group);
+            return f;
         }
 
         /// <summary>which transformation is on (Pokemon Stadium 2, hazards on): the recording has no field for it, the collision lines of the frame
