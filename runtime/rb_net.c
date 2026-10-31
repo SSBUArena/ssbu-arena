@@ -167,7 +167,13 @@ static int g_match_n;                                   /* (hs12) online matches
 /* (hs12) the tag byte at the end of every PADS message: the agreed match id and the match number of the session. Run tw7:
  * the other game's last pads of match 1 arrived after this game's match-1 reset and were taken at the start of match 2
  * (their acknowledgement 1081 made each game send no pads any more: both waited for ever at frame 7). */
-static uint8_t pads_tag(void) { return (uint8_t)(g_match_id ^ ((uint32_t)g_match_n * 0x3bu)); }
+/* (0.2.23) From the agreed match id alone when there is one: the match number is each game's own count, so after one game was restarted
+ * (a crash, a new start) the two differed, each dropped all the other's pads and both waited 120 s at the start barrier: the "freeze at
+ * the start of a match". */
+static uint8_t pads_tag(void) {
+    uint32_t id = g_match_id;
+    return id ? (uint8_t)(id ^ (id >> 8) ^ (id >> 16) ^ (id >> 24)) : (uint8_t)((uint32_t)g_match_n * 0x3bu);
+}
 static long long g_hs_tx, g_hs_rx;
 #define RBH_BLK 0xa48                                   /* match block + 0 .. + 0x580 + 2 * 0x260 + 8 */
 static uint8_t g_hs_mine_blk[RBH_BLK], g_hs_peer_blk[RBH_BLK]; static int g_hs_mine_ok, g_hs_peer_got, g_hs_blk_done; static uint8_t g_hs_peer_have[RBH_BLK / 768 + 1];
@@ -695,6 +701,8 @@ static int auto_delay(void) {
     return d < 1 ? 1 : d > 5 ? 5 : d;      /* 1..5 (delay 1 and 4 in sync since the agreed match gets no pad before its base) */
 }
 void rbn_start(long long f0) {
+    {   /* (test) SSBU_RB_NET_TEST_MATCHN=<n>: this game counts as having played n matches, as after the other one was restarted */
+        static int once; const char *e = once ? NULL : getenv("SSBU_RB_NET_TEST_MATCHN"); once = 1; if (e) g_match_n = atoi(e); }
     g_f0 = f0; g_started = 1; g_match_n++; g_hs_pending = 0;
     if (g_hlog) { fprintf(g_hlog, "m %d id %08x\n", g_match_n, g_match_id); fflush(g_hlog); }      /* (rbn_cmp.py: frames are per match) */
     g_remote = 1 - g_local;
