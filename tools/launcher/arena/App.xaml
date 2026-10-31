@@ -534,6 +534,52 @@
         </Setter>
       </Style>
 
+      <!-- tool tips (the system's has a white background, and the plain text above is white) -->
+      <Style TargetType="ToolTip">
+        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="FontFamily" Value="{StaticResource Body}"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="MaxWidth" Value="440"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ToolTip">
+              <Border Background="#111A26" BorderBrush="#2E4057" BorderThickness="1" CornerRadius="4" Padding="9,5">
+                <ContentPresenter>
+                  <ContentPresenter.Resources><Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="Foreground" Value="{StaticResource Text}"/></Style></ContentPresenter.Resources>
+                </ContentPresenter>
+              </Border>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <!-- the replay viewer's switches: a chip that is lit when on -->
+      <Style x:Key="RvChip" TargetType="CheckBox">
+        <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+        <Setter Property="FontFamily" Value="{StaticResource Condensed}"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="CheckBox">
+              <Border x:Name="b" CornerRadius="4" Background="Transparent" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,0" Height="30" Margin="5,0,0,0">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{StaticResource Text}"/></Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                  <Setter TargetName="b" Property="Background" Value="#1A65C7FF"/>
+                  <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                  <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
       <Style x:Key="Panel" TargetType="Border">
         <Setter Property="Background" Value="{StaticResource Card}"/>
         <Setter Property="BorderBrush" Value="{StaticResource Line}"/>

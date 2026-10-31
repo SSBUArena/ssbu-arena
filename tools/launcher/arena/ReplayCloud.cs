@@ -42,7 +42,14 @@ namespace Arena
         {
             string q = "/rest/v1/replays?select=id,match_id,played_at,p1_name,p2_name,p1_uid,p2_uid,ssbv_uid,p1_chara,p2_chara,stage,frames,flags,winner,is_public,path,ssbv_path&order=played_at.desc&limit=" + limit;
             string p = new string((player ?? "").Where(ch => char.IsLetterOrDigit(ch) || ch == ' ' || ch == '_' || ch == '-' || ch == '.').ToArray()).Trim();
-            if (p.Length > 0) q += "&or=" + Uri.EscapeDataString("(p1_name.ilike.*" + p + "*,p2_name.ilike.*" + p + "*)");
+            if (p.Length > 0)
+            {
+                // the players' names, and the fighters and stages with that name (the rows keep their ids, the search is on the last 10 digits)
+                var or = new List<string> { "p1_name.ilike.*" + p + "*", "p2_name.ilike.*" + p + "*" };
+                foreach (var id in ReplayNames.FighterIdsNamed(p).Take(6)) { or.Add("p1_chara.like.*" + id); or.Add("p2_chara.like.*" + id); }
+                foreach (var id in ReplayNames.StageIdsNamed(p).Take(4)) or.Add("stage.like.*" + id);
+                q += "&or=" + Uri.EscapeDataString("(" + string.Join(",", or) + ")");
+            }
             var rows = Json.Deserialize<List<Dictionary<string, object>>>(Account.Rest("GET", q, null));
             return rows.Select(r =>
             {
