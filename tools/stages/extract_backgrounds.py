@@ -166,9 +166,13 @@ def label(info):
 
 # (0.2.20) the fog of the stage's render parameters (render/*.prc), as "path of the float in the file": with the background gone it
 # turned everything behind the stage white. Black here: the "off" background is black. Found by trying them on Battlefield (run bg3).
+# (0.2.25) the b3a508757 group: the draw that really fills the background in a fight (the first list only did so in the pause). With it at 0
+# nothing fills that part of the scene's target: the runtime clears it (nvn_vk_draw.c, OP_TARGETS, only with SSBU_STAGE_BG=off).
 FOG_OFF = {'10dcd9f838.101d41b76', '10dcd9f838.16c09ff9d', '10dcd9f838.171beeff9',
            'b45840531.101d41b76', 'b45840531.16c09ff9d', 'b45840531.171beeff9',
-           'e1b3ef638.16b643b84', 'ed3deb9b1.f09c31ed4'}
+           'e1b3ef638.16b643b84', 'ed3deb9b1.f09c31ed4',
+           'b3a508757.513a346d8', 'b3a508757.5760cc7df', 'b3a508757.7af5c7bf6',
+           'b3a508757.828252f5a', 'b3a508757.85552db1f', 'b3a508757.862e73d0b'}
 
 
 def prc_zero(data, wanted):

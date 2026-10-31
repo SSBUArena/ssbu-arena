@@ -3163,6 +3163,7 @@ static void dt_vk(int fight, int idx, int ok, const Cmd *m, int indexed, const B
            R.scissor[0], R.scissor[1], R.scissor[2], R.scissor[3], R.have_scissor, R.drange[0], R.drange[1], R.depth_clamp, R.restart, R.rast_discard, R.pass_w, R.pass_h, R.ncol, R.depth.tex != NULL, R.chanmask, R.blend_on, R.gen);
 }
 static void replay(uint64_t handle, int depth);
+static volatile int g_bg_frame;                    /* frames presented: the black stage background (OP_TARGETS) */
 static void exec(const Cmd *m, int depth) {
     const uint8_t *blob = BLOB(m);
     const uint64_t *a = m->a;
@@ -3228,6 +3229,20 @@ static void exec(const Cmd *m, int depth) {
         R.ncol = 0; R.have_targets = 0;
         for (int i = 0; i < n; i++) if (col[i].tex && !col[i].tex->dead) { R.col[i] = col[i]; R.ncol = i + 1; R.have_targets = 1; }
         if (dep->tex && !dep->tex->dead) { R.depth = *dep; R.have_targets = 1; }
+        {   /* (0.2.25) SSBU_STAGE_BG=off, the black stage background: in a fight the game never clears the scene's colour target, a draw of the
+             * stage's fog fills what the background leaves. tools\stages\extract_backgrounds.py turns that draw off: cleared here, once a frame,
+             * or the frames before would stay in it. Only on this PC's pictures: guest memory and the match are not touched. */
+            static int on = -1, last = -1;
+            if (on < 0) { const char *e = getenv("SSBU_STAGE_BG"); on = e && !strcmp(e, "off"); }
+            if (on && R.ncol == 1 && R.col[0].tex && R.depth.tex && R.col[0].tex->b.format == 61 && R.col[0].tex->b.width >= 640 && last != g_bg_frame && pass_begin()) {
+                VkClearAttachment ca; VkClearRect cr;
+                last = g_bg_frame;
+                memset(&ca, 0, sizeof ca); memset(&cr, 0, sizeof cr);
+                ca.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ca.clearValue.color.float32[3] = 1.0f;
+                cr.rect.extent.width = (uint32_t)R.pass_w; cr.rect.extent.height = (uint32_t)R.pass_h; cr.layerCount = 1;
+                vkCmdClearAttachments(R.cmd, 1, &ca, 1, &cr);
+            }
+        }
         R.dyn_dirty = 1;                           /* default viewport / scissor follow the target size */
         break;
     }
@@ -3988,6 +4003,7 @@ swap: ;
     if (!g_sem[g_isem][0]) { VkSemaphoreCreateInfo smi = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}; VKC(vkCreateSemaphore(V.device, &smi, NULL, &g_sem[g_isem][0])); VKC(vkCreateSemaphore(V.device, &smi, NULL, &g_sem[g_isem][1])); }
     VkSemaphore acq = g_sem[g_isem][0], rend = g_sem[g_isem][1];
     int ok = V.swapchain || swapchain_create();
+    g_bg_frame++;
     InterlockedIncrement64(&g_wd_try);
     if (ok) {
         g_wd_where = 2;
