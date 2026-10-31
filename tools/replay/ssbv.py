@@ -36,6 +36,7 @@ class Ssbv:
             self.fighters.append(dict(ui_chara=ui, kind=kind, colour=colour, type=typ, entry=entry, slot=slot, name=cstr(data[o + 16:o + 48]), end_stocks=end_stocks, end_damage=end_damage))
         self.build = cstr(data[0x160:0x180])
         self.local_player, self.match_number, self.seed, self.first_ff, self.ended_frame, self.winner, self.rec_us = struct.unpack_from("<IIQIIiI", data, 0x180)
+        self.slot_entry = data[0x1a0:0x1a4]
         self.match_id, self.kind = struct.unpack_from("<IB", data, 0x1a4)
         self.local_name = cstr(data[0x1ac:0x1cc])
         body = data[self.header_size:self.header_size + self.body_size]

@@ -302,14 +302,26 @@ namespace Arena
         /// list of its files, made if missing; null if it cannot be made.</summary>
         public static string MakeReplayAssets(string replay)
         {
-            string dir = Path.Combine(Build, "replay_assets"), list = Path.Combine(dir, "replays", Path.GetFileName(replay) + ".txt");
-            if (File.Exists(list)) return list;
-            if (Repo == null || RomFS == null) return null;
+            string dir = Path.Combine(Build, "replay_assets"), list = Path.Combine(dir, "replays3", Path.GetFileName(replay) + ".txt");
+            if (File.Exists(list) && ReplayAssetsThere(dir, list)) return list;
+            if (Repo == null || RomFS == null) return File.Exists(list) ? list : null;
             string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\replay\replay_assets.py"), arc = Path.Combine(RomFS, "data.arc");
             if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return null;
             var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + dir + "\" --replay \"" + replay + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
             using (var p = Process.Start(psi)) p.WaitForExit(300000);
             return File.Exists(list) ? list : null;
+        }
+
+        /// <summary>the folders a replay's list names are all there (a folder removed by hand: made again)</summary>
+        static bool ReplayAssetsThere(string dir, string list)
+        {
+            foreach (var l in File.ReadAllLines(list))
+            {
+                var p = l.Split(' ');
+                string model = p[0] == "stage" && p.Length >= 2 ? p[1] : p[0] == "fighter" && p.Length >= 5 ? p[2] : p[0] == "extra" && p.Length >= 6 ? p[3] : null;
+                if (model != null && !File.Exists(Path.Combine(dir, model, "model.rvm"))) return false;
+            }
+            return true;
         }
 
         public static string AvatarsDir => Path.Combine(Build, "avatars");
@@ -360,7 +372,7 @@ namespace Arena
         {
             try
             {
-                if (File.Exists(Path.Combine(AvatarsDir, "icons.txt")) || Repo == null || RomFS == null) return;
+                if ((File.Exists(Path.Combine(AvatarsDir, "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "more", "done.txt"))) || Repo == null || RomFS == null) return;
                 string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\ui\extract_fighter_icons.py"), arc = Path.Combine(RomFS, "data.arc");
                 if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return;
                 var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + AvatarsDir + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };

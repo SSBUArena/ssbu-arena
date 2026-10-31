@@ -6,10 +6,13 @@ missing: the models of its fighters and stage and the animations its fighters re
 
     python tools/replay/replay_assets.py --arc <data.arc> --out <build>/replay_assets --replay <file.ssbv>
 
-<fighter>_c<NN>/model.rvm     bones, meshes, skinning (layout: write_model), tex<N>.png
+<fighter>_c<NN>_v3/model.rvm  bones, meshes, skinning (layout: write_model), tex<N>.png
 <fighter>/<motion hash>.rva   one motion's bone tracks and the meshes it switches (layout: write_motion)
-stage_<id>/model.rvm          the stage's playable parts, already placed (no bones)
-replays/<replay name>.txt     what the launcher loads: one line "fighter <slot> <model folder> <motions folder> <scale>" per fighter, "stage <folder>"
+stage3_<id>[_f<form>]/model.rvm   the stage's playable parts, already placed (no bones); platforms.txt: the parts placed each frame on the recorded lines;
+                              forms.txt: the parts of each transformation
+replays3/<replay name>.txt    what the launcher loads: one line "fighter <index> <model folder> <motions folder> <scale>" per fighter,
+                              "extra <index> <recorded slot> <model folder> <motions folder> <scale>" per other body of a fighter (Nana), "stage <folder>"
+(the _v3 / stage3 / replays3 names: files made by an older version are not read, an older launcher keeps its own)
 """
 import argparse
 import hashlib
@@ -37,7 +40,10 @@ pfushigisou plizardon diddy lucas sonic dedede pikmin lucario robot toonlink wol
 palutena pacman reflet shulk koopajr duckhunt ryu ken cloud kamui bayonetta inkling ridley simon richter krool shizue gaogaen packun
 jack brave buddy dolly master tantan pickel edge eflame elight demon trail miifighter miiswordsman miigunner'''.split()
 # a select screen's entry that is not one fighter's folder (ui_chara -> the folders)
-UI_FOLDER = {'ice_climber': 'popo', 'eflame_first': 'eflame', 'elight_first': 'elight', 'pfushigisou': 'pfushigisou'}
+UI_FOLDER = {'ice_climber': 'popo', 'eflame_first': 'eflame', 'elight_first': 'elight', 'eflame_only': 'eflame', 'elight_only': 'elight', 'element': 'eflame', 'pfushigisou': 'pfushigisou',
+             'ptrainer': 'pzenigame', 'ptrainer_low': 'pzenigame'}
+# a player with more bodies, each with a recorded slot of its own: the folders of its other slots, in the order the game makes them
+OTHER_BODIES = {'popo': ['nana'], 'eflame': ['elight'], 'elight': ['eflame'], 'pzenigame': ['pfushigisou', 'plizardon'], 'pfushigisou': ['plizardon', 'pzenigame'], 'plizardon': ['pzenigame', 'pfushigisou']}
 
 
 def hash40(s):
@@ -64,7 +70,13 @@ class Files:
 
     def get(self, name):
         pi = self.names.get(hash40(name) if isinstance(name, str) else name)
-        return None if pi is None else bytes(self.arc.read(self.arc.file_record(pi)))
+        if pi is None:
+            return None
+        try:
+            return bytes(self.arc.read(self.arc.file_record(pi)))
+        except Exception as e:                    # (records of the archive that hold no frame of their own: as a file that is not there)
+            print('file %x: %s' % (hash40(name) if isinstance(name, str) else name, e))
+            return None
 
 
 # ------------------------------------------------------------------ textures
@@ -117,6 +129,14 @@ def short_name(n):
     return n
 
 
+def additive(mat):
+    """a material added to the picture (glows, lights): its black is not drawn in the game, here it would be (the viewer has no additive drawing)"""
+    for p in mat['attributes']:
+        if p['param_id'] == 0x118 and p['param'][0] == 0x11:
+            return struct.unpack_from('<I', p['param'][1], 8)[0] == 1
+    return False
+
+
 def mesh_data(files, baked=False):
     from brawl import ssbh
     _m, _v, mesh = ssbh.parse(files.get('model.numshb'))
@@ -131,7 +151,7 @@ def mesh_data(files, baked=False):
     for o in mesh['objects']:
         key = (o['name'], o['subindex'])
         mat = mats.get(mat_of.get(key))
-        if mat is None:
+        if mat is None or additive(mat):
             continue
         maps = {p['param_id']: p['param'][1] for p in mat['attributes'] if p['param'][0] == 0xB}
         tex = next((maps[k] for k in ((TEX_PARAM, TEX_BAKED) if baked else (TEX_PARAM,)) if k in maps and not maps[k].startswith('#')), None)
@@ -213,7 +233,7 @@ def skinning(m, bone_of, n):
 
 def make_fighter(arc, tree, fighter, colour, out):
     from brawl import ssbh
-    d = os.path.join(out, '%s_c%02d' % (fighter, colour))
+    d = os.path.join(out, '%s_c%02d_v3' % (fighter, colour))
     if os.path.exists(os.path.join(d, 'model.rvm')):
         return 0
     files = Files(arc, tree, 'fighter/%s/c%02d' % (fighter, colour), 'fighter/%s/model/body/c%02d' % (fighter, colour))
@@ -349,11 +369,11 @@ def make_motions(arc, tree, fighter, motions, out):
     for m in missing:
         p = os.path.join(d, '%010x.rva' % (m & M40))
         r = rows.get(m & M40)
-        data = files.get(r.anims[0] & M40) if r and r.anims else None
-        if data is None:
-            open(p, 'wb').close()              # this motion has no animation: known, not asked for again
-            continue
         try:
+            data = files.get(r.anims[0] & M40) if r and r.anims else None
+            if data is None:
+                open(p, 'wb').close()          # this motion has no animation: known, not asked for again
+                continue
             _m, _v, anim = ssbh.parse(data)
             write_motion(p, anim, bone_of)
             made += 1
@@ -364,30 +384,43 @@ def make_motions(arc, tree, fighter, motions, out):
 
 
 # ------------------------------------------------------------------ stages
-# parts the replay does not draw: Pokemon Stadium 2's transformations (the replay does not say which one is on), keeping its normal form
-# and Final Destination's platforms (its other forms). Town and City's moving platforms: the viewer draws them from the recorded lines.
-HIDE_PARTS = {'poke_stadium2': {0x16fe6c4fcf, 0x10555db0c9, 0x102ac7e828, 0x103bc02e8b, 0x10ca9cd1a3, 0x121e829983, 0x12db03f4fe, 0x14d5ce671a, 0x120e6baab0},
+# parts the replay does not draw: Final Destination's platforms (its other forms). Town and City's: its platforms are placed apart (PLATFORMS).
+HIDE_PARTS = {'poke_stadium2': {0x120e6baab0},
               'end': {0x1368726318, 0x12bf759851},
               'animal_city': {0x1ae09d28b4, 0x148ecbe207, 0x1aa41a6c97}}
 MOVING_PART = {'animal_village': 0x1324f918c0}        # the platform that moves: placed each frame on the recorded lines (moving.txt)
+# the part with a stage's several platforms: each one's meshes, by the name they start with, placed each frame on its recorded line (platforms.txt)
+PLATFORMS = {'animal_city': (0x1126d56e9b, {'city_L': 'city_L', 'city_R': 'city_R', 'village_L': 'village_L', 'village_C': 'village_C', 'village_R': 'village_R'})}      # (the leaves: cut-outs, not drawn)
+# the parts of a stage's transformations (forms.txt): the viewer shows the one the recorded lines of the frame say (ReplayScene.StageForm)
+STAGE_FORMS = {'poke_stadium2': {0x12963e23fa: 'normal', 0x1249ee0a19: 'normal', 0x16fe6c4fcf: 'electric', 0x10555db0c9: 'electric', 0x102ac7e828: 'ice', 0x103bc02e8b: 'ground',
+                                 0x10ca9cd1a3: 'flying', 0x14d5ce671a: 'flying', 0x121e829983: 'flying', 0x12db03f4fe: 'ground'}}
+FORM_DIR = {0: 'normal', 1: 'battle', 2: 'end'}       # the stage's form in the match's record -> its models
 STAGE_FOLDER = {'battle_field': 'battlefield', 'battle_field_s': 'battlefield_s', 'end': 'end', 'poke_stadium2': 'poke_stadium2', 'animal_village': 'animal_village',
                 'animal_city': 'animal_city'}
 HIDE_MESH = ('inkmesh', 'shadow', 'castshadow')       # the ink of the Splatoon games' paint, shadow casters
 
 
-def make_stage(arc, tree, stage, out):
+def stage_folder(stage, form):
+    return 'stage3_%s' % stage + ('_f%d' % form if form else '')
+
+
+def make_stage(arc, tree, stage, out, form=0):
     from brawl import ssbh
     import extract_backgrounds as eb
-    d = os.path.join(out, 'stage_%s' % stage)
+    d = os.path.join(out, stage_folder(stage, form))
     if os.path.exists(os.path.join(d, 'model.rvm')) or stage not in eb.PLAYABLE:
         return 0
-    key = hash40('stage/%s/normal/model' % stage)
+    key = hash40('stage/%s/%s/model' % (stage, FORM_DIR.get(form, 'normal')))
     if key not in tree.dirs:
         return 0
     os.makedirs(d, exist_ok=True)
-    all_meshes, tex_names, moving = [], [], None
+    all_meshes, tex_names, moving, platforms, forms = [], [], None, {}, {}
+    plat_part, plat_names = PLATFORMS.get(stage, (None, {})) if not form else (None, {})
     for part in tree.children(tree.dirinfo(tree.dirs[key])):
-        if part['name'] not in eb.PLAYABLE[stage] or part['name'] == eb.TRANSITION or part['name'] in HIDE_PARTS.get(stage, ()):
+        if form:                                          # (the battlefield and final destination forms: see the size check below)
+            if part['name'] == eb.TRANSITION:
+                continue
+        elif part['name'] != plat_part and (part['name'] not in eb.PLAYABLE[stage] or part['name'] == eb.TRANSITION or part['name'] in HIDE_PARTS.get(stage, ())):
             continue
         names = {}
         for f in tree.files(part):
@@ -409,6 +442,8 @@ def make_stage(arc, tree, stage, out):
         for m in mesh_data(files, stage in BAKED_STAGES):
             if m['name'].lower().startswith(HIDE_MESH):
                 continue
+            if form and (np.abs(m['pos'][:, 0]).max() > 110 or np.abs(m['pos'][:, 2]).max() > 110):
+                continue                                  # (these folders have no list of playable parts: what is around the fight is the background)
             m['tex_i'] = -1
             if m['tex']:
                 u = m['tex']
@@ -424,7 +459,9 @@ def make_stage(arc, tree, stage, out):
                         tex_names.append(u)
                 if u in tex_names:
                     m['tex_i'] = tex_names.index(u)
-            if m['parent'] and m['parent'] in rows and not (m['rig'] and m['rig']['buffers']):
+            if part['name'] == plat_part:
+                pass                                      # (a platform's meshes stay at the origin: placed on their line each frame)
+            elif m['parent'] and m['parent'] in rows and not (m['rig'] and m['rig']['buffers']):
                 w = rows[m['parent']]                     # a mesh parented to one bone: placed here, the file has no bones
                 m['pos'] = (m['pos'].dot(w[:3, :3]) + w[3, :3]).astype('<f4')
                 m['nor'] = m['nor'].dot(w[:3, :3]).astype('<f4')
@@ -433,18 +470,34 @@ def make_stage(arc, tree, stage, out):
             m['skin_b'] = np.zeros((len(m['pos']), 4), 'u1')
             m['skin_w'] = np.zeros((len(m['pos']), 4), '<f4')
             m['skin_w'][:, 0] = 1
+            plat = plat_names.get(next((n for n in plat_names if m['name'].startswith(n)), None)) if part['name'] == plat_part else None
+            if part['name'] == plat_part and plat is None:
+                continue
             m['name'] = 'stage%d' % len(all_meshes)
             all_meshes.append(m)
-            if part['name'] == MOVING_PART.get(stage):
+            if part['name'] == MOVING_PART.get(stage) and not form:
                 moving = (moving or []) + [len(all_meshes) - 1]
+            if plat:
+                platforms.setdefault(plat, []).append(len(all_meshes) - 1)
+            if not form and part['name'] in STAGE_FORMS.get(stage, ()):
+                forms.setdefault(STAGE_FORMS[stage][part['name']], []).append(len(all_meshes) - 1)
     ident = np.eye(4, dtype='<f4').tobytes()
     write_model(os.path.join(d, 'model.rvm'), [dict(parent=-1, local=ident, inv=ident)], all_meshes, tex_names)
     if moving:
         pts = np.concatenate([all_meshes[i]['pos'] for i in moving])
         with open(os.path.join(d, 'moving.txt'), 'w') as f:
             f.write('%d %d %f %f' % (moving[0], len(moving), (pts[:, 0].min() + pts[:, 0].max()) / 2, pts[:, 1].max()))
-    if HIDE_PARTS.get(stage) and stage == 'animal_city':
-        open(os.path.join(d, 'lines.txt'), 'w').close()      # the viewer draws the moving platforms as lines
+    if forms:
+        with open(os.path.join(d, 'forms.txt'), 'w') as f:
+            for name, meshes in sorted(forms.items()):
+                f.write(name + ' ' + ' '.join(str(i) for i in meshes) + '\n')
+    if platforms:
+        # (a platform's meshes are at the origin, its top a little over 0: "<name> <mesh> <mesh> ...", then the top)
+        tops = np.concatenate([all_meshes[i]['pos'][:, 1] for v in platforms.values() for i in v])
+        with open(os.path.join(d, 'platforms.txt'), 'w') as f:
+            f.write('%f\n' % np.percentile(tops, 99))
+            for name, meshes in sorted(platforms.items()):
+                f.write(name + ' ' + ' '.join(str(i) for i in meshes) + '\n')
     return 1
 
 
@@ -453,7 +506,8 @@ def replay_needs(path):
     from ssbv import Ssbv
     with open(path, 'rb') as f:
         v = Ssbv(f.read())
-    fighters = [(f['ui_chara'] & M40, f['colour']) for f in v.fighters]
+    # (a fighter's main slot; files of the first test builds: 0xff, the slots are the fighters')
+    fighters = [(f['ui_chara'] & M40, f['colour'], f['slot'] if f['slot'] != 0xff else i, f['entry']) for i, f in enumerate(v.fighters)]
     motions = {}
     for fr in v.frames:
         for slot, st in fr['f'].items():
@@ -464,7 +518,7 @@ def replay_needs(path):
 def scale_of(arc, tree, name, colour, slot, v, out):
     """the fighter's size in the game: the scale that puts its bones nearest the hurt boxes the game recorded (a fighter's model is
     drawn scaled by a parameter). Kept in the model's folder."""
-    f = os.path.join(out, '%s_c%02d' % (name, colour), 'scale.txt')
+    f = os.path.join(out, '%s_c%02d_v3' % (name, colour), 'scale.txt')
     if os.path.exists(f):
         return open(f).read().strip()
     from brawl import ssbh
@@ -550,23 +604,30 @@ def main():
     v, fighters, motions = replay_needs(a.replay)
     made = 0
     manifest = []
-    for slot, (ui, colour) in enumerate(fighters):
+    for index, (ui, colour, slot, entry) in enumerate(fighters):
         name = fighter_of(ui)
         if not name:
             print('fighter not known: %x' % ui)
-            manifest.append('fighter %d' % slot)
+            manifest.append('fighter %d' % index)
             continue
-        print('fighter', slot, name, 'colour', colour, flush=True)
+        print('fighter', index, name, 'colour', colour, flush=True)
         made += make_fighter(arc, tree, name, colour, a.out)
         made += make_motions(arc, tree, name, motions.get(slot, ()), a.out)
-        manifest.append('fighter %d %s_c%02d %s %s' % (slot, name, colour, name, scale_of(arc, tree, name, colour, slot, v, a.out)))
+        manifest.append('fighter %d %s_c%02d_v3 %s %s' % (index, name, colour, name, scale_of(arc, tree, name, colour, slot, v, a.out)))
+        # the player's other bodies (Nana): the other recorded slots of the same entry (the slot table of the file's header)
+        others = [k for k in sorted(motions) if k != slot and v.slot_entry[k] == entry]
+        for k, other in zip(others, OTHER_BODIES.get(name, [])):
+            print('other body', k, other, flush=True)
+            made += make_fighter(arc, tree, other, colour, a.out)
+            made += make_motions(arc, tree, other, motions[k], a.out)
+            manifest.append('extra %d %d %s_c%02d_v3 %s %s' % (index, k, other, colour, other, scale_of(arc, tree, other, colour, k, v, a.out)))
     stage = next((f for u, f in STAGE_FOLDER.items() if hash40('ui_stage_' + u) == v.ui_stage & M40), None)
-    print('stage', stage, flush=True)
+    print('stage', stage, 'form', v.stage_form, flush=True)
     if stage:
-        made += make_stage(arc, tree, stage, a.out)
-        manifest.append('stage stage_%s' % stage)
-    os.makedirs(os.path.join(a.out, 'replays'), exist_ok=True)
-    with open(os.path.join(a.out, 'replays', os.path.basename(a.replay) + '.txt'), 'w') as f:
+        made += make_stage(arc, tree, stage, a.out, v.stage_form)
+        manifest.append('stage %s' % stage_folder(stage, v.stage_form))
+    os.makedirs(os.path.join(a.out, 'replays3'), exist_ok=True)
+    with open(os.path.join(a.out, 'replays3', os.path.basename(a.replay) + '.txt'), 'w') as f:
         f.write('\n'.join(manifest) + '\n')
     print('done', made, flush=True)
 
