@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SSBU Arena launcher: the schematic replay view (ReplayState.cs): the stage drawn from the collision lines the game
 // reported, the blast zones, the fighters as their hurt volumes in the player's colour with name and a facing mark, the
-// hitboxes as wireframe spheres (the website's HitSphere style), the damage and stocks; and the timeline under it.
+// hitboxes as wireframe spheres (the website's HitSphere style), the damage and stocks; and the timeline under it. Weapons and items without
+// a model: a shape with the name of their kind. Each frame is drawn from its own data only, so seeking backwards shows the same as playing.
 // Everything is drawn in OnRender from frozen pens / brushes, at the display's rate while playing.
 using System;
 using System.Collections.Generic;
@@ -49,6 +50,8 @@ namespace Arena
         static readonly Pen HurtXlu = RvPalette.P(RvPalette.Hex("#8899AA"), .6, 1.2, new DashStyle(new double[] { 3, 3 }, 0));
         static readonly Brush HurtFill = RvPalette.B(RvPalette.Hex("#9FC6DD"), .05);
         static readonly Brush TextB = RvPalette.B(RvPalette.Hex("#EEF3F7")), MutedB = RvPalette.B(RvPalette.Hex("#91A0B2")), DimB = RvPalette.B(RvPalette.Hex("#5D6B7C"));
+        static readonly Brush ItemFill = RvPalette.B(RvPalette.Hex("#FFD27A"), .22);
+        static readonly Pen ItemEdge = RvPalette.P(RvPalette.Hex("#FFD27A"), .9, 1.4);
         Brush[] playerB, playerFill, hitFill; Pen[] playerP, hitP, hitInner, hurtP;
         static readonly Color Hot = RvPalette.Hex("#FF8A1F"), HotPale = RvPalette.Hex("#FFD27A");
 
@@ -279,6 +282,12 @@ namespace Arena
                     if (ShowHurt) foreach (var u in e.Value.Hurts) DrawCapsule(dc, u.X, u.Y, u.X2, u.Y2, u.R, hurtP[e.Key % 4], null);
                     DrawFighter(dc, e.Value, e.Key, e.Key % 4, false);
                 }
+            // the weapons and items of this frame: their model is in the scene; without one, a plain shape with the kind's name
+            if (fr.Objects != null)
+                foreach (var o in fr.Objects)
+                    if (!r.HelperKinds.Contains(o.Cat * 65536 + o.Kind) && (Scene == null || !Scene.ObjectShown(o)) && (o.IsItem || o.Hits.Length > 0)) DrawObjectShape(dc, o);
+            if (ShowHit && fr.Objects != null)
+                foreach (var o in fr.Objects) foreach (var h in o.Hits) DrawHitSphere(dc, h, (o.Owner == 0xff ? 0 : o.Owner) % 4);
             if (ShowHit)
                 for (int k = 0; k < fr.F.Length && k < r.Fighters.Count; k++)
                 {
@@ -288,6 +297,18 @@ namespace Arena
             if (ShowHit && fr.Extra != null) foreach (var e in fr.Extra) foreach (var h in e.Value.Hits) DrawHitSphere(dc, h, e.Key % 4);
 
             DrawHud(dc, fr, W, H, hudH);
+        }
+
+        void DrawObjectShape(DrawingContext dc, RvObject o)
+        {
+            Point c = S(o.X, o.Y + (o.IsItem ? 2 : 0));
+            double R = Math.Max(2.2 * sc, 5);
+            int pc = (o.Owner == 0xff ? 0 : o.Owner) % 4;
+            if (o.IsItem) dc.DrawRoundedRectangle(ItemFill, ItemEdge, new Rect(c.X - R, c.Y - R, R * 2, R * 2), R * .35, R * .35);
+            else dc.DrawEllipse(playerFill[pc], playerP[pc], c, R * .8, R * .8);
+            string name = Scene?.ObjectName(o) ?? (o.IsItem ? "Item " : "Projectile ") + o.Kind;
+            var t = Text(name, 11, TextB, Ui);
+            dc.DrawText(t, new Point(c.X - t.Width / 2, c.Y - R - t.Height - 1));
         }
 
         void DrawCapsule(DrawingContext dc, float x1, float y1, float x2, float y2, float rr, Pen pen, Brush fill)

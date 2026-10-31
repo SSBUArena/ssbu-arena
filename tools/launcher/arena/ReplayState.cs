@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SSBU Arena launcher: the schematic replays (.ssbv). Each game writes one per match into <Saves>\replays
 // (fighter_sdk/replay_state.c documents the layout): the state of each fighter in every final frame as the game itself
-// reported it (position, damage, action, shield, stocks, hit and hurt boxes), the stage's collision lines and blast zones.
+// reported it (position, damage, action, shield, stocks, hit and hurt boxes), the stage's collision lines and blast zones,
+// and (version 3) the weapons and items of each frame (the files of older versions have none and still open).
 // Here: reading (the raw body is deflated in place the first time, codec 1), the list, names, and the match statistics.
 using System;
 using System.Collections.Generic;
@@ -24,6 +25,12 @@ namespace Arena
         public RvHurt[] Hurts;
         public bool Grounded => Situation == 0;
     }
+    /// <summary>(file version 3) a weapon, item, gimmick of this frame. Id: the game's own, the same while it lives</summary>
+    public sealed class RvObject
+    {
+        public uint Id; public int Kind, Cat, Lr, Owner; public float X, Y, MotionFrame, Rot, Scale; public ulong Motion; public RvHit[] Hits;
+        public bool IsItem => Cat == 4;
+    }
     public sealed class RvLine { public float X1, Y1, X2, Y2; public int Flags; public bool Floor => (Flags & 1) != 0; public bool Passable => (Flags & 2) != 0; public bool Wall => (Flags & 4) != 0; public bool Moves => (Flags & 16) != 0; public int FirstFrame => (int)((uint)Flags >> 8); }
     public sealed class RvFrame
     {
@@ -32,6 +39,7 @@ namespace Arena
         public List<KeyValuePair<int, RvFighterFrame>> Extra;   // a player's other bodies (Nana of the Ice Climbers): fighter index, state
         public float[][] Lines;                         // the stage lines' end points at this frame (shared arrays when unchanged)
         public ulong LinesOn;                           // the lines that exist at this frame (bit per line)
+        public RvObject[] Objects;                      // weapons and items at this frame (null: none, or a file before version 3)
     }
     public sealed class RvFighter
     {
@@ -78,7 +86,7 @@ namespace Arena
             if (f.Length < HeaderSize || Encoding.ASCII.GetString(f, 0, 4) != "SSBV") throw new Exception("not an SSBU Arena match state file");
             var r = new ReplayState { Path = path, FileSize = size };
             r.Version = BitConverter.ToUInt16(f, 4);
-            if (r.Version < 1 || r.Version > 2) throw new Exception("match state format " + r.Version + ": update SSBU Arena");
+            if (r.Version < 1 || r.Version > 3) throw new Exception("match state format " + r.Version + ": update SSBU Arena");
             int hs = BitConverter.ToUInt16(f, 6);
             r.Flags = (int)BitConverter.ToUInt32(f, 8); r.Frames = (int)BitConverter.ToUInt32(f, 0xc); r.UnixTime = BitConverter.ToInt64(f, 0x10);
             uint stored = BitConverter.ToUInt32(f, 0x18), raw = BitConverter.ToUInt32(f, 0x1c);
@@ -138,7 +146,7 @@ namespace Arena
             while (o + fh <= b.Length)
             {
                 var fr = new RvFrame { Number = (int)BitConverter.ToUInt32(b, o), F = new RvFighterFrame[Math.Max(nf, 4)], LinesOn = fh == 16 ? BitConverter.ToUInt64(b, o + 8) : ulong.MaxValue };
-                int mask = b[o + 4], moved = b[o + 5]; o += fh;
+                int mask = b[o + 4], moved = b[o + 5], nobj = Version >= 3 ? BitConverter.ToUInt16(b, o + 6) : 0; o += fh;
                 if (moved > 0) { cur = (float[][])cur.Clone(); }
                 for (int m = 0; m < moved; m++)
                 {
@@ -183,9 +191,29 @@ namespace Arena
                         else if (fe >= 0) (fr.Extra ?? (fr.Extra = new List<KeyValuePair<int, RvFighterFrame>>())).Add(new KeyValuePair<int, RvFighterFrame>(fe, s));
                     }
                 }
+                if (nobj > 0) fr.Objects = new RvObject[nobj];
+                for (int i = 0; i < nobj; i++)
+                {
+                    var ob = new RvObject
+                    {
+                        Id = BitConverter.ToUInt32(b, o), Kind = BitConverter.ToUInt16(b, o + 4), Cat = b[o + 6], Lr = (sbyte)b[o + 7], X = BitConverter.ToInt16(b, o + 8) / 16f, Y = BitConverter.ToInt16(b, o + 10) / 16f,
+                        MotionFrame = BitConverter.ToUInt16(b, o + 12) / 8f, Rot = BitConverter.ToInt16(b, o + 14) / 10f, Motion = BitConverter.ToUInt32(b, o + 16) | (ulong)b[o + 20] << 32, Owner = b[o + 21], Scale = b[o + 23] / 32f,
+                    };
+                    int nh = b[o + 22];
+                    o += 24;
+                    ob.Hits = new RvHit[nh];
+                    for (int h = 0; h < nh; h++, o += 20)
+                        ob.Hits[h] = new RvHit
+                        {
+                            X = BitConverter.ToInt16(b, o) / 16f, Y = BitConverter.ToInt16(b, o + 2) / 16f, X2 = BitConverter.ToInt16(b, o + 4) / 16f, Y2 = BitConverter.ToInt16(b, o + 6) / 16f,
+                            R = BitConverter.ToUInt16(b, o + 8) / 16f, Id = b[o + 10], Flags = b[o + 11], Damage = BitConverter.ToUInt16(b, o + 12) / 10f, Angle = BitConverter.ToInt16(b, o + 14),
+                        };
+                    fr.Objects[i] = ob;
+                }
                 FrameList.Add(fr);
             }
             Frames = FrameList.Count;
+            MarkHelpers();
             // the lines of the start scan are known only once the scan is over (its first frames): they were there before too
             for (int i = 0; i < Lines.Count && i < 64; i++)
             {
@@ -193,6 +221,26 @@ namespace Arena
                 int on = FrameList.FindIndex(x => (x.LinesOn & (1UL << i)) != 0);
                 for (int j = 0; j < on; j++) FrameList[j].LinesOn |= 1UL << i;
             }
+        }
+
+        /// <summary>the kinds that are only the game's helpers: there for nearly the whole match, never moving, never hitting (Link's bow while it is not in use, Steve's bench):
+        /// not drawn. Cat * 65536 + kind</summary>
+        public HashSet<int> HelperKinds = new HashSet<int>();
+        void MarkHelpers()
+        {
+            var seen = new Dictionary<uint, float[]>();      // id: frames, min x, max x, min y, max y, hit, cat * 65536 + kind
+            foreach (var fr in FrameList)
+            {
+                if (fr.Objects == null) continue;
+                foreach (var ob in fr.Objects)
+                {
+                    if (!seen.TryGetValue(ob.Id, out var s)) seen[ob.Id] = s = new[] { 0, ob.X, ob.X, ob.Y, ob.Y, 0, ob.Cat * 65536f + ob.Kind };
+                    s[0]++; s[1] = Math.Min(s[1], ob.X); s[2] = Math.Max(s[2], ob.X); s[3] = Math.Min(s[3], ob.Y); s[4] = Math.Max(s[4], ob.Y);
+                    if (ob.Hits.Length > 0) s[5] = 1;
+                }
+            }
+            foreach (var s in seen.Values)
+                if (s[0] > FrameList.Count * .9 && s[5] == 0 && s[2] - s[1] < 2 && s[4] - s[3] < 2) HelperKinds.Add((int)s[6]);
         }
 
         /// <summary>a raw file (codec 0) rewritten with its body deflated (codec 1): about a tenth of the size</summary>

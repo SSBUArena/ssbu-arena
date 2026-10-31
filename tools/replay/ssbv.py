@@ -47,11 +47,13 @@ class Ssbv:
         o = 20 * self.nlines
         while o + 8 <= len(body):
             if self.version >= 2:
-                fr, mask, moved, _, valid = struct.unpack_from("<IBBHQ", body, o)
+                fr, mask, moved, nobj, valid = struct.unpack_from("<IBBHQ", body, o)
+                nobj = nobj if self.version >= 3 else 0
                 o += 16
             else:
                 fr, mask, moved = struct.unpack_from("<IBB", body, o)
                 valid = (1 << 64) - 1
+                nobj = 0
                 o += 8
             mv = []
             for _ in range(moved):
@@ -75,7 +77,17 @@ class Ssbv:
                     hurts.append(dict(x=ux / 16, y=uy / 16, x2=ux2 / 16, y2=uy2 / 16, r=ur / 16, part=part, status=ust))
                     o += 12
                 fs[k] = dict(x=x, y=y, dmg=dmg, mf=mf, motion=mot, status=st, lr=lr, situation=sit, stocks=stocks, shield=shield, ff=ff, hits=hits, hurts=hurts)
-            self.frames.append(dict(frame=fr, moved=mv, valid=valid, f=fs))
+            objs = []
+            for _ in range(nobj):
+                oid, kind, cat, lr, ox, oy, mf8, rot10, mot, mot_hi, owner, nhit, scale32 = struct.unpack_from("<IHBbhhHhIBBBB", body, o)
+                o += 24
+                hits = []
+                for _ in range(nhit):
+                    hx, hy, hx2, hy2, r, hid, hfl, d10, ang, kbg, bkb = struct.unpack_from("<4hHBBHhHH", body, o)
+                    hits.append(dict(x=hx / 16, y=hy / 16, x2=hx2 / 16, y2=hy2 / 16, r=r / 16, id=hid, dmg=d10 / 10, angle=ang))
+                    o += 20
+                objs.append(dict(id=oid, kind=kind, cat=cat, lr=lr, x=ox / 16, y=oy / 16, mf=mf8 / 8, rot=rot10 / 10, motion=mot | mot_hi << 32, owner=owner, scale=scale32 / 32, hits=hits))
+            self.frames.append(dict(frame=fr, moved=mv, valid=valid, f=fs, o=objs))
 
 
 def line(fr):

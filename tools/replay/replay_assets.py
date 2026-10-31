@@ -12,6 +12,8 @@ stage3_<id>[_f<form>]/model.rvm   the stage's playable parts, already placed (no
                               forms.txt: the parts of each transformation
 replays3/<replay name>.txt    what the launcher loads: one line "fighter <index> <model folder> <motions folder> <scale>" per fighter,
                               "extra <index> <recorded slot> <model folder> <motions folder> <scale>" per other body of a fighter (Nana), "stage <folder>"
+                              "object <cat> <kind> <name> [<model folder> <motions folder> <scale>]" per kind of weapon or item of the file (version 3)
+obj_<name>[_c<NN>]_v3/, obj_<name>/   a weapon's or an item's model and motions (the same layouts); no model of its own: only the name in the list
 (the _v3 / stage3 / replays3 names: files made by an older version are not read, an older launcher keeps its own)
 """
 import argparse
@@ -119,11 +121,11 @@ FACE_DEFAULT = ('_Eye', '_FaceN', '_FaceNMClose')
 
 
 def visible_default(full, short):
-    return '_VIS_' not in full or short.endswith(FACE_DEFAULT)
+    return '_VIS_' not in full or full.endswith('_VIS_O_OBJ_NSCShape') or short.endswith(FACE_DEFAULT)      # (_NSC: Steve's body)
 
 
 def short_name(n):
-    for s in ('_VIS_O_OBJShape', '_O_OBJShape', 'Shape'):
+    for s in ('_VIS_O_OBJ_NSCShape', '_VIS_O_OBJShape', '_O_OBJShape', 'Shape'):
         if n.endswith(s):
             return n[:-len(s)]
     return n
@@ -240,8 +242,19 @@ def make_fighter(arc, tree, fighter, colour, out):
     if files.get('model.numshb') is None:
         print('no model of', fighter, colour)
         return 0
+    return write_files_model(files, d)
+
+
+def write_files_model(files, d):
+    """one model's files of the archive -> model.rvm, tex<N>.png, names.txt in d"""
+    from brawl import ssbh
     os.makedirs(d, exist_ok=True)
-    _m, _v, sk = ssbh.parse(files.get('model.nusktb'))
+    skl = files.get('model.nusktb')
+    if skl is None:                           # (a thing without bones)
+        ident = np.eye(4, dtype='<f4').tobytes()
+        sk = dict(bone_entries=[dict(parent=-1, name='root')], local=[ident], inv_world=[ident], world=[ident])
+    else:
+        _m, _v, sk = ssbh.parse(skl)
     bones = [dict(parent=b['parent'], name=b['name'], local=sk['local'][i], inv=sk['inv_world'][i]) for i, b in enumerate(sk['bone_entries'])]
     bone_of = {b['name']: i for i, b in enumerate(bones)}
     meshes = mesh_data(files)
@@ -350,27 +363,47 @@ def write_motion(path, anim, bone_of):
 
 
 def make_motions(arc, tree, fighter, motions, out):
-    from brawl import ssbh
-    from brawl.motion_list import MotionList
     d = os.path.join(out, fighter)
     os.makedirs(d, exist_ok=True)
     missing = [m for m in motions if not os.path.exists(os.path.join(d, '%010x.rva' % (m & M40)))]
     if not missing:
         return 0
     files = Files(arc, tree, 'fighter/%s/c00' % fighter, 'fighter/%s/motion/body/c00' % fighter)
+    model = Files(arc, tree, 'fighter/%s/c00' % fighter, 'fighter/%s/model/body/c00' % fighter)
+    return write_files_motions(files, model, missing, d)
+
+
+def motion_rows(data):
+    """motion_list.bin (layout: fighter_sdk/tools/brawl/motion_list.py; weapons' rows have a shorter tail): motion -> its animation files"""
+    rows = {}
+    count = struct.unpack_from('<Q', data, 16)[0]
+    p = 24
+    for _ in range(count):
+        key, _game, _fl, _bl, n, tail = struct.unpack_from('<QQHBBI', data, p)
+        p += 24
+        rows[key & M40] = struct.unpack_from('<%dQ' % n, data, p)
+        p += 8 * n + (n + 3) // 4 * 4 + tail
+    return rows
+
+
+def write_files_motions(files, model, missing, d):
+    from brawl import ssbh
     listed = files.get('motion_list.bin')
     if listed is None:
         return 0
-    rows = {r.key & M40: r for r in MotionList(listed).rows}
-    model = Files(arc, tree, 'fighter/%s/c00' % fighter, 'fighter/%s/model/body/c00' % fighter)
-    _m, _v, sk = ssbh.parse(model.get('model.nusktb'))
-    bone_of = {b['name']: i for i, b in enumerate(sk['bone_entries'])}
+    rows = motion_rows(listed)
+    skl = model.get('model.nusktb')
+    if skl is None:
+        bone_of = {}
+    else:
+        _m, _v, sk = ssbh.parse(skl)
+        bone_of = {b['name']: i for i, b in enumerate(sk['bone_entries'])}
     made = 0
     for m in missing:
         p = os.path.join(d, '%010x.rva' % (m & M40))
         r = rows.get(m & M40)
         try:
-            data = files.get(r.anims[0] & M40) if r and r.anims else None
+            data = files.get(r[0] & M40) if r else None
             if data is None:
                 open(p, 'wb').close()          # this motion has no animation: known, not asked for again
                 continue
@@ -501,6 +534,53 @@ def make_stage(arc, tree, stage, out, form=0):
     return 1
 
 
+# ------------------------------------------------------------------ weapons and items
+def object_place(cat, kind):
+    """-> the label, and for the archive: (group, model folder, motion folder) with %02d for the colour; None: only a label"""
+    from replay_kinds import WEAPON_KIND, ITEM_KIND
+    if cat == 1 and kind in WEAPON_KIND:
+        n = WEAPON_KIND[kind].lower()
+        f = next((f for f in sorted(FIGHTERS, key=len, reverse=True) if n.startswith(f + '_')), None)
+        if f is None:
+            return n, None
+        w = n[len(f) + 1:]
+        return n, ('fighter/%s/c%%02d' % f, 'fighter/%s/model/%s/c%%02d' % (f, w), 'fighter/%s/motion/%s/c00' % (f, w), 'fighter/%s/c00' % f)
+    if cat == 4 and kind in ITEM_KIND:
+        n = ITEM_KIND[kind].lower()
+        return n, ('item/%s' % n, 'item/%s/model/body/c%%02d' % n, 'item/%s/motion/body/c00' % n, 'item/%s' % n)
+    return ('projectile_%d' % kind if cat == 1 else 'item_%d' % kind if cat == 4 else 'object_%d' % kind), None
+
+
+def make_object(arc, tree, cat, kind, colour, motions, out):
+    """the line of the list for one kind; its files, what is missing of them"""
+    name, place = object_place(cat, kind)
+    label = {'pickelobject': 'steve_block'}.get(name, name)
+    if place is None:
+        return 'object %d %d %s' % (cat, kind, label)
+    group, model, motion, group0 = place
+    files = None
+    for col in (colour, 0):
+        g = group % col if '%' in group else group
+        fl = Files(arc, tree, g, model % col)
+        if fl.get('model.numshb') is not None:
+            files, used = fl, col
+            break
+    if files is None:
+        return 'object %d %d %s' % (cat, kind, label)
+    d, md = 'obj_%s_c%02d_v3' % (name, used), 'obj_%s' % name
+    try:
+        if not os.path.exists(os.path.join(out, d, 'model.rvm')):
+            write_files_model(files, os.path.join(out, d))
+        os.makedirs(os.path.join(out, md), exist_ok=True)
+        missing = [m for m in motions if not os.path.exists(os.path.join(out, md, '%010x.rva' % (m & M40)))]
+        if missing:
+            write_files_motions(Files(arc, tree, group0, motion), files, missing, os.path.join(out, md))
+    except Exception as e:
+        print('object', name, e)
+        return 'object %d %d %s' % (cat, kind, label)
+    return 'object %d %d %s %s %s 1' % (cat, kind, label, d, md)
+
+
 # ------------------------------------------------------------------ a replay's needs
 def replay_needs(path):
     from ssbv import Ssbv
@@ -621,6 +701,14 @@ def main():
             made += make_fighter(arc, tree, other, colour, a.out)
             made += make_motions(arc, tree, other, motions[k], a.out)
             manifest.append('extra %d %d %s_c%02d_v3 %s %s' % (index, k, other, colour, other, scale_of(arc, tree, other, colour, k, v, a.out)))
+    # the weapons and items of the file (version 3), the colour of the fighter that made them
+    kinds = {}
+    for fr in v.frames:
+        for o in fr.get('o', ()):
+            k = kinds.setdefault((o['cat'], o['kind']), [next((c for u, c, s, e in fighters if e == o['owner']), 0), set()])
+            k[1].add(o['motion'])
+    for (cat, kind), (colour, ms) in sorted(kinds.items()):
+        manifest.append(make_object(arc, tree, cat, kind, colour, ms, a.out))
     stage = next((f for u, f in STAGE_FOLDER.items() if hash40('ui_stage_' + u) == v.ui_stage & M40), None)
     print('stage', stage, 'form', v.stage_form, flush=True)
     if stage:
