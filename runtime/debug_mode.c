@@ -766,7 +766,83 @@ void hs_show_agreed(int idx) {
     }
     fflush(stdout);
 }
+/* (0.2.23) The game's allocator (jemalloc) after a rollback. Crash reports of two PCs: bitmap_sfu 0x7103932ba0 on a slab whose free count is
+ * not 0 although its bitmap has no free bit: the first set bit of 0 is -1 and the read lands 32 GB away. What makes a slab so is not known
+ * yet (two checks around each rollback load say when). extent_nfree_get 0x7103931e50 runs under the bin's lock: for such a slab it now
+ * answers 0, so the allocator treats it as full and takes another one; the line in the log says it happened.
+ * Bin: arena + 0x3e20 + 0x138 * n, its slab + 0x98; slab: + 0 bits (size class at bit 18, 8 bits; free count at bit 26, 14 bits), + 0x40
+ * bitmap; 0x7104862158 + 0x58 * n: the bin's facts, + 0x18 its bitmap's (+ 8 levels, + 0x10 each level's first word).
+ * SSBU_ALLOC_CHECK=0: none of this. SSBU_ALLOC_REPAIR=0 (test): no answer of 0. SSBU_ALLOC_TEST_BREAK=<n> (test): at the n-th check the
+ * current slab of each bin of the first arena is made so. */
+#define AC_NARENA 8
+static uint64_t g_ac_arena[AC_NARENA]; static ImportFn g_orig_fill, g_orig_nfree; static long long g_ac_bad, g_ac_checks; static volatile LONG g_ac_saved;
+static int g_ac_repair = 1, g_ac_break;
+static void ac_nfree_hook(Ctx *c, void *user) {
+    (void)user;
+    uint64_t slab = c->x[0];
+    g_orig_nfree(c);
+    if (!c->x[0] || !g_ac_repair) return;
+    uint64_t bits = *(uint64_t *)(uintptr_t)slab, ind = (bits >> 18) & 0xff;
+    if (ind >= 36) return;
+    uint64_t facts = GA(0x7104862158ULL) + 0x58 * ind;
+    uint32_t nl = *(uint32_t *)(uintptr_t)(facts + 0x18 + 8);
+    if (nl < 1 || nl > 8) return;
+    uint64_t top = *(uint64_t *)(uintptr_t)(facts + 0x18 + 0x10 + 8ull * (nl - 1));
+    if (*(uint64_t *)(uintptr_t)(slab + 0x40 + top * 8)) return;
+    LONG n = InterlockedIncrement(&g_ac_saved);
+    if (n <= 20) { printf("alloc check: slab %llx of bin %llu has %llu free by its count and no free bit: taken as full (%ld so far)\n", (unsigned long long)slab, (unsigned long long)ind, (unsigned long long)c->x[0], n); fflush(stdout); }
+    c->x[0] = 0;
+}
+static void ac_fill_hook(Ctx *c, void *user) {
+    (void)user;
+    uint64_t a = c->x[1];
+    for (int i = 0; i < AC_NARENA; i++) {
+        uint64_t have = g_ac_arena[i];
+        if (have == a) break;
+        if (!have && InterlockedCompareExchange64((volatile LONG64 *)&g_ac_arena[i], (LONG64)a, 0) == 0) { printf("alloc check: arena %d at %llx\n", i, (unsigned long long)a); fflush(stdout); break; }
+    }
+    g_orig_fill(c);
+}
+static int ac_read(uint64_t a, void *out, size_t n) { SIZE_T got = 0; return ReadProcessMemory(GetCurrentProcess(), (const void *)(uintptr_t)a, out, n, &got) && got == n; }
+void dm_alloc_check(const char *when, long long frame) {
+    if (!g_orig_fill) return;
+    g_ac_checks++;
+    if (g_ac_break && g_ac_checks == g_ac_break && g_ac_arena[0]) {
+        for (int b = 0; b < 36; b++) {
+            uint64_t slab = *(uint64_t *)(uintptr_t)(g_ac_arena[0] + 0x3e20 + 0x138ull * (unsigned)b + 0x98);
+            if (!slab || !((*(uint64_t *)(uintptr_t)slab >> 26) & 0x3fff)) continue;
+            uint64_t facts = GA(0x7104862158ULL) + 0x58ull * (unsigned)b; uint32_t nl = *(uint32_t *)(uintptr_t)(facts + 0x18 + 8);
+            uint64_t end = *(uint64_t *)(uintptr_t)(facts + 0x18 + 0x10 + 8ull * nl);
+            memset((void *)(uintptr_t)(slab + 0x40), 0, (size_t)end * 8);
+            printf("alloc check: TEST: slab %llx of bin %d made to have no free bit\n", (unsigned long long)slab, b); fflush(stdout);
+        }
+    }
+    for (int ai = 0; ai < AC_NARENA && g_ac_arena[ai]; ai++) {
+        for (int b = 0; b < 36; b++) {
+            uint64_t bin = g_ac_arena[ai] + 0x3e20 + 0x138ull * (unsigned)b, slab = 0, bits = 0, facts = GA(0x7104862158ULL) + 0x58ull * (unsigned)b;
+            uint64_t lv[3] = {0, 0, 0}, nl = 0, w[64];
+            if (!ac_read(bin + 0x98, &slab, 8) || !slab || !ac_read(slab, &bits, 8)) continue;
+            if (!ac_read(facts + 0x18 + 8, &nl, 8) || !ac_read(facts + 0x18 + 0x10, lv, sizeof lv)) continue;
+            nl &= 0xffffffffu;
+            if (nl < 1 || lv[1] <= lv[0] || lv[1] > 64) continue;
+            if (!ac_read(slab + 0x40 + lv[0] * 8, w, (size_t)(lv[1] - lv[0]) * 8)) continue;
+            unsigned nfree = (unsigned)((bits >> 26) & 0x3fff), ones = 0;
+            for (uint64_t k = 0; k < lv[1] - lv[0]; k++) ones += (unsigned)__popcnt64(w[k]);
+            if (nfree != ones && g_ac_bad++ < 40) {
+                printf("alloc check: BAD (%s, rollback frame %lld): arena %d bin %d slab %llx: free count %u, free bits %u\n", when, frame, ai, b, (unsigned long long)slab, nfree, ones);
+                fflush(stdout);
+            }
+        }
+    }
+}
 void debug_mode_init(void) {
+    {   const char *e = getenv("SSBU_ALLOC_CHECK");
+        if (!(e && e[0] == '0')) {
+            e = getenv("SSBU_ALLOC_REPAIR"); g_ac_repair = !(e && e[0] == '0');
+            e = getenv("SSBU_ALLOC_TEST_BREAK"); g_ac_break = e ? atoi(e) : 0;
+            hook_install(GA(0x7103931cb0ULL), ac_fill_hook, NULL, &g_orig_fill);
+            hook_install(GA(0x7103931e50ULL), ac_nfree_hook, NULL, &g_orig_nfree);
+        } }
     if (getenv("SSBU_DEBUG_PANELS")) CreateThread(NULL, 0, panel_thread, NULL, 0, NULL);
     const char *end = getenv("SSBU_DEBUG_END"), *list = getenv("SSBU_DEBUG_MATCH_LIST");
     if (end && atof(end) > 0) { g_end_limit = (LONG64)(strchr(end, 's') ? atof(end) * 60.0 : atof(end)); printf("debug end: the run ends after %lld fight frames\n", (long long)g_end_limit); }

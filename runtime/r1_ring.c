@@ -898,6 +898,7 @@ static void rgc_after(void) {                           /* after the copies and 
 static long long g_rg_refused;                        /* (R3 pub1) loads refused: a thread still running after the hold */
 static long long g_rg_rezero;                         /* (Arena) pages decommitted at the loaded frame, committed since: zeroed by the load */
 static long long g_rg_ldpg, g_rg_recommit, g_rg_rewake;           /* (R3 net3) pages to load, all loads (the written ones: g_cp_wrote); pages committed again by a load */
+void dm_alloc_check(const char *when, long long frame);    /* debug_mode.c */
 int r1_ring_load(long long frame, Ctx *c) {
     int si = -1;
     for (int i = 0; i < g_rg_count; i++) if (rg_slot(i)->frame == frame) si = i;
@@ -1003,6 +1004,7 @@ int r1_ring_load(long long frame, Ctx *c) {
     double t3 = now_ms();
     {   int os_r1_wake_waits_from(uint64_t lr);      /* (Arena: the 6700K hang) the task workers' idle wait: woken again (os_threads.c) */
         g_rg_rewake += os_r1_wake_waits_from(GA(0x710354a5acull)); }
+    dm_alloc_check("after the load", frame);
     unpark();
     g_mp[4] += t2a - t2; g_mp[5] += t2b - t2a; g_mp[6] += t2c - t2b; g_mp[7] += t3 - t2c; g_mp[8] += now_ms() - t3; g_mp_n[1]++;
     *c = g->ctx;
