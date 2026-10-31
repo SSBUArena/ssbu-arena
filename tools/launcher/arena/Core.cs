@@ -278,7 +278,7 @@ namespace Arena
         }
 
         public static string StagesDir => Path.Combine(Build, "stages");
-        public static bool StagesReady() { return File.Exists(Path.Combine(StagesDir, "done_v2.txt")); }
+        public static bool StagesReady() { return File.Exists(Path.Combine(StagesDir, "done_v3.txt")); }
 
         /// <summary>(0.2.20) the stage backgrounds from this player's data.arc (tools/stages/extract_backgrounds.py, about 240 MB, game
         /// content: never in the repository or on the server). When a player first chooses a background that needs them.</summary>
@@ -292,7 +292,7 @@ namespace Arena
                 if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return false;
                 var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + StagesDir + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
                 using (var p = Process.Start(psi)) { p.WaitForExit(300000); if (p.ExitCode != 0) return false; }
-                File.WriteAllText(Path.Combine(StagesDir, "done_v2.txt"), "ok");
+                File.WriteAllText(Path.Combine(StagesDir, "done_v3.txt"), "ok");
                 return true;
             }
             catch { return false; }
@@ -734,7 +734,7 @@ namespace Arena
             env["SSBU_FONTS"] = Fonts;
             env["SSBU_LOOSE_FILES"] = Competitive ? "1" : "0";      // build\characters\competitive (runtime/loose_files.c)
             if (InputDelay >= 1) env["SSBU_RB_NET_DELAY"] = InputDelay.ToString();      // (0.2.14) the player's choice; unset: from the round trip (rb_net.c auto_delay)
-            if (StageBg > 0 && StagesReady()) env["SSBU_STAGE_BG"] = StageBg == 1 ? "off" : "custom";      // (0.2.20) runtime/loose_files.c: local graphics only
+            if (StageBg > 0 && MakeStages()) env["SSBU_STAGE_BG"] = StageBg == 1 ? "off" : "custom";      // (0.2.20) runtime/loose_files.c: local graphics only
             env["SSBU_LATENCY"] = "normal";                          // wins over a latency = low / lowest written by hand in graphics.ini
             env["SSBU_COMPETITIVE"] = env["SSBU_LOOSE_FILES"];       // no FS meter, no random items (runtime/competitive.c)
             // the matches the game records for the Replays page (fighter_sdk/replay_state.c: local, mm, ldn, arena)
