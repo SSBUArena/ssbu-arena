@@ -4,6 +4,7 @@
 // move data of Ultimate Frame Data (Assets/ufd_moves.json, tools/replay/ufd_moves.py) next to the moves being made.
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -17,21 +18,30 @@ using System.Windows.Media;
 
 namespace Arena
 {
+    /// <summary>a day's heading in the list</summary>
+    public sealed class ReplayDay { public string Title { get; set; } public string Count { get; set; } }
+
     /// <summary>one row of the list: a match on this PC (R), on the Arena server (C), or both</summary>
-    public sealed class ReplayRow
+    public sealed class ReplayRow : INotifyPropertyChanged
     {
         public ReplayState R; public CloudReplay C; public bool Uploaded;
+        public event PropertyChangedEventHandler PropertyChanged;
+        /// <summary>what the row is doing now (its pill says it); null: nothing</summary>
+        public string Busy;
+        public void Changed() { PropertyChanged?.Invoke(this, new PropertyChangedEventArgs("")); }
         static ulong Hex(string h) => ulong.TryParse(h, NumberStyles.HexNumber, null, out ulong v) ? v : 0;
         DateTime WhenUtc => R != null ? R.When.ToUniversalTime() : C.PlayedAt;
         public DateTime Sort => WhenUtc;
+        public DateTime Day => WhenUtc.ToLocalTime().Date;
         public string WhenText => WhenUtc.ToLocalTime().ToString("dd MMM yyyy  HH:mm", CultureInfo.InvariantCulture);
+        public string TimeText => WhenUtc.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture);
         public string Kind
         {
             get
             {
                 if (R == null) return "Online";
                 if (R.LoopTest) return "Rollback test (one PC)";
-                return R.Kind == 1 ? "Matchmaking" : R.Kind == 2 ? "Online LDN" : R.Kind == 3 ? "Online" : R.Rollback ? "Online (rollback)" : "Local match";
+                return R.Kind == 1 ? "Matchmaking" : R.Kind == 2 ? "Online room" : R.Kind == 3 ? "Online" : R.Rollback ? "Online (rollback)" : "Local match";
             }
         }
         RvFighter F(int i) => R != null && i < R.Fighters.Count ? R.Fighters[i] : null;
@@ -41,15 +51,52 @@ namespace Arena
         public string P2Name => C != null ? C.P2Name : F(1)?.Name ?? "";
         public string Stage => R != null ? R.StageName : ReplayNames.StageName(Hex(C.Stage));
         public string Length { get { int fr = R != null ? R.Frames : C.Frames, s = fr / 60; return (s / 60) + ":" + (s % 60).ToString("00"); } }
-        public string Result
+        // the fighters' portraits: from the player's own game files (Core.MakeAvatars); the initials under them when there is none
+        string P1Key => R != null ? F(0)?.FighterKey : ReplayNames.FighterKey(Hex(C.P1Chara));
+        string P2Key => R != null ? F(1)?.FighterKey : ReplayNames.FighterKey(Hex(C.P2Chara));
+        public ImageSource P1Icon => MainWindow.FighterIcon(P1Key);
+        public ImageSource P2Icon => MainWindow.FighterIcon(P2Key);
+        static string Initials(string n) => string.Concat(n.Split(new[] { ' ', '.', '&' }, StringSplitOptions.RemoveEmptyEntries).Take(2).Select(w => char.ToUpperInvariant(w[0])));
+        public string P1Initials => Initials(P1Fighter);
+        public string P2Initials => Initials(P2Fighter);
+        /// <summary>the winner: 0, 1, -1 not known</summary>
+        int Winner => R != null && R.Winner >= 0 ? R.Winner : C?.Winner ?? -1;
+        /// <summary>which of the two is this player: 0, 1, -1 none of them</summary>
+        int MeIndex
         {
             get
             {
-                if (R != null && R.Winner >= 0 && R.Winner < R.Fighters.Count) return R.Fighters[R.Winner].Name + " won (" + R.Fighters[R.Winner].FighterName + ")";
-                if (R == null) return C.Winner == 0 ? C.P1Name + " won" : C.Winner == 1 ? C.P2Name + " won" : "";
-                return R.Ended ? "Played to the end" : "Ended early";
+                if (C != null && Account.SignedIn)
+                {
+                    if (string.Equals(C.P1Uid, Account.Me.Id, StringComparison.OrdinalIgnoreCase)) return 0;
+                    if (string.Equals(C.P2Uid, Account.Me.Id, StringComparison.OrdinalIgnoreCase)) return 1;
+                }
+                if (R == null || R.LoopTest) return -1;
+                if (R.Kind != 0) return R.LocalPlayer < 2 ? R.LocalPlayer : -1;
+                return R.Fighters.Count(f => f.Type == 0) == 1 ? R.Fighters.FindIndex(f => f.Type == 0) : -1;      // (local: one human, the rest CPUs)
             }
         }
+        /// <summary>true: this player won, false: lost, null: not a match of this player or no result</summary>
+        public bool? MeWon => MeIndex >= 0 && (Winner == 0 || Winner == 1) ? Winner == MeIndex : (bool?)null;
+        static Brush Res(string k) => (Brush)Application.Current.Resources[k];
+        public Brush P1Brush => Winner == 1 ? Res("Muted") : Res("Text");
+        public Brush P2Brush => Winner == 0 ? Res("Muted") : Res("Text");
+        public string ChipText => MeWon == true ? "WIN" : MeWon == false ? "LOSS" : "";
+        public Visibility ChipVisible => MeWon != null ? Visibility.Visible : Visibility.Collapsed;
+        public Brush ChipBrush => new SolidColorBrush(MeWon == true ? Color.FromRgb(0x3D, 0xDC, 0x97) : Color.FromRgb(0xFF, 0x6B, 0x75));
+        public Brush ChipBack => new SolidColorBrush(MeWon == true ? Color.FromArgb(0x26, 0x3D, 0xDC, 0x97) : Color.FromArgb(0x26, 0xFF, 0x6B, 0x75));
+        /// <summary>under the chip: the stocks the winner kept; not a match of this player: who won</summary>
+        public string ResultText
+        {
+            get
+            {
+                int w = Winner;
+                if (MeWon != null) { int st = R != null && w < R.Fighters.Count ? R.Fighters[w].EndStocks : 0; return st > 0 ? "by " + st + (st == 1 ? " stock" : " stocks") : ""; }
+                if (w == 0 || w == 1) { string n = w == 0 ? P1Name : P2Name; return (string.IsNullOrEmpty(n) ? (w == 0 ? P1Fighter : P2Fighter) : n) + " won"; }
+                return R != null ? (R.Ended ? "No winner" : "Ended early") : "";
+            }
+        }
+        public string RowTip => WhenText + "  ·  " + Where + (R != null && C != null ? "; this PC's file is played" : "");
         /// <summary>where the replay is: this PC, the server (private / public)</summary>
         public string Where
         {
@@ -61,21 +108,27 @@ namespace Arena
             }
         }
         public bool CanWatch => R != null || (C != null && C.HasState);
+        public Visibility WatchVisible => CanWatch ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility NoWatchVisible => CanWatch ? Visibility.Collapsed : Visibility.Visible;
         // (0.2.11) visibility, upload and delete
         bool OnlineMatch => R != null && R.Kind != 0 && R.MatchId != 0 && !R.LoopTest;
         public bool IsPublic => C != null && C.IsPublic;
         /// <summary>a player of the match (a server row), or a local online match not uploaded yet (made public = uploaded first)</summary>
-        public bool CanSetVis => (C != null && C.Mine) || (C == null && OnlineMatch && Account.SignedIn);
-        public Visibility VisVisible => CanSetVis || IsPublic ? Visibility.Visible : Visibility.Collapsed;
-        public string VisText => IsPublic ? "Public" : "Private";
-        public Geometry VisIcon => (Geometry)Application.Current.Resources[IsPublic ? "IcoGlobe" : "IcoLock"];
-        public Brush VisBrush => (Brush)Application.Current.Resources[IsPublic ? "Accent" : "Muted"];
-        public string VisTip => !CanSetVis ? "Public: every signed-in player can watch it."
+        public bool CanSetVis => Busy == null && ((C != null && C.Mine) || (C == null && OnlineMatch && Account.SignedIn));
+        public string VisText => Busy ?? (IsPublic ? "Public" : C != null ? "Private" : "This PC");
+        public Geometry VisIcon => (Geometry)Application.Current.Resources[IsPublic ? "IcoGlobe" : C != null ? "IcoLock" : "IcoFolderTab"];
+        public Brush VisBrush => Res(IsPublic ? "Accent" : C != null ? "Text" : "Muted");
+        public Brush VisBorder => CanSetVis ? Res(IsPublic ? "Accent" : "Muted") : Brushes.Transparent;
+        public System.Windows.Input.Cursor VisCursor => CanSetVis ? System.Windows.Input.Cursors.Hand : System.Windows.Input.Cursors.Arrow;
+        public string VisTip => C == null && !CanSetVis ? (R != null && R.Kind == 0 ? "Local match: it stays on this PC." : !Account.SignedIn ? "On this PC. Sign in to upload it." : "On this PC.")
+            : !CanSetVis ? "Public: every signed-in player can watch it."
             : IsPublic ? "Public: every signed-in player can find it by name. Click to make it private."
             : C == null ? "Only on this PC. Click to upload it and make it public."
-            : "Only you and your opponent. Click to make it public.";
-        public Visibility UploadVisible => C == null && OnlineMatch && !Uploaded && Account.SignedIn ? Visibility.Visible : Visibility.Collapsed;
-        public Visibility DeleteVisible => R != null ? Visibility.Visible : Visibility.Collapsed;
+            : "Private: only you and your opponent. Click to make it public.";
+        public Visibility UploadVisible => C == null && OnlineMatch && !Uploaded && Account.SignedIn && Busy == null ? Visibility.Visible : Visibility.Collapsed;
+        public string UploadTip => "Upload it to the Arena server" + (Core.RecPublic ? " as public" : ": private, only you and your opponent see it");
+        public Visibility DeleteVisible => R != null && Busy == null ? Visibility.Visible : Visibility.Collapsed;
+        public string DeleteTip => "Delete it from this PC" + (C != null || Uploaded ? " (the copy on the Arena server stays)" : "");
         /// <summary>what the search box looks in (lower case)</summary>
         public string Haystack => string.Join(" ", P1Name, P2Name, P1Fighter, P2Fighter, Stage, Kind).ToLowerInvariant();
     }
@@ -96,12 +149,24 @@ namespace Arena
 
         List<ReplayRow> replayRows = new List<ReplayRow>();
         string cloudError;
+        bool rvLoading; int rvLoadSeq;
+
+        static readonly Dictionary<string, ImageSource> fighterIcons = new Dictionary<string, ImageSource>();
+        /// <summary>a fighter's portrait for the list (null: none)</summary>
+        public static ImageSource FighterIcon(string key)
+        {
+            if (key == null) return null;
+            if (fighterIcons.TryGetValue(key, out var im)) return im;
+            return fighterIcons[key] = AvatarImage(key, 76);
+        }
 
         /// <summary>this PC's recordings and, signed in, the server's replays this player may watch (one row per match)</summary>
         void LoadReplays()
         {
-            ReplaysStatus.Text = "Reading the replays...";
             bool signed = Account.SignedIn;
+            int seq = ++rvLoadSeq;
+            rvLoading = true;
+            ShowReplayRows();
             Task.Run(() =>
             {
                 ReplayLibrary.Cap();
@@ -122,32 +187,117 @@ namespace Arena
                 return Tuple.Create(rows.OrderByDescending(r => r.Sort).ToList(), err);
             }).ContinueWith(t =>
             {
-                if (t.IsFaulted) { ReplaysStatus.Text = "Could not read the replays: " + t.Exception.GetBaseException().Message; return; }
-                replayRows = t.Result.Item1; cloudError = t.Result.Item2;
+                if (seq != rvLoadSeq) return;               // (a newer reading is on its way)
+                rvLoading = false;
+                if (t.IsFaulted) { cloudError = t.Exception.GetBaseException().Message; replayRows = new List<ReplayRow>(); }
+                else { replayRows = t.Result.Item1; cloudError = t.Result.Item2; }
                 ShowReplayRows();
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
+        bool rvFilling;
+        /// <summary>a filter's choices: "all" and what the rows have; the choice stays while it is still there</summary>
+        void FillCombo(ComboBox box, string all, IEnumerable<string> values)
+        {
+            string was = box.SelectedItem as string;
+            var items = new List<string> { all };
+            items.AddRange(values.Where(v => !string.IsNullOrEmpty(v) && v != "-").Distinct().OrderBy(v => v, StringComparer.CurrentCultureIgnoreCase));
+            if (box.ItemsSource is List<string> cur && cur.SequenceEqual(items)) return;
+            box.ItemsSource = items;
+            box.SelectedItem = was != null && items.Contains(was) ? was : all;
+        }
+
+        const string AllFighters = "All fighters", AllStages = "All stages", AnyResult = "Any result", Wins = "Wins", Losses = "Losses";
+
         void ShowReplayRows()
         {
-            string f = RvFilterMine.IsChecked == true ? "mine" : RvFilterPublic.IsChecked == true ? "public" : RvFilterPc.IsChecked == true ? "pc" : "all";
+            var all = replayRows.Concat(searchRows.Where(s => !replayRows.Any(r => r.C != null && r.C.Id == s.C.Id))).ToList();
+            rvFilling = true;
+            FillCombo(RvFighterBox, AllFighters, all.SelectMany(r => new[] { r.P1Fighter, r.P2Fighter }));
+            FillCombo(RvStageBox, AllStages, all.Select(r => r.Stage));
+            if (RvResultBox.ItemsSource == null) { RvResultBox.ItemsSource = new List<string> { AnyResult, Wins, Losses }; RvResultBox.SelectedIndex = 0; }
+            rvFilling = false;
+            string scope = RvFilterMine.IsChecked == true ? "mine" : RvFilterPublic.IsChecked == true ? "public" : RvFilterPc.IsChecked == true ? "pc" : "all";
+            string f = RvFighterBox.SelectedItem as string, st = RvStageBox.SelectedItem as string, res = RvResultBox.SelectedItem as string;
             string q = (RvSearch.Text ?? "").Trim().ToLowerInvariant();
             var words = q.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            var all = replayRows.Concat(searchRows.Where(s => !replayRows.Any(r => r.C != null && r.C.Id == s.C.Id)));
-            var rows = all.Where(r => f == "all" || (f == "mine" && (r.C == null || r.C.Mine)) || (f == "public" && r.C != null && r.C.IsPublic) || (f == "pc" && r.R != null))
-                          .Where(r => words.All(w => r.Haystack.Contains(w))).OrderByDescending(r => r.Sort).ToList();
-            ReplaysList.ItemsSource = rows;
-            ReplaysEmpty.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            ReplaysEmptyTitle.Text = q.Length > 0 ? "No match for \u201c" + RvSearch.Text.Trim() + "\u201d" : replayRows.Count > 0 ? "Nothing here" : "No matches recorded yet";
-            ReplaysEmptyText.Text = q.Length > 0 ? (Account.SignedIn ? "No replay of yours and no public replay has a player, fighter or stage with that name." : "Sign in to search the Arena server's public replays too.")
-                                  : replayRows.Count > 0 ? "No replay fits this filter." : "Play a match: the game records it and it shows up here.";
-            int server = replayRows.Count(r => r.C != null);
-            ReplaysStatus.Text = rows.Count + " match" + (rows.Count == 1 ? "" : "es") + " shown; " + replayRows.Count(r => r.R != null) + " on this PC (the last " + ReplayLibrary.Keep + " are kept), "
-                + (Account.SignedIn ? server + " on the Arena server" : "sign in to see the Arena server's replays") + (searching ? "; searching the server..." : searchError != null && RvSearch.Text.Trim().Length >= 2 ? "; the server's search failed: " + searchError : "")
-                + (cloudError != null ? " (server: " + cloudError + ")" : "") + ".";
+            var rows = all.Where(r => scope == "all" || (scope == "mine" && ((r.C == null && r.R.Kind != 0) || (r.C != null && r.C.Mine) || r.MeWon != null)) || (scope == "public" && r.C != null && r.C.IsPublic) || (scope == "pc" && r.R != null))
+                          .Where(r => words.All(w => r.Haystack.Contains(w)))
+                          .Where(r => f == AllFighters || f == null || r.P1Fighter == f || r.P2Fighter == f)
+                          .Where(r => st == AllStages || st == null || r.Stage == st)
+                          .Where(r => res == AnyResult || res == null || (res == Wins && r.MeWon == true) || (res == Losses && r.MeWon == false))
+                          .OrderByDescending(r => r.Sort).ToList();
+            // the rows under the heading of their day
+            var items = new List<object>();
+            DateTime today = DateTime.Now.Date;
+            foreach (var g in rows.GroupBy(r => r.Day))
+            {
+                string name = g.Key == today ? "TODAY" : g.Key == today.AddDays(-1) ? "YESTERDAY" : g.Key.ToString("dddd d MMMM yyyy", CultureInfo.InvariantCulture).ToUpperInvariant();
+                int n = g.Count();
+                items.Add(new ReplayDay { Title = name, Count = n + (n == 1 ? " match" : " matches") });
+                items.AddRange(g);
+            }
+            var sv = ReplaysList.Template?.FindName("scroll", ReplaysList) as ScrollViewer;
+            double at = sv?.VerticalOffset ?? 0;
+            ReplaysList.ItemsSource = items;
+            if (sv != null && at > 0) { var k = at; Dispatcher.BeginInvoke(new Action(() => sv.ScrollToVerticalOffset(k)), System.Windows.Threading.DispatcherPriority.Loaded); }
+            bool narrowed = words.Length > 0 || scope != "all" || (f != null && f != AllFighters) || (st != null && st != AllStages) || (res != null && res != AnyResult);
+            ReplaysClear.Visibility = narrowed ? Visibility.Visible : Visibility.Collapsed;
+            RvSearchBusy.Visibility = searching ? Visibility.Visible : Visibility.Collapsed;
+            // the states: reading (the rows' shapes, only when nothing is there yet), empty, the banner for what cannot be reached
+            bool first = rvLoading && replayRows.Count == 0;
+            ReplaysLoading.Visibility = first ? Visibility.Visible : Visibility.Collapsed;
+            ReplaysEmpty.Visibility = rows.Count == 0 && !first ? Visibility.Visible : Visibility.Collapsed;
+            rvEmptyAction = null;
+            if (rows.Count == 0 && searching) { ReplaysEmptyTitle.Text = "Searching..."; ReplaysEmptyText.Text = "Looking for “" + RvSearch.Text.Trim() + "” on the Arena server."; }
+            else if (rows.Count == 0 && q.Length > 0)
+            {
+                ReplaysEmptyTitle.Text = "No match for “" + RvSearch.Text.Trim() + "”";
+                ReplaysEmptyText.Text = Account.SignedIn ? "No replay of yours and no public replay has a player, fighter or stage with that name." : "Nothing on this PC. Sign in to search the Arena server's public replays too.";
+                rvEmptyAction = "Clear filters";
+            }
+            else if (rows.Count == 0 && replayRows.Count > 0)
+            {
+                ReplaysEmptyTitle.Text = "Nothing here";
+                ReplaysEmptyText.Text = scope == "public" ? "No public replay among these. A match becomes public when one of its players opens its pill and makes it so." : "No replay fits these filters.";
+                rvEmptyAction = "Clear filters";
+            }
+            else if (rows.Count == 0)
+            {
+                ReplaysEmptyTitle.Text = "No matches recorded yet";
+                ReplaysEmptyText.Text = Core.RecMatchmaking || Core.RecLdn || Core.RecArena || Core.RecLocal ? "Play a match: the game records it and it shows up here." : "The game records nothing now: turn the recording on in Settings, under Replays.";
+                rvEmptyAction = "Refresh";
+            }
+            ReplaysEmptyButton.Visibility = rvEmptyAction != null ? Visibility.Visible : Visibility.Collapsed;
+            ReplaysEmptyButton.Content = rvEmptyAction;
+            string err = cloudError ?? (searchError != null && q.Length >= 2 ? searchError : null);
+            ReplaysBanner.Visibility = err != null || !Account.SignedIn ? Visibility.Visible : Visibility.Collapsed;
+            if (err != null) { ReplaysBannerText.Text = "The Arena server's replays could not be read: " + err; ReplaysBannerAction.Text = "Try again"; }
+            else if (!Account.SignedIn) { ReplaysBannerText.Text = "Only this PC's recordings are shown: sign in for your uploaded replays and the public ones."; ReplaysBannerAction.Text = "Sign in"; }
+            int pc = replayRows.Count(r => r.R != null), server = replayRows.Count(r => r.C != null);
+            ReplaysStatus.Text = rvLoading && first ? "Reading the replays..."
+                : (rows.Count == all.Count ? rows.Count + (rows.Count == 1 ? " match" : " matches") : rows.Count + " of " + all.Count + " matches") + "  ·  " + pc + " on this PC" + (pc >= ReplayLibrary.Keep ? " (the newest " + ReplayLibrary.Keep + " are kept)" : "")
+                  + (Account.SignedIn ? "  ·  " + server + " on the Arena server" : "") + (rvLoading ? "  ·  updating..." : "");
         }
 
         void ReplaysFilter_Checked(object sender, RoutedEventArgs e) { if (ReplaysList != null && replayRows != null) ShowReplayRows(); }
+        void ReplaysCombo_Changed(object sender, SelectionChangedEventArgs e) { if (!rvFilling && ReplaysStatus != null && replayRows != null && IsLoaded) ShowReplayRows(); }
+
+        void ReplaysClear_Click(object sender, RoutedEventArgs e)
+        {
+            RvFilterAll.IsChecked = true;
+            rvFilling = true;
+            if (RvFighterBox.Items.Count > 0) RvFighterBox.SelectedIndex = 0;
+            if (RvStageBox.Items.Count > 0) RvStageBox.SelectedIndex = 0;
+            if (RvResultBox.Items.Count > 0) RvResultBox.SelectedIndex = 0;
+            rvFilling = false;
+            RvSearch.Text = "";                             // (shows the rows)
+            ShowReplayRows();
+        }
+
+        string rvEmptyAction;
+        void ReplaysEmpty_Click(object sender, RoutedEventArgs e) { if (rvEmptyAction == "Refresh") LoadReplays(); else ReplaysClear_Click(null, null); }
+        void ReplaysBanner_Click(object sender, RoutedEventArgs e) { if (Account.SignedIn) { searchError = null; LoadReplays(); } else ShowLogin(); }
 
         // ------------------------------------------------------------ (0.2.11) search: this list at once, the server's replays of that player after a pause in typing
         List<ReplayRow> searchRows = new List<ReplayRow>();
@@ -166,7 +316,7 @@ namespace Arena
             }
             rvSearchTimer.Stop();
             string q = RvSearch.Text.Trim();
-            if (q.Length < 2 || !Account.SignedIn) { searchSeq++; searchRows = new List<ReplayRow>(); searching = false; }
+            if (q.Length < 2 || !Account.SignedIn) { searchSeq++; searchRows = new List<ReplayRow>(); searching = false; searchError = null; }
             else rvSearchTimer.Start();
             ShowReplayRows();
         }
@@ -186,21 +336,29 @@ namespace Arena
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
+        void RowFailed(ReplayRow row, string what, Exception e)
+        {
+            row.Busy = null; row.Changed();
+            Show("Replay", what + ": " + e.GetBaseException().Message, null, ("OK", null, true));
+        }
+
         void ReplayPublic_Click(object sender, RoutedEventArgs e)
         {
             e.Handled = true;                               // (inside the row's own button: not a Watch click)
             var row = (sender as Button)?.Tag as ReplayRow;
             if (row == null || !row.CanSetVis) return;
             bool pub = !row.IsPublic;
-            ReplaysStatus.Text = row.C == null ? "Uploading the replay..." : pub ? "Making it public..." : "Making it private...";
+            row.Busy = row.C == null ? "Uploading..." : "Saving..."; row.Changed();
             Task.Run(() =>
             {
                 string id = row.C?.Id ?? ReplayCloud.Upload(row.R);      // (a local match: on the server first)
                 ReplayCloud.SetPublic(id, pub);
             }).ContinueWith(t =>
             {
-                if (t.IsFaulted) { ReplaysStatus.Text = ""; Show("Replay", "Could not change it: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
-                searchRows.Clear(); LoadReplays();
+                if (t.IsFaulted) { RowFailed(row, "Could not change it", t.Exception); return; }
+                row.Busy = null;
+                if (row.C != null) { row.C.IsPublic = pub; row.Changed(); if (RvFilterPublic.IsChecked == true) ShowReplayRows(); }
+                else { row.Uploaded = true; row.Changed(); searchRows.Clear(); LoadReplays(); }
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
@@ -209,11 +367,12 @@ namespace Arena
             e.Handled = true;
             var row = (sender as Button)?.Tag as ReplayRow;
             if (row?.R == null) return;
-            ReplaysStatus.Text = "Uploading the replay...";
+            row.Busy = "Uploading..."; row.Changed();
             bool pub = Core.RecPublic;
             Task.Run(() => { string id = ReplayCloud.Upload(row.R); if (pub) ReplayCloud.SetPublic(id, true); }).ContinueWith(t =>
             {
-                if (t.IsFaulted) { ReplaysStatus.Text = ""; Show("Replay", "Could not upload it: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
+                if (t.IsFaulted) { RowFailed(row, "Could not upload it", t.Exception); return; }
+                row.Busy = null; row.Uploaded = true; row.Changed();
                 LoadReplays();
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
@@ -223,12 +382,14 @@ namespace Arena
             e.Handled = true;
             var row = (sender as Button)?.Tag as ReplayRow;
             if (row?.R == null) return;
-            string note = row.C != null || row.Uploaded ? "\n\nThe copy on the Arena server stays: you and your opponent can still watch it." : "";
+            string note = row.C != null || row.Uploaded ? "\n\nThe copy on the Arena server stays: you and your opponent can still watch it." : "\n\nIt is on this PC only: it cannot be brought back.";
             Show("Delete replay", row.P1Fighter + " vs " + row.P2Fighter + ", " + row.WhenText + ": this PC's file is deleted." + note, null,
                  ("Delete", () =>
                  {
                      try { File.Delete(row.R.Path); } catch (Exception ex) { Show("Replay", "Could not delete it: " + ex.Message, null, ("OK", null, true)); return; }
-                     LoadReplays();
+                     if (row.C != null) { row.R = null; row.Changed(); }      // (the server's copy stays in the list)
+                     else replayRows.Remove(row);
+                     ShowReplayRows();
                  }, true), ("Cancel", null, false));
         }
 
@@ -245,7 +406,7 @@ namespace Arena
         static readonly HashSet<string> uploadTried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         static int UploadPending()
         {
-            if (!Core.RecUpload || !Account.SignedIn) return 0;
+            if (!Core.RecUpload || !Account.SignedIn || Environment.GetEnvironmentVariable("SSBU_ARENA_NO_UPLOAD") == "1") return 0;      // (tests)
             var up = ReplayCloud.Uploaded(); int n = 0;
             foreach (var l in ReplayLibrary.List())
             {
@@ -266,10 +427,11 @@ namespace Arena
             if (row == null) return;
             if (row.R != null) { OpenReplay(row.R.Path); return; }
             if (!row.CanWatch) { Show("Replay", "The server has only the input recording of this match: it will be watchable in the game itself later.", null, ("OK", null, true)); return; }
-            ReplaysStatus.Text = "Downloading the replay...";
+            row.Busy = "Getting it..."; row.Changed();
             Task.Run(() => ReplayCloud.Download(row.C)).ContinueWith(t =>
             {
-                if (t.IsFaulted) { ReplaysStatus.Text = ""; Show("Replay", "Could not download it: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
+                if (t.IsFaulted) { RowFailed(row, "Could not download it", t.Exception); return; }
+                row.Busy = null; row.Changed();
                 OpenReplay(t.Result);
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
@@ -281,9 +443,9 @@ namespace Arena
             ReplaysStatus.Text = "Opening " + Path.GetFileName(path) + " ...";
             Task.Run(() => { var r = ReplayState.Read(path); return Tuple.Create(r, ReplayStats.Of(r)); }).ContinueWith(t =>
             {
-                if (t.IsFaulted) { ReplaysStatus.Text = ""; Show("Replay", "Could not open the replay: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
+                if (t.IsFaulted) { ShowReplayRows(); Show("Replay", "Could not open the replay: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
                 var r = t.Result.Item1; rvStats = t.Result.Item2;
-                if (r.FrameList.Count == 0) { ReplaysStatus.Text = "This replay has no frames."; return; }
+                if (r.FrameList.Count == 0) { ShowReplayRows(); Show("Replay", "This replay has no frames.", null, ("OK", null, true)); return; }
                 ReplaysListPanel.Visibility = Visibility.Collapsed; ReplayViewer.Visibility = Visibility.Visible;
                 RvView.Replay = r;
                 if (rvScene == null) { rvScene = new ReplayScene(RvScene); RvView.Scene = rvScene; }
@@ -308,6 +470,7 @@ namespace Arena
                 RvSub.Text = r.StageName + "  ·  " + r.When.ToString("dd MMM yyyy HH:mm", CultureInfo.InvariantCulture) + "  ·  " + r.Length + "  ·  " + r.FrameList.Count + " frames"
                              + (r.Rollback ? "  ·  final frames of the rollback session" : "");
                 BuildStats(r);
+                RvTotal.Text = RvClock(r.FrameList.Count - 1);
                 RvSet(frame);
                 RvPause(!play);
                 RvView.Focus();
@@ -326,8 +489,11 @@ namespace Arena
         {
             RvView.Frame = f;
             RvTimeline.Frame = RvView.Frame; RvTimeline.InvalidateVisual();
+            RvNow.Text = RvClock(RvView.Frame);
             RefreshMoveInfo();
         }
+
+        static string RvClock(double frame) { int s = (int)(frame / 60); return (s / 60) + ":" + (s % 60).ToString("00"); }
 
         void RvPause(bool pause)
         {
@@ -345,7 +511,7 @@ namespace Arena
             if (f >= RvView.Replay.FrameList.Count - 1) { f = RvView.Replay.FrameList.Count - 1; RvPause(true); }
             RvView.Frame = f;
             RvTimeline.Frame = f; RvTimeline.InvalidateVisual();
-            if (((int)f & 7) == 0) RefreshMoveInfo();
+            if (((int)f & 7) == 0) { RefreshMoveInfo(); RvNow.Text = RvClock(f); }
         }
 
         void RvPlay_Click(object sender, RoutedEventArgs e)
@@ -371,6 +537,10 @@ namespace Arena
             else if (e.Key == Key.Right) { RvPause(true); RvSet(Math.Round(RvView.Frame) + (Keyboard.Modifiers == ModifierKeys.Shift ? 60 : 1)); e.Handled = true; }
             else if (e.Key == Key.Home) { RvSet(0); e.Handled = true; }
             else if (e.Key == Key.End) { RvSet(RvView.Replay.FrameList.Count - 1); e.Handled = true; }
+            else if (e.Key == Key.M) { RvModels.IsChecked = RvModels.IsChecked != true; e.Handled = true; }
+            else if (e.Key == Key.H) { RvHit.IsChecked = RvHit.IsChecked != true; e.Handled = true; }
+            else if (e.Key == Key.U) { RvHurt.IsChecked = RvHurt.IsChecked != true; e.Handled = true; }
+            else if (e.Key == Key.F) { RvFollow.IsChecked = RvFollow.IsChecked != true; e.Handled = true; }
         }
 
         // ------------------------------------------------------------ the side panel
@@ -394,6 +564,9 @@ namespace Arena
                 head.Children.Add(new Border { Width = 4, Height = 22, Background = col, CornerRadius = new CornerRadius(2), Margin = new Thickness(0, 0, 10, 0) });
                 head.Children.Add(Line(f.FighterName.ToUpperInvariant() + "   " + f.Name, 15, null, FontWeights.SemiBold, new Thickness(0)));
                 RvStats.Children.Add(head);
+                rvMoveInfo[k] = Line("", 13, col, null, new Thickness(0, 0, 0, 6));
+                rvMoveInfo[k].MinHeight = 34;              // (the lines below do not jump while it plays)
+                RvStats.Children.Add(rvMoveInfo[k]);
                 RvStats.Children.Add(Line(string.Format(CultureInfo.InvariantCulture, "Damage dealt  {0:0.0}%   ·   taken  {1:0.0}%", p.DamageDealt, p.DamageTaken), 14, muted));
                 var kos = rvStats.Kos.Where(x => x.Fighter == k).ToList();
                 RvStats.Children.Add(Line("Stocks lost  " + p.StocksLost + (f.EndStocks > 0 ? "   ·   left at the end  " + f.EndStocks : ""), 14, muted));
@@ -410,8 +583,6 @@ namespace Arena
                     RvStats.Children.Add(Line("Most used moves", 13, (Brush)FindResource("Dim"), FontWeights.SemiBold, new Thickness(0, 8, 0, 2)));
                     foreach (var m in p.Moves) RvStats.Children.Add(Line(m.Value + "×  " + m.Key, 14, null, null, new Thickness(10, 1, 0, 0)));
                 }
-                rvMoveInfo[k] = Line("", 13, col, null, new Thickness(0, 8, 0, 0));
-                RvStats.Children.Add(rvMoveInfo[k]);
             }
         }
 
@@ -423,7 +594,7 @@ namespace Arena
             var fr = r.FrameList[Math.Max(0, Math.Min((int)Math.Round(RvView.Frame), r.FrameList.Count - 1))];
             for (int k = 0; k < rvMoveInfo.Length && k < fr.F.Length; k++)
             {
-                var s = fr.F[k];
+                var s = fr.F[k] ?? fr.Extra?.FirstOrDefault(e => e.Key == k).Value;
                 if (s == null) { rvMoveInfo[k].Text = ""; continue; }
                 string mv = ReplayNames.MoveName(s.Motion);
                 string text = mv != null ? "Now: " + mv + "  (frame " + (int)Math.Floor(s.MotionFrame + 1) + " of the move)" : "Now: " + ReplayNames.ActionText(s);

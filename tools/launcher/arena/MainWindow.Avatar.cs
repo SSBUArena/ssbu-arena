@@ -21,6 +21,7 @@ namespace Arena
         {
             if (string.IsNullOrEmpty(name)) return null;
             string f = Path.Combine(Core.AvatarsDir, name + ".png");
+            if (!File.Exists(f)) f = Path.Combine(Core.AvatarsDir, "more", name + ".png");      // (the replay list's other portraits)
             if (!File.Exists(f)) return null;
             try
             {
@@ -46,6 +47,9 @@ namespace Arena
         void FillAvatars()
         {
             AvatarGrid.Children.Clear();
+            bool newIcons = fighterIcons.Values.Any(v => v == null);      // (the replay list's portraits were made after it asked)
+            fighterIcons.Clear();
+            if (newIcons && PageReplays.Visibility == Visibility.Visible) ShowReplayRows();
             string[] files = { };
             try { if (Directory.Exists(Core.AvatarsDir)) files = Directory.GetFiles(Core.AvatarsDir, "*.png").Where(f => Core.ProfileIconOf(Path.GetFileNameWithoutExtension(f)) >= 0).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray(); } catch { }
             AvatarNote.Text = files.Length == 0 ? "The pictures come from your game files: they appear here once they are ready."

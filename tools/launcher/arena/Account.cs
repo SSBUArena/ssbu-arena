@@ -24,7 +24,7 @@ namespace Arena
 
     public static class Account
     {
-        public const string Url = "https://gnufjvqwynxmudpgrded.supabase.co";
+        public static readonly string Url = Environment.GetEnvironmentVariable("SSBU_ARENA_SERVER_URL") ?? "https://gnufjvqwynxmudpgrded.supabase.co";      // (test: a local server)
         public const string Key = "sb_publishable_v5DkzLiVBpTnDMy6BdpI7A_rqZSSQWz";
         public const string SignUpPage = "https://ssbuarena.com/signup";
         public const string AccountPage = "https://ssbuarena.com/account";

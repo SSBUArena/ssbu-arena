@@ -5,7 +5,8 @@ repository, never uploaded; an account stores only the fighter's name).
 
 Writes <fighter>.png (ui/replace/chara/chara_4/chara_4_<fighter>_00.bntx, 162 x 162), icons.txt (<fighter>=<number of the fighter's
 icon in the game's own profile icons, ui_profile_icon_db: what the launcher writes in the save, Core.ApplyProfileIcon). icons.txt is
-written last: it also marks the work as done."""
+written last: it also marks the work as done. more/<fighter>.png: the portraits of the fighters not offered as pictures (the ones from
+the updates, the select screen's shared panels), for the replay list; more/done.txt marks them as done."""
 import argparse
 from pathlib import Path
 import struct
@@ -24,6 +25,10 @@ pichu falco marth lucina younglink ganon mewtwo roy chrom gamewatch metaknight p
 lucas sonic dedede pikmin lucario robot toonlink wolf murabito rockman wiifit rosetta littlemac gekkouga palutena pacman reflet
 shulk koopajr duckhunt ryu ken cloud kamui bayonetta inkling ridley simon richter krool shizue gaogaen packun jack brave buddy
 dolly master tantan pickel edge eflame elight demon trail miifighter miiswordsman miigunner'''.split()
+
+# the list's other names of a fighter: the panels that share one, what a match's record can hold
+MORE = FIGHTERS + 'ice_climber element eflame_first elight_first eflame_only elight_only'.split()
+PORTRAIT = ('ui/replace/chara/chara_4/chara_4_%s_00.bntx', 'ui/replace_patch/chara/chara_4/chara_4_%s_00.bntx')
 
 # fields of ui_profile_icon_db (hashes: the file keeps no names): which picture, its colour slot, the icon's number
 F_CHARA, F_SLOT, F_INDEX = 0xd8fe20293, 0x5665648e9, 0xf5f9446e1
@@ -80,8 +85,11 @@ def main():
     a.out.mkdir(parents=True, exist_ok=True)
     made = 0
     for f in FIGHTERS:
+        if (a.out / (f + '.png')).exists():
+            made += 1
+            continue
         try:
-            bntx = bytearray(arc.get('ui/replace/chara/chara_4/chara_4_%s_00.bntx' % f))
+            bntx = bytearray(arc.get(PORTRAIT[0] % f))
         except KeyError:
             continue
         for _, base in texture_slots(bntx).items():
@@ -95,6 +103,23 @@ def main():
     print('icons in the game: %d of %d fighters' % (len(numbers), len(FIGHTERS)))
     if made:
         (a.out / 'icons.txt').write_text(''.join('%s=%d\n' % kv for kv in numbers.items()))
+    more = a.out / 'more'
+    more.mkdir(exist_ok=True)
+    for f in MORE:
+        if (a.out / (f + '.png')).exists():
+            continue
+        for path in PORTRAIT:
+            try:
+                bntx = bytearray(arc.get(path % f))
+            except KeyError:
+                continue
+            for _, base in texture_slots(bntx).items():
+                image = decode(bntx, base)
+                if image:
+                    image[0].save(more / (f + '.png'))
+                break
+            break
+    (more / 'done.txt').write_text('ok')
 
 
 if __name__ == '__main__':

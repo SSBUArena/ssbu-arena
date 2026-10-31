@@ -349,93 +349,159 @@
 
       <!-- ============================================================ REPLAYS (MainWindow.Replays.cs, ReplayView.cs) -->
       <Grid x:Name="PageReplays" Visibility="Collapsed">
-        <!-- the list of this PC's matches -->
-        <Border x:Name="ReplaysListPanel" Style="{StaticResource Panel}" Padding="34,28">
+        <!-- the list: this PC's matches and the server's (ReplayRow), grouped by day -->
+        <Border x:Name="ReplaysListPanel" Style="{StaticResource Panel}" Padding="26,18,26,14">
           <DockPanel>
-            <Grid DockPanel.Dock="Top" Margin="0,0,0,18">
-              <StackPanel>
-                <TextBlock Text="REPLAYS" Style="{StaticResource SectionTitle}" FontSize="40"/>
-                <TextBlock Text="Your matches, redrawn from what the game recorded frame by frame: positions, damage, hitboxes. No game start needed." Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,0"/>
+            <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
+              <TextBlock Text="REPLAYS" Style="{StaticResource SectionTitle}" FontSize="36" VerticalAlignment="Center" ToolTip="Your matches, redrawn from what the game recorded frame by frame: positions, damage, hitboxes. No game start needed."/>
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <RadioButton x:Name="RvFilterAll" Style="{StaticResource RvSpeed}" Content="All" GroupName="rvfilter" IsChecked="True" Checked="ReplaysFilter_Checked"/>
+                <RadioButton x:Name="RvFilterMine" Style="{StaticResource RvSpeed}" Content="My matches" GroupName="rvfilter" Checked="ReplaysFilter_Checked" ToolTip="The matches you played"/>
+                <RadioButton x:Name="RvFilterPublic" Style="{StaticResource RvSpeed}" Content="Public" GroupName="rvfilter" Checked="ReplaysFilter_Checked" ToolTip="Replays every signed-in player can watch"/>
+                <RadioButton x:Name="RvFilterPc" Style="{StaticResource RvSpeed}" Content="On this PC" GroupName="rvfilter" Checked="ReplaysFilter_Checked" ToolTip="Recordings kept on this PC"/>
               </StackPanel>
               <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                <Button Style="{StaticResource Outline}" Height="40" Click="ReplaysFolder_Click" Margin="0,0,10,0">
-                  <StackPanel Orientation="Horizontal"><Path Data="{StaticResource IcoFolder}" Fill="{StaticResource Muted}" Width="16" Height="14" Stretch="Uniform"/><TextBlock Text="Open folder" Margin="10,0,0,0" FontSize="16"/></StackPanel>
+                <Button Style="{StaticResource Outline}" Height="36" Padding="14,0" Click="ReplaysFolder_Click" Margin="0,0,8,0" ToolTip="The folder of this PC's recordings">
+                  <StackPanel Orientation="Horizontal"><Path Data="{StaticResource IcoFolder}" Fill="{StaticResource Muted}" Width="15" Height="13" Stretch="Uniform"/><TextBlock Text="Folder" Margin="8,0,0,0" FontSize="15"/></StackPanel>
                 </Button>
-                <Button Style="{StaticResource Outline}" Height="40" Click="ReplaysRefresh_Click" Content="Refresh" FontSize="16"/>
+                <Button Style="{StaticResource Outline}" Height="36" Padding="14,0" Click="ReplaysRefresh_Click" Content="Refresh" FontSize="15"/>
               </StackPanel>
             </Grid>
-            <TextBlock DockPanel.Dock="Bottom" x:Name="ReplaysStatus" Style="{StaticResource Small}" Margin="0,14,0,0"/>
-            <Grid DockPanel.Dock="Top" Margin="0,0,0,14">
-              <Grid Width="340" HorizontalAlignment="Left">
-                <TextBox x:Name="RvSearch" Padding="22,0,30,0" TextChanged="ReplaysSearch_Changed" ToolTip="A player's name, a fighter or a stage. Signed in: also every public replay of that player on the Arena server."/>
+            <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="176"/><ColumnDefinition Width="184"/><ColumnDefinition Width="136"/></Grid.ColumnDefinitions>
+              <Grid>
+                <TextBox x:Name="RvSearch" Padding="22,0,30,0" TextChanged="ReplaysSearch_Changed" ToolTip="A player's name, a fighter or a stage. Signed in: also every public replay that fits, on the Arena server."/>
                 <Path Data="{StaticResource IcoSearch}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="15" Height="15" Stretch="Uniform" HorizontalAlignment="Left" Margin="13,0,0,0" IsHitTestVisible="False" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                 <TextBlock x:Name="RvSearchHint" Text="Search a player, a fighter, a stage" Foreground="{StaticResource Dim}" FontSize="16" VerticalAlignment="Center" Margin="37,0,0,0" IsHitTestVisible="False"/>
+                <TextBlock x:Name="RvSearchBusy" Text="Searching the server..." Style="{StaticResource Small}" Foreground="{StaticResource Accent}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,36,0" IsHitTestVisible="False" Visibility="Collapsed"/>
                 <Button x:Name="RvSearchClear" Style="{StaticResource Bare}" HorizontalAlignment="Right" Margin="0,0,8,0" Padding="4" Click="ReplaysSearchClear_Click" Visibility="Collapsed" ToolTip="Clear">
                   <Path Data="{StaticResource IcoCross}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="10" Height="10" Stretch="Uniform"/>
                 </Button>
               </Grid>
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                <RadioButton x:Name="RvFilterAll" Style="{StaticResource RvSpeed}" Content="All" GroupName="rvfilter" IsChecked="True" Checked="ReplaysFilter_Checked"/>
-                <RadioButton x:Name="RvFilterMine" Style="{StaticResource RvSpeed}" Content="My matches" GroupName="rvfilter" Checked="ReplaysFilter_Checked"/>
-                <RadioButton x:Name="RvFilterPublic" Style="{StaticResource RvSpeed}" Content="Public" GroupName="rvfilter" Checked="ReplaysFilter_Checked"/>
-                <RadioButton x:Name="RvFilterPc" Style="{StaticResource RvSpeed}" Content="On this PC" GroupName="rvfilter" Checked="ReplaysFilter_Checked"/>
-              </StackPanel>
+              <ComboBox x:Name="RvFighterBox" Grid.Column="1" Margin="10,0,0,0" FontSize="15" SelectionChanged="ReplaysCombo_Changed" ToolTip="Only the matches of this fighter"/>
+              <ComboBox x:Name="RvStageBox" Grid.Column="2" Margin="10,0,0,0" FontSize="15" SelectionChanged="ReplaysCombo_Changed" ToolTip="Only the matches on this stage"/>
+              <ComboBox x:Name="RvResultBox" Grid.Column="3" Margin="10,0,0,0" FontSize="15" SelectionChanged="ReplaysCombo_Changed" ToolTip="Only the matches you won, or lost"/>
+            </Grid>
+            <!-- what cannot be reached: the server's error, or not signed in -->
+            <Border x:Name="ReplaysBanner" DockPanel.Dock="Top" Visibility="Collapsed" CornerRadius="4" Background="#14FFC857" BorderBrush="#55FFC857" BorderThickness="1" Padding="12,5" Margin="0,0,0,10">
+              <Grid>
+                <TextBlock x:Name="ReplaysBannerText" Style="{StaticResource Small}" Foreground="{StaticResource Text}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,110,0"/>
+                <Button x:Name="ReplaysBannerButton" Style="{StaticResource Link}" HorizontalAlignment="Right" VerticalAlignment="Center" Click="ReplaysBanner_Click"><TextBlock x:Name="ReplaysBannerAction" FontSize="14"/></Button>
+              </Grid>
+            </Border>
+            <Grid DockPanel.Dock="Bottom" Margin="0,8,0,0">
+              <TextBlock x:Name="ReplaysStatus" Style="{StaticResource Small}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,110,0"/>
+              <Button x:Name="ReplaysClear" Style="{StaticResource Link}" HorizontalAlignment="Right" VerticalAlignment="Center" Click="ReplaysClear_Click" Visibility="Collapsed"><TextBlock Text="Clear filters" FontSize="14"/></Button>
             </Grid>
             <Grid>
-              <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <ItemsControl x:Name="ReplaysList">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                      <Button Style="{StaticResource CardButton}" Margin="0,0,0,10" Padding="22,14" Tag="{Binding}" Click="ReplayOpen_Click">
-                        <Grid>
-                          <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="170"/><ColumnDefinition Width="*"/><ColumnDefinition Width="210"/><ColumnDefinition Width="80"/><ColumnDefinition Width="290"/>
-                          </Grid.ColumnDefinitions>
-                          <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="{Binding WhenText}" FontSize="16" FontWeight="SemiBold"/>
-                            <TextBlock Text="{Binding Kind}" Style="{StaticResource Small}" Margin="0,2,0,0"/>
-                            <TextBlock Text="{Binding Where}" Style="{StaticResource Small}" Foreground="{StaticResource Dim}" Margin="0,1,0,0"/>
-                          </StackPanel>
-                          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                            <Border Width="4" Height="30" Background="#FF5F6B" CornerRadius="2" Margin="0,0,10,0"/>
-                            <StackPanel><TextBlock Text="{Binding P1Fighter}" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="{Binding P1Name}" Style="{StaticResource Small}"/></StackPanel>
-                            <TextBlock Text="VS" FontFamily="{StaticResource Display}" FontStyle="Italic" FontWeight="ExtraBold" FontSize="20" Foreground="{StaticResource Dim}" Margin="22,0" VerticalAlignment="Center"/>
-                            <Border Width="4" Height="30" Background="#4FA8FF" CornerRadius="2" Margin="0,0,10,0"/>
-                            <StackPanel><TextBlock Text="{Binding P2Fighter}" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="{Binding P2Name}" Style="{StaticResource Small}"/></StackPanel>
-                          </StackPanel>
-                          <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding Stage}" FontSize="16"/>
-                            <TextBlock Text="{Binding Result}" Style="{StaticResource Small}" Margin="0,2,0,0"/>
-                          </StackPanel>
-                          <TextBlock Grid.Column="3" Text="{Binding Length}" FontSize="18" FontFamily="{StaticResource Display}" FontWeight="Bold" VerticalAlignment="Center" Foreground="{StaticResource Muted}"/>
-                          <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
-                            <Button Style="{StaticResource Bare}" Tag="{Binding}" Click="ReplayPublic_Click" Visibility="{Binding VisVisible}" IsHitTestVisible="{Binding CanSetVis}" ToolTip="{Binding VisTip}" ToolTipService.ShowOnDisabled="True" Margin="0,0,14,0">
-                              <Border CornerRadius="13" BorderThickness="1" BorderBrush="{Binding VisBrush}" Padding="10,4,12,4" MinWidth="92">
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                  <Path Data="{Binding VisIcon}" Stroke="{Binding VisBrush}" StrokeThickness="1.6" Width="13" Height="13" Stretch="Uniform" StrokeLineJoin="Round"/>
-                                  <TextBlock Text="{Binding VisText}" Foreground="{Binding VisBrush}" FontSize="14.5" FontWeight="SemiBold" Margin="7,0,0,0"/>
-                                </StackPanel>
-                              </Border>
-                            </Button>
-                            <Button Style="{StaticResource IconButton}" Tag="{Binding}" Click="ReplayUpload_Click" Visibility="{Binding UploadVisible}" ToolTip="Upload it to the Arena server now" Padding="7" Margin="0,0,4,0">
-                              <Path Data="{StaticResource IcoUpload}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="15" Height="15" Stretch="Uniform" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
-                            </Button>
-                            <Button Style="{StaticResource IconButton}" Tag="{Binding}" Click="ReplayDelete_Click" Visibility="{Binding DeleteVisible}" ToolTip="Delete it from this PC" Padding="7" Margin="0,0,16,0">
-                              <Path Data="{StaticResource IcoTrash}" Stroke="{StaticResource Muted}" StrokeThickness="1.7" Width="15" Height="15" Stretch="Uniform" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
-                            </Button>
-                            <Path Data="{StaticResource IcoPlay}" Fill="{StaticResource Accent}" Width="14" Height="14" Stretch="Uniform"/>
-                            <TextBlock Text="Watch" Foreground="{StaticResource Accent}" FontSize="16" FontWeight="SemiBold" Margin="8,0,0,0"/>
-                          </StackPanel>
+              <ItemsControl x:Name="ReplaysList" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.ScrollUnit="Pixel" VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True">
+                <ItemsControl.Template>
+                  <ControlTemplate TargetType="ItemsControl">
+                    <ScrollViewer x:Name="scroll" VerticalScrollBarVisibility="Auto" Focusable="False" CanContentScroll="True"><ItemsPresenter Margin="0,0,10,0"/></ScrollViewer>
+                  </ControlTemplate>
+                </ItemsControl.Template>
+                <ItemsControl.ItemsPanel><ItemsPanelTemplate><VirtualizingStackPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                <ItemsControl.Resources>
+                  <DataTemplate DataType="{x:Type local:ReplayDay}">
+                    <StackPanel Orientation="Horizontal" Margin="2,6,0,5">
+                      <TextBlock Text="{Binding Title}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="15" Foreground="{StaticResource Muted}"/>
+                      <TextBlock Text="{Binding Count}" Style="{StaticResource Small}" Foreground="{StaticResource Dim}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                  </DataTemplate>
+                  <DataTemplate DataType="{x:Type local:ReplayRow}">
+                    <Button Style="{StaticResource CardButton}" Margin="0,0,0,6" Padding="12,7" Tag="{Binding}" Click="ReplayOpen_Click" ToolTip="{Binding RowTip}">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="52"/><ColumnDefinition Width="*"/><ColumnDefinition Width="164"/><ColumnDefinition Width="106"/><ColumnDefinition Width="100"/><ColumnDefinition Width="156"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center">
+                          <TextBlock Text="{Binding TimeText}" FontSize="15" FontWeight="SemiBold"/>
+                          <TextBlock Text="{Binding Length}" Style="{StaticResource Small}" ToolTip="The length of the match"/>
+                        </StackPanel>
+                        <Grid Grid.Column="1" Margin="4,0,8,0" VerticalAlignment="Center">
+                          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                          <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <Grid Width="38" Height="38" HorizontalAlignment="Left">
+                              <Ellipse Fill="#16202C"/>
+                              <TextBlock Text="{Binding P1Initials}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="15" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                              <Ellipse Stroke="#FF5F6B" StrokeThickness="2"><Ellipse.Fill><ImageBrush ImageSource="{Binding P1Icon}" Stretch="UniformToFill"/></Ellipse.Fill></Ellipse>
+                            </Grid>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                              <TextBlock Text="{Binding P1Fighter}" FontSize="15.5" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{Binding P1Brush}"/>
+                              <TextBlock Text="{Binding P1Name}" Style="{StaticResource Small}" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                          </Grid>
+                          <TextBlock Grid.Column="1" Text="VS" FontFamily="{StaticResource Display}" FontStyle="Italic" FontWeight="ExtraBold" FontSize="15" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                          <Grid Grid.Column="2">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <Grid Width="38" Height="38" HorizontalAlignment="Left">
+                              <Ellipse Fill="#16202C"/>
+                              <TextBlock Text="{Binding P2Initials}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="15" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                              <Ellipse Stroke="#4FA8FF" StrokeThickness="2"><Ellipse.Fill><ImageBrush ImageSource="{Binding P2Icon}" Stretch="UniformToFill"/></Ellipse.Fill></Ellipse>
+                            </Grid>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                              <TextBlock Text="{Binding P2Fighter}" FontSize="15.5" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{Binding P2Brush}"/>
+                              <TextBlock Text="{Binding P2Name}" Style="{StaticResource Small}" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                          </Grid>
                         </Grid>
-                      </Button>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
-              </ScrollViewer>
+                        <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,0,8,0">
+                          <TextBlock Text="{Binding Stage}" FontSize="15" TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="{Binding Kind}" Style="{StaticResource Small}" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="3" VerticalAlignment="Center" Margin="0,0,6,0">
+                          <Border CornerRadius="3" Padding="7,0" HorizontalAlignment="Left" Background="{Binding ChipBack}" Visibility="{Binding ChipVisible}">
+                            <TextBlock Text="{Binding ChipText}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="14" Foreground="{Binding ChipBrush}"/>
+                          </Border>
+                          <TextBlock Text="{Binding ResultText}" Style="{StaticResource Small}" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <!-- who can watch it: a click on the pill changes it -->
+                        <Button Grid.Column="4" Style="{StaticResource Bare}" Tag="{Binding}" Click="ReplayPublic_Click" IsHitTestVisible="{Binding CanSetVis}" ToolTip="{Binding VisTip}" ToolTipService.ShowOnDisabled="True" HorizontalAlignment="Left" VerticalAlignment="Center" Cursor="{Binding VisCursor}">
+                          <Border CornerRadius="13" BorderThickness="1" BorderBrush="{Binding VisBorder}" Padding="9,3,11,3" MinWidth="86">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                              <Path Data="{Binding VisIcon}" Stroke="{Binding VisBrush}" StrokeThickness="1.6" Width="13" Height="13" Stretch="Uniform" StrokeLineJoin="Round"/>
+                              <TextBlock Text="{Binding VisText}" Foreground="{Binding VisBrush}" FontSize="14" FontWeight="SemiBold" Margin="6,0,0,0"/>
+                            </StackPanel>
+                          </Border>
+                        </Button>
+                        <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
+                          <Button Style="{StaticResource IconButton}" Tag="{Binding}" Click="ReplayUpload_Click" Width="32" Height="32" Visibility="{Binding UploadVisible}" ToolTip="{Binding UploadTip}" Padding="0">
+                            <Path Data="{StaticResource IcoUpload}" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.8" Width="15" Height="15" Stretch="Uniform" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                          </Button>
+                          <Button Style="{StaticResource IconButton}" Tag="{Binding}" Click="ReplayDelete_Click" Width="32" Height="32" Visibility="{Binding DeleteVisible}" ToolTip="{Binding DeleteTip}" Padding="0">
+                            <Path Data="{StaticResource IcoTrash}" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.7" Width="15" Height="15" Stretch="Uniform" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                          </Button>
+                          <Grid Width="84" Margin="6,0,0,0">
+                            <Border CornerRadius="4" BorderThickness="1" BorderBrush="{StaticResource Accent}" Height="30" Visibility="{Binding WatchVisible}">
+                              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Path Data="{StaticResource IcoPlay}" Fill="{StaticResource Accent}" Width="11" Height="11" Stretch="Uniform"/>
+                                <TextBlock Text="Watch" Foreground="{StaticResource Accent}" FontSize="14.5" FontWeight="SemiBold" Margin="6,0,0,0"/>
+                              </StackPanel>
+                            </Border>
+                            <TextBlock Text="Inputs only" Style="{StaticResource Small}" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="{Binding NoWatchVisible}"/>
+                          </Grid>
+                        </StackPanel>
+                      </Grid>
+                    </Button>
+                  </DataTemplate>
+                </ItemsControl.Resources>
+              </ItemsControl>
+              <!-- reading the list the first time: the rows' shapes -->
+              <StackPanel x:Name="ReplaysLoading" Visibility="Collapsed" IsHitTestVisible="False">
+                <StackPanel.Triggers>
+                  <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                    <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetProperty="Opacity" From="1" To="0.45" Duration="0:0:0.8" AutoReverse="True" RepeatBehavior="Forever"/></Storyboard></BeginStoryboard>
+                  </EventTrigger>
+                </StackPanel.Triggers>
+                <Border Height="54" Style="{StaticResource Panel}" Margin="0,6,10,6"/><Border Height="54" Style="{StaticResource Panel}" Margin="0,0,10,6"/><Border Height="54" Style="{StaticResource Panel}" Margin="0,0,10,6"/>
+                <Border Height="54" Style="{StaticResource Panel}" Margin="0,0,10,6"/><Border Height="54" Style="{StaticResource Panel}" Margin="0,0,10,6"/><Border Height="54" Style="{StaticResource Panel}" Margin="0,0,10,6"/>
+              </StackPanel>
               <StackPanel x:Name="ReplaysEmpty" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed">
-                <Path Data="{StaticResource IcoFilm}" Stroke="{StaticResource Accent}" StrokeThickness="1.6" Width="56" Height="46" Stretch="Uniform" StrokeLineJoin="Round"/>
-                <TextBlock x:Name="ReplaysEmptyTitle" Text="No matches recorded yet" Style="{StaticResource SectionTitle}" FontSize="34" HorizontalAlignment="Center" Margin="0,18,0,0"/>
-                <TextBlock x:Name="ReplaysEmptyText" Text="Play a match: the game records it and it shows up here." FontSize="17" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                <Path Data="{StaticResource IcoFilm}" Stroke="{StaticResource Accent}" StrokeThickness="1.6" Width="48" Height="40" Stretch="Uniform" StrokeLineJoin="Round"/>
+                <TextBlock x:Name="ReplaysEmptyTitle" Text="No matches recorded yet" Style="{StaticResource SectionTitle}" FontSize="30" HorizontalAlignment="Center" Margin="0,14,0,0"/>
+                <TextBlock x:Name="ReplaysEmptyText" Text="Play a match: the game records it and it shows up here." FontSize="16" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="620" Margin="0,6,0,0"/>
+                <Button x:Name="ReplaysEmptyButton" Style="{StaticResource Outline}" Height="38" Padding="18,0" FontSize="15" HorizontalAlignment="Center" Margin="0,16,0,0" Click="ReplaysEmpty_Click" Visibility="Collapsed"/>
               </StackPanel>
             </Grid>
           </DockPanel>
@@ -452,27 +518,32 @@
               <TextBlock x:Name="RvSceneNote" Style="{StaticResource Small}" Margin="16,40,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False"/>
             </Grid>
           </Border>
-          <!-- controls and timeline -->
-          <Border Grid.Row="1" Style="{StaticResource Panel}" Margin="0,12,0,0" Padding="16,12">
+          <!-- controls and timeline: one row of controls, the time on both sides of the timeline -->
+          <Border Grid.Row="1" Style="{StaticResource Panel}" Margin="0,10,0,0" Padding="14,10">
             <StackPanel>
               <Grid>
                 <StackPanel Orientation="Horizontal">
-                  <Button Style="{StaticResource Outline}" Width="44" Height="36" Padding="0" Click="RvStepBack_Click" ToolTip="One frame back (Left)"><Path Data="M14,6 L8,12 L14,18 M18,6 V18" Stroke="{StaticResource Text}" StrokeThickness="1.8" Width="14" Height="14" Stretch="Uniform"/></Button>
-                  <Button x:Name="RvPlay" Style="{StaticResource Primary}" Width="64" Height="36" Margin="8,0" Click="RvPlay_Click" ToolTip="Play / pause (Space)">
-                    <Path x:Name="RvPlayIcon" Data="{StaticResource IcoPlay}" Fill="#06121D" Width="14" Height="14" Stretch="Uniform"/>
+                  <Button Style="{StaticResource Outline}" Width="38" Height="34" Padding="0" Click="RvStepBack_Click" ToolTip="One frame back (Left, Shift + Left: one second)"><Path Data="M14,6 L8,12 L14,18 M18,6 V18" Stroke="{StaticResource Text}" StrokeThickness="1.8" Width="13" Height="13" Stretch="Uniform"/></Button>
+                  <Button x:Name="RvPlay" Style="{StaticResource Primary}" Width="56" Height="34" Margin="6,0" Click="RvPlay_Click" ToolTip="Play / pause (Space)">
+                    <Path x:Name="RvPlayIcon" Data="{StaticResource IcoPlay}" Fill="#06121D" Width="13" Height="13" Stretch="Uniform"/>
                   </Button>
-                  <Button Style="{StaticResource Outline}" Width="44" Height="36" Padding="0" Click="RvStepFwd_Click" ToolTip="One frame forward (Right)"><Path Data="M10,6 L16,12 L10,18 M6,6 V18" Stroke="{StaticResource Text}" StrokeThickness="1.8" Width="14" Height="14" Stretch="Uniform"/></Button>
-                  <Border Width="1" Height="26" Background="{StaticResource Line}" Margin="16,0"/>
-                  <StackPanel x:Name="RvSpeeds" Orientation="Horizontal"/>
+                  <Button Style="{StaticResource Outline}" Width="38" Height="34" Padding="0" Click="RvStepFwd_Click" ToolTip="One frame forward (Right, Shift + Right: one second)"><Path Data="M10,6 L16,12 L10,18 M6,6 V18" Stroke="{StaticResource Text}" StrokeThickness="1.8" Width="13" Height="13" Stretch="Uniform"/></Button>
+                  <Border Width="1" Height="24" Background="{StaticResource Line}" Margin="10,0"/>
+                  <StackPanel x:Name="RvSpeeds" Orientation="Horizontal" VerticalAlignment="Center"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                  <CheckBox x:Name="RvModels" Style="{StaticResource RvChip}" Content="Models" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="The game's own fighters and stage, from your game files (M)"/>
+                  <CheckBox x:Name="RvHit" Style="{StaticResource RvChip}" Content="Hitboxes" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where the attacks hit (H)"/>
+                  <CheckBox x:Name="RvHurt" Style="{StaticResource RvChip}" Content="Hurtboxes" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where the fighters can be hit (U)"/>
+                  <CheckBox x:Name="RvFollow" Style="{StaticResource RvChip}" Content="Follow" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="The camera follows the fighters; off: the whole stage and its blast zones (F)"/>
                 </StackPanel>
               </Grid>
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
-                  <CheckBox x:Name="RvModels" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Game models" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="15"/>
-                  <CheckBox x:Name="RvHit" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Hitboxes" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="15"/>
-                  <CheckBox x:Name="RvHurt" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Hurtboxes" Margin="8,0,18,0" VerticalAlignment="Center" FontSize="15"/>
-                  <CheckBox x:Name="RvFollow" Style="{StaticResource Switch}" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed"/><TextBlock Text="Follow" Margin="8,0,0,0" VerticalAlignment="Center" FontSize="15"/>
-                </StackPanel>
-              <local:ReplayTimeline x:Name="RvTimeline" Height="54" Margin="0,12,0,0" Cursor="Hand"/>
+              <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="44"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="RvNow" Text="0:00" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="16" Foreground="{StaticResource Text}" VerticalAlignment="Center"/>
+                <local:ReplayTimeline x:Name="RvTimeline" Grid.Column="1" Height="42" Cursor="Hand"/>
+                <TextBlock x:Name="RvTotal" Grid.Column="2" Text="0:00" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="16" Foreground="{StaticResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+              </Grid>
             </StackPanel>
           </Border>
           <!-- side panel: the match, the stats, the move data -->
