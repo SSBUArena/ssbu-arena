@@ -202,7 +202,7 @@ namespace Arena
             if (r == null || r.FrameList.Count == 0 || W < 10 || H < 10) return;
             int fi = (int)Math.Round(frame);
             var fr = r.FrameList[Math.Max(0, Math.Min(fi, r.FrameList.Count - 1))];
-            double hudH = 120;
+            double hudH = 80;
             var view = ViewRect(fi);
             if (zoom > 1.001)                               // mouse wheel: closer, centred on the fighters (double click: back)
             {
@@ -247,7 +247,7 @@ namespace Arena
             {
                 var L = r.Lines[i]; var p = fr.Lines != null && i < fr.Lines.Length ? fr.Lines[i] : new[] { L.X1, L.Y1, L.X2, L.Y2 };
                 if (fr.Number < L.FirstFrame || (i < 64 && (fr.LinesOn & (1UL << i)) == 0)) continue;      // not there (yet / now)
-                if (stageModel && !(Scene.MovingAsLines && L.Passable)) continue;
+                if (stageModel) continue;
                 if (L.Passable) { plats.Add(new[] { Math.Min(p[0], p[2]), p[1], Math.Max(p[0], p[2]), p[3] }); continue; }
                 Point a = S(p[0], p[1]), b = S(p[2], p[3]);
                 if (L.Floor) dc.DrawLine(StageRail, a, b);
@@ -323,7 +323,7 @@ namespace Arena
         void DrawFighter(DrawingContext dc, RvFighterFrame s, int k, int pc, bool tagged)
         {
             Point feet = S(s.X, s.Y);
-            bool model = Scene != null && Scene.FighterShown(k) && tagged;
+            bool model = Scene != null && (tagged ? Scene.FighterShown(k) : Scene.OtherShown(s.Slot));
             // body: the hurt volumes' extent (else a capsule of a typical size), filled in the player's colour
             double x0 = s.X - 4, x1 = s.X + 4, y0 = s.Y, y1 = s.Y + 14;
             foreach (var u in s.Hurts) { x0 = Math.Min(x0, Math.Min(u.X, u.X2) - u.R); x1 = Math.Max(x1, Math.Max(u.X, u.X2) + u.R); y0 = Math.Min(y0, Math.Min(u.Y, u.Y2) - u.R); y1 = Math.Max(y1, Math.Max(u.Y, u.Y2) + u.R); }
@@ -370,36 +370,37 @@ namespace Arena
         void DrawHud(DrawingContext dc, RvFrame fr, double W, double H, double hudH)
         {
             int n = r.Fighters.Count;
-            double cardW = Math.Min(260, (W - 40) / Math.Max(n, 1) - 16), total = n * (cardW + 16) - 16, x = (W - total) / 2, y = H - hudH + 14;
+            double cardW = Math.Min(270, (W - 40) / Math.Max(n, 1) - 12), total = n * (cardW + 12) - 12, x = (W - total) / 2, y = H - hudH + 8;
             dc.DrawRectangle(RvPalette.B(RvPalette.Navy, .92), null, new Rect(0, H - hudH, W, hudH));
             dc.DrawLine(RvPalette.P(RvPalette.Line, 1, 1), new Point(0, H - hudH), new Point(W, H - hudH));
-            for (int k = 0; k < n; k++, x += cardW + 16)
+            for (int k = 0; k < n; k++, x += cardW + 12)
             {
-                var f = r.Fighters[k]; var s = fr.F[k]; int pc = k % 4;
-                var rect = new Rect(x, y, cardW, hudH - 28);
+                var f = r.Fighters[k]; var s = fr.F[k] ?? fr.Extra?.FirstOrDefault(e => e.Key == k).Value; int pc = k % 4;      // (a Pokemon Trainer's other Pokemon)
+                var rect = new Rect(x, y, cardW, hudH - 16);
                 dc.DrawRoundedRectangle(RvPalette.B(RvPalette.Surface), RvPalette.P(RvPalette.Line, 1, 1), rect, 6, 6);
-                dc.DrawRectangle(playerB[pc], null, new Rect(x, y + 8, 3, rect.Height - 16));
-                dc.DrawText(Text(f.FighterName.ToUpperInvariant(), 13, MutedB, UiBold), new Point(x + 16, y + 9));
-                dc.DrawText(Text(f.Name, 15, TextB, Ui), new Point(x + 16, y + 27));
+                dc.DrawRectangle(playerB[pc], null, new Rect(x, y + 7, 3, rect.Height - 14));
+                double nameW = Math.Max(20, cardW - 112);      // (the damage has the right side)
+                var fn = Text(f.FighterName.ToUpperInvariant(), 13, MutedB, UiBold); fn.MaxTextWidth = nameW; fn.MaxLineCount = 1; fn.Trimming = TextTrimming.CharacterEllipsis;
+                var pn = Text(f.Name, 14, TextB, Ui); pn.MaxTextWidth = nameW; pn.MaxLineCount = 1; pn.Trimming = TextTrimming.CharacterEllipsis;
+                dc.DrawText(fn, new Point(x + 12, y + 5));
+                dc.DrawText(pn, new Point(x + 12, y + 21));
                 if (s != null)
                 {
                     double d = Math.Floor(s.Damage * 10 + 1e-4) / 10;      // the game's own display: tenths, cut (10.08 shows 10.0)
                     var dcol = DamageColour(d);
-                    var t = Text(d.ToString("0.0", CultureInfo.InvariantCulture), 40, new SolidColorBrush(dcol), UiBold);
-                    var pct = Text("%", 18, new SolidColorBrush(dcol), UiBold);
-                    double rx = x + cardW - 14 - pct.Width;
-                    dc.DrawText(pct, new Point(rx, y + 30));
-                    dc.DrawText(t, new Point(rx - t.Width - 1, y + 8));
-                    for (int i = 0; i < Math.Min(s.Stocks, 8); i++) dc.DrawEllipse(playerB[pc], null, new Point(x + 22 + i * 16, y + rect.Height - 16), 5.5, 5.5);
-                    if (s.Stocks == 0) dc.DrawText(Text("OUT", 13, DimB, UiBold), new Point(x + 16, y + rect.Height - 25));
+                    var t = Text(d.ToString("0.0", CultureInfo.InvariantCulture), 32, new SolidColorBrush(dcol), UiBold);
+                    var pct = Text("%", 15, new SolidColorBrush(dcol), UiBold);
+                    double rx = x + cardW - 10 - pct.Width;
+                    dc.DrawText(pct, new Point(rx, y + 18));
+                    dc.DrawText(t, new Point(rx - t.Width - 1, y + 1));
+                    for (int i = 0; i < Math.Min(s.Stocks, 8); i++) dc.DrawEllipse(playerB[pc], null, new Point(x + 17 + i * 12, y + rect.Height - 10), 4, 4);
+                    if (s.Stocks == 0) dc.DrawText(Text("OUT", 13, DimB, UiBold), new Point(x + 12, y + rect.Height - 19));
                     var mv = ReplayNames.MoveName(s.Motion);
-                    if (mv != null) { var m = Text(mv, 12, playerB[pc], Ui); dc.DrawText(m, new Point(x + cardW - 14 - m.Width, y + rect.Height - 22)); }
+                    if (mv != null) { var m = Text(mv, 12, playerB[pc], Ui); dc.DrawText(m, new Point(x + cardW - 10 - m.Width, y + rect.Height - 19)); }
                 }
             }
-            // time and frame
-            int sec = (int)(fr.Number / 60.0);
-            var tt = Text(string.Format(CultureInfo.InvariantCulture, "{0}:{1:00}.{2:00}   FRAME {3}", sec / 60, sec % 60, (int)(fr.Number % 60 * 100 / 60), fr.Number), 13, MutedB, UiBold);
-            dc.DrawText(tt, new Point(16, 12));
+            // the frame (the time is beside the timeline)
+            dc.DrawText(Text("FRAME " + fr.Number, 13, MutedB, UiBold), new Point(16, 12));
             var st = Text(r.StageName.ToUpperInvariant(), 13, DimB, UiBold);
             dc.DrawText(st, new Point(W - st.Width - 16, 12));
         }
@@ -477,10 +478,23 @@ namespace Arena
                 }
             dc.DrawLine(Head, new Point(px, 0), new Point(px, H));
             dc.DrawEllipse(RvPalette.B(RvPalette.Accent), null, new Point(px, H / 2), 5, 5);
+            if (hover >= 0 && hover <= W)
+            {
+                dc.DrawLine(HoverP, new Point(hover, 0), new Point(hover, H));
+                int s = (int)(hover / W * (N - 1) / 60);
+                var t = new FormattedText((s / 60) + ":" + (s % 60).ToString("00"), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, HoverFont, 13, HoverText, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+                double tx = Math.Max(4, Math.Min(W - t.Width - 4, hover + (hover + t.Width + 8 > W ? -t.Width - 6 : 6)));
+                dc.DrawText(t, new Point(tx, 2));
+            }
         }
+        double hover = -1;
+        static readonly Pen HoverP = RvPalette.P(RvPalette.Hex("#EEF3F7"), .35, 1);
+        static readonly Brush HoverText = RvPalette.B(RvPalette.Hex("#EEF3F7"));
+        static readonly Typeface HoverFont = new Typeface(new FontFamily(new Uri("pack://application:,,,/"), "./Assets/Fonts/#Barlow Condensed"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+        protected override void OnMouseLeave(MouseEventArgs e) { hover = -1; InvalidateVisual(); }
 
         protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e) { CaptureMouse(); Do(e.GetPosition(this)); e.Handled = true; }
-        protected override void OnMouseMove(MouseEventArgs e) { if (IsMouseCaptured) Do(e.GetPosition(this)); }
+        protected override void OnMouseMove(MouseEventArgs e) { hover = e.GetPosition(this).X; if (IsMouseCaptured) Do(e.GetPosition(this)); else InvalidateVisual(); }
         protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e) { ReleaseMouseCapture(); }
         void Do(Point p)
         {

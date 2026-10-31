@@ -19,7 +19,7 @@ namespace Arena
     {
         public float X, Y, Damage, MotionFrame, Shield;
         public ulong Motion;
-        public int Status, Lr, Situation, Stocks, FightFrame;
+        public int Status, Lr, Situation, Stocks, FightFrame, Slot;    // Slot: the recorder's (a fighter's other bodies have their own)
         public RvHit[] Hits;
         public RvHurt[] Hurts;
         public bool Grounded => Situation == 0;
@@ -71,9 +71,12 @@ namespace Arena
 
         public static ReplayState Read(string path, bool body = true)
         {
-            byte[] f = File.ReadAllBytes(path);
+            byte[] f; long size;
+            if (body) { f = File.ReadAllBytes(path); size = f.Length; }
+            else using (var s = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))      // (the list: only the header, a hundred files)
+            { size = s.Length; f = new byte[Math.Min(size, HeaderSize)]; int o0 = 0, k0; while (o0 < f.Length && (k0 = s.Read(f, o0, f.Length - o0)) > 0) o0 += k0; }
             if (f.Length < HeaderSize || Encoding.ASCII.GetString(f, 0, 4) != "SSBV") throw new Exception("not an SSBU Arena match state file");
-            var r = new ReplayState { Path = path, FileSize = f.Length };
+            var r = new ReplayState { Path = path, FileSize = size };
             r.Version = BitConverter.ToUInt16(f, 4);
             if (r.Version < 1 || r.Version > 2) throw new Exception("match state format " + r.Version + ": update SSBU Arena");
             int hs = BitConverter.ToUInt16(f, 6);
@@ -153,6 +156,7 @@ namespace Arena
                         Motion = BitConverter.ToUInt64(b, o + 16), Status = BitConverter.ToInt32(b, o + 24), Lr = (sbyte)b[o + 28], Situation = b[o + 29], Stocks = b[o + 30],
                         Shield = BitConverter.ToSingle(b, o + 36), FightFrame = (int)BitConverter.ToUInt32(b, o + 40),
                     };
+                    s.Slot = k;
                     int nh = b[o + 31], nu = b[o + 32];
                     o += 44;
                     s.Hits = new RvHit[nh];
@@ -344,7 +348,7 @@ namespace Arena
             { "inkling", "Inkling" }, { "ridley", "Ridley" }, { "simon", "Simon" }, { "richter", "Richter" }, { "krool", "King K. Rool" }, { "shizue", "Isabelle" },
             { "gaogaen", "Incineroar" }, { "packun", "Piranha Plant" }, { "jack", "Joker" }, { "brave", "Hero" }, { "buddy", "Banjo & Kazooie" }, { "dolly", "Terry" },
             { "master", "Byleth" }, { "tantan", "Min Min" }, { "pickel", "Steve" }, { "edge", "Sephiroth" }, { "eflame", "Pyra" }, { "elight", "Mythra" },
-            { "element", "Pyra / Mythra" }, { "eflame_first", "Pyra" }, { "elight_first", "Mythra" }, { "demon", "Kazuya" }, { "trail", "Sora" } };
+            { "element", "Pyra / Mythra" }, { "eflame_first", "Pyra" }, { "elight_first", "Mythra" }, { "eflame_only", "Pyra" }, { "elight_only", "Mythra" }, { "demon", "Kazuya" }, { "trail", "Sora" } };
         // the six legal stages (Arena's competitive list) and a few more by name only
         static readonly string[,] Stages = {
             { "battle_field", "Battlefield" }, { "battle_field_s", "Small Battlefield" }, { "end", "Final Destination" }, { "poke_stadium2", "Pokemon Stadium 2" },
@@ -368,6 +372,14 @@ namespace Arena
         {
             if (fighterIx == null) fighterIx = Index(Fighters, "ui_chara_");
             return fighterIx.TryGetValue(uiChara & 0xffffffffffUL, out int i) ? Fighters[i, 1] : "Fighter " + kind;
+        }
+        /// <summary>the fighters and stages whose name holds this text: the low 40 bits of their ids, as text (the server's search)</summary>
+        public static IEnumerable<string> FighterIdsNamed(string q) => Named(Fighters, "ui_chara_", q);
+        public static IEnumerable<string> StageIdsNamed(string q) => Named(Stages, "ui_stage_", q);
+        static IEnumerable<string> Named(string[,] t, string prefix, string q)
+        {
+            for (int i = 0; i < t.GetLength(0); i++)
+                if (t[i, 1].IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0) yield return Hash40(prefix + t[i, 0]).ToString("x10");
         }
         public static string StageKey(ulong uiStage)
         {

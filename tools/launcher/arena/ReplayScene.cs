@@ -87,8 +87,14 @@ namespace Arena
         readonly OrthographicCamera cam = new OrthographicCamera { LookDirection = new Vector3D(0, 0, -1), UpDirection = new Vector3D(0, 1, 0), NearPlaneDistance = 1, FarPlaneDistance = 6000 };
         readonly Model3DGroup root = new Model3DGroup();
         Fighter[] fighters = new Fighter[0];
-        bool stageOn, stageLines;
+        readonly Dictionary<int, Fighter> others = new Dictionary<int, Fighter>();      // a fighter's other bodies (Nana), by recorded slot
+        bool stageOn;
         int moveFirst = -1, moveCount; double moveX, moveY; TranslateTransform3D moveBy; Model3DGroup moveGroup;
+        // the stage's platforms placed on their recorded lines (Town and City): the part of each, by name
+        sealed class Platform { public HashSet<int> Meshes = new HashSet<int>(); public Model3DGroup Group = new Model3DGroup(); public TranslateTransform3D By = new TranslateTransform3D(); public bool Seen; }
+        readonly Dictionary<string, Platform> platforms = new Dictionary<string, Platform>();
+        double platformTop;
+        readonly Dictionary<string, Platform> stageForms = new Dictionary<string, Platform>();      // the parts of a stage's transformations (Pokemon Stadium 2)
         int loadId;
 
         public ReplayScene(Viewport3D v)
@@ -99,15 +105,15 @@ namespace Arena
 
         public bool On = true;
         public bool StageShown => On && stageOn;
-        public bool MovingAsLines => stageLines;      // this stage's moving platforms are drawn by ReplayView
         public bool FighterShown(int k) => On && k < fighters.Length && fighters[k] != null;
+        public bool OtherShown(int slot) => On && others.ContainsKey(slot);
 
         public static string AssetsDir => Path.Combine(Core.Build, "replay_assets");
 
         public void Clear()
         {
             loadId++;
-            fighters = new Fighter[0]; stageOn = stageLines = false; moveFirst = -1; moveGroup = null; root.Children.Clear();
+            fighters = new Fighter[0]; others.Clear(); platforms.Clear(); stageForms.Clear(); stageOn = false; moveFirst = -1; moveGroup = null; root.Children.Clear();
         }
 
         /// <summary>the files of this replay (made if missing), then the scene. status: what the page says meanwhile; "" when done.</summary>
@@ -132,7 +138,7 @@ namespace Arena
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
-        sealed class Loaded { public Fighter[] F; public RvModel Stage; public string StageDir; public Dictionary<string, BitmapSource> Tex = new Dictionary<string, BitmapSource>(); }
+        sealed class Loaded { public Fighter[] F; public Dictionary<int, Fighter> Others = new Dictionary<int, Fighter>(); public RvModel Stage; public string StageDir; public Dictionary<string, BitmapSource> Tex = new Dictionary<string, BitmapSource>(); }
 
         static BitmapSource Png(string f)
         {
@@ -153,21 +159,26 @@ namespace Arena
                 {
                     int k = int.Parse(p[1]);
                     while (slots.Count <= k) slots.Add(null);
-                    if (p.Length < 5) continue;
-                    string dir = Path.Combine(AssetsDir, p[2]), motions = Path.Combine(AssetsDir, p[3]);
-                    if (!File.Exists(Path.Combine(dir, "model.rvm"))) continue;
-                    var f = new Fighter { Model = RvModel.Read(dir), Folder = dir, Scale = double.Parse(p[4], System.Globalization.CultureInfo.InvariantCulture) };
-                    foreach (var t in Textures(f.Model, dir)) res.Tex[t.Key] = t.Value;
-                    foreach (var file in Directory.GetFiles(motions, "*.rva"))
-                    {
-                        var m = RvMotion.Read(file);
-                        if (m != null) f.Motions[Convert.ToUInt64(Path.GetFileNameWithoutExtension(file), 16)] = m;
-                    }
-                    slots[k] = f;
+                    if (p.Length >= 5) slots[k] = ReadFighter(res, p[2], p[3], p[4]);
                 }
+                else if (p[0] == "extra" && p.Length >= 6) res.Others[int.Parse(p[2])] = ReadFighter(res, p[3], p[4], p[5]);
             }
             res.F = slots.ToArray();
             return res;
+        }
+
+        static Fighter ReadFighter(Loaded res, string model, string motionFolder, string scale)
+        {
+            string dir = Path.Combine(AssetsDir, model), motions = Path.Combine(AssetsDir, motionFolder);
+            if (!File.Exists(Path.Combine(dir, "model.rvm"))) return null;
+            var f = new Fighter { Model = RvModel.Read(dir), Folder = dir, Scale = double.Parse(scale, System.Globalization.CultureInfo.InvariantCulture) };
+            foreach (var t in Textures(f.Model, dir)) res.Tex[t.Key] = t.Value;
+            foreach (var file in Directory.GetFiles(motions, "*.rva"))
+            {
+                var m = RvMotion.Read(file);
+                if (m != null) f.Motions[Convert.ToUInt64(Path.GetFileNameWithoutExtension(file), 16)] = m;
+            }
+            return f;
         }
 
         static IEnumerable<KeyValuePair<string, BitmapSource>> Textures(RvModel m, string dir)
@@ -199,7 +210,32 @@ namespace Arena
             {
                 var g = new Model3DGroup();
                 string mv = Path.Combine(l.StageDir, "moving.txt");
-                stageLines = File.Exists(Path.Combine(l.StageDir, "lines.txt"));
+                string fm = Path.Combine(l.StageDir, "forms.txt");
+                if (File.Exists(fm))
+                    foreach (var row in File.ReadAllLines(fm))
+                    {
+                        var q = row.Split(' ');
+                        var pf = new Platform();
+                        foreach (var mesh in q.Skip(1)) pf.Meshes.Add(int.Parse(mesh));
+                        pf.Group.Transform = pf.By;
+                        stageForms[q[0]] = pf;
+                        g.Children.Add(pf.Group);
+                    }
+                string pl = Path.Combine(l.StageDir, "platforms.txt");
+                if (File.Exists(pl))
+                {
+                    var rows = File.ReadAllLines(pl);
+                    platformTop = double.Parse(rows[0], System.Globalization.CultureInfo.InvariantCulture);
+                    foreach (var row in rows.Skip(1))
+                    {
+                        var q = row.Split(' ');
+                        var pf = new Platform();
+                        foreach (var mesh in q.Skip(1)) pf.Meshes.Add(int.Parse(mesh));
+                        pf.Group.Transform = pf.By;
+                        platforms[q[0]] = pf;
+                        g.Children.Add(pf.Group);
+                    }
+                }
                 if (File.Exists(mv))
                 {
                     var q = File.ReadAllText(mv).Split(' ');
@@ -219,12 +255,13 @@ namespace Arena
                     pos.Freeze(); nor.Freeze();
                     geo.Positions = pos; geo.Normals = nor; geo.Freeze();
                     var mat = Mat(TexOf(l, l.StageDir, m.Tex));
-                    (mi >= moveFirst && moveFirst >= 0 && mi < moveFirst + moveCount ? moveGroup : g).Children.Add(new GeometryModel3D(geo, mat) { BackMaterial = mat });
+                    var into = mi >= moveFirst && moveFirst >= 0 && mi < moveFirst + moveCount ? moveGroup : platforms.Values.Concat(stageForms.Values).FirstOrDefault(pf => pf.Meshes.Contains(mi))?.Group ?? g;
+                    into.Children.Add(new GeometryModel3D(geo, mat) { BackMaterial = mat });
                 }
                 root.Children.Add(g);
                 stageOn = true;
             }
-            foreach (var f in l.F)
+            foreach (var f in l.F.Concat(l.Others.Values))
             {
                 if (f == null) continue;
                 f.Group = new Model3DGroup();
@@ -239,6 +276,7 @@ namespace Arena
                 root.Children.Add(f.Group);
             }
             fighters = l.F;
+            foreach (var o in l.Others) if (o.Value != null) others[o.Key] = o.Value;
         }
 
         static BitmapSource TexOf(Loaded l, string dir, int i)
@@ -250,7 +288,7 @@ namespace Arena
         /// <summary>this frame, with the view's scale (pixels per game unit) and origin</summary>
         public void Update(ReplayState r, RvFrame fr, double W, double H, double sc, double ox, double oy)
         {
-            bool on = On && (stageOn || fighters.Any(x => x != null));
+            bool on = On && (stageOn || others.Count > 0 || fighters.Any(x => x != null));
             view.Visibility = on ? Visibility.Visible : Visibility.Hidden;
             if (!on) return;
             cam.Width = W / sc;
@@ -269,14 +307,67 @@ namespace Arena
                 bool any = x0 != double.MaxValue;
                 moveBy.OffsetX = any ? (x0 + x1) / 2 - moveX : 0; moveBy.OffsetY = any ? y - moveY : -100000;
             }
-            for (int k = 0; k < fighters.Length; k++)
+            PlacePlatforms(r, fr);
+            if (stageForms.Count > 0)
             {
-                var f = fighters[k];
-                if (f == null) continue;
-                var s = k < fr.F.Length ? fr.F[k] : null;
-                if (s == null || !f.Motions.TryGetValue(s.Motion & 0xffffffffffUL, out var motion)) { foreach (var m in f.Model.Meshes) m.Model.Geometry = null; f.Seen = -1; continue; }
-                Pose(f, s, motion);
+                string form = StageForm(r, fr);
+                foreach (var pf in stageForms) pf.Value.By.OffsetY = pf.Key == form ? 0 : -100000;
             }
+            for (int k = 0; k < fighters.Length; k++)
+                if (fighters[k] != null) Show(fighters[k], k < fr.F.Length ? fr.F[k] : null);
+            foreach (var o in others)
+            {
+                RvFighterFrame s = null;
+                if (fr.Extra != null) foreach (var e in fr.Extra) if (e.Value.Slot == o.Key) s = e.Value;
+                Show(o.Value, s);
+            }
+        }
+
+        /// <summary>which transformation is on (Pokemon Stadium 2, hazards on): the recording has no field for it, the collision lines of the frame
+        /// say it. The normal form's platforms are there: normal. Else by the lines that exist only now: a floor as wide as the stage, ramps (ice);
+        /// platforms over the middle (ground: its tree); slanted platforms at the sides (flying); none of these: electric, whose floor adds no shape
+        /// (a file also can stop finding lines at its 64th, so the last form seen in a long match may have none)</summary>
+        static string StageForm(ReplayState r, RvFrame fr)
+        {
+            bool normal = false, ground = false, flying = false, ice = false;
+            for (int i = 0; i < r.Lines.Count && i < 64; i++)
+            {
+                if ((fr.LinesOn & (1UL << i)) == 0) continue;
+                var L = r.Lines[i];
+                var p = fr.Lines != null && i < fr.Lines.Length ? fr.Lines[i] : new[] { L.X1, L.Y1, L.X2, L.Y2 };
+                if (L.FirstFrame == 0) { normal |= L.Passable; continue; }
+                double c = (p[0] + p[2]) / 2, slope = Math.Abs(p[3] - p[1]);
+                if (L.Passable && Math.Abs(c) < 20 && p[1] > 10) ground = true;
+                else if (L.Passable && Math.Abs(c) > 40 && slope > 1) flying = true;
+                else if (L.Floor && !L.Passable && Math.Max(Math.Abs(p[0]), Math.Abs(p[2])) > 92) ice = true;
+            }
+            return normal ? "normal" : ground ? "ground" : flying ? "flying" : ice ? "ice" : "electric";
+        }
+
+        void Show(Fighter f, RvFighterFrame s)
+        {
+            if (s == null || !f.Motions.TryGetValue(s.Motion & 0xffffffffffUL, out var motion)) { foreach (var m in f.Model.Meshes) m.Model.Geometry = null; f.Seen = -1; return; }
+            Pose(f, s, motion);
+        }
+
+        /// <summary>each platform on its line of this frame. Which line is which platform: where the line was first seen (the left, the
+        /// middle, the right one), and the ones found later in the match or far out are the second form's (Town and City: the city's)</summary>
+        void PlacePlatforms(ReplayState r, RvFrame fr)
+        {
+            if (platforms.Count == 0) return;
+            foreach (var pf in platforms.Values) pf.Seen = false;
+            for (int i = 0; i < r.Lines.Count; i++)
+            {
+                var L = r.Lines[i];
+                if (!L.Passable) continue;
+                double c0 = (L.X1 + L.X2) / 2;
+                string name = (L.FirstFrame > 0 || Math.Abs(c0) > 90 ? "city_" : "village_") + (Math.Abs(c0) < 30 ? "C" : c0 < 0 ? "L" : "R");
+                if (!platforms.TryGetValue(name, out var pf) || fr.Number < L.FirstFrame || (i < 64 && (fr.LinesOn & (1UL << i)) == 0)) continue;
+                var p = fr.Lines != null && i < fr.Lines.Length ? fr.Lines[i] : new[] { L.X1, L.Y1, L.X2, L.Y2 };
+                pf.By.OffsetX = (p[0] + p[2]) / 2; pf.By.OffsetY = (p[1] + p[3]) / 2 - platformTop;
+                pf.Seen = true;
+            }
+            foreach (var pf in platforms.Values) if (!pf.Seen) pf.By.OffsetY = -100000;
         }
 
         // matrices: 3 x 4 by rows in the file's convention (a point is multiplied from the left: p' = p * M, translation in the last row)
