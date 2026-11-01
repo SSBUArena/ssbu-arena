@@ -156,6 +156,47 @@ static int rbg_sched(long long i, int m) {
     for (int q = 0; q < sn; q++) if (sf[q] == i) { sf[q] = -1; LOG("r1: RB NET TEST_SCHED: rollback at frame %lld to the state of frame %lld\n", i, sl[q]); if (m <= 0 || m > sl[q] + 1) m = (int)(sl[q] + 1); }
     return m;
 }
+/* (rollback 8 ms) THE LUA GARBAGE COLLECTOR OF THE MAIN LOOP. At 0x7103747ad8 the game runs luaC_step in a loop for up to 1 ms, and
+ * only when more than 5 ms are left in its frame (the time is read from the clock at 0x7103747830: the amount of collector work is
+ * wall-clock dependent, it differs between two games by design and has no part in the simulation). It was ~0.85 ms of every pass
+ * (a sixth of a re-run pass, stack samples 2026-11-01). Now, in a rollback match:
+ *  - re-run passes do not run it (SSBU_RB_GC_RERUN=0: they do): the game's own path for a late frame;
+ *  - real passes do not run it at their place; the same work is done at the safe point after the rollback decision, while the
+ *    pacing wait has at least 5 ms left, with the game's own limit of 1 ms (SSBU_RB_GC_IDLE=0: at its place). The workers are
+ *    still held there, as they are quiet at the game's own place. A tick that ran late gets no collector work, as in the game.
+ * The hook returns with x20 = 0: the loop's limit, so the loop ends at its next time check. Other callers of 0x71038fe690 (the
+ * collector's own allocation check) run as always. Bits 128 / 256 of the A/B test. */
+static ImportFn g_rbg_gc_orig; static uint64_t g_rbg_gc_L; static long long g_rbg_gc_frame = -1, g_rbg_gc_rerun, g_rbg_gc_real, g_rbg_gc_idle, g_rbg_gc_steps, g_rbg_gc_noidle; static double g_rbg_gc_ms;
+static int g_rbg_gc_r = -1, g_rbg_gc_i = -1;
+static void rbg_gc_hook(Ctx *c, void *user) {
+    (void)user;
+    if (c->x[30] == GA(0x7103747b10ull) && g_rbg_in_match == 1 && g_rg_ready && !g_rbg_noring) {
+        if (g_rbg_gc_r < 0) { const char *e = getenv("SSBU_RB_GC_RERUN"); g_rbg_gc_r = !(e && e[0] == '0'); e = getenv("SSBU_RB_GC_IDLE"); g_rbg_gc_i = !(e && e[0] == '0'); }
+        if (g_ra_phase == 2) { if (rb_feat(128, g_rbg_gc_r)) { g_rbg_gc_rerun++; c->x[20] = 0; return; } }
+        else if (g_rbg_pace > 0 && rb_feat(256, g_rbg_gc_i)) { g_rbg_gc_L = c->x[0]; g_rbg_gc_real++; c->x[20] = 0; return; }
+    }
+    g_rbg_gc_orig(c);
+}
+static void rbg_gc_idle(Ctx *c, long long i) {
+    uint64_t L = g_rbg_gc_L;
+    if (!L || g_rbg_gc_frame == i || g_rbg_next <= 0) return;
+    g_rbg_gc_frame = i;
+    double t0 = now_ms();
+    if (g_rbg_next - t0 < 5.0) { g_rbg_gc_noidle++; return; }
+    void r1_wrote(uint64_t a, uint64_t n);
+    Ctx t = *c; g_rbg_gc_idle++;
+    uint64_t sp = (c->x[31] - 0x4000) & ~15ull, g = rd64(L + 24);
+    do {                                                /* as the game's loop: 0x7103747ad8 .. 0x7103747b30 */
+        uint64_t tot = rd64(g + 16) + rd64(g + 24); int64_t debt = (int64_t)(tot + 0x8000000000000001ull); if (debt < -2400) debt = -2400;
+        uint8_t was = rd8(g + 87);
+        r1_wrote(g + 16, 16); *(uint64_t *)(uintptr_t)(g + 16) = tot - (uint64_t)debt; *(int64_t *)(uintptr_t)(g + 24) = debt;
+        r1_wrote(g + 87, 1); *(volatile uint8_t *)(uintptr_t)(g + 87) = 1;
+        t.x[0] = L; t.x[31] = sp; t.x[30] = GA(0x7103747b10ull);
+        g_rbg_gc_orig(&t); g_rbg_gc_steps++;
+        *(volatile uint8_t *)(uintptr_t)(g + 87) = was;
+    } while (rd8(g + 85) != 8 && now_ms() - t0 < 1.0);
+    g_rbg_gc_ms += now_ms() - t0;
+}
 /* at the safe point (H2) of every pass while the fight runs (r1_ring.c rgs_step) */
 static void rbg_step_body(Ctx *c) {
     long long i = g_rgs_next;
@@ -338,6 +379,7 @@ static void rbg_step_body(Ctx *c) {
     if (stalled) g_rbg_stall_ms += now_ms() - ts;
     r1_ring_let_go();
     rbn_finalize(g_rbg_pend > 0 && g_rbg_pend - 1 < i ? g_rbg_pend - 1 : i);      /* (R3 pub1) a refused load: its frames are not final yet */
+    if (!gorb) rbg_gc_idle(c, i);                       /* (rollback 8 ms) the Lua collector's work of this frame, in the idle part of the tick */
     {   /* (Arena perf) the task workers let go here, before the pacing wait (no load or capture follows in this tick): the
          * kick's preparation jobs run during the wait instead of after it. SSBU_RB_NET_EARLY_GO=0: at H2 as before */
         static int eg = -1; if (eg < 0) { const char *e = getenv("SSBU_RB_NET_EARLY_GO"); eg = !e || atoi(e) != 0; }
@@ -500,6 +542,8 @@ static void rbg_fight_off(void) {
     g_rbg_noring = 0;
     LOG("r1: RB NET: match %d over: ring emptied, session reset for the next match\n", rbn_match_number());
     { char mk[24]; snprintf(mk, sizeof mk, "match%dover", g_rbg_in_match == 1 ? rbn_match_number() : 0); if (g_rbg_in_match == 1) input_mark(mk); else input_mark("localmatchover"); }
+    LOG("r1: RB NET report: Lua collector: re-run passes without it %lld; real passes without it %lld, idle runs %lld (%lld steps, %.3f ms each run), no time left %lld\n", g_rbg_gc_rerun, g_rbg_gc_real, g_rbg_gc_idle, g_rbg_gc_steps, g_rbg_gc_idle ? g_rbg_gc_ms / (double)g_rbg_gc_idle : 0.0, g_rbg_gc_noidle);
+    g_rbg_gc_L = 0; g_rbg_gc_frame = -1;
     g_rbg_in_match = 0; g_rbg_ff_first = -1;
     g_rbg_rb = 0; memset(g_rbg_k, 0, sizeof g_rbg_k); g_rbg_rerun = g_rbg_miss = g_rbg_stalls = g_rbg_capfail = g_rbg_capskip = g_rbg_lastlocal = g_rbg_real = g_rbg_gone = 0;
     g_rbg_stall_ms = g_rbg_load_ms = g_rbg_tick0 = g_rbg_next = g_rbg_last_go = 0;

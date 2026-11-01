@@ -1995,6 +1995,7 @@ static void ra_init(void) {
          * blend wrong for the rest of the match (magenta / green / yellow fighters, seen in every rollback fight; groups 1, 2,
          * 8, 16, 32, 64 checked one by one: colours right). Costs ~0.3 of the ~1.3 ms a re-run pass saves. */
         if (!getenv("SSBU_RB_SIM_LITE")) _putenv("SSBU_RB_SIM_LITE=0");
+        hook_install(GA(0x71038fe690ull), rbg_gc_hook, NULL, &g_rbg_gc_orig);      /* (rollback 8 ms) rb_rollback.c */
         rbn_init();
         LOG("r1: RB NET on (R3 online rollback on the snapshot ring): kick skip mask in re-run passes %d\n", g_rgs_skip);
         rgs_lite_init(); }
