@@ -199,6 +199,75 @@ static void rbg_gc_idle(Ctx *c, long long i) {
     } while (rd8(g + 85) != 8 && now_ms() - t0 < ms);
     g_rbg_gc_ms += now_ms() - t0;
 }
+/* (rollback 8 ms) SSBU_RB_SKIPF=<hex guest addresses>: functions that do nothing in re-run passes (each entry is one decision, removable at will);
+ * SSBU_RB_SKIPF_LAST=0: they run in the last re-run pass. Default list: g_rbg_skipf_def. */
+typedef struct { uint64_t a; ImportFn orig; long long n; } RbgSkipF;
+static RbgSkipF g_rbg_skf[32]; static int g_rbg_nskf, g_rbg_skf_last = 1;
+static void rbg_skipf_hook(Ctx *c, void *user) {
+    RbgSkipF *s = user;
+    if (g_ra_phase == 2 && (g_rgs_left > 1 || g_rbg_skf_last)) { s->n++; return; }
+    s->orig(c);
+}
+static const char *g_rbg_skipf_def = "";
+static void rbg_skipf_init(void) {
+    const char *e = getenv("SSBU_RB_SKIPF"); if (!e) e = g_rbg_skipf_def;
+    { const char *l = getenv("SSBU_RB_SKIPF_LAST"); if (l && l[0] == '0') g_rbg_skf_last = 0; }
+    while (e && *e && g_rbg_nskf < 32) {
+        uint64_t a = strtoull(e, NULL, 16); if (!a) break;
+        RbgSkipF *s = &g_rbg_skf[g_rbg_nskf]; s->a = a;
+        if (hook_install(GA(a), rbg_skipf_hook, s, &s->orig)) g_rbg_nskf++;
+        LOG("r1: RB NET: skipped in re-run passes: %llx\n", (unsigned long long)a);
+        e = strchr(e, ','); if (e) e++;
+    }
+}
+/* (rollback 8 ms) THREAD PLACEMENT. Windows moves the main thread between cores and CCXs; each move loses its caches. In a rollback match: main alone on one physical core (its SMT
+ * sibling left free), the page copy helpers and the task workers on the other cores of the same L3, everything else of the game on the rest. Measured on the Ryzen 5 3600: main's CPU -10 % in real passes, -6 % in
+ * re-run passes, rollback tick -0.7 ms, normal tick -0.35 ms (alternated). Off with fewer than 4 cores, or SSBU_RB_PIN=0; given back at the end of the match.
+ * SSBU_RB_PIN=main,copy,workers,dispatch,other: hex masks (test). */
+static int g_rbg_pinned; static unsigned long long g_rbg_pm[5];
+static int rbg_pin_topology(unsigned long long m[5]) {
+    DWORD len = 0; GetLogicalProcessorInformationEx(RelationAll, NULL, &len);
+    uint8_t *buf = malloc(len); if (!buf || !GetLogicalProcessorInformationEx(RelationAll, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf, &len)) { free(buf); return 0; }
+    unsigned long long core[64], l3 = 0; int nc = 0;
+    for (uint8_t *p = buf; p < buf + len; p += ((PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p)->Size) {
+        PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX x = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p;
+        if (x->Relationship == RelationProcessorCore && nc < 64 && x->Processor.GroupMask[0].Group == 0) core[nc++] = x->Processor.GroupMask[0].Mask;
+        else if (x->Relationship == RelationCache && x->Cache.Level == 3 && !l3 && x->Cache.GroupMask.Group == 0) l3 = x->Cache.GroupMask.Mask;
+    }
+    free(buf);
+    if (nc < 4) return 0;
+    if (!l3) for (int i = 0; i < nc; i++) l3 |= core[i];
+    int in = 0, lastc = -1; unsigned long long all = 0, rest = 0;
+    for (int i = 0; i < nc; i++) { all |= core[i]; if ((core[i] & l3) == core[i]) { in++; lastc = i; } }
+    if (in < 3) return 0;
+    unsigned long long same = 0; for (int i = 0; i < nc; i++) if ((core[i] & l3) == core[i] && i != lastc) same |= core[i];
+    rest = all & ~core[lastc]; if (all & ~l3) rest = all & ~l3;
+    m[0] = core[lastc] & (~core[lastc] + 1); m[1] = same; m[2] = same; m[3] = rest; m[4] = rest;
+    return 1;
+}
+static void rbg_pin_apply(unsigned long long mm, unsigned long long mc, unsigned long long mw, unsigned long long md, unsigned long long mo) {
+    if (mm) SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)mm);
+    for (int k = 0; mc && k < g_ncp; k++) if (g_cp_h[k]) SetThreadAffinityMask(g_cp_h[k], (DWORD_PTR)mc);
+    Ctx *tc; const char *nm; HANDLE h; DWORD me = GetCurrentThreadId();
+    for (int i = 0; guest_thread_info(i, &tc, &nm, &h); i++) {
+        if (!h || GetThreadId(h) == me || !nm) continue;
+        unsigned long long m = strstr(nm, "TaskWorker") ? mw : (strstr(nm, "render dispatch") || strstr(nm, "GraphicsDevice")) ? md : mo;
+        if (m) SetThreadAffinityMask(h, (DWORD_PTR)m);
+    }
+}
+static void rbg_pin(int on) {
+    if (on) {
+        const char *e = getenv("SSBU_RB_PIN"); if (e && e[0] == '0' && !e[1]) return;
+        unsigned long long *m = g_rbg_pm;
+        if (e) { if (sscanf(e, "%llx,%llx,%llx,%llx,%llx", &m[0], &m[1], &m[2], &m[3], &m[4]) != 5) return; }
+        else if (!rbg_pin_topology(m)) return;
+        rbg_pin_apply(m[0], m[1], m[2], m[3], m[4]); g_rbg_pinned = 1;
+        LOG("r1: RB NET: threads placed: main %llx, copy helpers %llx, task workers %llx, render dispatch %llx, others %llx\n", m[0], m[1], m[2], m[3], m[4]);
+    } else if (g_rbg_pinned) {
+        DWORD_PTR pa = 0, sa = 0; GetProcessAffinityMask(GetCurrentProcess(), &pa, &sa); g_rbg_pinned = 0;
+        rbg_pin_apply(pa, pa, pa, pa, pa);
+    }
+}
 /* at the safe point (H2) of every pass while the fight runs (r1_ring.c rgs_step) */
 static void rbg_step_body(Ctx *c) {
     long long i = g_rgs_next;
@@ -252,6 +321,7 @@ static void rbg_step_body(Ctx *c) {
         if (g_rbg_wdfix) g_ra_wd_pause = 1;
         g_rbg_in_match = 1;
         if (i > 0) LOG("r1: RB NET: the base state was made %lld passes after the first safe point with the fight on (fight frame %lld): it is frame %lld, as on the other game (net3)\n", i, g_rbg_ff_first, i);
+        rbg_pin(1);
         rbn_start(i);
         rbn_pass_hash(0);                               /* (hs12) the checksum of frame 1 starts here (run tw8: frame-line lines from before the base, a different number on the two games, made frame 1 of match 2 differ) */
         { char mk[24]; snprintf(mk, sizeof mk, "match%don", rbn_match_number()); input_mark(mk); }
@@ -542,6 +612,7 @@ static void rbg_fight_off(void) {
     if (g_rbg_in_match == 1) { void dm_room_restore(void); dm_room_restore(); }      /* (0.2.17) a room's match: the room's mode and panel states back (debug_mode.c); not at the end of the waiting-stage fight, which comes after the match's set-up (0.2.16 gave them back before the match) */
     if (g_rg_nomem == 1) g_rg_nomem = 0;                /* (hs13) nothing was kept: the next match tries the ring again */
     g_rbg_noring = 0;
+    rbg_pin(0);
     LOG("r1: RB NET: match %d over: ring emptied, session reset for the next match\n", rbn_match_number());
     { char mk[24]; snprintf(mk, sizeof mk, "match%dover", g_rbg_in_match == 1 ? rbn_match_number() : 0); if (g_rbg_in_match == 1) input_mark(mk); else input_mark("localmatchover"); }
     g_rbg_gc_L = 0; g_rbg_gc_frame = -1;

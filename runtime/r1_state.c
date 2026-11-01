@@ -1280,7 +1280,7 @@ static void blk1_init(void) {                           /* mark_setup, threads h
 typedef struct { uint8_t *d; const uint8_t *s; } CopyJob;
 static CopyJob *g_cj; static size_t g_ncj, g_cjcap;
 static int g_ncp = -1, g_ncp_big;                    /* (0.2.11) g_ncp_big: the helpers of the whole-memory passes (cp_run_big) */
-static HANDLE g_cp_go[8], g_cp_done[8];
+static HANDLE g_cp_go[8], g_cp_done[8], g_cp_h[8];
 static void cp_add(uint8_t *d, const uint8_t *s) { if (g_ncj >= g_cjcap) { g_cjcap = g_cjcap ? g_cjcap * 2 : 65536; g_cj = realloc(g_cj, g_cjcap * sizeof *g_cj); } g_cj[g_ncj].d = d; g_cj[g_ncj].s = s; g_ncj++; }
 static void cp_add_range(uint8_t *d, const uint8_t *s, size_t n) { for (size_t o = 0; o < n; o += PG) cp_add(d + o, s + o); }
 static uint8_t *g_cp_cmp;                             /* (R2 round 3) set: the queued jobs are COMPARED (g_cp_cmp[i] = 1 if they differ), not copied */
@@ -1316,7 +1316,7 @@ static void cp_init(void) {
     { const char *b = getenv("SSBU_R1_BIG_THREADS"); g_ncp_big = b ? atoi(b) : (int)si.dwNumberOfProcessors - 2;
       if (g_ncp_big > 8) g_ncp_big = 8; if (g_ncp_big > (int)si.dwNumberOfProcessors - 2) g_ncp_big = (int)si.dwNumberOfProcessors > 2 ? (int)si.dwNumberOfProcessors - 2 : 0;
       if (g_ncp_big < 0) g_ncp_big = 0; if (!b && g_ncp_big < g_ncp) g_ncp_big = g_ncp; }
-    for (int k = 0; k < (g_ncp_big > g_ncp ? g_ncp_big : g_ncp); k++) { g_cp_go[k] = CreateEventA(NULL, FALSE, FALSE, NULL); g_cp_done[k] = CreateEventA(NULL, FALSE, FALSE, NULL); HANDLE t = CreateThread(NULL, 0, cp_thread, (void *)(intptr_t)k, 0, NULL); SetThreadPriority(t, THREAD_PRIORITY_HIGHEST); CloseHandle(t); }
+    for (int k = 0; k < (g_ncp_big > g_ncp ? g_ncp_big : g_ncp); k++) { g_cp_go[k] = CreateEventA(NULL, FALSE, FALSE, NULL); g_cp_done[k] = CreateEventA(NULL, FALSE, FALSE, NULL); HANDLE t = CreateThread(NULL, 0, cp_thread, (void *)(intptr_t)k, 0, NULL); SetThreadPriority(t, THREAD_PRIORITY_HIGHEST); g_cp_h[k] = t; }
 }
 static void cp_run(void) {                            /* every queued page, then the queue is empty */
     if (g_cp_chain_on < 0) { const char *e = getenv("SSBU_RB_CPCHAIN"); g_cp_chain_on = !(e && e[0] == '0'); }
@@ -2033,6 +2033,7 @@ static void ra_init(void) {
          * 8, 16, 32, 64 checked one by one: colours right). Costs ~0.3 of the ~1.3 ms a re-run pass saves. */
         if (!getenv("SSBU_RB_SIM_LITE")) _putenv("SSBU_RB_SIM_LITE=123");
         hook_install(GA(0x71038fe690ull), rbg_gc_hook, NULL, &g_rbg_gc_orig);      /* (rollback 8 ms) rb_rollback.c */
+        rbg_skipf_init();
         rbn_init();
         LOG("r1: RB NET on (R3 online rollback on the snapshot ring): kick skip mask in re-run passes %d\n", g_rgs_skip);
         rgs_lite_init(); }
