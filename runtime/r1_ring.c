@@ -472,6 +472,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
     }
     if (!ra_hold_quiet(g_rg_park_ms)) { g_rgp_seg = seg_was; g_rg_cap_fail++; if (g_rg_cap_fail <= 20 || g_rg_cap_fail % 100 == 0) LOG("r1: RING: capture %lld (frame %lld) skipped: thread %s not at a wait within %.1f ms\n", g_rg_cap_fail, frame, g_ra_busy ? g_ra_busy : "?", g_rg_park_ms); return 0; }
     double t1 = now_ms();
+    { void os_r1_fibers_inc_on(void); os_r1_fibers_inc_on(); }      /* (rollback 8 ms) the threads are held: the fiber list from now on kept, not rebuilt */
     if (g_rg_count == g_rg_cap) { rg_slot_drop(rg_slot(0), 1); g_rg_head = (g_rg_head + 1) % g_rg_cap; g_rg_count--; }
     RgSlot *s = rg_slot(g_rg_count);
     s->frame = frame; s->nent = 0; s->pages = 0; s->xpages = 0;

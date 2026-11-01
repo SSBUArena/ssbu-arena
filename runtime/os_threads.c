@@ -29,6 +29,7 @@ int display_l1_trace(void); double display_l1_ms(void); const char *guest_thread
 typedef struct Obj {
     uint64_t key;
     struct Obj *next;
+    char fc_in;                              /* (rollback 8 ms) in the list of objects with a host fiber (os_r1_fibers) */
     CRITICAL_SECTION cs;
     CONDITION_VARIABLE cv;
     int signaled, autoclear;                 /* events */
@@ -373,8 +374,32 @@ void os_r1_objs(void (*cb)(uint64_t key, int signaled, int count, uint64_t len, 
 /* (R2 round 3) the objects that have a host fiber are cached in table order: the full walk of the 65,536 buckets cost
  * ~0.15 ms per call, 3 calls per ring capture. The cache is rebuilt when a fiber is made or handed back (g_fib_gen). */
 static volatile LONG g_fib_gen = 1; static LONG g_fib_cgen; static Obj **g_fib_c; static int g_fib_cn, g_fib_ccap;
+/* (rollback 8 ms) the list kept up to date instead of rebuilt: the game makes a fiber in most frames, so each frame's first call
+ * walked the 65,536 buckets. An object once in the list stays (the callers skip those without a fiber); an old array is never freed:
+ * a held thread may be inside fib_note while main reads. SSBU_RB_FIBLIST=0: the rebuild. */
+static volatile LONG g_fib_clock; static int g_fib_cinc;
+static void fib_note(Obj *o) {
+    if (!g_fib_cinc || o->fc_in) { InterlockedIncrement(&g_fib_gen); return; }
+    while (InterlockedCompareExchange(&g_fib_clock, 1, 0)) YieldProcessor();
+    if (!o->fc_in) {
+        if (g_fib_cn >= g_fib_ccap) { int nc = g_fib_ccap ? g_fib_ccap * 2 : 4096; Obj **na = malloc((size_t)nc * sizeof *na); if (g_fib_cn) memcpy(na, g_fib_c, (size_t)g_fib_cn * sizeof *na); MemoryBarrier(); g_fib_c = na; g_fib_ccap = nc; }
+        g_fib_c[g_fib_cn] = o; MemoryBarrier(); g_fib_cn++; o->fc_in = 1;
+    }
+    g_fib_clock = 0;
+}
+void os_r1_fibers_inc_on(void) {                        /* r1_state.c, at the ring's start (threads held): the list as it is, kept from now on */
+    if (g_fib_cinc) return;
+    { const char *e = getenv("SSBU_RB_FIBLIST"); if (e && e[0] == '0') return; }
+    while (InterlockedCompareExchange(&g_fib_clock, 1, 0)) YieldProcessor();
+    g_fib_cn = 0;
+    for (int h = 0; h < BUCKETS; h++)
+        for (Obj *o = g_table[h]; o; o = o->next)
+            if (o->fiber) { if (g_fib_cn >= g_fib_ccap) { int nc = g_fib_ccap ? g_fib_ccap * 2 : 4096; Obj **na = malloc((size_t)nc * sizeof *na); if (g_fib_cn) memcpy(na, g_fib_c, (size_t)g_fib_cn * sizeof *na); g_fib_c = na; g_fib_ccap = nc; } g_fib_c[g_fib_cn++] = o; o->fc_in = 1; }
+    g_fib_cinc = 1;
+    g_fib_clock = 0;
+}
 void os_r1_fibers(void (*cb)(uint64_t key, Ctx *c, uint64_t stack, uint64_t stack_size, void *fiber)) {
-    if (g_fib_cgen != g_fib_gen) {
+    if (!g_fib_cinc && g_fib_cgen != g_fib_gen) {
         LONG gen = g_fib_gen; g_fib_cn = 0;
         for (int h = 0; h < BUCKETS; h++)
             for (Obj *o = g_table[h]; o; o = o->next)
@@ -766,7 +791,7 @@ static void fib_init(Ctx *c) {                        /* (FiberType*, fn, arg, s
     Obj *o = obj(A0);
     o->fn = A1; o->arg = A2; o->stack = A3; o->stack_size = A4; r1_stack_note(A3, A4);
     o->fiber = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o);
-    InterlockedIncrement(&g_fib_gen);
+    fib_note(o);
     if (g_r1_fiber_born) g_r1_fiber_born(o->fiber);
     if (g_r1_keep_fibers) { o->fctx = NULL; o->fls = NULL; o->fls_fiber = NULL; o->run_tid = 0; }      /* (R2) a new host fiber: no context, no block yet */
     RET(0);
@@ -812,7 +837,7 @@ void os_r1_fiber_set(uint64_t key, void *fiber, Ctx *fctx, int fresh) {
     Obj *o = obj_peek(key); if (!o) return;
     if (fresh) { o->fiber = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o); o->fctx = NULL; if (g_r1_fiber_born) g_r1_fiber_born(o->fiber); }
     else { o->fiber = fiber; o->fctx = fctx; }
-    InterlockedIncrement(&g_fib_gen);
+    fib_note(o);
 }
 static void fib_current(Ctx *c) { RET(fiber_cur()); }
 int g_r1_keep_fibers;                                  /* R1 (r1_state.c, SSBU_R1 only): a finalized fiber's host fiber is kept, so a
