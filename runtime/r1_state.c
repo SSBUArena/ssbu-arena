@@ -395,10 +395,15 @@ static int ra_audio(const char *n);
 /* (rollback 8 ms) also threads the game's frames never wait for (network, save, sound helpers): each costs 2 system calls per hold and 1 per
  * let go, ~15 us each, 3 holds per rollback. Not the loaders or the module thread: a frame may wait for those. A kept thread's next holds
  * need no call at all (ra_hold_save: it is suspended at the wait it was checked at). SSBU_RB_IDLEKEEP=0: only the sound threads, checked. */
+/* (rollback 8 ms) SSBU_RB_IDLEKEEP_MORE=0: not the loaders, the module thread, VSync. Default on: a frame that really waits for one of them in a re-run pass hangs (not seen; to be checked before a release: Kirby's copy abilities) */
+static int g_keep_more = -1;
 static int ra_keepable(const char *n) {
+    if (g_keep_more < 0) { const char *e = getenv("SSBU_RB_IDLEKEEP_MORE"); g_keep_more = !(e && e[0] == '0'); }
     static int ik = -1; if (ik < 0) { const char *e = getenv("SSBU_RB_IDLEKEEP"); ik = !(e && e[0] == '0'); }
     if (ra_audio(n)) return 1;
-    return ik && (strstr(n, "BCATCacheStorage") || strstr(n, "LibcurlResolver") || strstr(n, "AsyncTonePreparer") || strstr(n, "nuscFileAsyncRequest") || strstr(n, "SaveStorage"));
+    if (ik >= 2 || ik < 0) {}
+    return ik && (strstr(n, "BCATCacheStorage") || strstr(n, "LibcurlResolver") || strstr(n, "AsyncTonePreparer") || strstr(n, "nuscFileAsyncRequest") || strstr(n, "SaveStorage")
+        || (g_keep_more && (strstr(n, "ResUpdateThread") || strstr(n, "ResLoadingThread") || strstr(n, "ResInflateThread") || strstr(n, "L2CDynamicModuleManager") || strstr(n, "VSync Count") || strstr(n, "UNKNOWN"))));
 }
 static int snd_kept_at(HANDLE h) { for (int k = 0; k < g_nsnd_kept; k++) if (g_snd_kept[k] == h) return k; return -1; }
 static void unpark(void) {
@@ -1641,6 +1646,18 @@ static void r1_hold_prof_report(void) {
     for (int i = 0; i < g_hp_n; i++) LOG("r1: HOLD PROF thread %s: %lld times, mean %.4f ms, max %.3f ms, retries %lld\n", g_hp[i].n, g_hp[i].cnt, g_hp[i].ms / (g_hp[i].cnt ? g_hp[i].cnt : 1), g_hp[i].mx, g_hp[i].spins);
 }
 static int ra_peek(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RB_HOLD_PEEK"); v = !(e && e[0] == '0'); } return v; }      /* SSBU_RB_HOLD_PEEK=0: suspend / resume while waiting, as before */
+/* (rollback 8 ms) SSBU_RB_HOLDFAST=0: off. A thread that shows the same waiting import from the same place as at its last checked hold is taken as blocked without
+ * GetThreadContext (~10 us: it waits for the suspend to land). Not proved: it may be inside the import's own code then (the reason for th_blocked). */
+#define HF_N 64
+static struct { HANDLE h; uint64_t from, rsp, rip; const char *imp; } g_hf[HF_N]; static int g_hf_on = -1;
+static int hf_same(Th *t) {
+    if (g_hf_on < 0) { const char *e = getenv("SSBU_RB_HOLDFAST"); g_hf_on = !(e && e[0] == '0'); }
+    if (!g_hf_on || !t->c->in_import) return 0;
+    unsigned i = (unsigned)(((uintptr_t)t->h >> 2) % HF_N);
+    if (g_hf[i].h != t->h || g_hf[i].imp != t->c->in_import || g_hf[i].from != t->c->import_from) return 0;
+    t->rsp = g_hf[i].rsp; t->rip = g_hf[i].rip; return 1;
+}
+static void hf_note(Th *t) { unsigned i = (unsigned)(((uintptr_t)t->h >> 2) % HF_N); g_hf[i].h = t->h; g_hf[i].imp = t->c->in_import; g_hf[i].from = t->c->import_from; g_hf[i].rsp = g_tb_rsp; g_hf[i].rip = g_tb_rip; }
 static int ra_hold_save(void) {
     DWORD me = GetCurrentThreadId(); Ctx *tc; const char *nm; HANDLE h;
     if (g_hp_on < 0) g_hp_on = getenv("SSBU_RB_HOLD_PROF") && atoi(getenv("SSBU_RB_HOLD_PROF")) > 0;
@@ -1672,7 +1689,8 @@ static int ra_hold_save(void) {
              * each suspend / resume slowed the sound thread (~0.85 ms per hold, 3 holds per rollback tick) */
             if (ra_peek() && !waiting_import(t->c->in_import) && now_ms() - t0 <= g_ra_park_ms) { spins++; SwitchToThread(); continue; }
             if (SuspendThread(t->h) == (DWORD)-1) break;
-            if (waiting_import(t->c->in_import) && th_blocked(t->h)) { t->held = 1; t->parked = 1; t->rsp = g_tb_rsp; t->rip = g_tb_rip; t->cok = 1; break; }
+            if (waiting_import(t->c->in_import) && hf_same(t)) { t->held = 1; t->parked = 1; t->cok = 1; break; }
+            if (waiting_import(t->c->in_import) && th_blocked(t->h)) { t->held = 1; t->parked = 1; t->rsp = g_tb_rsp; t->rip = g_tb_rip; t->cok = 1; hf_note(t); break; }
             ResumeThread(t->h); spins++;
             if (now_ms() - t0 > g_ra_park_ms) {
                 if (g_hp_on) hp_add(t->name, now_ms() - t0, spins);
@@ -1914,7 +1932,8 @@ static void ra_workers_hold(void) {
     for (int i = 0; guest_thread_info(i, &tc, &nm, &h) && g_ra_nwh < 16; i++) {
         if (!h || GetThreadId(h) == me || !nm || !strstr(nm, "TaskWorker")) continue;
         if (SuspendThread(h) == (DWORD)-1) continue;
-        if (!th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }      /* busy: not held (that pass will likely skip its save) */
+        if (g_hf_on != 1 && !th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }      /* busy: not held (that pass will likely skip its save) */
+        if (g_hf_on == 1 && !waiting_import(tc->in_import) && !th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }      /* (rollback 8 ms) at a waiting import: no question to the kernel */
         g_ra_wh[g_ra_nwh++] = h;
     }
     InterlockedExchange(&g_ra_wh_on, 1);
