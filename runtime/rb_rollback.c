@@ -542,7 +542,6 @@ static void rbg_fight_off(void) {
     g_rbg_noring = 0;
     LOG("r1: RB NET: match %d over: ring emptied, session reset for the next match\n", rbn_match_number());
     { char mk[24]; snprintf(mk, sizeof mk, "match%dover", g_rbg_in_match == 1 ? rbn_match_number() : 0); if (g_rbg_in_match == 1) input_mark(mk); else input_mark("localmatchover"); }
-    LOG("r1: RB NET report: Lua collector: re-run passes without it %lld; real passes without it %lld, idle runs %lld (%lld steps, %.3f ms each run), no time left %lld\n", g_rbg_gc_rerun, g_rbg_gc_real, g_rbg_gc_idle, g_rbg_gc_steps, g_rbg_gc_idle ? g_rbg_gc_ms / (double)g_rbg_gc_idle : 0.0, g_rbg_gc_noidle);
     g_rbg_gc_L = 0; g_rbg_gc_frame = -1;
     g_rbg_in_match = 0; g_rbg_ff_first = -1;
     g_rbg_rb = 0; memset(g_rbg_k, 0, sizeof g_rbg_k); g_rbg_rerun = g_rbg_miss = g_rbg_stalls = g_rbg_capfail = g_rbg_capskip = g_rbg_lastlocal = g_rbg_real = g_rbg_gone = 0;
@@ -576,6 +575,7 @@ static void rbg_report(void) {
     { void nnunwind_catch_stats(long long *, long long *, long long *, long long *, long long *); long long l, d, cr, fu, mp; nnunwind_catch_stats(&l, &d, &cr, &fu, &mp);
       LOG("r1: RB NET report: catch table (hs15): %lld live records, %lld removed slots, %lld puts found no free slot in their window, %lld table full, longest probe %lld; dead records dropped at loads %lld (host fiber stacks known %zu)\n", l, d, cr, fu, mp, g_rgc_dead, g_nbf); }
     LOG("r1: RB NET report: host stack pages inside the guest windows left out of the state %lld (%lld ranges, %lld from fibers made later)\n", g_hs_pages, g_hs_ranges, g_hs_fibers_later);
+    LOG("r1: RB NET report: Lua collector: re-run passes without it %lld; real passes without it %lld, idle runs %lld (%lld steps, %.3f ms each run), no time left %lld; heap %.1f MB\n", g_rbg_gc_rerun, g_rbg_gc_real, g_rbg_gc_idle, g_rbg_gc_steps, g_rbg_gc_idle ? g_rbg_gc_ms / (double)g_rbg_gc_idle : 0.0, g_rbg_gc_noidle, g_rbg_gc_L ? (double)(rd64(rd64(g_rbg_gc_L + 24) + 16) + rd64(rd64(g_rbg_gc_L + 24) + 24)) / 1048576.0 : 0.0);
     if (g_rbg_rb) LOG("r1: RB NET report: rollback parts (ms per rollback): before the load %.3f (keep mode %d), load %.3f, re-run passes %.3f (%.2f per rollback, %.3f each), re-run captures %.3f (%.2f per rollback, recap mode %d)\n",
         g_rbg_t_pre / g_rbg_rb, g_rbg_keep, g_rbg_t_load / g_rbg_rb, g_rbg_t_rerun / g_rbg_rb, (double)g_rbg_n_rerun / g_rbg_rb, g_rbg_n_rerun ? g_rbg_t_rerun / g_rbg_n_rerun : 0.0, g_rbg_t_recap / g_rbg_rb, (double)g_rbg_n_recap / g_rbg_rb, g_rbg_recap);
     LOG("r1: RB NET report: rollbacks made right after the pacing wait (go check) %lld of %lld, not made (a thread still running) %lld (go check %s, loop test early pads %d%%)\n", g_rbg_n_gorb, g_rbg_rb, g_rbg_n_gobusy, g_rbg_gocheck ? "on" : "OFF", g_rbg_golate > 0 ? g_rbg_golate : 0);

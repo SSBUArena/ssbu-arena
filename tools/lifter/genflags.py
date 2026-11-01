@@ -20,7 +20,7 @@ CONDC = re.compile(r'\bcond\(c, (\d+)\)')
 FIELD = re.compile(r'\bc->([NZCV])\b')
 WRITER = re.compile(r'\b(adds64|adds32|logic64|logic32)\(c,')
 ANYW = re.compile(r'\b(adds64|adds32|logic64|logic32|set_nzcv|fcmp)\(c\b')
-BL = re.compile(r'c->x\[30\] = ')
+BL = re.compile(r'c->x\[30\] = 0x[0-9a-f]+ULL; (?:f_|u_|imp_|h_|call_indirect|sdk_)')
 MASKN = {N: 'N', Z: 'Z', C: 'C', V: 'V'}
 
 
@@ -68,6 +68,8 @@ def process_fn(body, stats):
             stop[i] = 1
         else:
             t.append(i + 1)
+            if 'return;' in s:                           # a conditional jump out of the function
+                gen[i] = ALL
         if wr: kill[i] = ALL
         if 'goto' in s and not all(x in idx or x == 'dispatch' for x in re.findall(r'goto L_(\w+);', s)):
             gen[i] = ALL
