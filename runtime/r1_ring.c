@@ -584,7 +584,13 @@ static int lb_commit(uint32_t id) {
     uint8_t *cm = id < g_rg_n1 ? g_sh1c : g_sh2c; size_t pi = id < g_rg_n1 ? id : id - g_rg_n1;
     if (cm[pi]) return 1;
     size_t c0 = pi & ~(size_t)15;
-    if (VirtualAlloc(lb_shadow(id) - (pi - c0) * PG, 16 * PG, MEM_COMMIT, PAGE_READWRITE)) { memset(cm + c0, 1, 16); return 1; }
+    /* (rollback 8 ms) two crashes of a copy thread here (memcmp on a shadow page not committed, 1 run in ~30, r11 = STATUS_COMMITMENT_LIMIT): the commit
+     * was refused for a moment (the page file growing). Tried again for up to ~200 ms; only then it counts as out of memory. */
+    for (int t = 0; t < 40; t++) {
+        if (VirtualAlloc(lb_shadow(id) - (pi - c0) * PG, 16 * PG, MEM_COMMIT, PAGE_READWRITE)) { memset(cm + c0, 1, 16); if (t) LOG("r1: LAZY BASE: a shadow commit refused %d times, then made\n", t); return 1; }
+        Sleep(5);
+    }
+    LOG("r1: LAZY BASE: a shadow commit refused for 200 ms (error %lu)\n", (unsigned long)GetLastError());
     InterlockedIncrement64(&g_lb_commit_fail);           /* out of memory: the page's base value is lost; lb_finished turns the ring off */
     return 0;
 }
