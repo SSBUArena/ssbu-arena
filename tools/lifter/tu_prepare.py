@@ -31,11 +31,11 @@ import threading
 
 # bump when the way parts are made changes: it is part of build_opt's hint key and split stamp
 VERSION = 2
-DEF = re.compile(r'^(?:static )?void (\w+)\((Ctx \*c(?:, uint64_t rp)?)\) \{$')
+DEF = re.compile(r'^(?:static )?void (\w+)\((Ctx \*c(?:, uint64_t (?:rp|jt0))?)\) \{$')
 # the lifted functions' names (nearly all of funcs.h: f_ / u_<10 hex digits>) are found by their address part (a pattern
 # that starts with a literal is scanned ~5x faster than an identifier pattern; an address that is no call only adds an
 # unused declaration), the few other names of funcs.h (nro_catch_call) by a plain text search
-LIFTED = re.compile(r'[fu]_[0-9a-f]{10}')
+LIFTED = re.compile(r'[fus]_[0-9a-f]{10}')
 ADDR = re.compile(r'_([0-9a-f]{10})')
 INCLUDE = '#include "funcs.h"'
 _decls = {}
@@ -127,7 +127,7 @@ def prepare(src, out_dir, split_lines, cold=None, own_decls=True, stats=None):
             btext = '\n'.join(body)
             used = set()
             for a in set(ADDR.findall(btext)):
-                used.update(('f_' + a, 'u_' + a))
+                used.update(('f_' + a, 'u_' + a, 's_' + a))
             used.update(n for n in d[None] if n in btext)
             need = ''.join(x for n in sorted(used) if n in d for x in d[n])
             text = text.replace(INCLUDE, '/* the declarations of funcs.h this part uses (tu_prepare.py) */\n' + need, 1)

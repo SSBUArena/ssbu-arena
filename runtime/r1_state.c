@@ -1300,7 +1300,10 @@ static void cp_part(int k) { size_t a = g_ncj * (size_t)k / (size_t)(g_ncp + 1),
     else if (g_cp_cond) { long long w = 0; for (size_t i = a; i < b; i++) if (memcmp(g_cj[i].d, g_cj[i].s, PG)) { memcpy(g_cj[i].d, g_cj[i].s, PG); w++; } g_cp_wrote[k < 9 ? k : 8] += w; }
     else if (g_cp_nt) { for (size_t i = a; i < b; i++) cp_page_nt(g_cj[i].d, g_cj[i].s); _mm_sfence(); }
     else for (size_t i = a; i < b; i++) memcpy(g_cj[i].d, g_cj[i].s, PG); }
-static DWORD WINAPI cp_thread(void *p) { int k = (int)(intptr_t)p; for (;;) { WaitForSingleObject(g_cp_go[k], INFINITE); cp_part(k + 1); SetEvent(g_cp_done[k]); } return 0; }
+static volatile LONG g_cp_left; static int g_cp_chain, g_cp_chain_on = -1;
+static DWORD WINAPI cp_thread(void *p) { int k = (int)(intptr_t)p; for (;;) { WaitForSingleObject(g_cp_go[k], INFINITE);
+    if (g_cp_chain) { if (k + 1 < g_ncp) SetEvent(g_cp_go[k + 1]); cp_part(k + 1); InterlockedDecrement(&g_cp_left); }
+    else { cp_part(k + 1); SetEvent(g_cp_done[k]); } } return 0; }
 static void cp_init(void) {
     if (g_ncp >= 0) return;
     const char *e = getenv("SSBU_RUNAHEAD_COPY_THREADS"); g_ncp = e ? atoi(e) : rgs_wanted() ? 3 : 2;      /* (R2 round 3: the ring, 6; Arena loop bench b4c3: 3 as fast, p99 rollback tick 49 -> 37 ms, less CPU) */ if (g_ncp > 8) g_ncp = 8; if (g_ncp < 0) g_ncp = 0;
@@ -1311,7 +1314,13 @@ static void cp_init(void) {
     for (int k = 0; k < (g_ncp_big > g_ncp ? g_ncp_big : g_ncp); k++) { g_cp_go[k] = CreateEventA(NULL, FALSE, FALSE, NULL); g_cp_done[k] = CreateEventA(NULL, FALSE, FALSE, NULL); HANDLE t = CreateThread(NULL, 0, cp_thread, (void *)(intptr_t)k, 0, NULL); SetThreadPriority(t, THREAD_PRIORITY_HIGHEST); CloseHandle(t); }
 }
 static void cp_run(void) {                            /* every queued page, then the queue is empty */
-    if (g_ncp > 0 && g_ncj >= 64) { for (int k = 0; k < g_ncp; k++) SetEvent(g_cp_go[k]); cp_part(0); WaitForMultipleObjects((DWORD)g_ncp, g_cp_done, TRUE, INFINITE); }
+    if (g_cp_chain_on < 0) { const char *e = getenv("SSBU_RB_CPCHAIN"); g_cp_chain_on = !(e && e[0] == '0'); }
+    if (g_ncp > 0 && g_ncj >= 64 && g_cp_chain_on && g_ncp <= 3) {      /* (rollback 8 ms) one kernel wake here, the helpers wake each other; main waits by spinning (they end within ~100 us of it) */
+        g_cp_chain = 1; g_cp_left = g_ncp; SetEvent(g_cp_go[0]); cp_part(0);
+        for (int spins = 0; g_cp_left > 0; spins++) { YieldProcessor(); if ((spins & 1023) == 1023) SwitchToThread(); }
+        g_cp_chain = 0;
+    }
+    else if (g_ncp > 0 && g_ncj >= 64) { for (int k = 0; k < g_ncp; k++) SetEvent(g_cp_go[k]); cp_part(0); WaitForMultipleObjects((DWORD)g_ncp, g_cp_done, TRUE, INFINITE); }
     else { int keep = g_ncp; g_ncp = 0; cp_part(0); g_ncp = keep; }
     g_ncj = 0;
 }

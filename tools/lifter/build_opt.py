@@ -455,6 +455,11 @@ PIPE_LLC = ['-O1', '-fp-contract=off', '-mcpu=x86-64'] + [f for f in (os.environ
 # cx16 (cmpxchg16b, on every x86-64 CPU Windows 10/11 runs on): lets stxp64 (STXP, 16-byte compare-and-swap) be inlined;
 # without it a unit holding an STXP had to drop the inlined helpers altogether
 PIPE_FE = ['-O1', '-Xclang', '-disable-llvm-passes', '-emit-llvm', '-mcx16']
+# (rollback 8 ms) RECOMP_PIPE_SCOPE=1: guest registers kept across guest stores and page marks (ctxscope.py), then these passes
+PIPE_SCOPE = os.environ.get('RECOMP_PIPE_SCOPE', '') not in ('', '0')
+PIPE_PASSES2 = os.environ.get('RECOMP_PIPE_PASSES2', 'function(early-cse<memssa>,gvn<no-pre>,dse,instcombine<no-verify-fixpoint>,simplifycfg)')
+if PIPE_SCOPE:
+    import ctxscope
 
 
 def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=None):
@@ -466,13 +471,25 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
         steps = [[CLANG, '-c'] + PIPE_FE + extra + ([INLINE_FLAG] if inl else []) + base_flags + [src, '-o', bc],
                  [os.path.join(LLVM19, 'opt.exe'), '-passes=' + PIPE_PASSES, bc, '-o', bc2],
                  [os.path.join(LLVM19, 'llc.exe'), '-filetype=obj'] + PIPE_LLC + [bc2, '-o', obj]]
+        ll, ll2 = obj[:-4] + '.a.ll', obj[:-4] + '.b.ll'
+        if PIPE_SCOPE:       # (rollback 8 ms) ctxscope.py: textual IR, the alias information, then the passes that use it
+            steps[1] = [os.path.join(LLVM19, 'opt.exe'), '-S', '-passes=' + PIPE_PASSES, bc, '-o', ll]
+            steps[2:2] = ['scope', [os.path.join(LLVM19, 'opt.exe'), '-passes=' + PIPE_PASSES2, ll2, '-o', bc2]]
         code, out = 0, ''
         for cmd in steps:
+            if cmd == 'scope':
+                t0 = time.time()
+                with open(ll, encoding='latin-1', newline='') as f:
+                    txt = f.read()
+                with open(ll2, 'w', encoding='latin-1', newline='') as f:
+                    f.write(ctxscope.annotate(txt))
+                total += time.time() - t0
+                continue
             code, out, secs = run_limited(cmd, time_limit or TIME_LIMIT)
             total += secs
             if code != 0:
                 break
-        for f in (bc, bc2):
+        for f in (bc, bc2, ll, ll2):
             if os.path.exists(f):
                 os.remove(f)
         if code == 0:
