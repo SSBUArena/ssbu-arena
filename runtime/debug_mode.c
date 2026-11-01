@@ -807,6 +807,7 @@ static int ac_read(uint64_t a, void *out, size_t n) { SIZE_T got = 0; return Rea
 void dm_alloc_check(const char *when, long long frame) {
     if (!g_orig_fill) return;
     g_ac_checks++;
+    { static int all = -1; if (all < 0) all = getenv("SSBU_ALLOC_CHECK_ALL") != NULL; if (!all && !g_ac_break && (g_ac_checks & 7)) return; }      /* (rollback 8 ms) 0.2 ms of each load: every 8th */
     if (g_ac_break && g_ac_checks == g_ac_break && g_ac_arena[0]) {
         for (int b = 0; b < 36; b++) {
             uint64_t slab = *(uint64_t *)(uintptr_t)(g_ac_arena[0] + 0x3e20 + 0x138ull * (unsigned)b + 0x98);

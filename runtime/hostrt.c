@@ -207,10 +207,16 @@ static void fn_hash_build(void) {
     }
     g_fn_mask = size - 1;
 }
+/* (rollback 8 ms) one word per entry: (addr >> 2) low 30 bits above, the table slot + 1 below; read and written whole, so threads need no lock */
+#define FN_L1 8192u
+static volatile uint64_t g_fn_l1[FN_L1];
 static void (*lookup_guest(uint64_t addr))(Ctx *) {
     if (g_fn_mask) {
+        uint64_t tag = (addr >> 2) & 0x3fffffffu;
+        unsigned l1 = (unsigned)((addr >> 2) ^ (addr >> 15)) & (FN_L1 - 1); uint64_t e = g_fn_l1[l1];
+        if ((e >> 32) == tag && (uint32_t)e) return g_fn_hash[(uint32_t)e - 1].fn;
         for (unsigned h = fn_hash(addr) & g_fn_mask;; h = (h + 1) & g_fn_mask) {
-            if (g_fn_hash[h].addr == addr) return g_fn_hash[h].fn;
+            if (g_fn_hash[h].addr == addr) { if (addr >= 0x7100000000ULL && addr < 0x7100000000ULL + (1ULL << 32)) g_fn_l1[l1] = (tag << 32) | (uint64_t)(h + 1); return g_fn_hash[h].fn; }
             if (!g_fn_hash[h].addr) return NULL;
         }
     }

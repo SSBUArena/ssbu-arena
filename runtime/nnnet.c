@@ -105,7 +105,9 @@ void register_nnnet_imports(void) {
 void os_init_event(uint64_t key, int autoclear);          /* os_threads.c */
 static uint8_t g_friends_service_token[16];
 static void fr_lock(Ctx *c, uint64_t self, int lock) {
-    ImportFn f = import_lookup(lock ? "_ZN2nn2os9LockMutexEPNS0_9MutexTypeE" : "_ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE");
+    static ImportFn fl, fu;      /* (rollback 8 ms) found once: a walk of the import table with strcmp, every frame */
+    ImportFn f = lock ? fl : fu;
+    if (!f) { f = import_lookup(lock ? "_ZN2nn2os9LockMutexEPNS0_9MutexTypeE" : "_ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE"); if (lock) fl = f; else fu = f; }
     c->x[0] = self;
     if (f) f(c);
 }

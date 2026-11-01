@@ -390,17 +390,24 @@ static void slow_report(const char *when) {        /* which thread made the hold
 /* (Arena perf) g_snd_keep (rb_rollback.c, from a rollback's load to its last re-run pass): unpark leaves the sound threads
  * suspended (one suspension each, kept in g_snd_kept; the next holds find them at their wait at once); snd_let_go resumes them.
  * The sound output has 5 buffers of 10.7 ms queued (nnaudio.c), the threads are held ~10-15 ms. SSBU_RB_SNDKEEP=0: off */
-static int g_snd_keep; static HANDLE g_snd_kept[16]; static int g_nsnd_kept; static long long g_snd_keeps;
+static int g_snd_keep; static HANDLE g_snd_kept[16]; static uint64_t g_snd_rsp[16], g_snd_rip[16]; static int g_nsnd_kept; static long long g_snd_keeps;
 static int ra_audio(const char *n);
+/* (rollback 8 ms) also threads the game's frames never wait for (network, save, sound helpers): each costs 2 system calls per hold and 1 per
+ * let go, ~15 us each, 3 holds per rollback. Not the loaders or the module thread: a frame may wait for those. A kept thread's next holds
+ * need no call at all (ra_hold_save: it is suspended at the wait it was checked at). SSBU_RB_IDLEKEEP=0: only the sound threads, checked. */
+static int ra_keepable(const char *n) {
+    static int ik = -1; if (ik < 0) { const char *e = getenv("SSBU_RB_IDLEKEEP"); ik = !(e && e[0] == '0'); }
+    if (ra_audio(n)) return 1;
+    return ik && (strstr(n, "BCATCacheStorage") || strstr(n, "LibcurlResolver") || strstr(n, "AsyncTonePreparer") || strstr(n, "nuscFileAsyncRequest") || strstr(n, "SaveStorage"));
+}
+static int snd_kept_at(HANDLE h) { for (int k = 0; k < g_nsnd_kept; k++) if (g_snd_kept[k] == h) return k; return -1; }
 static void unpark(void) {
     for (int i = 0; i < g_nth; i++) if (g_th[i].held) {
         g_th[i].held = 0;
-        if (g_snd_keep && g_th[i].name && ra_audio(g_th[i].name)) {
-            int k = 0; while (k < g_nsnd_kept && g_snd_kept[k] != g_th[i].h) k++;
-            if (k < g_nsnd_kept) ResumeThread(g_th[i].h);          /* already kept: the extra suspension of this hold goes */
-            else if (g_nsnd_kept < 16) { g_snd_kept[g_nsnd_kept++] = g_th[i].h; g_snd_keeps++; }      /* this suspension stays */
-            else ResumeThread(g_th[i].h);
-            continue;
+        if (g_snd_keep && g_th[i].name && ra_keepable(g_th[i].name)) {
+            int k = snd_kept_at(g_th[i].h);
+            if (k >= 0) continue;                                  /* already kept: the hold took no suspension of its own */
+            if (g_nsnd_kept < 16) { g_snd_rsp[g_nsnd_kept] = g_th[i].rsp; g_snd_rip[g_nsnd_kept] = g_th[i].rip; g_snd_kept[g_nsnd_kept++] = g_th[i].h; g_snd_keeps++; continue; }      /* this suspension stays */
         }
         ResumeThread(g_th[i].h);
     }
@@ -1641,6 +1648,8 @@ static int ra_hold_save(void) {
     for (int i = 0; i < g_nth; i++) {
         Th *t = &g_th[i];
         if (ra_free(t->name)) continue;
+        if (g_snd_keep && g_nsnd_kept) { int kk = snd_kept_at(t->h);      /* (rollback 8 ms) still suspended at its wait: nothing to ask */
+            if (kk >= 0) { t->held = 1; t->parked = 1; t->rsp = g_snd_rsp[kk]; t->rip = g_snd_rip[kk]; t->cok = 1; t->from = t->c->import_from; t->imp = t->c->in_import; t->regs = *t->c; continue; } }
         double t0 = now_ms();
         if (all_first && pre[i]) {
             pre[i] = 0;
@@ -1658,7 +1667,7 @@ static int ra_hold_save(void) {
             ResumeThread(t->h); spins++;
             if (now_ms() - t0 > g_ra_park_ms) {
                 if (g_hp_on) hp_add(t->name, now_ms() - t0, spins);
-                for (int j = 0; j < i; j++) if (g_th[j].held) { ResumeThread(g_th[j].h); g_th[j].held = 0; }
+                for (int j = 0; j < i; j++) if (g_th[j].held) { if (!(g_snd_keep && snd_kept_at(g_th[j].h) >= 0)) ResumeThread(g_th[j].h); g_th[j].held = 0; }
                 if (all_first) for (int j = i + 1; j < g_nth; j++) if (pre[j]) { ResumeThread(g_th[j].h); pre[j] = 0; }
                 g_ra_busy = t->name; g_ra_busy_imp = t->c->in_import;      /* (R3 lwr) and the import it was in (log) */
                 if (strstr(t->name, "TaskWorker")) g_ra_skip_why[0]++; else if (ra_audio(t->name)) g_ra_skip_why[1]++; else g_ra_skip_why[2]++;
@@ -1728,7 +1737,7 @@ static int ra_hold_quiet(double limit) {
         if (ra_hold_save()) {
             double tf = g_hp_on > 0 ? now_ms() : 0; int fq = ra_fibers_quiet(); if (g_hp_on > 0) { g_hp_fib_ms += now_ms() - tf; g_hp_fib_n++; }
             if (fq) { if (tries) { g_ra_fiber_waits++; g_ra_fiber_wait_ms += now_ms() - t0; } return 1; }
-            for (int i = 0; i < g_nth; i++) if (g_th[i].held) { ResumeThread(g_th[i].h); g_th[i].held = 0; }
+            for (int i = 0; i < g_nth; i++) if (g_th[i].held) { if (!(g_snd_keep && snd_kept_at(g_th[i].h) >= 0)) ResumeThread(g_th[i].h); g_th[i].held = 0; }
             g_ra_busy = "a job fiber (task worker)"; g_ra_skip_why[3]++;
         }
         tries++;
