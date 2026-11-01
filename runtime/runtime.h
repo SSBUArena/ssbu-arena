@@ -128,6 +128,26 @@ static inline uint32_t adds32(Ctx *c, uint32_t a, uint32_t b, uint32_t cin) {
 }
 static inline uint64_t logic64(Ctx *c, uint64_t r) { c->N = (uint32_t)(r >> 63); c->Z = r == 0; c->C = 0; c->V = 0; return r; }
 static inline uint32_t logic32(Ctx *c, uint32_t r) { c->N = r >> 31; c->Z = r == 0; c->C = 0; c->V = 0; return r; }
+/* (rollback 8 ms, tools/lifter/genflags.py) the same with only the flags in m stored (N 8, Z 4, C 2, V 1): the others are not read before the next set */
+static inline uint64_t adds64f(int m, Ctx *c, uint64_t a, uint64_t b, uint32_t cin) {
+    uint64_t r = a + b + cin;
+    if (m & 8) c->N = (uint32_t)(r >> 63);
+    if (m & 4) c->Z = r == 0;
+    if (m & 2) c->C = (r < a) || (cin && r == a);
+    if (m & 1) c->V = (uint32_t)(((a ^ r) & (b ^ r)) >> 63);
+    return r;
+}
+static inline uint32_t adds32f(int m, Ctx *c, uint32_t a, uint32_t b, uint32_t cin) {
+    uint64_t wide = (uint64_t)a + b + cin;
+    uint32_t r = (uint32_t)wide;
+    if (m & 8) c->N = r >> 31;
+    if (m & 4) c->Z = r == 0;
+    if (m & 2) c->C = (uint32_t)(wide >> 32);
+    if (m & 1) c->V = ((a ^ r) & (b ^ r)) >> 31;
+    return r;
+}
+static inline uint64_t logic64f(int m, Ctx *c, uint64_t r) { if (m & 8) c->N = (uint32_t)(r >> 63); if (m & 4) c->Z = r == 0; if (m & 2) c->C = 0; if (m & 1) c->V = 0; return r; }
+static inline uint32_t logic32f(int m, Ctx *c, uint32_t r) { if (m & 8) c->N = r >> 31; if (m & 4) c->Z = r == 0; if (m & 2) c->C = 0; if (m & 1) c->V = 0; return r; }
 static inline void set_nzcv(Ctx *c, int f) { c->N = (f >> 3) & 1; c->Z = (f >> 2) & 1; c->C = (f >> 1) & 1; c->V = f & 1; }
 
 static inline int cond(const Ctx *c, int cc) {

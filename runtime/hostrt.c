@@ -195,6 +195,7 @@ void trace_printf(const char *fmt, ...) {
  * before that, and as the reference, the binary search over fn_table (sorted by address). Same answer either way. */
 static struct { uint64_t addr; void (*fn)(Ctx *); } *g_fn_hash;
 static unsigned g_fn_mask;
+static uintptr_t g_fn_l1_base;
 static inline unsigned fn_hash(uint64_t addr) { return (unsigned)(((addr >> 2) * 0x9E3779B97F4A7C15ULL) >> 40); }
 static void fn_hash_build(void) {
     unsigned size = 1024;
@@ -205,18 +206,25 @@ static void fn_hash_build(void) {
         while (g_fn_hash[h].addr) h = (h + 1) & (size - 1);
         g_fn_hash[h].addr = fn_table[i].addr; g_fn_hash[h].fn = fn_table[i].fn;
     }
+    g_fn_l1_base = (uintptr_t)-1;
+    for (int i = 0; i < fn_table_count; i++) if ((uintptr_t)fn_table[i].fn < g_fn_l1_base) g_fn_l1_base = (uintptr_t)fn_table[i].fn;
     g_fn_mask = size - 1;
 }
-/* (rollback 8 ms) one word per entry: (addr >> 2) low 30 bits above, the table slot + 1 below; read and written whole, so threads need no lock */
+/* (rollback 8 ms) a small cache in front of the big table: one word per entry, read and written whole, so threads need no lock: (addr >> 2)
+ * low 30 bits above, the function's offset in the game DLL + 1 below (the function address itself: the table's slot is a cache miss too) */
 #define FN_L1 8192u
 static volatile uint64_t g_fn_l1[FN_L1];
 static void (*lookup_guest(uint64_t addr))(Ctx *) {
     if (g_fn_mask) {
         uint64_t tag = (addr >> 2) & 0x3fffffffu;
         unsigned l1 = (unsigned)((addr >> 2) ^ (addr >> 15)) & (FN_L1 - 1); uint64_t e = g_fn_l1[l1];
-        if ((e >> 32) == tag && (uint32_t)e) return g_fn_hash[(uint32_t)e - 1].fn;
+        if ((e >> 32) == tag && (uint32_t)e) return (void (*)(Ctx *))(g_fn_l1_base + (uint32_t)e - 1);
         for (unsigned h = fn_hash(addr) & g_fn_mask;; h = (h + 1) & g_fn_mask) {
-            if (g_fn_hash[h].addr == addr) { if (addr >= 0x7100000000ULL && addr < 0x7100000000ULL + (1ULL << 32)) g_fn_l1[l1] = (tag << 32) | (uint64_t)(h + 1); return g_fn_hash[h].fn; }
+            if (g_fn_hash[h].addr == addr) {
+                uintptr_t off = (uintptr_t)g_fn_hash[h].fn - g_fn_l1_base;
+                if (addr >= 0x7100000000ULL && addr < 0x7100000000ULL + (1ULL << 32) && off < 0xfffffff0u) g_fn_l1[l1] = (tag << 32) | (uint64_t)(off + 1);
+                return g_fn_hash[h].fn;
+            }
             if (!g_fn_hash[h].addr) return NULL;
         }
     }
