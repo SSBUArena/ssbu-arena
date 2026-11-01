@@ -44,6 +44,14 @@ namespace Arena
             StateChanged += (s, e) => Root.Margin = WindowState == WindowState.Maximized ? new Thickness(7) : new Thickness(0);
             Closing += (s, e) =>
             {
+                if (Core.CloseToTray && !quitting)      // (0.2.26) Settings > Launcher: the X leaves it in the notification area
+                {
+                    e.Cancel = true;
+                    SaveQuiet();
+                    ToTray();
+                    if (!trayToldOnce) { trayToldOnce = true; tray.ShowBalloonTip(4000, "SSBU Arena is still open", "Open it or quit it from this icon.", System.Windows.Forms.ToolTipIcon.None); }
+                    return;
+                }
                 SaveQuiet();
                 PadLiveStop();
                 if (prep != null) { prepCancelled = true; try { prep.Kill(); } catch { } }
@@ -285,6 +293,7 @@ namespace Arena
             SizeBox.IsEnabled = Core.WindowMode == 0;
             AspectBox.SelectedIndex = Core.Aspect;
             ShaderBox.SelectedIndex = Core.ShaderLoad;
+            CloseBox.SelectedIndex = Core.CloseToTray ? 1 : 0;
             BgBox.SelectedIndex = Core.StageBg; BgFolder.Visibility = Core.StageBg == 2 ? Visibility.Visible : Visibility.Collapsed;
             FpsBox.IsChecked = Core.Fps;
             KbBox.SelectedIndex = Core.Keyboard;
@@ -312,6 +321,7 @@ namespace Arena
             if (SizeBox.SelectedIndex != filledSize) Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;      // (0.2.12) a size set in the game, not in this list, stays
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
             Core.ShaderLoad = Math.Max(0, ShaderBox.SelectedIndex);
+            Core.CloseToTray = CloseBox.SelectedIndex == 1;
             Core.StageBg = Math.Max(0, BgBox.SelectedIndex);
             Core.Fps = FpsBox.IsChecked == true;
             Core.Keyboard = Math.Max(0, KbBox.SelectedIndex);
@@ -502,7 +512,7 @@ namespace Arena
         void Section_Checked(object sender, RoutedEventArgs e)
         {
             if (BoxPlayer == null) return;
-            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles } };
+            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles }, { SecLauncher, BoxLauncher } };
             foreach (var kv in map) kv.Value.Visibility = kv.Key == sender ? Visibility.Visible : Visibility.Collapsed;
             if (sender == SecPads && PageSettings.Visibility == Visibility.Visible) PadLiveStart(); else PadLiveStop();
         }
@@ -525,7 +535,7 @@ namespace Arena
             else if (parts[0] == "changes") TabChanges.IsChecked = true;
             else if (parts[0] == "settings")
             {
-                var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles } };
+                var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles }, { "launcher", SecLauncher } };
                 OpenSettings(parts.Length > 1 && secs.ContainsKey(parts[1]) ? secs[parts[1]] : SecPlayer);
             }
         }
@@ -983,6 +993,7 @@ namespace Arena
 
         // ---------------------------------------------------------------- the notification area while the game runs
         System.Windows.Forms.NotifyIcon tray;
+        bool quitting, trayToldOnce;
 
         /// <summary>while the game runs the launcher leaves the screen and the taskbar for the notification area (the hidden
         /// icons), as game launchers do; the icon's menu or a double click brings it back</summary>
@@ -993,7 +1004,7 @@ namespace Arena
                 tray = new System.Windows.Forms.NotifyIcon { Text = "SSBU Arena", Icon = System.Drawing.Icon.ExtractAssociatedIcon(Updater.ExePath) };
                 var menu = new System.Windows.Forms.ContextMenuStrip();
                 menu.Items.Add("Open SSBU Arena", null, (s, e) => Dispatcher.Invoke(FromTray));
-                menu.Items.Add("Quit the launcher", null, (s, e) => Dispatcher.Invoke(() => { HideTray(); Application.Current.Shutdown(); }));
+                menu.Items.Add("Quit the launcher", null, (s, e) => Dispatcher.Invoke(() => { quitting = true; HideTray(); Application.Current.Shutdown(); }));
                 tray.ContextMenuStrip = menu;
                 tray.DoubleClick += (s, e) => Dispatcher.Invoke(FromTray);
                 Closed += (s, e) => HideTray();
@@ -1002,8 +1013,10 @@ namespace Arena
             Hide();
         }
 
-        void FromTray()
+        /// <summary>back on the screen: from the icon, or a second launcher that was opened (App.xaml.cs)</summary>
+        public void FromTray()
         {
+            if (game == null) HideTray();      // the icon stays only while a game runs
             base.Show();
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
             Activate();

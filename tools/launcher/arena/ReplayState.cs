@@ -478,9 +478,21 @@ namespace Arena
             return moveByHash.TryGetValue(motion & 0xffffffffffUL, out var s) ? s : null;
         }
 
+        /// <summary>(0.2.26) a fighter that cannot act, by the game's common status kinds (they are the same for every fighter): the shield
+        /// broken (fly 0x5c, fall 0x5d, on the ground 0x5e), then dizzy (standing up 0x5f, dizzy 0x60, the end 0x61); hit by a move. Else null.</summary>
+        public static string StunText(RvFighterFrame s)
+        {
+            if (s.Status >= 0x5c && s.Status <= 0x5e) return "Shield broken";
+            if (s.Status >= 0x5f && s.Status <= 0x61) return "Stunned (dizzy)";
+            if (MotionText(s.Motion).StartsWith("damage_")) return "Hitstun";
+            return null;
+        }
+
         /// <summary>what a fighter is doing when it is not one of the named moves: a few plain words, never a raw id</summary>
         public static string ActionText(RvFighterFrame s)
         {
+            string stun = StunText(s);
+            if (stun != null) return stun;
             string m = MotionText(s.Motion);
             if (m.StartsWith("damage_fly") || m.StartsWith("damage_")) return "Hitstun";
             if (m.StartsWith("guard")) return "Shield";

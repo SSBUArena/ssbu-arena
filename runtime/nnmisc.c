@@ -329,7 +329,11 @@ static DWORD WINAPI oe_watch(LPVOID unused) {
         int ours = oe_observe_foreground();
         if (!g_oe_was_foreground) { LeaveCriticalSection(&g_oe_lock); continue; }
         int minimised = g_oe_window && IsIconic(g_oe_window);
-        int runnable = ours || g_oe_exit_requested || (minimised ? g_oe_focus_mode == 1 : g_oe_focus_mode != 3);
+        /* (0.2.26) a game on a PC goes on when its window is minimised, as one behind another window does: the console's rule stopped every
+         * guest thread, in an online match too, the picture and the other player with it. SSBU_FOCUS_SUSPEND=1: the console's rule. */
+        static int console_rule = -1;
+        if (console_rule < 0) { const char *e = getenv("SSBU_FOCUS_SUSPEND"); console_rule = (e && e[0] == '1') || test; }
+        int runnable = !console_rule || ours || g_oe_exit_requested || (minimised ? g_oe_focus_mode == 1 : g_oe_focus_mode != 3);
         if (!runnable && !g_guest_frozen) {
             if (g_oe_resume_notify) oe_push(OE_MSG_RESUME);
             frozen_at = GetTickCount64(); polls_at = g_oe_poll_count;

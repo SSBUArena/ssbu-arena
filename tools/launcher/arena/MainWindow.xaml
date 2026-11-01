@@ -630,6 +630,7 @@
               <RadioButton x:Name="SecSaves" Style="{StaticResource SideTab}" Content="Saves" Checked="Section_Checked"/>
               <RadioButton x:Name="SecDlc" Style="{StaticResource SideTab}" Content="DLC" Checked="Section_Checked"/>
               <RadioButton x:Name="SecFiles" Style="{StaticResource SideTab}" Content="Game files" Checked="Section_Checked"/>
+              <RadioButton x:Name="SecLauncher" Style="{StaticResource SideTab}" Content="Launcher" Checked="Section_Checked"/>
             </StackPanel>
           </DockPanel>
         </Border>
@@ -810,6 +811,16 @@
                           VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="Vol_Changed"/>
                   <TextBlock x:Name="VolText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
                 </StackPanel>
+              </StackPanel>
+
+              <!-- launcher -->
+              <StackPanel x:Name="BoxLauncher" Visibility="Collapsed">
+                <TextBlock Text="LAUNCHER" Style="{StaticResource SectionTitle}"/>
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,24" TextWrapping="Wrap" Text="Only one launcher can be open: opening it again brings this one back."/>
+                <TextBlock Text="WHEN YOU CLOSE THE LAUNCHER" Style="{StaticResource FieldLabel}"/>
+                <ComboBox x:Name="CloseBox" Width="480" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
+                  <ComboBoxItem>Close it completely</ComboBoxItem><ComboBoxItem>Keep it in the icons at the bottom right of Windows</ComboBoxItem>
+                </ComboBox>
               </StackPanel>
 
               <!-- saves -->

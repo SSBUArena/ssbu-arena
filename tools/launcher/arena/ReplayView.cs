@@ -416,7 +416,7 @@ namespace Arena
                     dc.DrawText(t, new Point(rx - t.Width - 1, y + 1));
                     for (int i = 0; i < Math.Min(s.Stocks, 8); i++) dc.DrawEllipse(playerB[pc], null, new Point(x + 17 + i * 12, y + rect.Height - 10), 4, 4);
                     if (s.Stocks == 0) dc.DrawText(Text("OUT", 13, DimB, UiBold), new Point(x + 12, y + rect.Height - 19));
-                    var mv = ReplayNames.MoveName(s.Motion);
+                    var mv = ReplayNames.MoveName(s.Motion) ?? ReplayNames.StunText(s);
                     if (mv != null) { var m = Text(mv, 12, playerB[pc], Ui); dc.DrawText(m, new Point(x + cardW - 10 - m.Width, y + rect.Height - 19)); }
                 }
             }
