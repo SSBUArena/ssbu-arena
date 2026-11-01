@@ -2008,11 +2008,11 @@ static void ra_init(void) {
          * lite group 1 (camera) skipped: std::terminate; lite group 64 (effect emitter tick) skipped: GD crash; 2 / 8 cost
          * ~0.01 ms per pass, 16 / 32 are never called in re-runs. Cost of 1 / 0 against 49 / 123: ~+0.5 .. 1.3 ms on the
          * median rollback tick (re-run pass ~4.5 -> ~4.9 ms). SSBU_RB_SIM_SKIP / SSBU_RB_SIM_LITE: the old masks (test). */
-        g_rgs_skip = getenv("SSBU_RB_SIM_SKIP") ? atoi(getenv("SSBU_RB_SIM_SKIP")) : 1;
+        g_rgs_skip = getenv("SSBU_RB_SIM_SKIP") ? atoi(getenv("SSBU_RB_SIM_SKIP")) : 49;      /* (rollback 8 ms, 2026-11-01: speed first on this branch, the crashes noted above are open again; 1 / 0 is the stable pair) */
         /* 123 = 127 without group 4 (lighting): skipping the lighting callees in re-run passes left the fighters' colour
          * blend wrong for the rest of the match (magenta / green / yellow fighters, seen in every rollback fight; groups 1, 2,
          * 8, 16, 32, 64 checked one by one: colours right). Costs ~0.3 of the ~1.3 ms a re-run pass saves. */
-        if (!getenv("SSBU_RB_SIM_LITE")) _putenv("SSBU_RB_SIM_LITE=0");
+        if (!getenv("SSBU_RB_SIM_LITE")) _putenv("SSBU_RB_SIM_LITE=123");
         hook_install(GA(0x71038fe690ull), rbg_gc_hook, NULL, &g_rbg_gc_orig);      /* (rollback 8 ms) rb_rollback.c */
         rbn_init();
         LOG("r1: RB NET on (R3 online rollback on the snapshot ring): kick skip mask in re-run passes %d\n", g_rgs_skip);
