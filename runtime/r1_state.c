@@ -1567,6 +1567,8 @@ static double g_ra_s[16384], g_ra_r[16384], g_ra_sh[16384], g_ra_rh[16384]; stat
 static char *g_ra_kind; static long long g_ra_nkind, g_ra_kcap;              /* per fight frame (frame line calls): 'R' real, 'S' speculative */
 static volatile LONG g_ra_lines;
 static PadRec g_ra_pad;
+static int g_rgs_left;
+int r1_rb_pass_kind(void) { return g_ra_phase != 2 ? 0 : g_rgs_left > 1 ? 1 : 2; }      /* (test: prof15.c) */
 int r1_ra_phase(void) { return g_ra > 0 ? g_ra_phase : 0; }
 int r1_ra_quiet(void) { return g_ra > 0 && g_ra_phase == 2; }          /* nvn_gl.c: the real pass's submission is not presented, the game not held */
 /* nvn_gl.c queue_present: 0 = as usual; 1 = bookkeeping only (the picture went to the window at the submission); 2 = nothing */
