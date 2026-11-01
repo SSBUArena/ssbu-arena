@@ -21,6 +21,7 @@ void prof15_start(void) { if (getenv("SSBU_PROF15")) printf("prof15: SSBU_PROF15
 #include <string.h>
 #include <windows.h>
 #include <tlhelp32.h>
+#include <mmsystem.h>
 #include "runtime.h"
 #include "hostrt.h"
 
@@ -225,7 +226,53 @@ static DWORD WINAPI p15_thread(LPVOID arg) {
     fflush(stdout);
     return 0;
 }
+/* SSBU_RB8PROF=<seconds after the fight began>,<seconds>,<file> (TEST): every ms a whole stack of the busiest thread (the main thread), one line
+ * per sample: pass kind (0 real, 1 re-run but the last, 2 last re-run), segment (r1_state.c g_rgp_seg), then the functions from the root down */
+int r1_rb_pass_kind(void); extern volatile int g_rgp_seg;
+static DWORD WINAPI p8_thread(LPVOID arg) {
+    const char *spec = arg; int start = 0, dur = 0; char out[512] = "";
+    if (sscanf(spec, "%d,%d,%511s", &start, &dur, out) < 3 || dur <= 0) return 0;
+    int on = 0; while (on < start * 20) { Sleep(50); on = p15_fight_on() ? on + 1 : 0; }
+    p15_modules(); p15_pick_threads();
+    if (!g_p15_nthr) return 0;
+    HANDLE h = g_p15_thr[0].h;
+    size_t cap = 256u << 20, used = 0; char *buf = VirtualAlloc(NULL, cap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); if (!buf) return 0;
+    memset(buf, 0, cap);
+    timeBeginPeriod(1);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    double t0 = (double)GetTickCount64();
+    while ((double)GetTickCount64() - t0 < dur * 1000.0 && used + 8192 < cap) {
+        CONTEXT ctx; uint64_t keys[200]; int k = 0;
+        memset(&ctx, 0, sizeof ctx); ctx.ContextFlags = CONTEXT_FULL;
+        if (SuspendThread(h) == (DWORD)-1) break;
+        int kind = r1_rb_pass_kind(), seg = g_rgp_seg;
+        if (GetThreadContext(h, &ctx)) {
+            for (int depth = 0; depth < 800 && k < 200; depth++) {
+                uint64_t g = guest_function_of(ctx.Rip), key; DWORD64 base = 0;
+                RUNTIME_FUNCTION *rf = RtlLookupFunctionEntry(ctx.Rip, &base, NULL);
+                key = g ? (g | P15_GUEST) : (rf ? base + rf->BeginAddress : ctx.Rip);
+                if (k == 0 || keys[k - 1] != key) keys[k++] = key;
+                if (!rf) { uint64_t ra = 0; if (depth > 0 || !p15_read(ctx.Rsp, &ra, 8) || !ra) break; ctx.Rip = ra; ctx.Rsp += 8; continue; }
+                void *hd; DWORD64 est;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx.Rip, rf, &ctx, &hd, &est, NULL);
+                if (!ctx.Rip) break;
+            }
+        }
+        ResumeThread(h);
+        used += (size_t)sprintf(buf + used, "%d %d", kind, seg);
+        for (int i = k - 1; i >= 0; i--) {
+            if (keys[i] & P15_GUEST) used += (size_t)sprintf(buf + used, " g%llx", (unsigned long long)(keys[i] & ~P15_GUEST));
+            else { uint64_t off; const char *m = p15_mod_of(keys[i], &off); used += (size_t)sprintf(buf + used, " %.12s+%llx", m, (unsigned long long)off); }
+        }
+        buf[used++] = '\n';
+        Sleep(1);
+    }
+    FILE *fo = fopen(out, "wb"); if (fo) { fwrite(buf, 1, used, fo); fclose(fo); }
+    printf("rb8prof: %zu bytes written\n", used); fflush(stdout);
+    return 0;
+}
 void prof15_start(void) {
+    { const char *p8 = getenv("SSBU_RB8PROF"); if (p8 && *p8) CloseHandle(CreateThread(NULL, 0, p8_thread, (LPVOID)p8, 0, NULL)); }
     const char *spec = getenv("SSBU_PROF15");
     if (spec && *spec) CloseHandle(CreateThread(NULL, 0, p15_thread, (LPVOID)spec, 0, NULL));
 }
