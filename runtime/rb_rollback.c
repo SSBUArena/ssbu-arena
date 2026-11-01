@@ -183,6 +183,8 @@ static void rbg_gc_idle(Ctx *c, long long i) {
     g_rbg_gc_frame = i;
     double t0 = now_ms();
     if (g_rbg_next - t0 < 5.0) { g_rbg_gc_noidle++; return; }
+    static double ms = -1; if (ms < 0) { const char *e = getenv("SSBU_RB_GC_MS"); ms = e ? atof(e) : 0.15; }
+    if (ms <= 0) return;
     void r1_wrote(uint64_t a, uint64_t n);
     Ctx t = *c; g_rbg_gc_idle++;
     uint64_t sp = (c->x[31] - 0x4000) & ~15ull, g = rd64(L + 24);
@@ -194,7 +196,7 @@ static void rbg_gc_idle(Ctx *c, long long i) {
         t.x[0] = L; t.x[31] = sp; t.x[30] = GA(0x7103747b10ull);
         g_rbg_gc_orig(&t); g_rbg_gc_steps++;
         *(volatile uint8_t *)(uintptr_t)(g + 87) = was;
-    } while (rd8(g + 85) != 8 && now_ms() - t0 < 1.0);
+    } while (rd8(g + 85) != 8 && now_ms() - t0 < ms);
     g_rbg_gc_ms += now_ms() - t0;
 }
 /* at the safe point (H2) of every pass while the fight runs (r1_ring.c rgs_step) */
