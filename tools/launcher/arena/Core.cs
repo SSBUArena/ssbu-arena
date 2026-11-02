@@ -53,7 +53,7 @@ namespace Arena
         public static readonly string Exe = Path.Combine(Work, "ssbu_native.exe");
         public static readonly string RbExe = Path.Combine(Work, "ssbu_native_rb.exe");
         public static readonly string UiExe = Path.Combine(Work, "ssbu_ui_native.exe");
-        public static readonly string MainElf = Path.Combine(Build, @"binaries\13.0.4\main.elf");
+        public static readonly string MainElf = Path.Combine(Build, "binaries", GameVersion(), "main.elf");
         public static readonly string Fonts = Path.Combine(Build, @"sysdata\fonts");
         public static readonly string GameLog = Path.Combine(Build, "game.log");
         static readonly string LauncherIni = Path.Combine(Cfg, "launcher.ini");
@@ -124,6 +124,19 @@ namespace Arena
             }
             catch { }
             return Path.Combine(Repo, "build");
+        }
+
+        /// <summary>the game build setup.py converted (state.json game_version, as scripts/run.py reads it): 13.0.4 or 13.0.5</summary>
+        static string GameVersion()
+        {
+            try
+            {
+                string st = Path.Combine(Build, "state.json");
+                var m = File.Exists(st) ? Regex.Match(File.ReadAllText(st), "\"game_version\"\\s*:\\s*\"(13\\.0\\.[45])\"") : null;
+                if (m != null && m.Success) return m.Groups[1].Value;
+            }
+            catch { }
+            return "13.0.4";
         }
 
         public static void Load()
