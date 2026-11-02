@@ -208,7 +208,7 @@ static void rbg_skipf_hook(Ctx *c, void *user) {
     if (g_ra_phase == 2 && (g_rgs_left > 1 || g_rbg_skf_last)) { s->n++; return; }
     s->orig(c);
 }
-static const char *g_rbg_skipf_def = "";
+static const char *g_rbg_skipf_def = "71022df110,71022dec30,71022dc3d0";      /* (2026-11-02: -0.35 ms, pair IDENTICAL; SSBU_RB_SKIPF= (empty) for none) */
 static void rbg_skipf_init(void) {
     const char *e = getenv("SSBU_RB_SKIPF"); if (!e) e = g_rbg_skipf_def;
     { const char *l = getenv("SSBU_RB_SKIPF_LAST"); if (l && l[0] == '0') g_rbg_skf_last = 0; }
