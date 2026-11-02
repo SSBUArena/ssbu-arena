@@ -52,7 +52,17 @@ RAW = {0x0: 'the image base',
        0x36f7410: 'g_rgl_h[] (r1_ring.c): GA() where the array is used',
        0x37857f0: 'g_rgl_h[] (r1_ring.c): GA() where the array is used',
        0x3864700: 'g_rgl_h[] (r1_ring.c): GA() where the array is used',
-       0x7500000: 'the upper bound of the "main+offset" log labels (r1_state.c), past the image in both builds'}
+       0x7500000: 'the upper bound of the "main+offset" log labels (r1_state.c), past the image in both builds',
+       0x47d20: 'site[] (nnsdk.c host_fixed_clock): GA() where the array is used',
+       0x138534: 'site[]', 0x366d1f0: 'site[]', 0x366d388: 'site[]',
+       0x81980: 'big3[] (rb_learned.c): GA() where the array is used',
+       0xa3fd8: 'big3[]', 0x3559e08: 'big3[]', 0x3760cf8: 'big3[]', 0x3816944: 'big3[]',
+       0x530454c: 'k_rules[] (competitive.c): GA() where the array is used',
+       0x5309924: 'k_rules[]', 0x530f49c: 'k_rules[]',
+       0x1a028b0: 'the amiibo panel hooks (nnapplet.c): installed on 13.0.4 only',
+       0x1a1dbf0: 'the amiibo panel hooks', 0x1a1fa30: 'the amiibo panel hooks',
+       0x52c41b0: 'through ga() itself (rb_net.c declares it and does not include hostrt.h, where GA() is)',
+       0x80000000: 'a free host range for a test stack (rb_rollback.c, SSBU_RB_NET_TEST_STK), not an address of the image'}
 
 
 class Elf:
