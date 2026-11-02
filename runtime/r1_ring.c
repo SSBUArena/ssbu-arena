@@ -253,7 +253,9 @@ static void rg_cb_load(RgSlot *s) {
     }
     nvn_r1_cb_restore();
 }
+void fontll_rb_save(int slot); void fontll_rb_load(int slot);
 static void rg_meta_capture(RgSlot *s, Ctx *c) {       /* threads still held: their places, the fibers, the command buffers */
+    fontll_rb_save((int)(s - g_rg));                      /* (crash phase) the font engines' settings (nnfontll.c) */
     s->ctx = *c;
     { long long nvn_r1_posted(void); s->posted = nvn_r1_posted(); }
     s->nth = g_nth; s->ninfo = g_ninfo;
@@ -1008,10 +1010,12 @@ int r1_ring_load(long long frame, Ctx *c) {
     fibers_restore_all(); double t2b = now_ms();
     rgc_after(); double t2c = now_ms();
     rg_cb_load(g);
+    fontll_rb_load((int)(g - g_rg));                      /* (crash phase) the font engines' settings of that frame */
     double t3 = now_ms();
     {   int os_r1_wake_waits_from(uint64_t lr);      /* (Arena: the 6700K hang) the task workers' idle wait: woken again (os_threads.c) */
         g_rg_rewake += os_r1_wake_waits_from(GA(0x710354a5acull)); }
     dm_alloc_check("after the load", frame);
+    { extern volatile LONG g_font_job_in; g_font_job_in = 0; }      /* (crash phase) every capture was taken with the font job not running: so is the loaded state */
     unpark();
     g_mp[4] += t2a - t2; g_mp[5] += t2b - t2a; g_mp[6] += t2c - t2b; g_mp[7] += t3 - t2c; g_mp[8] += now_ms() - t3; g_mp_n[1]++;
     *c = g->ctx;

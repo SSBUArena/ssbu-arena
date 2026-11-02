@@ -1758,11 +1758,15 @@ static void ra_quiet_cb(uint64_t key, Ctx *c, uint64_t stack, uint64_t size, voi
 static int ra_fibers_quiet(void) { g_ra_busy_fibers = 0; os_r1_fibers(ra_quiet_cb); return g_ra_busy_fibers == 0; }
 static long long g_ra_fiber_waits, g_ra_fiber_skips; static double g_ra_fiber_wait_ms;
 /* hold the threads at a quiet moment: retry until `limit` ms */
+/* (crash phase, 2026-11-02) the HUD's font job (f_710007f870, a TaskWorker job): a capture taken while it was half done, then a load of that capture and the
+ * frames after it run again, crashed it (f_710007f870 walking a freed request node, ~1 Battlefield loop run in 5 at a KO; every crash run showed the
+ * job in progress at a load, no clean run did). A hold now also waits for that job to end (rb_rollback.c counts it). SSBU_RB_FONTWAIT=0: off. */
+volatile LONG g_font_job_in; static int g_fontwait = -1; static long long g_fontwait_n, g_fontwait_reset;
 static int ra_hold_quiet(double limit) {
     double t0 = now_ms(); int tries = 0;
     for (;;) {
         if (ra_hold_save()) {
-            double tf = g_hp_on > 0 ? now_ms() : 0; int fq = ra_fibers_quiet(); if (g_hp_on > 0) { g_hp_fib_ms += now_ms() - tf; g_hp_fib_n++; }
+            double tf = g_hp_on > 0 ? now_ms() : 0; int fq = ra_fibers_quiet(); if (fq && g_fontwait == 2 && g_font_job_in > 0) { if (now_ms() - t0 > limit * 0.5) { g_font_job_in = 0; g_fontwait_reset++; } else { fq = 0; g_fontwait_n++; } }      /* (a job that never came back through the hook: a throw, or a load that brought back its fiber from before its start: counted no more) */ if (g_hp_on > 0) { g_hp_fib_ms += now_ms() - tf; g_hp_fib_n++; }
             if (fq) { if (tries) { g_ra_fiber_waits++; g_ra_fiber_wait_ms += now_ms() - t0; } return 1; }
             for (int i = 0; i < g_nth; i++) if (g_th[i].held) { if (!(g_snd_keep && snd_kept_at(g_th[i].h) >= 0)) ResumeThread(g_th[i].h); g_th[i].held = 0; }
             g_ra_busy = "a job fiber (task worker)"; g_ra_skip_why[3]++;
@@ -1926,7 +1930,13 @@ static DWORD WINAPI ra_watchdog(void *p) {
     }
     return 0;
 }
+static long long g_fontwait_h1; static double g_fontwait_h1_ms;
 static void ra_workers_hold(void) {
+    /* (crash phase, 2026-11-02) H1 holds the workers until H2. The HUD's font job, kicked earlier in the pass, waits for jobs of its own: held there, it was
+     * still half done at the capture of H2, and a load of such a capture then crashed it later (f_710007f870, at a KO; 0 crashes with the Lua collector at
+     * its place, whose ~1 ms gave the job time to end before H1). Now H1 first lets that job end (it ends in well under 2 ms; counted by the hook on
+     * 0x710007f870 in rb_rollback.c): a cost only in passes where the HUD draws new glyphs. SSBU_RB_FONTWAIT=0: off; 2: the old hold-side wait. */
+    if (g_fontwait == 1 && g_font_job_in > 0) { double t0 = now_ms(); g_fontwait_h1++; while (g_font_job_in > 0 && now_ms() - t0 < 3.0) SwitchToThread(); g_fontwait_h1_ms += now_ms() - t0; if (g_font_job_in > 0) g_font_job_in = 0; }
     Ctx *tc; const char *nm; HANDLE h; DWORD me = GetCurrentThreadId();
     g_ra_nwh = 0;
     for (int i = 0; guest_thread_info(i, &tc, &nm, &h) && g_ra_nwh < 16; i++) {
@@ -2034,6 +2044,7 @@ static void ra_init(void) {
         if (!getenv("SSBU_RB_SIM_LITE")) _putenv("SSBU_RB_SIM_LITE=123");
         hook_install(GA(0x71038fe690ull), rbg_gc_hook, NULL, &g_rbg_gc_orig);      /* (rollback 8 ms) rb_rollback.c */
         rbg_skipf_init();
+        { const char *e = getenv("SSBU_RB_FONTWAIT"); g_fontwait = e ? atoi(e) : 1; if (g_fontwait || getenv("SSBU_RB_FONTDIAG")) hook_install(GA(0x710007f870ull), rbg_fd_hook, NULL, &g_fd_orig); }      /* (crash phase) */
         rbn_init();
         LOG("r1: RB NET on (R3 online rollback on the snapshot ring): kick skip mask in re-run passes %d\n", g_rgs_skip);
         rgs_lite_init(); }
