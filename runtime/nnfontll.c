@@ -1134,7 +1134,29 @@ static void fe_AcquireGlyphmap(Ctx *c) {
     }
     RET((uint64_t)(uintptr_t)map);
 }
-static void fe_ReleasesGlyph(Ctx *c) { free(HOST(A1)); engine(A0)->error = 0; RET(0); }
+/* (rollback 8 ms, crash f_710007f870 of rbtick3) a glyph map is HOST memory the game keeps a pointer to in its glyph cache. A rollback brings back a cache
+ * that still holds a map released (freed) in the frames thrown away: the game then read freed host memory (a list node of other data: crash in the
+ * TaskWorker's font job, 1 run in ~30, 3 in 4 with more skipping in re-run passes). Now a released map is freed ~2 s later (a rollback goes back
+ * at most 8 frames); released again in that time (the timeline after a load released it once more): one release. Maps acquired in frames thrown
+ * away are not freed (a few KB each, rare). SSBU_FONT_QUARANTINE=0: freed at once, as before. */
+#define FQ_N 4096
+static struct { void *p; ULONGLONG t; } g_fq[FQ_N]; static int g_fq_n, g_fq_on = -1;
+static void fe_ReleasesGlyph(Ctx *c) {
+    void *p = HOST(A1);
+    if (g_fq_on < 0) { const char *e = getenv("SSBU_FONT_QUARANTINE"); g_fq_on = !(e && e[0] == '0'); }
+    if (!g_fq_on || !p) { free(p); engine(A0)->error = 0; RET(0); return; }
+    EnterCriticalSection(&g_lock);
+    ULONGLONG now = GetTickCount64(); int dup = 0, w = 0;
+    for (int i = 0; i < g_fq_n; i++) {
+        if (g_fq[i].p == p) { dup = 1; g_fq[w++] = g_fq[i]; continue; }
+        if (now - g_fq[i].t >= 2000) { free(g_fq[i].p); continue; }
+        g_fq[w++] = g_fq[i];
+    }
+    g_fq_n = w;
+    if (!dup) { if (g_fq_n < FQ_N) { g_fq[g_fq_n].p = p; g_fq[g_fq_n].t = now; g_fq_n++; } else free(p); }
+    LeaveCriticalSection(&g_lock);
+    engine(A0)->error = 0; RET(0);
+}
 
 /* (int *dx, int *dy, uint code1, uint code2) -> error; 16.16 pixels */
 static void fe_GetKerning(Ctx *c) {
