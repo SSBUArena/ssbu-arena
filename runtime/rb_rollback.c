@@ -121,6 +121,7 @@ static void rbg_wait_until(double t) {                  /* a high-resolution tim
         else YieldProcessor();
     }
 }
+static void rbg_fd_note(const char *where, long long i);
 static int rbg_rollback(Ctx *c, long long i, int m) {
     long long target = m - 1, best = -1;
     for (int s = 0; s < g_rg_count; s++) { long long f = rg_slot(s)->frame; if (f <= target && f > best) best = f; }
@@ -135,7 +136,9 @@ static int rbg_rollback(Ctx *c, long long i, int m) {
     if (g_rbg_refused_tick) { rbn_put_mismatch(m); return 0; }      /* (R3 pub1) refused once this tick: next tick */
     {   static int sk = -1; if (sk < 0) { const char *e = getenv("SSBU_RB_SNDKEEP"); sk = !(e && e[0] == '0'); }
         g_snd_keep = rb_feat(8, sk); }                  /* (Arena perf) the sound threads held through the re-run passes (r1_state.c unpark) */
+    rbg_fd_note("load", i);
     int lr = r1_ring_load(best, c);
+    rbg_fd_note("after the load", i);
     if (lr <= 0) snd_let_go();
     if (lr < 0) { g_rbg_refused_tick = 1; g_rbg_pend = m; rbn_put_mismatch(m); return 0; }      /* (R3 pub1) refused (a thread running): the wrong guess stays pending */
     if (!lr) { g_rbg_miss++; return 0; }
@@ -171,21 +174,68 @@ static int g_rbg_gc_r = -1, g_rbg_gc_i = -1;
 static void rbg_gc_hook(Ctx *c, void *user) {
     (void)user;
     if (c->x[30] == GA(0x7103747b10ull) && g_rbg_in_match == 1 && g_rg_ready && !g_rbg_noring) {
-        if (g_rbg_gc_r < 0) { const char *e = getenv("SSBU_RB_GC_RERUN"); g_rbg_gc_r = !(e && e[0] == '0'); e = getenv("SSBU_RB_GC_IDLE"); g_rbg_gc_i = !(e && e[0] == '0'); }
-        if (g_ra_phase == 2) { if (rb_feat(128, g_rbg_gc_r)) { g_rbg_gc_rerun++; c->x[20] = 0; return; } }
+        if (g_rbg_gc_r < 0) { const char *e = getenv("SSBU_RB_GC_RERUN"); g_rbg_gc_r = e ? atoi(e) : 1; e = getenv("SSBU_RB_GC_IDLE"); g_rbg_gc_i = !(e && e[0] == '0'); }
+        if (g_ra_phase == 2) { if (rb_feat(128, g_rbg_gc_r)) { g_rbg_gc_rerun++; if (g_rbg_gc_r == 2) g_rbg_gc_orig(c); c->x[20] = 0; return; } }      /* (crash phase) =2: one collector step per re-run pass, then the loop ends */
         else if (g_rbg_pace > 0 && rb_feat(256, g_rbg_gc_i)) { g_rbg_gc_L = c->x[0]; g_rbg_gc_real++; c->x[20] = 0; return; }
     }
     g_rbg_gc_orig(c);
+}
+/* (crash phase, 2026-11-02) WHERE the idle collector runs. At H2 (0bde20e) it ran right after the submission, with the jobs kicked at H1 / H2 not run yet (the
+ * workers are held from H1 to H2, let go after it): it could free a text object whose glyph request the HUD's font job (TaskWorker, f_7103761230 ->
+ * f_710007f870) had not taken yet; that job then walked a freed node (crash at ~frame 600 of the Battlefield loop bench, at a KO; 1 run in ~5; 0 in 15
+ * with the collector back at its place, 0 in 12 on v0.2.26). In the game the collector runs BEFORE the kick of those jobs. Now it runs at the end of the
+ * pacing wait: the jobs of this tick are done (checked: every task worker at its wait, no job fiber running; otherwise skipped this tick), the next
+ * kick comes after it, as in the game. SSBU_RB_GC_LATE=0: at H2 (test). */
+static int g_rbg_gc_late = -1; static long long g_rbg_gc_want = -1, g_rbg_gc_busy;
+/* (crash phase, TEST) SSBU_RB_FONTDIAG=1 */
+static ImportFn g_fd_orig; static volatile LONG g_fd_in; static uint64_t g_fd_obj; static long long g_fd_runs, g_fd_bad, g_fd_atload, g_fd_atgc, g_fd_atcap; static int g_fd_on = -1;
+static void rbg_fd_hook(Ctx *c, void *user) {
+    (void)user; g_fd_obj = c->x[0]; InterlockedIncrement(&g_fd_in); InterlockedIncrement(&g_font_job_in); g_fd_runs++;
+    g_fd_orig(c);
+    InterlockedDecrement(&g_fd_in); InterlockedDecrement(&g_font_job_in);
+}
+static int rbg_fd_check(const char *where, long long i) {
+    uint64_t o = g_fd_obj; if (!o) return 1;
+    uint64_t head = o + 80, n = rd64(head + 8); int k = 0;
+    uint64_t w1 = (uint64_t)(uintptr_t)g_win1;
+    for (uint64_t p = head, q; k < 2000; k++) {
+        q = rd64(p + 8);
+        if (q == head) return 1;
+        if (!(q >= w1 && q < w1 + g_wn1) || rd64(q) != p) {
+            if (g_fd_bad++ < 20) LOG("r1: FONTDIAG: request list of %llx BROKEN %s at frame %lld (phase %d left %d): node %llx -> %llx (back %llx), %d nodes walked\n",
+                (unsigned long long)o, where, i, g_ra_phase, g_rgs_left, (unsigned long long)p, (unsigned long long)q, (unsigned long long)((q >= w1 && q < w1 + g_wn1) ? rd64(q) : 0), k);
+            return 0;
+        }
+        p = q;
+    }
+    (void)n; return 1;
+}
+static void rbg_fd_note(const char *where, long long i) {
+    if (g_fd_on < 0) { const char *e = getenv("SSBU_RB_FONTDIAG"); g_fd_on = e && e[0] == '1'; }
+    if (g_fd_on <= 0) return;
+    if (g_fd_in) {
+        if (!strcmp(where, "load")) g_fd_atload++; else if (!strcmp(where, "gc")) g_fd_atgc++; else g_fd_atcap++;
+        if (g_fd_atload + g_fd_atgc + g_fd_atcap <= 40) LOG("r1: FONTDIAG: the font job is IN PROGRESS at %s, frame %lld (phase %d left %d)\n", where, i, g_ra_phase, g_rgs_left);
+    }
+    rbg_fd_check(where, i);
+}
+static int rbg_gc_quiet(void) {
+    Ctx *tc; const char *nm; HANDLE h;
+    for (int k = 0; guest_thread_info(k, &tc, &nm, &h); k++)
+        if (nm && strstr(nm, "TaskWorker") && tc && !waiting_import(tc->in_import)) return 0;
+    return ra_fibers_quiet();
 }
 static void rbg_gc_idle(Ctx *c, long long i) {
     uint64_t L = g_rbg_gc_L;
     if (!L || g_rbg_gc_frame == i || g_rbg_next <= 0) return;
     g_rbg_gc_frame = i;
     double t0 = now_ms();
-    if (g_rbg_next - t0 < 5.0) { g_rbg_gc_noidle++; return; }
     static double ms = -1; if (ms < 0) { const char *e = getenv("SSBU_RB_GC_MS"); ms = e ? atof(e) : 0.15; }
     if (ms <= 0) return;
+    if (g_rbg_gc_late > 0) { double left = g_rbg_next - t0 - 0.25; if (left < 0.05) { g_rbg_gc_noidle++; return; } if (left < ms) ms = left; }
+    else if (g_rbg_next - t0 < 5.0) { g_rbg_gc_noidle++; return; }
     void r1_wrote(uint64_t a, uint64_t n);
+    rbg_fd_note("gc", i);
     Ctx t = *c; g_rbg_gc_idle++;
     uint64_t sp = (c->x[31] - 0x4000) & ~15ull, g = rd64(L + 24);
     do {                                                /* as the game's loop: 0x7103747ad8 .. 0x7103747b30 */
@@ -198,6 +248,13 @@ static void rbg_gc_idle(Ctx *c, long long i) {
         *(volatile uint8_t *)(uintptr_t)(g + 87) = was;
     } while (rd8(g + 85) != 8 && now_ms() - t0 < ms);
     g_rbg_gc_ms += now_ms() - t0;
+    if (g_rbg_gc_late > 0) ms = -1;                     /* (the limit is read again: it was cut to the time left) */
+}
+static void rbg_gc_late_run(Ctx *c, long long i) {      /* at the end of the pacing wait */
+    if (g_rbg_gc_want != i) return;
+    g_rbg_gc_want = -1;
+    if (!rbg_gc_quiet()) { g_rbg_gc_busy++; return; }
+    rbg_gc_idle(c, i);
 }
 /* (rollback 8 ms) SSBU_RB_SKIPF=<hex guest addresses>: functions that do nothing in re-run passes (each entry is one decision, removable at will);
  * SSBU_RB_SKIPF_LAST=0: they run in the last re-run pass. Default list: g_rbg_skipf_def. */
@@ -271,6 +328,7 @@ static void rbg_pin(int on) {
 /* at the safe point (H2) of every pass while the fight runs (r1_ring.c rgs_step) */
 static void rbg_step_body(Ctx *c) {
     long long i = g_rgs_next;
+    rbg_fd_note(g_ra_phase == 2 ? "safe point after a re-run pass" : "safe point after a real pass", i);
     g_rbg_refused_tick = 0;
     if (g_rbg_wdfix < 0) { const char *e = getenv("SSBU_RB_NET_WDFIX"); g_rbg_wdfix = !e || atoi(e) != 0; e = getenv("SSBU_RB_NET_DETAIL"); g_rbg_detail = e && atoi(e) > 0;
         e = getenv("SSBU_RB_NET_RECAP"); g_rbg_recap = e ? atoi(e) : 3; e = getenv("SSBU_RB_NET_KEEP"); g_rbg_keep = e ? atoi(e) : 2; }
@@ -451,7 +509,8 @@ static void rbg_step_body(Ctx *c) {
     if (stalled) g_rbg_stall_ms += now_ms() - ts;
     r1_ring_let_go();
     rbn_finalize(g_rbg_pend > 0 && g_rbg_pend - 1 < i ? g_rbg_pend - 1 : i);      /* (R3 pub1) a refused load: its frames are not final yet */
-    if (!gorb) rbg_gc_idle(c, i);                       /* (rollback 8 ms) the Lua collector's work of this frame, in the idle part of the tick */
+    if (g_rbg_gc_late < 0) { const char *e = getenv("SSBU_RB_GC_LATE"); g_rbg_gc_late = !(e && e[0] == '0'); }
+    if (!gorb) { if (g_rbg_gc_late > 0) g_rbg_gc_want = i; else rbg_gc_idle(c, i); }      /* (rollback 8 ms) the Lua collector's work of this frame, in the idle part of the tick (crash phase: at the end of the wait) */
     {   /* (Arena perf) the task workers let go here, before the pacing wait (no load or capture follows in this tick): the
          * kick's preparation jobs run during the wait instead of after it. SSBU_RB_NET_EARLY_GO=0: at H2 as before */
         static int eg = -1; if (eg < 0) { const char *e = getenv("SSBU_RB_NET_EARLY_GO"); eg = !e || atoi(e) != 0; }
@@ -471,11 +530,11 @@ static void rbg_step_body(Ctx *c) {
             HANDLE ev = rbn_rx_event();
             for (;;) {
                 double t = now_ms();
-                if (t >= g_rbg_next - 0.3) break;
+                if (t >= g_rbg_next - 0.3 - (g_rbg_gc_want == i ? 0.6 : 0.0)) break;
                 if (g_rbg_wpad_at > 0 && t >= g_rbg_wpad_at && g_rbg_wpad_frame == i + 1) { rbn_drain(i + 1); g_rbg_wpad_at = -1; }
                 rbn_drain(i);
                 int m = rbn_take_mismatch();
-                double wake = g_rbg_next - 0.3;
+                double wake = g_rbg_next - 0.3 - (g_rbg_gc_want == i ? 0.6 : 0.0);
                 if (g_rbg_wpad_at > 0 && g_rbg_wpad_frame == i + 1 && g_rbg_wpad_at < wake) wake = g_rbg_wpad_at;
                 if (m > 0 && m <= i) {
                     if (g_rbg_wm_frame != i) { g_rbg_wm_frame = i; g_rbg_n_wmis++; g_rbg_wm_t0 = t; }      /* a wrong guess known inside this wait */
@@ -493,6 +552,7 @@ static void rbg_step_body(Ctx *c) {
             }
         }
         if (now_ms() > g_rbg_next + 0.5) { g_rbg_wrb_late++; g_rbg_wrb_late_ms += now_ms() - g_rbg_next; }      /* the tick already passed (a rollback in the wait ran past it) */
+        if (g_rbg_gc_want == i) { rbg_wait_until(g_rbg_next - 0.9); rbg_gc_late_run(c, i); }
         rbg_wait_until(g_rbg_next);
         g_rbg_sched = g_rbg_next;
         g_rbg_next += period;
@@ -615,6 +675,8 @@ static void rbg_fight_off(void) {
     rbg_pin(0);
     LOG("r1: RB NET: match %d over: ring emptied, session reset for the next match\n", rbn_match_number());
     { char mk[24]; snprintf(mk, sizeof mk, "match%dover", g_rbg_in_match == 1 ? rbn_match_number() : 0); if (g_rbg_in_match == 1) input_mark(mk); else input_mark("localmatchover"); }
+    LOG("r1: RB NET report: holds that waited for the font job %lld, count reset %lld; H1 waits for it %lld (%.3f ms each)\n", g_fontwait_n, g_fontwait_reset, g_fontwait_h1, g_fontwait_h1 ? g_fontwait_h1_ms / (double)g_fontwait_h1 : 0.0);
+    if (g_fd_on > 0) LOG("r1: FONTDIAG: font job runs %lld, in progress at loads %lld, at the idle collector %lld, at other safe points %lld; list broken %lld times\n", g_fd_runs, g_fd_atload, g_fd_atgc, g_fd_atcap, g_fd_bad);
     g_rbg_gc_L = 0; g_rbg_gc_frame = -1;
     g_rbg_in_match = 0; g_rbg_ff_first = -1;
     g_rbg_rb = 0; memset(g_rbg_k, 0, sizeof g_rbg_k); g_rbg_rerun = g_rbg_miss = g_rbg_stalls = g_rbg_capfail = g_rbg_capskip = g_rbg_lastlocal = g_rbg_real = g_rbg_gone = 0;
@@ -648,7 +710,7 @@ static void rbg_report(void) {
     { void nnunwind_catch_stats(long long *, long long *, long long *, long long *, long long *); long long l, d, cr, fu, mp; nnunwind_catch_stats(&l, &d, &cr, &fu, &mp);
       LOG("r1: RB NET report: catch table (hs15): %lld live records, %lld removed slots, %lld puts found no free slot in their window, %lld table full, longest probe %lld; dead records dropped at loads %lld (host fiber stacks known %zu)\n", l, d, cr, fu, mp, g_rgc_dead, g_nbf); }
     LOG("r1: RB NET report: host stack pages inside the guest windows left out of the state %lld (%lld ranges, %lld from fibers made later)\n", g_hs_pages, g_hs_ranges, g_hs_fibers_later);
-    LOG("r1: RB NET report: Lua collector: re-run passes without it %lld; real passes without it %lld, idle runs %lld (%lld steps, %.3f ms each run), no time left %lld; heap %.1f MB\n", g_rbg_gc_rerun, g_rbg_gc_real, g_rbg_gc_idle, g_rbg_gc_steps, g_rbg_gc_idle ? g_rbg_gc_ms / (double)g_rbg_gc_idle : 0.0, g_rbg_gc_noidle, g_rbg_gc_L ? (double)(rd64(rd64(g_rbg_gc_L + 24) + 16) + rd64(rd64(g_rbg_gc_L + 24) + 24)) / 1048576.0 : 0.0);
+    LOG("r1: RB NET report: Lua collector: re-run passes without it %lld; real passes without it %lld, idle runs %lld (%lld steps, %.3f ms each run), no time left %lld, workers busy %lld; heap %.1f MB\n", g_rbg_gc_rerun, g_rbg_gc_real, g_rbg_gc_idle, g_rbg_gc_steps, g_rbg_gc_idle ? g_rbg_gc_ms / (double)g_rbg_gc_idle : 0.0, g_rbg_gc_noidle, g_rbg_gc_busy, g_rbg_gc_L ? (double)(rd64(rd64(g_rbg_gc_L + 24) + 16) + rd64(rd64(g_rbg_gc_L + 24) + 24)) / 1048576.0 : 0.0);
     if (g_rbg_rb) LOG("r1: RB NET report: rollback parts (ms per rollback): before the load %.3f (keep mode %d), load %.3f, re-run passes %.3f (%.2f per rollback, %.3f each), re-run captures %.3f (%.2f per rollback, recap mode %d)\n",
         g_rbg_t_pre / g_rbg_rb, g_rbg_keep, g_rbg_t_load / g_rbg_rb, g_rbg_t_rerun / g_rbg_rb, (double)g_rbg_n_rerun / g_rbg_rb, g_rbg_n_rerun ? g_rbg_t_rerun / g_rbg_n_rerun : 0.0, g_rbg_t_recap / g_rbg_rb, (double)g_rbg_n_recap / g_rbg_rb, g_rbg_recap);
     LOG("r1: RB NET report: rollbacks made right after the pacing wait (go check) %lld of %lld, not made (a thread still running) %lld (go check %s, loop test early pads %d%%)\n", g_rbg_n_gorb, g_rbg_rb, g_rbg_n_gobusy, g_rbg_gocheck ? "on" : "OFF", g_rbg_golate > 0 ? g_rbg_golate : 0);

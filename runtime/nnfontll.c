@@ -155,8 +155,13 @@ static FT_Library g_ft;
 static uint32_t be16(const uint8_t *p) { return (uint32_t)p[0] << 8 | p[1]; }
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 static int16_t s16(const uint8_t *p) { return (int16_t)be16(p); }
-static void put16(uint8_t *p, int v) { uint16_t x = (uint16_t)v; memcpy(p, &x, 2); }
-static void put32(uint8_t *p, int32_t v) { memcpy(p, &v, 4); }
+/* (crash phase, 2026-11-02) every write of this engine into guest memory is marked for the rollback ring (r1_wrote: a no-op outside the guest windows, e.g. on a
+ * glyph map, which is host memory): unmarked, a load left the bytes the engine wrote in frames thrown away (metrics, advances, kerning tables) next to state put back
+ * from before them. Suspected cause of the HUD font job crash (f_710007f870). */
+void r1_wrote(uint64_t a, uint64_t n);
+#define GW(p, n) r1_wrote((uint64_t)(uintptr_t)(p), (uint64_t)(n))
+static void put16(uint8_t *p, int v) { uint16_t x = (uint16_t)v; GW(p, 2); memcpy(p, &x, 2); }
+static void put32(uint8_t *p, int32_t v) { GW(p, 4); memcpy(p, &v, 4); }
 
 static int g_log = -1;
 static volatile LONG g_counts[16];
@@ -720,7 +725,7 @@ static uint8_t *make_glyphmap(Engine *e, uint32_t code, unsigned type) {
 
 static int fill_metrics(Engine *e, uint8_t *m) {
     FontData *f = current(e);
-    memset(m, 0, METRICS_SIZE);
+    GW(m, METRICS_SIZE); memset(m, 0, METRICS_SIZE);
     if (!f) return ERR_NO_FONT;
     put16(m, f->upem);
     put16(m + 2, (int)be16(f->head + 44));
@@ -950,21 +955,21 @@ static Engine *engine(uint64_t key) {
     if (!e) { printf("nn::fontll: more than %d engines\n", MAX_ENGINES); report_and_exit(3); }
     slot = (uint64_t)(e - g_engines);
     magic = ENGINE_MAGIC;
-    memcpy(HOST(key), &slot, 8);
+    GW(HOST(key), 16); memcpy(HOST(key), &slot, 8);
     memcpy(HOST(key) + 8, &magic, 8);
     return e;
 }
 
 static void fe_ctor(Ctx *c) {
     uint64_t self = A0;
-    memset(HOST(self), 0, 0xb8);
+    GW(HOST(self), 0xb8); memset(HOST(self), 0, 0xb8);
     EnterCriticalSection(&g_lock);
     for (int i = 0; i < MAX_ENGINES; i++) if (g_engines[i].key == self) g_engines[i].key = 0;      /* a new object at a reused address */
     LeaveCriticalSection(&g_lock);
     engine(self);
     RET(self);
 }
-static void fe_Initialize(Ctx *c) { Engine *e = engine(A0); e->work = A1; e->error = 0; memcpy(HOST(A0) + 0xb0, &e->work, 8); RET(0); }
+static void fe_Initialize(Ctx *c) { Engine *e = engine(A0); e->work = A1; e->error = 0; GW(HOST(A0) + 0xb0, 8); memcpy(HOST(A0) + 0xb0, &e->work, 8); RET(0); }
 static void fe_Finalize(Ctx *c) { Engine *e = engine(A0); uint64_t self = A0; EnterCriticalSection(&g_lock); e->key = 0; LeaveCriticalSection(&g_lock); memset(HOST(self), 0, 16); RET(0); }
 static void fe_GetPointerToWorkBuffer(Ctx *c) { RET(engine(A0)->work); }
 static void fe_GetError(Ctx *c) { RET((uint32_t)engine(A0)->error); }
@@ -1121,6 +1126,29 @@ static void fe_GetAdvance(Ctx *c) {
     RET(e->error);
 }
 
+/* (crash phase, 2026-11-02) THE ENGINES' STATE IS STATE OF THE GAME. The game keeps the size it last set on an engine in its own memory (the HUD's font
+ * object + 7080, f_710007ef90) and calls SetScale only when it changes; the same for outline / bold. A rollback put that memory back, but the engine here kept
+ * the size set in the frames thrown away: the next glyph was made at another size than the game believed, its bitmap copied over the font cache's own
+ * request list (HUD font job crash f_710007f870 at a KO: the text changes size). Now each ring capture keeps the engines' settings (r1_ring.c) and a load
+ * puts them back. The fonts added to an engine are not part of it (added once, at loading). SSBU_RB_FONTSTATE=0: off. */
+typedef struct { uint64_t key, work; int count, current, error; int32_t scale[4]; uint32_t flags; int outline, bold; } EngSave;
+static EngSave g_es[17][MAX_ENGINES]; static int g_es_n[17], g_es_on = -1;
+void fontll_rb_save(int slot) {
+    if (g_es_on < 0) { const char *e = getenv("SSBU_RB_FONTSTATE"); g_es_on = !(e && e[0] == '0'); }
+    if (!g_es_on || slot < 0 || slot > 16) return;
+    int n = 0;
+    for (int i = 0; i < MAX_ENGINES; i++) if (g_engines[i].key) n = i + 1;
+    for (int i = 0; i < n; i++) { Engine *e = &g_engines[i]; EngSave *s = &g_es[slot][i];
+        s->key = e->key; s->work = e->work; s->count = e->count; s->current = e->current; s->error = e->error; memcpy(s->scale, e->scale, sizeof s->scale); s->flags = e->flags; s->outline = e->outline; s->bold = e->bold; }
+    g_es_n[slot] = n;
+}
+void fontll_rb_load(int slot) {
+    if (g_es_on <= 0 || slot < 0 || slot > 16) return;
+    for (int i = 0; i < g_es_n[slot]; i++) { Engine *e = &g_engines[i]; EngSave *s = &g_es[slot][i];
+        if (e->key != s->key) continue;               /* (an engine made or finalized in between: left as it is) */
+        e->work = s->work; e->current = s->current < e->count ? s->current : e->current; e->error = s->error; memcpy(e->scale, s->scale, sizeof s->scale); e->flags = s->flags; e->outline = s->outline; e->bold = s->bold; }
+}
+
 /* (uint code, ushort type) -> GlyphMap *, released with ReleasesGlyph */
 static void fe_AcquireGlyphmap(Ctx *c) {
     Engine *e = engine(A0);
@@ -1188,11 +1216,11 @@ static void fe_InitializeOtfKerningTable(Ctx *c) {
         entries = c->x[0];
         float per_unit = 1.0f / (float)f->upem;
         int32_t count = entries ? list.n : 0;
-        memset(HOST(tab), 0, 0x18);
+        GW(HOST(tab), 0x18); memset(HOST(tab), 0, 0x18);
         memcpy(HOST(tab), &count, 4);
         memcpy(HOST(tab) + 8, &entries, 8);
         memcpy(HOST(tab) + 0x10, &per_unit, 4);
-        if (entries && list.n) memcpy(HOST(entries), list.v, (size_t)list.n * 8);
+        if (entries && list.n) { GW(HOST(entries), (size_t)list.n * 8); memcpy(HOST(entries), list.v, (size_t)list.n * 8); }
     }
     printf("nn::fontll: OTF kerning table of \"%s\": %d entries%s\n", f->name, list.n, kern_only ? " (kern only)" : "");
     free(list.v);
@@ -1255,7 +1283,7 @@ static void fe_Decode(Ctx *c) {
     uint32_t size = (uint32_t)A1 & ~3u;
     static const uint8_t key[4] = {BFTTF_KEY >> 24, (BFTTF_KEY >> 16) & 0xff, (BFTTF_KEY >> 8) & 0xff, BFTTF_KEY & 0xff};
     if (!p || size < 12) { RET(0); return; }
-    for (uint32_t i = 0; i < size; i++) p[i] ^= key[i & 3];
+    GW(p, size); for (uint32_t i = 0; i < size; i++) p[i] ^= key[i & 3];
     RET((uint64_t)(uintptr_t)(p + 8));
 }
 
