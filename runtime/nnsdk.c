@@ -150,8 +150,11 @@ static void os_FreeMemoryPages(Ctx *c) {
             if (mi.State == MEM_COMMIT && (mi.Protect & PAGE_READWRITE)) memset(p, 0, (size_t)(re - p));
             p = re;
         }
-    } else { void r1_on_decommit(void *, size_t); r1_on_decommit(P(0), (size_t)A1);      /* R1 (r1_state.c): marks the pages (nothing without SSBU_R1_MARK) */
-             cxxrt_mem_changed(A0, A1); VirtualFree(P(0), (SIZE_T)A1, MEM_DECOMMIT); cxxrt_mem_changed(A0, A1); }      // PR #2 (jfb112697): report the decommitted range, before and after
+    } else { void r1_on_decommit(void *, size_t); void r1_dc_begin(void); void r1_dc_end(void);
+             r1_dc_begin();                                   /* (crash phase) not while the rollback ring copies pages (r1_state.c) */
+             r1_on_decommit(P(0), (size_t)A1);      /* R1 (r1_state.c): marks the pages (nothing without SSBU_R1_MARK) */
+             cxxrt_mem_changed(A0, A1); VirtualFree(P(0), (SIZE_T)A1, MEM_DECOMMIT); cxxrt_mem_changed(A0, A1);
+             r1_dc_end(); }      // PR #2 (jfb112697): report the decommitted range, before and after
     mp_note(1, n, t0);
     RET(0);
 }
