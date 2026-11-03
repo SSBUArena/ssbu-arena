@@ -69,7 +69,17 @@ int rbn_ahead(void) { return g_ahead; }
 
 /* ---------------------------------------------------------------- the test bot: a pure function of (seed, frame) */
 static uint32_t mix32(uint32_t x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
-static RbPad bot_pad(unsigned seed, long long f) {
+static RbPad bot_pad0(unsigned seed, long long f);
+static RbPad bot_pad(unsigned seed, long long f) {       /* (crash phase, test) SSBU_RB_NET_BOT_JITTER=<n>: held sticks tremble by up to +-n every frame */
+    static int jit = -1; if (jit < 0) { const char *e = getenv("SSBU_RB_NET_BOT_JITTER"); jit = e ? atoi(e) : 0; }
+    RbPad p = bot_pad0(seed, f);
+    if (jit > 0) { int16_t *ax[2] = {&p.lx, &p.ly};
+        for (int a = 0; a < 2; a++) if (*ax[a] > 1600 || *ax[a] < -1600) {
+            int v = *ax[a] + (int)(mix32(seed * 31u + (uint32_t)f * 2u + (uint32_t)a) % (uint32_t)(2 * jit + 1)) - jit;
+            *ax[a] = (int16_t)(v > 32767 ? 32767 : v < -32767 ? -32767 : v); } }
+    return p;
+}
+static RbPad bot_pad0(unsigned seed, long long f) {
     /* segments of 6..29 frames; each segment one action. Walking alternates sides around the middle of the stage. */
     RbPad p; memset(&p, 0, sizeof p);
     {   static long long off = -2; if (off == -2) { const char *e = getenv("SSBU_RB_NET_BOT_WALKOFF"); off = e && *e ? atoll(e) : -1; }      /* (R3 lwr, test) from that frame on: left held (the fighter walks off the stage: the match ends) */

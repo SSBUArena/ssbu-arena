@@ -63,6 +63,7 @@ static Obj *g_table[BUCKETS];
 extern int g_r1_keep_fibers;                           /* R1 (r1_state.c): set only with SSBU_R1 */
 DWORD g_r1_fls_idx = 0xFFFFFFFF;                       /* R1: FLS slot of fighter_host.c's per-fiber block (from the map) */
 static SRWLOCK g_table_lock = SRWLOCK_INIT;
+volatile LONG g_obj_in;                                /* (crash phase) threads inside obj()'s locked part (r1_state.c unpark) */
 
 /* Round 17 (P3 section 16): every lock / unlock / event call of every guest thread came through this look-up, which
  * took ONE process-wide lock exclusively. Records are never removed and a record's key and next pointer never change
@@ -78,6 +79,7 @@ static Obj *obj(uint64_t key) {
         while (f && f->key != key) f = f->next;
         if (f) return f;
     }
+    InterlockedIncrement(&g_obj_in);                  /* (crash phase) r1_state.c unpark: a thread suspended in here owns the lock */
     AcquireSRWLockExclusive(&g_table_lock);
     Obj *o = g_table[h];
     while (o && o->key != key) o = o->next;
@@ -90,6 +92,7 @@ static Obj *obj(uint64_t key) {
         InterlockedExchangePointer((void *volatile *)&g_table[h], o);      /* published complete */
     }
     ReleaseSRWLockExclusive(&g_table_lock);
+    InterlockedDecrement(&g_obj_in);
     return o;
 }
 /* Forget an object so a new one created at the same address starts clean. */
@@ -598,13 +601,15 @@ static void osw_enter(const char *what, uint64_t key, uint64_t lr) {
 }
 static void osw_leave(void) { if (t_osw >= 0 && t_osw < 512) g_osw[t_osw].key = 0; }
 static void obj_note_signal(Obj *o, uint64_t lr) { o->nsig++; o->sig_ms = GetTickCount64(); o->sig_tid = GetCurrentThreadId(); o->sig_lr = lr; }
+static Obj *obj_peek(uint64_t key);                   /* below: a look-up without the table lock */
 void os_wait_print(void (*pr)(const char *fmt, ...)) {      /* (the Linux freeze report has its own os_wait_report below) */
     ULONGLONG now = GetTickCount64();
     int n = g_osw_n < 512 ? (int)g_osw_n : 512, any = 0;
     for (int i = 0; i < n; i++) {
         OsWait w = g_osw[i];
         if (!w.key) continue;
-        Obj *o = obj(w.key);
+        Obj *o = obj_peek(w.key);
+        if (!o) { pr("    thread %lu %s %llx (object not listed yet)\n", (unsigned long)w.tid, w.what ? w.what : "?", (unsigned long long)w.key); any = 1; continue; }
         const char *tn = guest_thread_name_of(w.tid), *sn = o->sig_tid ? guest_thread_name_of(o->sig_tid) : NULL;
         if (!any) pr("  guest waits (os_threads.c): thread, what, object, called from, for how long; the object's state and its last signal\n");
         any = 1;
@@ -638,12 +643,24 @@ void os_signal_event(uint64_t key) {
  * its wake-up after the saved state leaves "jobs queued, nobody woken" after the load (main then polls forever). The
  * load signals again every event a guest thread waits on from `lr` (an extra wake-up is harmless: the worker finds the
  * queue as it is and waits again). Returns how many. */
+/* (crash phase 2026-11-03) the guest threads are still SUSPENDED here (r1_ring_load), anywhere: one inside obj() owns g_table_lock, one
+ * inside an event call owns that event's lock. Taking either froze the game for good (1 run in 4-8 with trembling sticks: nus3::audio
+ * update suspended inside obj(), main waiting in r1_ring_load). Now the look-up takes no lock and the event's lock is taken only if free;
+ * when it is not, the flag is set and the waiters woken without it (an extra wake-up is harmless, see above). SSBU_RB_WAKEPEEK=0: the old way. */
+static Obj *obj_peek(uint64_t key);
+long long g_wake_nolock;
 int os_r1_wake_waits_from(uint64_t lr) {
+    static int pk = -1; if (pk < 0) { const char *e = getenv("SSBU_RB_WAKEPEEK"); pk = !(e && e[0] == '0'); }
     int n = g_osw_n < 512 ? (int)g_osw_n : 512, k = 0;
     for (int i = 0; i < n; i++) {
         uint64_t key = g_osw[i].key; const char *w = g_osw[i].what;
         if (!key || g_osw[i].lr != lr || !w || strncmp(w, "event", 5)) continue;
-        os_signal_event(key); k++;
+        if (!pk) { os_signal_event(key); k++; continue; }
+        Obj *o = obj_peek(key);
+        if (!o) continue;
+        if (TryEnterCriticalSection(&o->cs)) { obj_note_signal(o, 0); o->signaled = 1; WakeAllConditionVariable(&o->cv); LeaveCriticalSection(&o->cs); }
+        else { *(volatile int *)&o->signaled = 1; WakeAllConditionVariable(&o->cv); g_wake_nolock++; }
+        k++;
     }
     return k;
 }

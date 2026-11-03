@@ -408,13 +408,37 @@ static int ra_keepable(const char *n) {
         || (g_keep_more && (strstr(n, "ResUpdateThread") || strstr(n, "ResLoadingThread") || strstr(n, "ResInflateThread") || strstr(n, "L2CDynamicModuleManager") || strstr(n, "VSync Count") || strstr(n, "UNKNOWN"))));
 }
 static int snd_kept_at(HANDLE h) { for (int k = 0; k < g_nsnd_kept; k++) if (g_snd_kept[k] == h) return k; return -1; }
+/* (crash phase 2026-11-03) a sound thread kept suspended from a load to the last re-run pass may have been held by HOLDFAST (hf_same: the
+ * same waiting import as before, no system-call check) while still inside obj() (the waiting-import mark is set before the object look-up):
+ * it then owned g_table_lock through the re-run passes and the game's next nn::os call blocked for good (4 runs in 20 with trembling sticks).
+ * unpark keeps it suspended only if it is blocked in a system call (one GetThreadContext). One that is not yet (it is a few us before its
+ * wait) is let run and suspended again until it is, for up to 0.3 ms while it stays in the same waiting import: dropping the keep cost
+ * ~0.25 ms per rollback tick on Battlefield (it had to be held again at the next load). Not there by then: resumed, not kept.
+ * The check (a GetThreadContext per kept thread, ~0.25 ms per load with ~10 kept threads) is made only while some thread is inside obj()'s
+ * locked part (os_threads.c g_obj_in): never otherwise, since the held threads are the only guest threads then.
+ * SSBU_RB_KEEPCHECK=0: off; =2: no second try (resumed at once); =3: checked at every load. */
+static int th_blocked(HANDLE h); static uint64_t g_tb_rsp, g_tb_rip;      /* (defined below) */
+long long g_keep_unsafe, g_keep_settled; extern volatile LONG g_obj_in;      /* os_threads.c: threads inside obj()'s locked part */                /* (crash phase) sound threads not kept / kept after a second try */
 static void unpark(void) {
+    static int kc = -1; if (kc < 0) { const char *e = getenv("SSBU_RB_KEEPCHECK"); kc = e && *e ? atoi(e) : 1; }
     for (int i = 0; i < g_nth; i++) if (g_th[i].held) {
         g_th[i].held = 0;
         if (g_snd_keep && g_th[i].name && ra_keepable(g_th[i].name)) {
             int k = snd_kept_at(g_th[i].h);
             if (k >= 0) continue;                                  /* already kept: the hold took no suspension of its own */
-            if (g_nsnd_kept < 16) { g_snd_rsp[g_nsnd_kept] = g_th[i].rsp; g_snd_rip[g_nsnd_kept] = g_th[i].rip; g_snd_kept[g_nsnd_kept++] = g_th[i].h; g_snd_keeps++; continue; }      /* this suspension stays */
+            if (kc && (kc == 3 || g_obj_in > 0) && !th_blocked(g_th[i].h)) {      /* (crash phase) a thread is inside obj(): this one, if not at a system call */
+                HANDLE h = g_th[i].h; const char *imp = g_th[i].c->in_import; uint64_t from = g_th[i].c->import_from; int st = 0;
+                double t0 = now_ms();
+                while (kc == 1 && now_ms() - t0 < 0.3) {          /* let it reach its wait, then suspend it there */
+                    ResumeThread(h); SwitchToThread();
+                    if (SuspendThread(h) == (DWORD)-1) { st = -1; break; }
+                    if (g_th[i].c->in_import != imp || g_th[i].c->import_from != from) break;      /* it left the wait: not kept */
+                    if (th_blocked(h)) { st = 1; break; }
+                }
+                if (st == 1 && g_nsnd_kept < 16) { g_snd_rsp[g_nsnd_kept] = g_tb_rsp; g_snd_rip[g_nsnd_kept] = g_tb_rip; g_snd_kept[g_nsnd_kept++] = h; g_snd_keeps++; g_keep_settled++; continue; }
+                if (g_keep_unsafe++ < 10) LOG("r1: KEEP: %s suspended outside a system call: resumed, not kept\n", g_th[i].name);
+                if (st == -1) continue;                            /* the suspension failed: it runs already */
+            } else if (g_nsnd_kept < 16) { g_snd_rsp[g_nsnd_kept] = g_th[i].rsp; g_snd_rip[g_nsnd_kept] = g_th[i].rip; g_snd_kept[g_nsnd_kept++] = g_th[i].h; g_snd_keeps++; continue; }      /* this suspension stays */
         }
         ResumeThread(g_th[i].h);
     }
