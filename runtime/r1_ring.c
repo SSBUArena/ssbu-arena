@@ -496,6 +496,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
     if (g_rgpg_on < 0) g_rgpg_on = getenv("SSBU_RB_SIM_PAGES") != NULL;
     g_rgpg_kind = g_ra_phase != 2 ? 0 : g_rgs_left > 1 ? 1 : 2; g_rgpg_caps[g_rgpg_kind]++;
     rg_stack_ww(c);                                       /* (Arena perf) the stack pages written (no marks there) */
+    dc_copy_lock(1);                                      /* (crash phase) no decommit from here to the end of the copy */
     if (g_ls_active) ls_capture(rg_cap_page); else rg_sweep(rg_cap_page);      /* R4: the learned set (rb_learned.c) instead of the marks */
     for (size_t e = 0; e < g_rg_nx && !g_rg_fail_now; e++) {             /* extras: the pages that differ from their newest value */
         uint32_t id = (uint32_t)(g_rg_n1 + g_rg_n2 + e);
@@ -507,6 +508,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
     double t2 = now_ms();
     {   static int nt = -1; if (nt < 0) { const char *e = getenv("SSBU_RB_NT"); nt = !e || atoi(e) != 0; }      /* (Arena perf) non-temporal stores into the pool (r1_state.c cp_page_nt) */
         g_cp_nt = rb_feat(2, nt); cp_run(); g_cp_nt = 0; }
+    dc_copy_lock(0);
     if (g_rg_fail_now && g_rg_poolfix) {                    /* (hs14) given up: this capture's pages back to their previous values, marked again */
         size_t undone = s->nent;
         for (size_t n = s->nent; n-- > 0;) { uint32_t id = s->ent[2 * n], old = s->ent[2 * n + 1]; rg_pool_put(g_rg_idx[id]); g_rg_idx[id] = old; rg_remark(id); }
@@ -616,7 +618,32 @@ static int lb_take(uint32_t id) {
     if (InterlockedDecrement64(&g_lb_left) == 0) lb_finished();
     return 1;
 }
+/* (crash phase, 2026-11-03: "mcmp60", 3 runs in ~150, a lazy-base copy thread's memcmp on a shadow page that was not committed although its commit flag was set;
+ * r11 = STATUS_COMMITMENT_LIMIT each time: a commit refused for a moment while the page file grows). A READ fault inside the shadow while the lazy base runs:
+ * the 64 KB chunk is committed (tried again for up to 2 s; logged with what the OS said) and the read goes on: a fresh page reads zeros, so the copy thread
+ * finds it different and copies the page, which is the right value. SSBU_RB_SHVEH=0: off. */
+static volatile LONG g_shveh_n;
+static LONG lb_shadow_fault(EXCEPTION_POINTERS *e) {
+    static int on = -1; if (on < 0) { const char *v = getenv("SSBU_RB_SHVEH"); on = !(v && v[0] == '0'); }
+    if (!on || !g_lb_active || e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
+    uint8_t *a = (uint8_t *)(uintptr_t)e->ExceptionRecord->ExceptionInformation[1], *base = NULL; size_t n = 0;
+    if (g_sh1 && a >= g_sh1 && a < g_sh1 + g_wn1) { base = g_sh1; n = g_wn1; } else if (g_sh2 && a >= g_sh2 && a < g_sh2 + WN2) { base = g_sh2; n = WN2; }
+    if (!base) return EXCEPTION_CONTINUE_SEARCH;
+    uint8_t *c0 = base + ((size_t)(a - base) & ~(size_t)0xffff);
+    MEMORY_BASIC_INFORMATION mi; memset(&mi, 0, sizeof mi); VirtualQuery(a, &mi, sizeof mi);
+    for (int t = 0; t < 400; t++) {
+        if (VirtualAlloc(c0, 0x10000, MEM_COMMIT, PAGE_READWRITE)) {
+            if (InterlockedIncrement(&g_shveh_n) <= 20) LOG("r1: LAZY BASE: a shadow page not committed was read (%p, state %lx protect %lx, flag %d): committed after %d tries\n", (void *)a, mi.State, mi.Protect,
+                (int)((base == g_sh1 ? g_sh1c : g_sh2c)[(size_t)(a - base) >> 12]), t + 1);
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        Sleep(5);
+    }
+    LOG("r1: LAZY BASE: a shadow page not committed was read (%p) and could not be committed (error %lu)\n", (void *)a, (unsigned long)GetLastError());
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 static LONG CALLBACK lb_veh(EXCEPTION_POINTERS *e) {
+    if (lb_shadow_fault(e) == EXCEPTION_CONTINUE_EXECUTION) return EXCEPTION_CONTINUE_EXECUTION;
     if (!g_lb_st || e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || e->ExceptionRecord->ExceptionInformation[0] != 1) return EXCEPTION_CONTINUE_SEARCH;
     uint32_t id;
     if (!lb_id((const uint8_t *)(uintptr_t)e->ExceptionRecord->ExceptionInformation[1], &id)) return EXCEPTION_CONTINUE_SEARCH;
@@ -970,6 +997,7 @@ int r1_ring_load(long long frame, Ctx *c) {
         rg_slot_drop(s, 0);
     }
     g_rg_count = si + 1;
+    dc_copy_lock(1);                                      /* (crash phase) no decommit from here to the end of the copy */
     rg_stack_ww(NULL);                                    /* (Arena perf) the stack pages written since the newest capture */
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */
     rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
@@ -1002,6 +1030,7 @@ int r1_ring_load(long long frame, Ctx *c) {
     {   /* (R3 net3) SSBU_RB_LOADCMP=1 (option, default off: measured no faster, na0 / na1): a page is written only if it differs from the value loaded */
         static int lc = -1; if (lc < 0) { const char *e = getenv("SSBU_RB_LOADCMP"); lc = e && e[0] == '1'; }
         g_cp_cond = lc; cp_run(); g_cp_cond = 0; }
+    dc_copy_lock(0);
     double t2 = now_ms();
     g_nfib = g->nfib; memcpy(g_fib, g->fib, (size_t)g->nfib * sizeof *g_fib);
     if (g->fpool_used) memcpy(g_fpool, g->fpool, g->fpool_used);

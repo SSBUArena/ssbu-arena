@@ -42,6 +42,8 @@ int r1_poll(int ticks) { (void)ticks; return 0; }
 void r1_pad(uint64_t *b, int *lx, int *ly, int *rx, int *ry) { (void)b; (void)lx; (void)ly; (void)rx; (void)ry; }
 void r1_init(void) { r1_on(); }
 void r1_on_decommit(void *p, size_t n) { (void)p; (void)n; }
+void r1_dc_begin(void) {}
+void r1_dc_end(void) {}
 void r1_on_commit(void *p, size_t n) { (void)p; (void)n; }
 void r1_wrote(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void r1_module_loaded(void *h, int fighter) { (void)h; (void)fighter; }
@@ -2012,6 +2014,7 @@ static void ra_report(void) {
     for (long long i = printed; i < g_ra_nkind; i += 200, printed = i < g_ra_nkind ? i : g_ra_nkind) LOG("r1: RA kinds %lld: %.*s\n", i + 1, (int)(g_ra_nkind - i < 200 ? g_ra_nkind - i : 200), g_ra_kind + i);
     if (rgs_wanted()) rgs_report();
 }
+static void dc_copy_lock(int on);      /* (crash phase) below */
 #include "r1_ring.c"                                  /* R2: the snapshot ring (rollback) */
 #include "rb_rollback.c"                              /* R3: online rollback on the ring (SSBU_RB_NET) */
 static void ra_init(void) {
@@ -2239,6 +2242,22 @@ static void dc_set(void *p, size_t n, int v) {
     if (i1 > (g_wn1 >> 12)) i1 = g_wn1 >> 12;
     memset(g_dc + i0, v, i1 - i0);
 }
+/* (crash phase, 2026-11-03) DECOMMITS AND THE RING'S COPIES. A capture lists the pages written (sweep) and then copies them; a load copies pages back. A guest
+ * thread the hold did not stop (never held: the opus decoder; or one taken as blocked) that decommits a page in between made the main thread read or write a
+ * page that is no longer there (crash in cp_page_nt / cp_part, ~1 loop run in 20). Now the decommit (nnsdk.c) waits on this lock while a capture or load copies
+ * (r1_ring.c); a held thread never holds it (it is taken inside a non-waiting import). The thread that had to wait is named in the log. SSBU_RB_DCLOCK=0: off. */
+static SRWLOCK g_dc_lock = SRWLOCK_INIT; static int g_dc_lock_on = -1; static volatile LONG g_dc_waits;
+void r1_dc_begin(void) {
+    if (g_dc_lock_on < 0) { const char *e = getenv("SSBU_RB_DCLOCK"); g_dc_lock_on = !(e && e[0] == '0'); }
+    if (!g_dc_lock_on) return;
+    if (!TryAcquireSRWLockShared(&g_dc_lock)) {
+        const char *guest_thread_name_of(DWORD tid); const char *nm = guest_thread_name_of(GetCurrentThreadId());
+        if (InterlockedIncrement(&g_dc_waits) <= 20) LOG("r1: RING: a decommit by %s waited for a capture / load copy\n", nm ? nm : "a host thread");
+        AcquireSRWLockShared(&g_dc_lock);
+    }
+}
+void r1_dc_end(void) { if (g_dc_lock_on > 0) ReleaseSRWLockShared(&g_dc_lock); }
+static void dc_copy_lock(int on) { if (g_dc_lock_on < 0) { const char *e = getenv("SSBU_RB_DCLOCK"); g_dc_lock_on = !(e && e[0] == '0'); } if (g_dc_lock_on) { if (on) AcquireSRWLockExclusive(&g_dc_lock); else ReleaseSRWLockExclusive(&g_dc_lock); } }
 void r1_on_decommit(void *p, size_t n) { lb_open((uint64_t)(uintptr_t)p, n); r1_mark_range((uint64_t)(uintptr_t)p, n); ls_range((uint64_t)(uintptr_t)p, n, 1); dc_set(p, n, 1); }
 void r1_on_commit(void *p, size_t n) {
     lb_open((uint64_t)(uintptr_t)p, n);                  /* (0.2.11) the lazy base: pages taken before they change (rb lazy base, r1_ring.c) */
