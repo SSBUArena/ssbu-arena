@@ -1696,9 +1696,16 @@ static int ra_peek(void) { static int v = -1; if (v < 0) { const char *e = geten
  * GetThreadContext (~10 us: it waits for the suspend to land). Not proved: it may be inside the import's own code then (the reason for th_blocked). */
 #define HF_N 64
 static struct { HANDLE h; uint64_t from, rsp, rip; const char *imp; } g_hf[HF_N]; static int g_hf_on = -1;
+/* (v0.2.27 field freeze, 2026-11-03) a task worker running a job on a fiber still shows the waiting import it switched from (SwitchToFiber):
+ * HOLDFAST took it as blocked and held it inside the job, once inside nvn_stub.c nobj() owning g_objs_lock (main waited for it: 10 s
+ * freezes in a room until the hold watchdog), and a capture with a job half done is a heap half changed (alloc check BAD after a load,
+ * then a crash). Task workers are held only when the kernel says they are blocked. SSBU_RB_HFWORK=0: the 0.2.27 way. */
+static int g_hf_work = -1;
+static int hf_work_safe(void) { if (g_hf_work < 0) { const char *e = getenv("SSBU_RB_HFWORK"); g_hf_work = !(e && e[0] == '0'); } return g_hf_work; }
 static int hf_same(Th *t) {
     if (g_hf_on < 0) { const char *e = getenv("SSBU_RB_HOLDFAST"); g_hf_on = !(e && e[0] == '0'); }
     if (!g_hf_on || !t->c->in_import) return 0;
+    if (hf_work_safe() && strstr(t->name, "TaskWorker")) return 0;
     unsigned i = (unsigned)(((uintptr_t)t->h >> 2) % HF_N);
     if (g_hf[i].h != t->h || g_hf[i].imp != t->c->in_import || g_hf[i].from != t->c->import_from) return 0;
     t->rsp = g_hf[i].rsp; t->rip = g_hf[i].rip; return 1;
@@ -1988,8 +1995,8 @@ static void ra_workers_hold(void) {
     for (int i = 0; guest_thread_info(i, &tc, &nm, &h) && g_ra_nwh < 16; i++) {
         if (!h || GetThreadId(h) == me || !nm || !strstr(nm, "TaskWorker")) continue;
         if (SuspendThread(h) == (DWORD)-1) continue;
-        if (g_hf_on != 1 && !th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }      /* busy: not held (that pass will likely skip its save) */
-        if (g_hf_on == 1 && !waiting_import(tc->in_import) && !th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }      /* (rollback 8 ms) at a waiting import: no question to the kernel */
+        if ((g_hf_on != 1 || hf_work_safe()) && !th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }      /* busy: not held (that pass will likely skip its save) */
+        if (g_hf_on == 1 && !hf_work_safe() && !waiting_import(tc->in_import) && !th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }      /* (rollback 8 ms) at a waiting import: no question to the kernel */
         g_ra_wh[g_ra_nwh++] = h;
     }
     InterlockedExchange(&g_ra_wh_on, 1);
