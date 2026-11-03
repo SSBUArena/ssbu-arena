@@ -1126,7 +1126,27 @@ static void hs_fiber_cb(uint64_t key, Ctx *c, uint64_t stack, uint64_t size, voi
     if (fiber) hs_exclude(*(uint64_t *)((uint8_t *)fiber + 0x20), *(uint64_t *)((uint8_t *)fiber + 0x10), "fiber stack");
 }
 extern void (*g_r1_fiber_born)(void *fiber);           /* os_threads.c: a host fiber made later (fib_init, a fresh one at a restore) */
-static void hs_fiber_born(void *fiber) { if (fiber) { long long b = g_hs_pages; hs_fiber_cb(0, NULL, 0, 0, fiber); if (g_hs_pages != b) g_hs_fibers_later++; } }
+/* (memory phase 2026-11-03) every host fiber made since the setup, with the capture count it was made at (r1_ring.c fib_reap deletes the
+ * ones nothing can use any more) */
+static void **g_fr_f; static long long *g_fr_t; static int g_fr_n, g_fr_cap; static SRWLOCK g_fr_lock = SRWLOCK_INIT; static long long g_fr_made, g_fr_deleted;
+static long long g_rg_caps_seen;                        /* r1_ring.c's capture count, as the registry sees it */
+static void fr_add(void *fiber) {
+    AcquireSRWLockExclusive(&g_fr_lock);
+    if (g_fr_n == g_fr_cap) { int nc = g_fr_cap ? g_fr_cap * 2 : 256; void **a = realloc(g_fr_f, nc * sizeof *a); long long *b = a ? realloc(g_fr_t, nc * sizeof *b) : NULL;
+                              if (a) g_fr_f = a; if (b) { g_fr_t = b; g_fr_cap = nc; } }
+    if (g_fr_n < g_fr_cap) { g_fr_f[g_fr_n] = fiber; g_fr_t[g_fr_n] = g_rg_caps_seen; g_fr_n++; g_fr_made++; }
+    ReleaseSRWLockExclusive(&g_fr_lock);
+}
+static void hs_unexclude(uint64_t lo, uint64_t hi) {     /* the inverse of hs_exclude, for a host fiber stack given back */
+    if (!g_ns1 || !g_ns2 || hi <= lo || hi - lo > (1ull << 32)) return;
+    long long n = 0;
+    for (uint64_t p = lo & ~(uint64_t)(PG - 1); p < hi; p += PG) {
+        if (g_win1 && p >= (uint64_t)(uintptr_t)g_win1 && p < (uint64_t)(uintptr_t)g_win1 + g_wn1) { size_t i = (size_t)(p - (uint64_t)(uintptr_t)g_win1) >> 12; if (g_ns1[i]) { g_ns1[i] = 0; n++; } }
+        else if (p >= WIN2 && p < WIN2 + WN2) { size_t i = (size_t)(p - WIN2) >> 12; if (g_ns2[i]) { g_ns2[i] = 0; n++; } }
+    }
+    g_hs_pages -= n;
+}
+static void hs_fiber_born(void *fiber) { if (fiber) { long long b = g_hs_pages; hs_fiber_cb(0, NULL, 0, 0, fiber); if (g_hs_pages != b) g_hs_fibers_later++; fr_add(fiber); } }
 static uint64_t g_hs_note[16][2]; static int g_hs_nnote;     /* host stacks this exe makes itself (not threads, not guest fibers): noted, left out at the setup */
 static void r1_host_stack_note(uint64_t lo, uint64_t hi) { if (g_hs_nnote < 16) { g_hs_note[g_hs_nnote][0] = lo; g_hs_note[g_hs_nnote][1] = hi; g_hs_nnote++; } if (g_ns2 && (g_hs_on < 0 || g_hs_on)) hs_exclude(lo, hi, "host stack (noted)"); }
 typedef struct { LONG st; void *teb; void *pid, *tid; ULONG_PTR mask; LONG pri, bpri; } HsTbi;

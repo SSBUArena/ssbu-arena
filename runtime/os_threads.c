@@ -786,6 +786,7 @@ static void mw_waitany(Ctx *c) { Obj *m = obj(A0); uint64_t r; while (!(r = mw_p
 static void mw_trywaitany(Ctx *c) { RET(mw_poll(obj(A0))); }
 
 /* ---------------------------------------------------------------- fibers */
+long long g_fib_made[4];                               /* (memory phase) host fibers made: fib_init, of which replacing; at a restore, of which replacing */
 void (*g_r1_fiber_born)(void *fiber);                 /* r1_state.c (R3 hs13): a new host fiber's stack is left out of the guest windows' state */
 static void CALLBACK fiber_main(void *arg) {
     Obj *o = arg;
@@ -807,6 +808,7 @@ static void CALLBACK fiber_main(void *arg) {
 static void fib_init(Ctx *c) {                        /* (FiberType*, fn, arg, stack, stackSize, flags) */
     Obj *o = obj(A0);
     o->fn = A1; o->arg = A2; o->stack = A3; o->stack_size = A4; r1_stack_note(A3, A4);
+    g_fib_made[0]++; if (o->fiber) g_fib_made[1]++;      /* (memory phase, diagnosis) made / replacing one that was there */
     o->fiber = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o);
     fib_note(o);
     if (g_r1_fiber_born) g_r1_fiber_born(o->fiber);
@@ -852,7 +854,7 @@ void os_r1_fiber_put(uint64_t key, const uint64_t v[6]) { Obj *o = obj_peek(key)
 /* R1 restore: give a guest fiber back the host fiber it had at the save (kept alive by g_r1_keep_fibers), or a fresh one */
 void os_r1_fiber_set(uint64_t key, void *fiber, Ctx *fctx, int fresh) {
     Obj *o = obj_peek(key); if (!o) return;
-    if (fresh) { o->fiber = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o); o->fctx = NULL; if (g_r1_fiber_born) g_r1_fiber_born(o->fiber); }
+    if (fresh) { g_fib_made[2]++; if (o->fiber) g_fib_made[3]++; o->fiber = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o); o->fctx = NULL; if (g_r1_fiber_born) g_r1_fiber_born(o->fiber); }
     else { o->fiber = fiber; o->fctx = fctx; }
     fib_note(o);
 }
