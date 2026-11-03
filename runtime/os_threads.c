@@ -788,6 +788,29 @@ static void mw_trywaitany(Ctx *c) { RET(mw_poll(obj(A0))); }
 /* ---------------------------------------------------------------- fibers */
 long long g_fib_made[4];                               /* (memory phase) host fibers made: fib_init, of which replacing; at a restore, of which replacing */
 void (*g_r1_fiber_born)(void *fiber);                 /* r1_state.c (R3 hs13): a new host fiber's stack is left out of the guest windows' state */
+static void CALLBACK fiber_main(void *arg);
+static int g_fib_lazy = -1; static volatile LONG g_fib_fail_said;
+static void *fib_make(Obj *o) {                        /* (field crash) a host fiber for o, tried again while the system refuses it */
+    void *f = NULL;
+    for (int t = 0; t < 400 && !f; t++) {
+        f = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o);
+        if (!f) { if (InterlockedIncrement(&g_fib_fail_said) <= 10) { printf("nn::os: a host fiber could not be made (error %lu, try %d)\n", (unsigned long)GetLastError(), t + 1); fflush(stdout); }
+                  if (g_fib_lazy == 0) break; Sleep(5); }
+    }
+    return f;
+}
+/* (field crash) the host fiber to switch to for guest fiber `next` (0 = the thread's own): made now if it has none */
+static void *fib_target(uint64_t next, void *own) {
+    if (!next) return own;
+    Obj *n = obj(next);
+    if (n->fiber || g_fib_lazy == 0) return n->fiber;
+    if (n->fn) {
+        n->fiber = fib_make(n);
+        if (n->fiber) { if (g_r1_fiber_born) g_r1_fiber_born(n->fiber); if (g_r1_keep_fibers) { n->fctx = NULL; n->fls = NULL; n->fls_fiber = NULL; } }
+        static volatile LONG said; if (InterlockedIncrement(&said) <= 20) { printf("nn::os: guest fiber %llx had no host fiber at a switch: %s\n", (unsigned long long)next, n->fiber ? "made now" : "could not be made: back to the thread's own context"); fflush(stdout); }
+    }
+    return n->fiber ? n->fiber : own;
+}
 static void CALLBACK fiber_main(void *arg) {
     Obj *o = arg;
     Ctx *c = new_ctx(o->stack + o->stack_size);
@@ -802,14 +825,18 @@ static void CALLBACK fiber_main(void *arg) {
         if (next) obj(next)->tp = c->tpidr;
         fiber_set_cur(next);
         if (g_r1_keep_fibers) { o->run_tid = 0; if (g_r1_fls_idx != 0xFFFFFFFF) { o->fls = FlsGetValue(g_r1_fls_idx); o->fls_fiber = GetCurrentFiber(); } if (next) obj(next)->run_tid = GetCurrentThreadId(); }
-        SwitchToFiber(next ? obj(next)->fiber : thread_fiber());
+        if (g_fib_lazy < 0) { const char *e = getenv("SSBU_FIB_LAZY"); g_fib_lazy = !(e && e[0] == '0'); }
+        SwitchToFiber(g_fib_lazy ? fib_target(next, thread_fiber()) : next ? obj(next)->fiber : thread_fiber());
     }
 }
 static void fib_init(Ctx *c) {                        /* (FiberType*, fn, arg, stack, stackSize, flags) */
     Obj *o = obj(A0);
     o->fn = A1; o->arg = A2; o->stack = A3; o->stack_size = A4; r1_stack_note(A3, A4);
     g_fib_made[0]++; if (o->fiber) g_fib_made[1]++;      /* (memory phase, diagnosis) made / replacing one that was there */
-    o->fiber = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o);
+    {   static long long ff = -1; if (ff < 0) { const char *e = getenv("SSBU_TEST_FIBFAIL"); ff = e ? atoll(e) : 0; }      /* (TEST ONLY) every Nth one fails, as when commit runs out */
+        if (ff > 0 && g_fib_made[0] % ff == 0) { o->fiber = NULL; fib_note(o); RET(0); return; } }
+    if (g_fib_lazy < 0) { const char *e = getenv("SSBU_FIB_LAZY"); g_fib_lazy = !(e && e[0] == '0'); }
+    o->fiber = g_fib_lazy ? fib_make(o) : CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o);
     fib_note(o);
     if (g_r1_fiber_born) g_r1_fiber_born(o->fiber);
     if (g_r1_keep_fibers) { o->fctx = NULL; o->fls = NULL; o->fls_fiber = NULL; o->run_tid = 0; }      /* (R2) a new host fiber: no context, no block yet */
@@ -822,6 +849,8 @@ static void fib_switch(Ctx *c) {
     if (next) obj(next)->tp = c->tpidr;               /* the thread block (errno, ...) belongs to the host thread, not to the fiber */
     fiber_set_cur(next);
     /* (0.2.23) crash reports: a job's fiber object with no host fiber (SwitchToFiber(NULL)). A wrong object: said, and no switch */
+    if (g_fib_lazy < 0) { const char *e = getenv("SSBU_FIB_LAZY"); g_fib_lazy = !(e && e[0] == '0'); }
+    if (next && !obj(next)->fiber && g_fib_lazy) fib_target(next, own);      /* (field crash) made now if it can be */
     if (next && !obj(next)->fiber) {
         static volatile LONG said;
         if (InterlockedIncrement(&said) <= 20) { printf("nn::os: SwitchToFiber to %llx, which has no host fiber (from %llx, caller %llx): stays on this one\n", (unsigned long long)next, (unsigned long long)self, (unsigned long long)c->x[30]); fflush(stdout); }
