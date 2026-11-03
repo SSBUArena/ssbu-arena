@@ -443,6 +443,36 @@ static void rg_stack_ww(Ctx *main_c) {
     }
     g_sw_ms += now_ms() - t;
 }
+/* (memory phase 2026-11-03) see r1_state.c fr_add. Picked with the threads held (no allocation; the registry lock only if free), deleted
+ * after they are let go: a fiber no guest fiber object (g_fib, just saved), no ring slot (its fibers' host fibers and objects), no
+ * held thread (TEB FiberData) and not main uses, made more than 4 rings ago, can never be switched to again. */
+static void *g_fr_pick[256]; static int g_fr_npick; static volatile LONG g_lb_active;      /* (below) */
+static void fib_reap_pick(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_FIBREAP"); on = !(e && e[0] == '0'); }
+    g_rg_caps_seen = g_rg_caps;
+    if (g_fr_npick) return;                               /* picked before, not deleted yet (threads kept for a load): nothing can use them still */
+    if (!on || g_lb_active || (g_rg_caps & 15) || !TryAcquireSRWLockExclusive(&g_fr_lock)) return;
+    static uint64_t th_f[256]; int nth = 0;
+    for (int i = 0; i < g_nth && nth < 256; i++) { uint64_t fd, sb, sl; live_teb(g_th[i].h, &fd, &sb, &sl); th_f[nth++] = fd; }
+    void *me = GetCurrentFiber();
+    for (int j = 0; j < g_fr_n && g_fr_npick < 256; ) {
+        void *f = g_fr_f[j]; int used = f == me || g_rg_caps - g_fr_t[j] < 4ll * g_rg_cap + 16;
+        for (int i = 0; !used && i < nth; i++) if ((void *)(uintptr_t)th_f[i] == f) used = 1;
+        for (int i = 0; !used && i < g_nfib; i++) if (g_fib[i].fiber == f || (void *)(uintptr_t)g_fib[i].obj[0] == f) used = 1;
+        for (int k = 0; !used && k < g_rg_cap; k++) { RgSlot *s = &g_rg[k]; if (s->fib) for (int i = 0; i < s->nfib; i++) if (s->fib[i].fiber == f || (void *)(uintptr_t)s->fib[i].obj[0] == f) { used = 1; break; } }
+        if (used) { j++; continue; }
+        g_fr_pick[g_fr_npick++] = f;
+        g_fr_f[j] = g_fr_f[g_fr_n - 1]; g_fr_t[j] = g_fr_t[g_fr_n - 1]; g_fr_n--;
+    }
+    ReleaseSRWLockExclusive(&g_fr_lock);
+}
+static void fib_reap_delete(void) {                      /* threads running again */
+    for (int i = 0; i < g_fr_npick; i++) {
+        void *f = g_fr_pick[i]; uint64_t lo = *(uint64_t *)((uint8_t *)f + 0x20), hi = *(uint64_t *)((uint8_t *)f + 0x10);
+        DeleteFiber(f); hs_unexclude(lo, hi); g_fr_deleted++;
+    }
+    g_fr_npick = 0;
+}
 int r1_ring_capture(long long frame, Ctx *c) {
     R1_CTR("capture (frame)", frame, 0);
     double t0 = now_ms(); int seg_was = g_rgp_seg; g_rgp_seg = 4;
@@ -525,9 +555,11 @@ int r1_ring_capture(long long frame, Ctx *c) {
     fibers_save(); double t3a = now_ms();
     nvn_r1_cb_save(); double t3b = now_ms();
     rg_meta_capture(s, c);
+    fib_reap_pick();                                      /* (memory phase) host fibers nothing can use any more */
     double t4 = now_ms();
     if (g_rg_keep) g_rg_kept = 1;                          /* a load follows at once (r1_ring_load / r1_ring_let_go lets them go) */
     else unpark();                                         /* every thread, the audio ones too (a real pass follows) */
+    if (!g_rg_keep && g_fr_npick) fib_reap_delete();
     double t5 = now_ms();
     g_mp[0] += t3a - t3; g_mp[1] += t3b - t3a; g_mp[2] += t4 - t3b; g_mp[3] += t5 - t4; g_mp_n[0]++; g_mp_b[0] += (double)g_fpool_used; g_mp_b[1] += (double)s->cbd_used;
     g_rg_count++; g_rg_caps++;

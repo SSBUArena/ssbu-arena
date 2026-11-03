@@ -579,6 +579,18 @@ static void rbg_step_body(Ctx *c) {
             }
         }
     }
+    if (g_rbg_real % 600 == 0) {      /* (memory phase, diagnosis) */
+        static int md = -1; if (md < 0) { const char *e = getenv("SSBU_RB_MEMDIAG"); md = e && e[0] == '1'; }      /* (test) SSBU_RB_MEMDIAG=1: on (it walks every page entry: ~10 ms) */
+        if (md) { extern long long g_fib_made[4];
+            size_t ent = 0, fp = 0, cb = 0, nent = 0; for (int k = 0; k < g_rg_cap; k++) { ent += g_rg[k].entcom; fp += g_rg[k].fpool_com; cb += g_rg[k].cbd_com; nent += g_rg[k].nent; }
+            size_t idx_pool = 0; for (size_t k = 0; k < (size_t)g_rg_n1 + g_rg_n2 + g_rg_nx; k++) if (g_rg_idx[k] >= 2) idx_pool++;
+            struct { DWORD cb, PageFaultCount; SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage, PrivateUsage; } pm;
+            BOOL WINAPI K32GetProcessMemoryInfo(HANDLE, void *, DWORD); memset(&pm, 0, sizeof pm); pm.cb = sizeof pm; K32GetProcessMemoryInfo(GetCurrentProcess(), &pm, sizeof pm);
+            LOG("r1: MEMDIAG frame %lld: private %.0f MB, working set %.0f MB | pool made %u (%.0f MB) committed %u free %u, pages whose newest copy is in the pool %zu (%.0f MB) | slots: entries %zu (committed %.0f MB), fiber pools %.0f MB, command buffers %.0f MB | lazy base active %d | host fibers made: fib_init %lld (replacing %lld), restore %lld (replacing %lld); listed %d, deleted %lld\n",
+                (long long)g_rbg_real, pm.PrivateUsage / 1048576.0, pm.WorkingSetSize / 1048576.0, g_rg_bump, g_rg_bump * (double)PG / 1048576.0, g_rg_pcom, g_rg_nfree,
+                idx_pool, idx_pool * (double)PG / 1048576.0, nent, ent / 1048576.0, fp / 1048576.0, cb / 1048576.0, (int)g_lb_active, g_fib_made[0], g_fib_made[1], g_fib_made[2], g_fib_made[3], g_fr_n, g_fr_deleted);
+        }
+    }
     if (g_rbg_real % 600 == 0) LOG("r1: RB NET: frame %lld: %lld rollbacks (%lld frames again), %lld stalls (%.0f ms), round trip %d ms, delay %d, remote pads up to %lld, clock ahead of the other game by %.1f ms\n",
                                    i, g_rbg_rb, g_rbg_rerun, g_rbg_stalls, g_rbg_stall_ms, rbn_rtt_ms(), rbn_delay(), rbn_confirmed(), rbn_offset_ms());
 }
