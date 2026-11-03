@@ -65,7 +65,7 @@ static uint32_t *g_rg_idx; static uint8_t *g_rg_touch; static uint32_t *g_rg_tl;
 static size_t g_rg_n1, g_rg_n2, g_rg_nx;               /* page counts: window 1, window 2, extras */
 static uint8_t **g_rg_xa, **g_rg_xb;                   /* extras page e: its address, its flat (first save) bytes */
 static uint8_t *g_rg_pool; static uint32_t g_rg_bump, g_rg_pcom, *g_rg_free, g_rg_nfree;
-static uint8_t *g_rg_cbs; static int *g_rg_ncbs; static int g_rg_cb_ok = -1;
+static uint8_t *g_rg_cbs; static int *g_rg_ncbs; static int g_rg_cb_ok = -1; extern long long g_wake_nolock;
 static double g_rg_park_ms = 30;
 static int g_rg_keep, g_rg_kept, g_rg_keep_on = -1; static long long g_rg_kept_n, g_rg_kept_same;   /* capture -> load at the same safe point: threads stay held */
 static long long g_rg_caps, g_rg_cap_fail, g_rg_loads, g_rg_overflow;
@@ -1042,7 +1042,9 @@ int r1_ring_load(long long frame, Ctx *c) {
     fontll_rb_load((int)(g - g_rg));                      /* (crash phase) the font engines' settings of that frame */
     double t3 = now_ms();
     {   int os_r1_wake_waits_from(uint64_t lr);      /* (Arena: the 6700K hang) the task workers' idle wait: woken again (os_threads.c) */
-        g_rg_rewake += os_r1_wake_waits_from(GA(0x710354a5acull)); }
+        g_rg_rewake += os_r1_wake_waits_from(GA(0x710354a5acull));
+        {   extern long long g_wake_nolock; static long long seen; static int said;      /* (crash phase) a wake-up done without the event's lock */
+            if (g_wake_nolock != seen) { seen = g_wake_nolock; if (said++ < 10) LOG("r1: RING: load at frame %lld: a worker's event was locked by a suspended thread: woken without its lock (%lld so far)\n", (long long)frame, seen); } } }
     dm_alloc_check("after the load", frame);
     { extern volatile LONG g_font_job_in; g_font_job_in = 0; }      /* (crash phase) every capture was taken with the font job not running: so is the loaded state */
     unpark();
@@ -1424,6 +1426,7 @@ static void rgs_report(void) {
     LOG("r1: RING report: %lld captures (%lld skipped: a thread not at a wait), %lld loads, %u pool buffers made (%.1f MB), %u free; log overflows %lld\n",
         g_rg_caps, g_rg_cap_fail, g_rg_loads, g_rg_bump, g_rg_bump * (double)PG / 1048576.0, g_rg_nfree, g_rg_overflow);
     LOG("r1: RING loads right after a capture with the threads kept held: %lld (threads kept at the same wait: %lld); fibers %d (last); stale fiber-block notes refused %lld\n", g_rg_kept_n, g_rg_kept_same, g_nfib, g_r1_fls_stale);
+    LOG("r1: KEEP: sound threads kept suspended from a load to the last re-run pass %lld; kept after a second try %lld; not kept (suspended outside a system call) %lld; worker wake-ups without the event lock %lld\n", g_snd_keeps, g_keep_settled, g_keep_unsafe, g_wake_nolock);
     LOG("r1: RING capture: median %.3f mean %.3f p99 %.3f ms; parts (means): hold %.3f, sweep + undo log %.3f, page copy (parallel) %.3f, fibers + threads + command buffers + let go %.3f; pages %.0f + extras %.0f mean (%.1f MB)\n",
         rg_pct(g_rgc[0], n, 50), rg_mean(g_rgc[0], n), rg_pct(g_rgc[0], n, 99), rg_mean(g_rgc[1], n), rg_mean(g_rgc[2], n), rg_mean(g_rgc[3], n), rg_mean(g_rgc[4], n), n ? pg / n : 0, n ? xp / n : 0, n ? (pg + xp) / n * PG / 1048576.0 : 0);
     LOG("r1: RING extras (write watch %s): %zu pages in %d ranges (%d pieces, %d watched); captures %lld: %.3f ms, %.1f pages to compare each, ranges not watched %lld; loads %lld: %.3f ms, %.1f pages to copy each, ranges not watched %lld\n",
