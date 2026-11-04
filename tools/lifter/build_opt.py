@@ -54,6 +54,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CLANG = os.environ.get('RECOMP_CLANG', r'C:\llvm-9.0.0\bin\clang.exe')
 OPT = os.environ.get('RECOMP_OPT', '-O1')
 EXTRA = ['-ffp-contract=off'] + os.environ.get('RECOMP_CFLAGS', '').split()
+# (game code +30%, 2026-11-04) switches of runtime.h for the game's code (each =0: the code of before):
+#   RECOMP_LANES=0     neon.h's lane loops stay loops (default: written out per lane, RT_LANES; the lanes stay in registers
+#                      instead of stack copies the CPU cannot forward; sampled ~15 % of the lifted code's time)
+#   RECOMP_FAST_FMAF=0 fmaf is the C library's for every call (default: double arithmetic, the library only for the cases
+#                      that need it; the same results bit for bit)
+#   RECOMP_ICACHE=0    no cache per indirect call site (default -DRECOMP_ICACHE: a hit calls the function directly
+#                      instead of the exe's call_indirect and lookup; the exe turns it on, SSBU_ICACHE=0 off at run time)
+# A change of these compiles the game's objects again (stamp _defs.txt in the object folder). RECOMP_ICACHE is given to the
+# game's units only (compile_one_main / main_base_flags) and sdklift_gen.c: the script modules have no rt_ic_miss.
+RT_DEFS = (([] if os.environ.get('RECOMP_LANES', '1') not in ('', '0') else ['-DRECOMP_LANES_LOOP']) +
+           ([] if os.environ.get('RECOMP_FAST_FMAF', '1') not in ('', '0') else ['-DRECOMP_FMAF_LIBM']))
+EXTRA += RT_DEFS                                  # every unit, the script modules' too (they include the same headers)
+GAME_DEFS = RT_DEFS + (['-DRECOMP_ICACHE'] if os.environ.get('RECOMP_ICACHE', '1') not in ('', '0') else [])
 # RECOMP_INLINE=1: the helpers of runtime.h / neon.h / fpexact.h (every guest load / store, flag, NEON op) inlined into the
 # lifted code. clang 9 at -O1 runs only the always-inline inliner, so without this each helper is a real call: measured
 # 2026-10-13 (private round 15): main thread -25-30 %, audio update 9-17 -> 2-4 ms, per-frame hash identical. Same
@@ -455,8 +468,12 @@ PIPE_LLC = ['-O1', '-fp-contract=off', '-mcpu=x86-64'] + [f for f in (os.environ
 # cx16 (cmpxchg16b, on every x86-64 CPU Windows 10/11 runs on): lets stxp64 (STXP, 16-byte compare-and-swap) be inlined;
 # without it a unit holding an STXP had to drop the inlined helpers altogether
 PIPE_FE = ['-O1', '-Xclang', '-disable-llvm-passes', '-emit-llvm', '-mcx16']
-# (rollback 8 ms) RECOMP_PIPE_SCOPE=1: guest registers kept across guest stores and page marks (ctxscope.py), then these passes
-PIPE_SCOPE = os.environ.get('RECOMP_PIPE_SCOPE', '') not in ('', '0')
+# (rollback 8 ms) RECOMP_PIPE_SCOPE=1: guest registers kept across guest stores and page marks (ctxscope.py), then these passes.
+# (game code +30%, 2026-11-04) on by default (0: off) for the units compiled with the inlined helpers (the game's and
+# sdklift_gen.c; the script modules, compiled without them, as before). Measured with PMC sampling (main thread, 20 s of a
+# BF fight): game DLL cycles -6% (18.2 -> 17.1 G), instructions -10%; online pair against a DLL without it IDENTICAL.
+# The end-to-end measure of 2026-11-04 (r8g, "no gain") was within the run-to-run noise. Compile: ~+30% for those units.
+PIPE_SCOPE = os.environ.get('RECOMP_PIPE_SCOPE', '1') not in ('', '0')
 PIPE_PASSES2 = os.environ.get('RECOMP_PIPE_PASSES2', 'function(early-cse<memssa>,gvn<no-pre>,dse,instcombine<no-verify-fixpoint>,simplifycfg)')
 if PIPE_SCOPE:
     import ctxscope
@@ -472,7 +489,7 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
                  [os.path.join(LLVM19, 'opt.exe'), '-passes=' + PIPE_PASSES, bc, '-o', bc2],
                  [os.path.join(LLVM19, 'llc.exe'), '-filetype=obj'] + PIPE_LLC + [bc2, '-o', obj]]
         ll, ll2 = obj[:-4] + '.a.ll', obj[:-4] + '.b.ll'
-        if PIPE_SCOPE:       # (rollback 8 ms) ctxscope.py: textual IR, the alias information, then the passes that use it
+        if PIPE_SCOPE and inline:       # (rollback 8 ms) ctxscope.py: textual IR, the alias information, then the passes that use it
             steps[1] = [os.path.join(LLVM19, 'opt.exe'), '-S', '-passes=' + PIPE_PASSES, bc, '-o', ll]
             steps[2:2] = ['scope', [os.path.join(LLVM19, 'opt.exe'), '-passes=' + PIPE_PASSES2, ll2, '-o', bc2]]
         code, out = 0, ''
@@ -497,6 +514,53 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
         note = 'helpers not inlined (the inlined compile failed)' if inl else note
     code, out, secs, note2 = compile_file(src, obj, base_flags, time_limit, extra)
     return code, out, total + secs, 'reduced pipeline failed, clang 9 -O1' + ('; ' + note2 if note2 else '')
+
+
+# (game code +30%, 2026-11-04) RECOMP_SDK_PIPE (default 1; 0: clang 9 -O1 as before): sdklift_gen.c, the lifted SDK code
+# among the DLL's data objects, through the reduced pipeline with the helpers inlined, like the game's units. It holds
+# the guest's memcpy / memset and the mutexes, which the game calls all the time; build.compile_game_data compiled it
+# with clang 9 -O1 without RECOMP_INLINE, so every guest load / store / page mark / flag in it was a real call (sampled:
+# ~7-11 % of the game DLL's time in that file and its helper calls). The same C: the results do not change.
+SDK_PIPE = os.environ.get('RECOMP_SDK_PIPE', '1') not in ('', '0')
+_compile_game_data_c9 = build.compile_game_data
+
+
+def compile_game_data_sdk(objdir, shim):
+    src, obj = os.path.join(build.HERE, 'sdklift_gen.c'), os.path.join(objdir, 'sdklift_gen.obj')
+    stamp = os.path.join(objdir, '_sdk_pipe.txt')
+    on = SDK_PIPE and PIPE == 'llvm19' and INLINE and os.path.exists(src)
+    if not on:
+        if os.path.exists(stamp):            # switched off: the object of the pipeline is compiled again the old way
+            for p in (stamp, obj):
+                if os.path.exists(p):
+                    os.remove(p)
+        return _compile_game_data_c9(objdir, shim)
+    os.makedirs(objdir, exist_ok=True)
+    here = build.HERE
+    newest = max([os.path.getmtime(os.path.join(here, h)) for h in os.listdir(here) if h.endswith('.h')] +
+                 [os.path.getmtime(src), os.path.getmtime(os.path.abspath(build.__file__))])
+    want = 'llvm19 inline ' + (' '.join(GAME_DEFS + (['scope'] if PIPE_SCOPE else [])) or 'none')
+    try:
+        have = open(stamp).read().strip()
+    except OSError:
+        have = None
+    if not (have == want and os.path.exists(obj) and os.path.getmtime(obj) >= newest):
+        base = ['-w', '-fno-strict-aliasing', '-DSDKLIFT_GEN', '-I', here, '-I', build.GEN] + build.NOCRT_FLAGS + build.PLAT_FLAGS
+        extra = ['-ffp-contract=off'] + os.environ.get('RECOMP_DATA_CFLAGS', '').split() + GAME_DEFS
+        code, out, secs, note = compile_pipeline(src, obj, base, True, extra)
+        if code == 0 and not note:
+            with open(stamp, 'w') as f:
+                f.write(want + '\n')
+            print('  sdklift_gen.c: reduced pipeline, helpers inlined (%.0f s)' % secs, flush=True)
+        else:                                # anything but the plain pipeline: the old way
+            print('  sdklift_gen.c: the reduced pipeline failed (%s): clang 9 -O1' % (note or (out or '')[-300:]), flush=True)
+            for p in (stamp, obj):
+                if os.path.exists(p):
+                    os.remove(p)
+    return _compile_game_data_c9(objdir, shim)
+
+
+build.compile_game_data = compile_game_data_sdk
 
 
 # ---- scenario D: the -O0 unit (tu_prepare.py) -------------------------------------------------------------------
@@ -626,7 +690,7 @@ def compile_split(src, obj, base_flags, opt_compile, cold_fn, own_decls, key=Non
 def compile_one_main(name):
     src = os.path.join(build.GEN, name)
     obj = os.path.join(build.OBJ, name[:-2] + '.obj')
-    base = ['-w', '-fno-strict-aliasing', '-I', HERE, '-I', build.GEN] + build.NOCRT_FLAGS + build.PLAT_FLAGS
+    base = ['-w', '-fno-strict-aliasing', '-I', HERE, '-I', build.GEN] + build.NOCRT_FLAGS + build.PLAT_FLAGS + GAME_DEFS
     if split_on():
         key = hint_key(src, split_signature())
         opt_compile = ((lambda part, o: compile_pipeline(part, o, base, INLINE)) if PIPE == 'llvm19' else
@@ -693,7 +757,7 @@ def cold_unit(unit, grp, base, run=None):
 
 
 def main_base_flags():
-    return ['-w', '-fno-strict-aliasing', '-I', HERE, '-I', build.GEN] + build.NOCRT_FLAGS + build.PLAT_FLAGS
+    return ['-w', '-fno-strict-aliasing', '-I', HERE, '-I', build.GEN] + build.NOCRT_FLAGS + build.PLAT_FLAGS + GAME_DEFS
 
 
 def cold_begin(todo):
@@ -840,8 +904,21 @@ def cmd_main(jobs):
         shave = open(sstamp).read().strip()
     except OSError:
         shave = None
+    # (game code +30%) objects compiled with other runtime.h switches (GAME_DEFS) or RECOMP_PIPE_SCOPE are compiled again, both kinds. No stamp:
+    # objects of before the switches existed (as with every switch off), so a first build with them compiles everything once.
+    dstamp, dwant = os.path.join(build.OBJ, '_defs.txt'), ' '.join(GAME_DEFS + (['scope'] if PIPE_SCOPE and PIPE == 'llvm19' else [])) or 'none'
+    try:
+        dhave = open(dstamp).read().strip()
+    except OSError:
+        dhave = '-DRECOMP_LANES_LOOP -DRECOMP_FMAF_LIBM'
+    dredo = old and dhave != dwant
+    os.makedirs(build.OBJ, exist_ok=True)
+    with open(dstamp, 'w') as f:
+        f.write(dwant + '\n')
     redo = None
-    if old and have != want and (have is not None or want == '1'):
+    if dredo:
+        redo = 'the game objects were compiled with other runtime.h switches (%s, now %s)' % (dhave, dwant)
+    elif old and have != want and (have is not None or want == '1'):
         redo = 'the game objects were compiled %s the inlined helpers' % ('with' if have == '1' else 'without')
     elif old and shave is not None and shave != swant:
         redo = 'the game objects were split another way (coverage list or RECOMP_SPLIT_LINES changed)'

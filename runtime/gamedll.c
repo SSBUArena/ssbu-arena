@@ -6,6 +6,9 @@
  * so the tables declared in runtime.h become pointers into the DLL, filled in here before main(). */
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "runtime.h"
 #include "game_data.h"
 
@@ -60,6 +63,16 @@ __attribute__((constructor)) static void bind_game(void) {
     game_fn_table_count_p = t.table_count;
     game_dyn_syms_p = (const DynSym (*)[])t.syms;
     game_dyn_sym_count_p = t.sym_count;
+#ifdef _WIN32
+    {   /* (game code +30%) the call sites' caches of a DLL built with RECOMP_ICACHE (game_shim.c rt_ic_miss): on, unless a
+         * diagnostic must see every indirect call (hostrt.c icall_record) or SSBU_ICACHE=0. An older DLL has no rt_ic_on. */
+        HMODULE m = NULL; const char *e = getenv("SSBU_ICACHE");
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)t.table, &m) && m) {
+            volatile int *on = (volatile int *)(void *)GetProcAddress(m, "rt_ic_on");
+            if (on) *on = !(e && e[0] == '0') && !getenv("SSBU_ICALLS") && !getenv("SSBU_ICALLS_STEP") && !getenv("SSBU_EXPERIMENT_POKE");
+        }
+    }
+#endif
     GameDataHost dh = {GAME_DATA_VERSION, sdk_host_call, sdk_trap_call, sdk_dispatch, sdk_jmp_record, sdk_jmp_restore, sdk_longjmp_target};
     game_data_bind(&dh, &game_data);
     if (game_data.version != GAME_DATA_VERSION || game_data.size != (int)sizeof game_data) {
