@@ -417,7 +417,7 @@ static void os_AllocateMemoryBlock(Ctx *c) {
     if (p) wr64(c->x[0], P(p));
     c->x[0] = p ? 0 : 0x1003;
 }
-static void os_FreeMemoryBlock(Ctx *c) { VirtualFree((void *)(uintptr_t)c->x[0], 0, MEM_RELEASE); }
+static void os_FreeMemoryBlock(Ctx *c) { { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)c->x[0], 0, 2); } VirtualFree((void *)(uintptr_t)c->x[0], 0, MEM_RELEASE); }
 static void os_SetMemoryPermission(Ctx *c) {
     DWORD old, prot = (uint32_t)c->x[2] == 3 ? PAGE_READWRITE : (uint32_t)c->x[2] == 1 ? PAGE_READONLY : PAGE_NOACCESS;
     if ((uint32_t)c->x[2] != 0 && (uint32_t)c->x[2] != 1 && (uint32_t)c->x[2] != 3) guest_trap("nn::os::SetMemoryPermission: invalid permission", c->x[30] - 4);
@@ -428,7 +428,7 @@ static void os_SetMemoryPermission(Ctx *c) {
 static void os_SetMemoryAttribute(Ctx *c) { (void)c; }
 static void os_FreeAddressRegion2(Ctx *c) {      // PR #2 (review): report the release before and after, as os_FreeAddressRegion in nnsdk.c does
     uint64_t base = c->x[0];
-    cxxrt_mem_changed(base, 0); VirtualFree((void *)(uintptr_t)base, 0, MEM_RELEASE); cxxrt_mem_changed(base, 0);
+    cxxrt_mem_changed(base, 0); { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)base, 0, 2); } VirtualFree((void *)(uintptr_t)base, 0, MEM_RELEASE); cxxrt_mem_changed(base, 0);
     c->x[0] = 0;
 }
 static void os_IsVammEnabled(Ctx *c) { c->x[0] = 1; }
