@@ -531,6 +531,12 @@ namespace Arena
         void OpenFromArgs()
         {
             var args = Environment.GetCommandLineArgs();
+            int sz = Array.IndexOf(args, "--size");              // --size <width>x<height> (screenshots at a given window size)
+            if (sz > 0 && sz + 1 < args.Length)
+            {
+                var wh = args[sz + 1].Split('x');
+                if (wh.Length == 2 && double.TryParse(wh[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double sw) && double.TryParse(wh[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double sh)) { WindowState = WindowState.Normal; Width = sw; Height = sh; }
+            }
             int i = Array.IndexOf(args, "--page");
             if (i < 0 || i + 1 >= args.Length) return;
             var parts = args[i + 1].Split(':');

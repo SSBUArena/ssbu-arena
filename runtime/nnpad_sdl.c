@@ -868,11 +868,13 @@ static int pad_test(int seconds) {
 
 /* (0.2.20) --pad-live, for the launcher's controller page: what the game gets from each pad, read by the code the game uses (dead zone
  * included), one line per pad when it changes (and every 500 ms), tab separated: pad, player, name, buttons (bits as g_pro), left x, y,
- * right x, y, the left stick before the dead zone x, y (0..32767), dead zone. Ends when stdin closes (the launcher went away).
+ * right x, y, the left stick before the dead zone x, y (0..32767), dead zone; (0.2.33, after those, for the page's drawn controller) the
+ * right stick before the dead zone x, y, the analog triggers L, R (0..32767, -1 none), the kind of controller (0 Xbox, 1 PlayStation,
+ * 2 Switch, 3 GameCube, 4 other pad, 5 joystick), outer zone, trigger threshold. Ends when stdin closes (the launcher went away).
  * SSBU_PAD_LIVE_VIRTUAL=1: a virtual pad that moves by itself (test). */
 static DWORD WINAPI live_stdin(void *u) { char b[64]; (void)u; while (fgets(b, sizeof b, stdin)) { } ExitProcess(0); return 0; }
 static int pad_live(void) {
-    uint64_t last[MAXDEV]; int ls[MAXDEV][6]; ULONGLONG at = 0;
+    uint64_t last[MAXDEV]; int ls[MAXDEV][10]; ULONGLONG at = 0;
     memset(last, 0xff, sizeof last); memset(ls, 0, sizeof ls);
     if (!tool_init()) return 1;
     CloseHandle(CreateThread(NULL, 0, live_stdin, NULL, 0, NULL));
@@ -889,6 +891,10 @@ static int pad_live(void) {
             SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTX, (Sint16)(32000.0 * sin((double)tick / 90)));
             SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTY, (Sint16)(32000.0 * cos((double)tick / 90) * ((tick / 300) % 2 ? 0.05 : 1.0)));
             SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, (tick / 120) % 2 ? 32767 : -32768);
+            SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, (Sint16)(-32768 + (tick * 400) % 65535));      /* (0.2.33) a slow press, again and again */
+            SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_RIGHTX, (Sint16)(20000.0 * cos((double)tick / 70)));
+            SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_RIGHTY, (Sint16)(20000.0 * sin((double)tick / 70)));
+            SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, (tick / 75) % 3 == 0);
         }
         nnpad_poll(1);
         lock();
@@ -899,9 +905,12 @@ static int pad_live(void) {
             if (!d->used || d->ignored) continue;
             dev_state(d, &st);
             int rx = d->gp ? SDL_GetGamepadAxis(d->gp, SDL_GAMEPAD_AXIS_LEFTX) : st.lx, ry = d->gp ? -SDL_GetGamepadAxis(d->gp, SDL_GAMEPAD_AXIS_LEFTY) : st.ly;
-            int cur[6] = {st.lx, st.ly, st.rx, st.ry, rx, ry};
+            int rrx = d->gp ? SDL_GetGamepadAxis(d->gp, SDL_GAMEPAD_AXIS_RIGHTX) : st.rx, rry = d->gp ? -SDL_GetGamepadAxis(d->gp, SDL_GAMEPAD_AXIS_RIGHTY) : st.ry;
+            int tl = st.gc ? st.trig_l : d->gp ? SDL_GetGamepadAxis(d->gp, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) : -1, tr = st.gc ? st.trig_r : d->gp ? SDL_GetGamepadAxis(d->gp, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) : -1;
+            int cur[10] = {st.lx, st.ly, st.rx, st.ry, rx, ry, rrx, rry, tl, tr};
             if (all || last[i] != st.buttons || memcmp(cur, ls[i], sizeof cur)) {
-                printf("pad\t%d\t%s\t%llu\t%d\t%d\t%d\t%d\t%d\t%d\t%.3f\n", d->slot + 1, d->name, (unsigned long long)st.buttons, st.lx, st.ly, st.rx, st.ry, rx, ry, EFF(d, dz));
+                printf("pad\t%d\t%s\t%llu\t%d\t%d\t%d\t%d\t%d\t%d\t%.3f\t%d\t%d\t%d\t%d\t%d\t%.3f\t%.3f\n", d->slot + 1, d->name, (unsigned long long)st.buttons, st.lx, st.ly, st.rx, st.ry, rx, ry, EFF(d, dz),
+                       rrx, rry, tl, tr, st.gc ? 3 : dev_type(d), EFF(d, outer), EFF(d, trig));
                 last[i] = st.buttons; memcpy(ls[i], cur, sizeof cur);
             }
         }
