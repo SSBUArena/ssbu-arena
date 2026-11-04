@@ -139,7 +139,8 @@ static void rg_touch(uint32_t id) {
     g_rg_touch[id] = 1; g_rg_tl[g_rg_ntl++] = id;
 }
 /* every page marked since the last sweep, in both windows (the same block lists as mark_sweep); marks cleared */
-static void rg_sweep(void (*fn)(uint32_t id, int w, size_t j)) {
+TT_DEFV(rg_sweep, (void (*fn)(uint32_t id, int w, size_t j)), (fn), 10)
+static void rg_sweep_tt(void (*fn)(uint32_t id, int w, size_t j)) {
     if (g_full_sweep < 0) g_full_sweep = getenv("SSBU_R1_FULL_SWEEP") != NULL;
     if (!g_blk1 && !g_full_sweep && g_win1) blk1_init();
     if (g_blk1 && g_blk1_dirty) blk1_rebuild();
@@ -235,7 +236,8 @@ static int rg_cb_capture(RgSlot *s) {
     s->ncbs = n;
     return 1;
 }
-static void rg_cb_load(RgSlot *s) {
+TT_DEFV(rg_cb_load, (RgSlot *s), (s), 12)
+static void rg_cb_load_tt(RgSlot *s) {
     if (g_rg_cb_ok) {
         size_t off = 0;
         for (int i = 0; i < s->ncbs; i++) {
@@ -254,7 +256,8 @@ static void rg_cb_load(RgSlot *s) {
     nvn_r1_cb_restore();
 }
 void fontll_rb_save(int slot); void fontll_rb_load(int slot);
-static void rg_meta_capture(RgSlot *s, Ctx *c) {       /* threads still held: their places, the fibers, the command buffers */
+TT_DEFV(rg_meta_capture, (RgSlot *s, Ctx *c), (s, c), 13)
+static void rg_meta_capture_tt(RgSlot *s, Ctx *c) {       /* threads still held: their places, the fibers, the command buffers */
     fontll_rb_save((int)(s - g_rg));                      /* (crash phase) the font engines' settings (nnfontll.c) */
     s->ctx = *c;
     { long long nvn_r1_posted(void); s->posted = nvn_r1_posted(); }
@@ -433,7 +436,8 @@ static void rg_sp_check(uint64_t sp, const char *who) {      /* an SP inside a w
     for (int k = 0; k < g_sw_n; k++) if (sp >= g_sw_lo[k] && sp <= g_sw_hi[k]) return;
     if (g_sw_badsp++ < 20) LOG("r1: RING stack write watch: %s has its SP %llx inside a window but in no registered stack: its stores are NOT tracked\n", who, (unsigned long long)sp);
 }
-static void rg_stack_ww(Ctx *main_c) {
+TT_DEFV(rg_stack_ww, (Ctx *main_c), (main_c), 9)
+static void rg_stack_ww_tt(Ctx *main_c) {
     double t = now_ms();
     os_r1_stacks(rg_stack_cb); g_sw_calls++;
     if ((g_sw_calls & 63) == 1) {                       /* every 64th call: every held thread's and main's SP checked */
@@ -447,7 +451,8 @@ static void rg_stack_ww(Ctx *main_c) {
  * after they are let go: a fiber no guest fiber object (g_fib, just saved), no ring slot (its fibers' host fibers and objects), no
  * held thread (TEB FiberData) and not main uses, made more than 4 rings ago, can never be switched to again. */
 static void *g_fr_pick[256]; static int g_fr_npick; static volatile LONG g_lb_active;      /* (below) */
-static void fib_reap_pick(void) {
+TT_DEFV(fib_reap_pick, (void), (), 14)
+static void fib_reap_pick_tt(void) {
     static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_FIBREAP"); on = !(e && e[0] == '0'); }
     g_rg_caps_seen = g_rg_caps;
     if (g_fr_npick) return;                               /* picked before, not deleted yet (threads kept for a load): nothing can use them still */
@@ -469,7 +474,7 @@ static void fib_reap_pick(void) {
 static void fib_reap_delete(void) {                      /* threads running again */
     for (int i = 0; i < g_fr_npick; i++) {
         void *f = g_fr_pick[i]; uint64_t lo = *(uint64_t *)((uint8_t *)f + 0x20), hi = *(uint64_t *)((uint8_t *)f + 0x10);
-        DeleteFiber(f); hs_unexclude(lo, hi); g_fr_deleted++;
+        { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)lo, (size_t)(hi - lo), 2); } DeleteFiber(f); hs_unexclude(lo, hi); g_fr_deleted++;
     }
     g_fr_npick = 0;
 }
@@ -567,7 +572,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
         LOG("r1: RING: capture at frame %lld ran out of room (pool %u buffers): older states dropped\n", frame, g_rg_bump);
         while (g_rg_count > 1) { rg_slot_drop(rg_slot(0), 1); g_rg_head = (g_rg_head + 1) % g_rg_cap; g_rg_count--; }
     }
-    g_rg_last[0] = t5 - t0; g_rgp_seg = seg_was;
+    g_tt[0] += t5 - t0; g_ttn[0]++; g_rg_last[0] = t5 - t0; g_rgp_seg = seg_was;
     if (g_rgc_n < RG_NST) { int i = g_rgc_n++; g_rgc[0][i] = t5 - t0; g_rgc[1][i] = t1 - t0; g_rgc[2][i] = t2 - t1; g_rgc[3][i] = t3 - t2; g_rgc[4][i] = (t4 - t3) + (t5 - t4); g_rgc_pg[i] = s->pages; g_rgc_xp[i] = s->xpages; }
     return 1;
 }
@@ -945,7 +950,8 @@ static int rgc_dead(uint64_t jb) {                     /* jb on a host fiber sta
     for (int k = 0; k < g_nlive; k++) if (g_live_rsp[k] >= lo && g_live_rsp[k] < hi) return 0;     /* (live_rsps of fibers_restore_all: a thread is on it) */
     return 1;
 }
-static void rgc_after(void) {                           /* after the copies and fibers_restore_all (g_rest_lo / g_rest_hi: the stacks copied back) */
+TT_DEFV(rgc_after, (void), (), 15)
+static void rgc_after_tt(void) {                           /* after the copies and fibers_restore_all (g_rest_lo / g_rest_hi: the stacks copied back) */
     if (!g_rgc_fix || !g_catch_addr) return;
     RgCatch *t = (RgCatch *)(uintptr_t)g_catch_addr; long long dropped = 0, kept = 0;
     static int deadfix = -1; if (deadfix < 0) { const char *e = getenv("SSBU_R1_CATCHDEAD"); deadfix = !(e && e[0] == '0'); }
@@ -1077,14 +1083,14 @@ int r1_ring_load(long long frame, Ctx *c) {
         g_rg_rewake += os_r1_wake_waits_from(GA(0x710354a5acull));
         {   extern long long g_wake_nolock; static long long seen; static int said;      /* (crash phase) a wake-up done without the event's lock */
             if (g_wake_nolock != seen) { seen = g_wake_nolock; if (said++ < 10) LOG("r1: RING: load at frame %lld: a worker's event was locked by a suspended thread: woken without its lock (%lld so far)\n", (long long)frame, seen); } } }
-    dm_alloc_check("after the load", frame);
+    { double _t = now_ms(); dm_alloc_check("after the load", frame); g_tt[16] += now_ms() - _t; g_ttn[16]++; }
     { extern volatile LONG g_font_job_in; g_font_job_in = 0; }      /* (crash phase) every capture was taken with the font job not running: so is the loaded state */
     unpark();
     g_mp[4] += t2a - t2; g_mp[5] += t2b - t2a; g_mp[6] += t2c - t2b; g_mp[7] += t3 - t2c; g_mp[8] += now_ms() - t3; g_mp_n[1]++;
     *c = g->ctx;
     g_rg_loads++;
     if (g_th_mismatch || g_fib_diff) LOG("r1: RING load of frame %lld (k %d): %d threads not at their wait, %d fibers not restored\n", frame, k, g_th_mismatch, g_fib_diff);
-    g_rg_last[1] = now_ms() - t0; g_rgp_seg = 1;
+    g_tt[1] += now_ms() - t0; g_ttn[1]++; g_rg_last[1] = now_ms() - t0; g_rgp_seg = 1;
     if (k < RG_MAXSLOT && g_rgl_n[k] < RG_NL) { int i = g_rgl_n[k]++; g_rgl[k][i][0] = now_ms() - t0; g_rgl[k][i][1] = t1 - t0; g_rgl[k][i][2] = t2 - t1; g_rgl_pg[k][i] = pages; (void)t3; }
     return 1;
 }
@@ -1441,6 +1447,7 @@ static void rgs_pad(uint64_t *b, int *lx, int *ly, int *rx, int *ry) {
 }
 static int cmp_d(const void *a, const void *b);
 static double rg_pct(const double *v, int n, int p) {
+    if (g_rep_win > 0 && n > g_rep_win) { v += n - g_rep_win; n = g_rep_win; }      /* (stability phase) periodic report: the newest samples */
     if (n <= 0) return 0;
     double *w = malloc((size_t)n * sizeof *w); memcpy(w, v, (size_t)n * sizeof *w); qsort(w, (size_t)n, sizeof *w, cmp_d);
     double r = w[(size_t)n * p / 100 < (size_t)n ? (size_t)n * p / 100 : (size_t)n - 1]; free(w); return r;

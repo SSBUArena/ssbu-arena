@@ -45,6 +45,7 @@ void r1_on_decommit(void *p, size_t n) { (void)p; (void)n; }
 void r1_dc_begin(void) {}
 void r1_dc_end(void) {}
 void r1_on_commit(void *p, size_t n) { (void)p; (void)n; }
+void r1_mem_note(void *p, size_t n, int kind) { (void)p; (void)n; (void)kind; }
 void r1_wrote(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void r1_module_loaded(void *h, int fighter) { (void)h; (void)fighter; }
 void r1_nosim(uint64_t a, uint64_t n) { (void)a; (void)n; }
@@ -74,6 +75,13 @@ static uint8_t *g_heap_base[8]; static int g_nheap;
 static Ctx g_ctx_save;
 static double g_qpf;
 static double now_ms(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart * 1000.0 / g_qpf; }
+/* (stability phase 2026-11-04) per-tick time of our parts (rb_rollback.c logs a slow tick with them) */
+double g_tt[20]; long long g_ttn[20];
+static double tt_up_s(void) { FILETIME c, e, k, u, n; GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u); GetSystemTimeAsFileTime(&n); return (double)((((ULONGLONG)n.dwHighDateTime << 32) | n.dwLowDateTime) - (((ULONGLONG)c.dwHighDateTime << 32) | c.dwLowDateTime)) / 1e7; }
+static const char *const g_tt_name[20] = {"capture", "load", "hold quiet", "hold restore", "workers hold H1", "unpark", "live rsps", "fibers restore", "fibers save", "stack ww", "sweep", "copy (cp_run)", "cb load", "meta capture", "fiber reap", "rgc after", "alloc check", "lua gc idle", "lua gc step max", "lua gc in pass"};
+#define TT_DEF(ret, name, params, args, k) static ret name##_tt params; static ret name params { double _t = now_ms(); ret _r = name##_tt args; g_tt[k] += now_ms() - _t; g_ttn[k]++; return _r; }
+#define TT_DEFV(name, params, args, k) static void name##_tt params; static void name params { double _t = now_ms(); name##_tt args; g_tt[k] += now_ms() - _t; g_ttn[k]++; }
+
 static FILE *g_log;
 static char g_born[2048]; static int g_nborn;
 static uint64_t g_catch_addr;
@@ -419,7 +427,8 @@ static int snd_kept_at(HANDLE h) { for (int k = 0; k < g_nsnd_kept; k++) if (g_s
  * SSBU_RB_KEEPCHECK=0: off; =2: no second try (resumed at once); =3: checked at every load. */
 static int th_blocked(HANDLE h); static uint64_t g_tb_rsp, g_tb_rip;      /* (defined below) */
 long long g_keep_unsafe, g_keep_settled; extern volatile LONG g_obj_in;      /* os_threads.c: threads inside obj()'s locked part */                /* (crash phase) sound threads not kept / kept after a second try */
-static void unpark(void) {
+TT_DEFV(unpark, (void), (), 5)
+static void unpark_tt(void) {
     static int kc = -1; if (kc < 0) { const char *e = getenv("SSBU_RB_KEEPCHECK"); kc = e && *e ? atoi(e) : 1; }
     for (int i = 0; i < g_nth; i++) if (g_th[i].held) {
         g_th[i].held = 0;
@@ -530,7 +539,8 @@ static uint64_t g_live_rsp[512], g_live_rip[512], g_live_fib[512]; static const 
 static uint8_t *live_teb_addr(HANDLE h);
 int guest_thread_info(int i, Ctx **c, const char **name, HANDLE *h);
 static int g_live_cache = -1; static long long g_live_cached, g_live_asked;
-static void live_rsps(void) {
+TT_DEFV(live_rsps, (void), (), 6)
+static void live_rsps_tt(void) {
     if (g_live_cache < 0) { const char *e = getenv("SSBU_R1_LIVECACHE"); g_live_cache = !(e && e[0] == '0'); }      /* (hs16) =0: every thread asked again (the old way) */
     g_nlive = 0;
     { volatile uint64_t here = (uint64_t)(uintptr_t)&here; g_live_rsp[g_nlive] = here; g_live_rip[g_nlive] = 0; g_live_nm[g_nlive] = "this thread"; g_live_h[g_nlive] = NULL; g_live_fib[g_nlive] = (uint64_t)(uintptr_t)GetCurrentFiber(); g_nlive++; }
@@ -610,7 +620,8 @@ static int rest_stack(uint64_t a) { for (int i = 0; i < g_nrest; i++) if (a >= g
 void nnunwind_trace_note(const char *what, uint64_t cfa, uint64_t jb);      /* (hs15) nnunwind.c, SSBU_UNWIND_TRACE */
 static int g_r1_ctr = -1;
 #define R1_CTR(w, a, b) do { if (g_r1_ctr < 0) g_r1_ctr = getenv("SSBU_UNWIND_TRACE") != NULL; if (g_r1_ctr) nnunwind_trace_note(w, (uint64_t)(a), (uint64_t)(b)); } while (0)
-static void fibers_restore_all(void) {
+TT_DEFV(fibers_restore_all, (void), (), 7)
+static void fibers_restore_all_tt(void) {
     g_nrest = 0;
     g_ncur = 0; g_fib_mode = 1; os_r1_fibers(fib_cb);
     g_fib_same = g_fib_diff = g_fib_new = 0;
@@ -705,7 +716,8 @@ static void park_quiet(int restore_mode) {
         unpark(); SwitchToThread();
     }
 }
-static void fibers_save(void) { if (g_fib_live_on < 0) { const char *e = getenv("SSBU_R1_LIVESTK"); g_fib_live_on = !(e && e[0] == '0'); } if (g_fib_live_on) live_rsps(); g_nfib = 0; g_fib_mode = 0; g_ncur = 0; g_fpool_used = 0; g_fib_bytes = 0; g_fib_bad = 0; g_fib_running = 0; os_r1_fibers(fib_cb); }
+TT_DEFV(fibers_save, (void), (), 8)
+static void fibers_save_tt(void) { if (g_fib_live_on < 0) { const char *e = getenv("SSBU_R1_LIVESTK"); g_fib_live_on = !(e && e[0] == '0'); } if (g_fib_live_on) live_rsps(); g_nfib = 0; g_fib_mode = 0; g_ncur = 0; g_fpool_used = 0; g_fib_bytes = 0; g_fib_bad = 0; g_fib_running = 0; os_r1_fibers(fib_cb); }
 static void fibers_restore(void) {
     fibers_restore_all();
     int born = 0; for (int j = 0; j < g_ncur; j++) { int i; for (i = 0; i < g_nfib; i++) if (g_fib[i].key == g_cur[j].key) break; if (i == g_nfib) born++; }
@@ -1364,7 +1376,8 @@ static void cp_init(void) {
       if (g_ncp_big < 0) g_ncp_big = 0; if (!b && g_ncp_big < g_ncp) g_ncp_big = g_ncp; }
     for (int k = 0; k < (g_ncp_big > g_ncp ? g_ncp_big : g_ncp); k++) { g_cp_go[k] = CreateEventA(NULL, FALSE, FALSE, NULL); g_cp_done[k] = CreateEventA(NULL, FALSE, FALSE, NULL); HANDLE t = CreateThread(NULL, 0, cp_thread, (void *)(intptr_t)k, 0, NULL); SetThreadPriority(t, THREAD_PRIORITY_HIGHEST); g_cp_h[k] = t; }
 }
-static void cp_run(void) {                            /* every queued page, then the queue is empty */
+TT_DEFV(cp_run, (void), (), 11)
+static void cp_run_tt(void) {                            /* every queued page, then the queue is empty */
     if (g_cp_chain_on < 0) { const char *e = getenv("SSBU_RB_CPCHAIN"); g_cp_chain_on = !(e && e[0] == '0'); }
     if (g_ncp > 0 && g_ncj >= 64 && g_cp_chain_on && g_ncp <= 3) {      /* (rollback 8 ms) one kernel wake here, the helpers wake each other; main waits by spinning (they end within ~100 us of it) */
         g_cp_chain = 1; g_cp_left = g_ncp; SetEvent(g_cp_go[0]); cp_part(0);
@@ -1594,6 +1607,7 @@ static LONG CALLBACK r1_veh(EXCEPTION_POINTERS *e) {
           (unsigned long long)((uint64_t *)(uintptr_t)g_veh_rsp)[0], (unsigned long long)((uint64_t *)(uintptr_t)g_veh_rsp)[1], (unsigned long long)((uint64_t *)(uintptr_t)g_veh_rsp)[2], (unsigned long long)((uint64_t *)(uintptr_t)g_veh_rsp)[3]); }
     { MEMORY_BASIC_INFORMATION mi; memset(&mi, 0, sizeof mi); VirtualQuery((void *)(uintptr_t)e->ExceptionRecord->ExceptionInformation[1], &mi, sizeof mi);
       LOG("r1: CRASH address: region %p size %llx state %lx protect %lx allocation base %p; window 1 %p + %llx\n", mi.BaseAddress, (unsigned long long)mi.RegionSize, (unsigned long)mi.State, (unsigned long)mi.Protect, mi.AllocationBase, (void *)g_win1, (unsigned long long)g_wn1); }
+    { void dch_print_fwd(uint64_t a); dch_print_fwd((uint64_t)e->ExceptionRecord->ExceptionInformation[1]); }
     os_r1_fibers(veh_fib_cb);
     if (!g_veh_hits) LOG("r1: CRASH rsp is on no fiber's host stack\n");
     return EXCEPTION_CONTINUE_SEARCH;
@@ -1762,7 +1776,8 @@ static int ra_hold_save(void) {
 }
 static void ra_release_save(void) { for (int i = 0; i < g_nth; i++) if (g_th[i].held && !ra_audio(g_th[i].name)) { ResumeThread(g_th[i].h); g_th[i].held = 0; } }
 /* restore: each thread at the SAME wait as at the save (the audio threads were never let go) */
-static void ra_hold_restore(void) {
+TT_DEFV(ra_hold_restore, (void), (), 3)
+static void ra_hold_restore_tt(void) {
     g_th_mismatch = 0; g_th_running = 0;
     for (int i = 0; i < g_nth; i++) {
         Th *t = &g_th[i];
@@ -1815,7 +1830,8 @@ static long long g_ra_fiber_waits, g_ra_fiber_skips; static double g_ra_fiber_wa
  * frames after it run again, crashed it (f_710007f870 walking a freed request node, ~1 Battlefield loop run in 5 at a KO; every crash run showed the
  * job in progress at a load, no clean run did). A hold now also waits for that job to end (rb_rollback.c counts it). SSBU_RB_FONTWAIT=0: off. */
 volatile LONG g_font_job_in; static int g_fontwait = -1; static long long g_fontwait_n, g_fontwait_reset;
-static int ra_hold_quiet(double limit) {
+TT_DEF(int, ra_hold_quiet, (double limit), (limit), 2)
+static int ra_hold_quiet_tt(double limit) {
     double t0 = now_ms(); int tries = 0;
     for (;;) {
         if (ra_hold_save()) {
@@ -1984,7 +2000,8 @@ static DWORD WINAPI ra_watchdog(void *p) {
     return 0;
 }
 static long long g_fontwait_h1; static double g_fontwait_h1_ms;
-static void ra_workers_hold(void) {
+TT_DEFV(ra_workers_hold, (void), (), 4)
+static void ra_workers_hold_tt(void) {
     /* (crash phase, 2026-11-02) H1 holds the workers until H2. The HUD's font job, kicked earlier in the pass, waits for jobs of its own: held there, it was
      * still half done at the capture of H2, and a load of such a capture then crashed it later (f_710007f870, at a KO; 0 crashes with the Lua collector at
      * its place, whose ~1 ms gave the job time to end before H1). Now H1 first lets that job end (it ends in well under 2 ms; counted by the hook on
@@ -2035,19 +2052,22 @@ static void ra_line(Ctx *c, void *user) {           /* the fighters' frame line:
     if (g_ra_phase == 1 && (g_ra_skip & 8)) { g_ra_skipped_lines++; return; }      /* SSBU_RUNAHEAD_SKIP bit 8: a speculative pass's fighters do not run their frame (its result is thrown away) */
     g_orig_line(c);
 }
+static int g_rep_win;                                  /* (stability phase) >0 while the periodic report runs: only the newest samples */
 static void ra_report(void); static int rbg_noring_now(void);
 static int g_rgs_left;                                  /* (r1_ring.c) */
 static void ra_frame_end(double te) {
     double fe = now_ms();
     if (g_ra_ready && g_t_poll > g_ra_t_mark && te > g_t_poll) { int k = g_ra_phase; if (k == 2 && g_rgs_left > 1) k = 1;      /* (online rollback: 1 = a re-run pass but the last) */ g_rap[k][0] += g_t_poll - g_ra_t_mark; g_rap[k][1] += te - g_t_poll; g_rap[k][2] += fe - te; g_ra_fe_end = fe; g_ra_fe_kind = k + 1; }
     g_ra_fe++;
-    { static long long n; if (++n % 1200 == 0 && (g_ra_ready || rbg_noring_now())) ra_report(); }      /* (hs14: a match without the ring too) */
+    { static long long n; if (++n % 1200 == 0 && (g_ra_ready || rbg_noring_now())) {
+        static int w = -1; if (w < 0) { const char *e = getenv("SSBU_RB_REPWIN"); w = e ? atoi(e) : 2400; }
+        g_rep_win = w; ra_report(); g_rep_win = 0; } }      /* (stability phase) the periodic report: constant cost (see pct) */      /* (hs14: a match without the ring too) */
     if (InterlockedExchange(&g_ra_lines, 0) > 0) {      /* this iteration ran a fight frame: real or speculative (for tests\r1_ra_cmp.py) */
         if (g_ra_nkind >= g_ra_kcap) { g_ra_kcap = g_ra_kcap ? g_ra_kcap * 2 : 65536; g_ra_kind = realloc(g_ra_kind, (size_t)g_ra_kcap); }
         g_ra_kind[g_ra_nkind++] = g_ra_phase == 1 || (g_ra_phase == 2 && rgs_wanted()) ? 'S' : 'R';      /* (R2 simulation: a re-run pass = 'S') */
     }
 }
-static double pct(double *v, int n, int p) { if (!n) return 0; qsort(v, (size_t)n, sizeof *v, cmp_d); return v[(size_t)n * p / 100 < (size_t)n ? (size_t)n * p / 100 : (size_t)n - 1]; }
+static double pct(double *v, int n, int p) { static double wbuf[65536]; if (g_rep_win > 0 && n > g_rep_win) { int m = g_rep_win < 65536 ? g_rep_win : 65536; memcpy(wbuf, v + n - m, (size_t)m * sizeof *v); v = wbuf; n = m; } if (!n) return 0; qsort(v, (size_t)n, sizeof *v, cmp_d); return v[(size_t)n * p / 100 < (size_t)n ? (size_t)n * p / 100 : (size_t)n - 1]; }
 static void ra_report(void) {
     if (g_ra <= 0) return;
     double ps = 0, pr = 0; for (int i = 0; i < g_ra_ns; i++) ps += (double)g_ra_sp[i]; for (int i = 0; i < g_ra_nr; i++) pr += (double)g_ra_rp[i];
@@ -2309,8 +2329,32 @@ void r1_dc_begin(void) {
 }
 void r1_dc_end(void) { if (g_dc_lock_on > 0) ReleaseSRWLockShared(&g_dc_lock); }
 static void dc_copy_lock(int on) { if (g_dc_lock_on < 0) { const char *e = getenv("SSBU_RB_DCLOCK"); g_dc_lock_on = !(e && e[0] == '0'); } if (g_dc_lock_on) { if (on) AcquireSRWLockExclusive(&g_dc_lock); else ReleaseSRWLockExclusive(&g_dc_lock); } }
-void r1_on_decommit(void *p, size_t n) { lb_open((uint64_t)(uintptr_t)p, n); r1_mark_range((uint64_t)(uintptr_t)p, n); ls_range((uint64_t)(uintptr_t)p, n, 1); dc_set(p, n, 1); }
+static struct { uint64_t a, n; long long f; DWORD tid; ULONGLONG ms; char dc; } g_dch[1024]; static volatile LONG g_dch_n, g_dch_rn;
+static void dch_note(void *p, size_t n, int dc) {       /* (stability phase) history: the game's commits / decommits in 0..511, releases in 512..1023 */
+    long long rbn_now(void); int i = dc == 2 ? 512 + ((InterlockedIncrement(&g_dch_rn) - 1) & 511) : (InterlockedIncrement(&g_dch_n) - 1) & 511;
+    g_dch[i].a = (uint64_t)(uintptr_t)p; g_dch[i].n = n; g_dch[i].f = rbn_now(); g_dch[i].tid = GetCurrentThreadId(); g_dch[i].ms = GetTickCount64(); g_dch[i].dc = (char)dc;
+}
+static void dch_print(uint64_t addr) {
+    int tot = g_dch_n < 512 ? (int)g_dch_n : 512, totr = g_dch_rn < 512 ? (int)g_dch_rn : 512, shown = 0; ULONGLONG now = GetTickCount64();
+    for (int j = 0; j < tot + totr && shown < 12; j++) { int i = j < tot ? (int)((g_dch_n - 1 - j) & 511) : 512 + (int)((g_dch_rn - 1 - (j - tot)) & 511);
+        if (addr >= g_dch[i].a && addr < g_dch[i].a + g_dch[i].n) { shown++; const char *guest_thread_name_of(DWORD tid); const char *nm = guest_thread_name_of(g_dch[i].tid);
+            LOG("r1: CRASH address history: %s %llx + %llx at net frame %lld by %s, %.1f s ago\n", g_dch[i].dc == 2 ? "RELEASED" : g_dch[i].dc ? "DECOMMITTED" : "committed", (unsigned long long)g_dch[i].a, (unsigned long long)g_dch[i].n,
+                g_dch[i].f, nm ? nm : "a host thread", (now - g_dch[i].ms) / 1000.0); } }
+    if (!shown) LOG("r1: CRASH address history: none of the last %d game commits / decommits covers it\n", tot);
+}
+void r1_on_decommit(void *p, size_t n) { dch_note(p, n, 1); lb_open((uint64_t)(uintptr_t)p, n); r1_mark_range((uint64_t)(uintptr_t)p, n); ls_range((uint64_t)(uintptr_t)p, n, 1); dc_set(p, n, 1); }
+void dch_print_fwd(uint64_t a) {
+    dch_print(a);
+    for (int i = 0; i < g_nr; i++) if (a >= (uint64_t)(uintptr_t)g_r[i].a && a < (uint64_t)(uintptr_t)g_r[i].a + g_r[i].n)
+        LOG("r1: CRASH address is in extra %d of the state (%p + %zx): copied whole at each capture\n", i, (void *)g_r[i].a, g_r[i].n);
+}
+void r1_mem_note(void *p, size_t n, int kind) {          /* kind 2: released (MEM_RELEASE); n 0 = the whole allocation (its first region's size) */
+    if (!p) return;
+    if (!n) { MEMORY_BASIC_INFORMATION m; if (VirtualQuery(p, &m, sizeof m)) n = m.RegionSize; }
+    dch_note(p, n, kind);
+}
 void r1_on_commit(void *p, size_t n) {
+    dch_note(p, n, 0);
     lb_open((uint64_t)(uintptr_t)p, n);                  /* (0.2.11) the lazy base: pages taken before they change (rb lazy base, r1_ring.c) */
     dc_set(p, n, 0);
     ls_range((uint64_t)(uintptr_t)p, n, 2);              /* R4: new pages of a fight read-only (their first write faults) */

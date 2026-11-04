@@ -178,7 +178,7 @@ static void rbg_gc_hook(Ctx *c, void *user) {
         if (g_ra_phase == 2) { if (rb_feat(128, g_rbg_gc_r)) { g_rbg_gc_rerun++; if (g_rbg_gc_r == 2) g_rbg_gc_orig(c); c->x[20] = 0; return; } }      /* (crash phase) =2: one collector step per re-run pass, then the loop ends */
         else if (g_rbg_pace > 0 && rb_feat(256, g_rbg_gc_i)) { g_rbg_gc_L = c->x[0]; g_rbg_gc_real++; c->x[20] = 0; return; }
     }
-    g_rbg_gc_orig(c);
+    { double _t = now_ms(); g_rbg_gc_orig(c); g_tt[19] += now_ms() - _t; g_ttn[19]++; }
 }
 /* (crash phase, 2026-11-02) WHERE the idle collector runs. At H2 (0bde20e) it ran right after the submission, with the jobs kicked at H1 / H2 not run yet (the
  * workers are held from H1 to H2, let go after it): it could free a text object whose glyph request the HUD's font job (TaskWorker, f_7103761230 ->
@@ -244,10 +244,10 @@ static void rbg_gc_idle(Ctx *c, long long i) {
         r1_wrote(g + 16, 16); *(uint64_t *)(uintptr_t)(g + 16) = tot - (uint64_t)debt; *(int64_t *)(uintptr_t)(g + 24) = debt;
         r1_wrote(g + 87, 1); *(volatile uint8_t *)(uintptr_t)(g + 87) = 1;
         t.x[0] = L; t.x[31] = sp; t.x[30] = GA(0x7103747b10ull);
-        g_rbg_gc_orig(&t); g_rbg_gc_steps++;
+        { double _t = now_ms(); g_rbg_gc_orig(&t); double _d = now_ms() - _t; if (_d > g_tt[18]) g_tt[18] = _d; g_ttn[18]++; } g_rbg_gc_steps++;
         *(volatile uint8_t *)(uintptr_t)(g + 87) = was;
     } while (rd8(g + 85) != 8 && now_ms() - t0 < ms);
-    g_rbg_gc_ms += now_ms() - t0;
+    g_rbg_gc_ms += now_ms() - t0; g_tt[17] += now_ms() - t0; g_ttn[17]++;
     if (g_rbg_gc_late > 0) ms = -1;                     /* (the limit is read again: it was cut to the time left) */
 }
 static void rbg_gc_late_run(Ctx *c, long long i) {      /* at the end of the pacing wait */
@@ -486,6 +486,19 @@ static void rbg_step_body(Ctx *c) {
         if (g_rbg_late && g_rbg_nlate < RBG_NT) g_rbg_late[g_rbg_nlate++] = tw - g_rbg_sched; }
     g_rbg_wrb_pend = 0;
     if (!gorb && g_rbg_tick0 > 0 && g_rbg_nw < RBG_NT) { g_rbg_work[g_rbg_nw] = (float)(tw - g_rbg_tick0); g_rbg_wcyc[g_rbg_nw] = (float)((rgs_cyc_now() - g_rbg_cyc_go) / 1e6); g_rbg_wk[g_rbg_nw] = (unsigned char)(g_rbg_tick_k > 255 ? 255 : g_rbg_tick_k); if (g_rbg_wab) g_rbg_wab[g_rbg_nw] = (unsigned char)g_rbab_side; g_rbg_nw++; }
+    if (!gorb && g_rbg_tick0 > 0) {      /* (stability phase) a slow tick: its parts; and the max per window of 1200 real frames */
+        static int thr = -1; if (thr < 0) { const char *e = getenv("SSBU_RB_SLOWTICK"); thr = e ? atoi(e) : 25; }
+        static double wmax; static long long wmax_f, slow_n, slow_match = -1; double wk = tw - g_rbg_tick0;
+        if (wk > wmax) { wmax = wk; wmax_f = i; }
+        if (g_rbg_real % 1200 == 0) { if (thr > 0) LOG("r1: SLOWTICK window to frame %lld: max %.2f ms at frame %lld (process up %.0f s)\n", i, wmax, wmax_f, tt_up_s()); wmax = 0; }
+        if (slow_match != rbn_match_number()) { slow_match = rbn_match_number(); slow_n = 0; }
+        if (thr > 0 && wk > thr && slow_n++ < 200) {
+            char b[1400]; int at = snprintf(b, sizeof b, "r1: SLOWTICK frame %lld: %.2f ms (k %d, process up %.0f s):", i, wk, g_rbg_tick_k, tt_up_s());
+            double ours = 0; for (int k = 0; k < (int)(sizeof g_tt / sizeof g_tt[0]); k++) if (g_ttn[k]) { at += snprintf(b + at, sizeof b - at > 0 ? sizeof b - at : 0, " %s %.2f(%lld)", g_tt_name[k], g_tt[k], g_ttn[k]); }
+            LOG("%s\n", b);
+        }
+    }
+    memset(g_tt, 0, sizeof g_tt); memset(g_ttn, 0, sizeof g_ttn);
     if (!gorb) g_rbg_tick0 = 0;
     int stalled = 0; double ts = 0;
     for (;;) {
@@ -701,6 +714,7 @@ static void rbg_fight_off(void) {
 }
 static int cmp_f(const void *a, const void *b) { float x = *(const float *)a, y = *(const float *)b; return x < y ? -1 : x > y; }
 static void rbg_dist(const char *what, const float *v, int n, const unsigned char *kk, int want) {
+    if (g_rep_win > 0 && n > g_rep_win) { v += n - g_rep_win; if (kk) kk += n - g_rep_win; n = g_rep_win; }      /* (stability phase) periodic report: the newest samples */
     float *w = malloc((size_t)(n ? n : 1) * sizeof *w); int m = 0; double s = 0, over = 0;
     for (int j = 0; j < n; j++) if (!kk || want < 0 || (want == 0 ? kk[j] == 0 : kk[j] > 0)) { w[m++] = v[j]; s += v[j]; over += v[j] > 1000.0 / 60.0; }
     if (m) { qsort(w, (size_t)m, sizeof *w, cmp_f);

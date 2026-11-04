@@ -30,6 +30,7 @@ typedef struct Obj {
     uint64_t key;
     struct Obj *next;
     char fc_in;                              /* (rollback 8 ms) in the list of objects with a host fiber (os_r1_fibers) */
+    char fin;                                /* (stability phase) a guest fiber finalized with the ring on: left out of os_r1_fibers */
     CRITICAL_SECTION cs;
     CONDITION_VARIABLE cv;
     int signaled, autoclear;                 /* events */
@@ -409,7 +410,7 @@ void os_r1_fibers(void (*cb)(uint64_t key, Ctx *c, uint64_t stack, uint64_t stac
                 if (o->fiber) { if (g_fib_cn >= g_fib_ccap) { g_fib_ccap = g_fib_ccap ? g_fib_ccap * 2 : 256; g_fib_c = realloc(g_fib_c, (size_t)g_fib_ccap * sizeof *g_fib_c); } g_fib_c[g_fib_cn++] = o; }
         g_fib_cgen = gen;
     }
-    for (int i = 0; i < g_fib_cn; i++) { Obj *o = g_fib_c[i]; if (o->fiber) cb(o->key, o->fctx, o->stack, o->stack_size, o->fiber); }
+    for (int i = 0; i < g_fib_cn; i++) { Obj *o = g_fib_c[i]; if (o->fiber && !o->fin) cb(o->key, o->fctx, o->stack, o->stack_size, o->fiber); }
 }
 void os_thread_report(FILE *out) {
     if (!g_oslog_n) return;
@@ -815,6 +816,7 @@ static void CALLBACK fiber_main(void *arg) {
     Obj *o = arg;
     Ctx *c = new_ctx(o->stack + o->stack_size);
     o->fctx = c;
+    { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)c->tpidr, 0x10000, 2); }      /* (stability phase) noted for a crash */
     VirtualFree((void *)(uintptr_t)c->tpidr, 0, MEM_RELEASE);   /* a fiber has no thread block of its own: it uses the one of the thread running it */
     for (;;) {
         c->tpidr = o->tp;
@@ -831,7 +833,7 @@ static void CALLBACK fiber_main(void *arg) {
 }
 static void fib_init(Ctx *c) {                        /* (FiberType*, fn, arg, stack, stackSize, flags) */
     Obj *o = obj(A0);
-    o->fn = A1; o->arg = A2; o->stack = A3; o->stack_size = A4; r1_stack_note(A3, A4);
+    o->fn = A1; o->arg = A2; o->stack = A3; o->stack_size = A4; r1_stack_note(A3, A4); o->fin = 0;
     g_fib_made[0]++; if (o->fiber) g_fib_made[1]++;      /* (memory phase, diagnosis) made / replacing one that was there */
     {   static long long ff = -1; if (ff < 0) { const char *e = getenv("SSBU_TEST_FIBFAIL"); ff = e ? atoll(e) : 0; }      /* (TEST ONLY) every Nth one fails, as when commit runs out */
         if (ff > 0 && g_fib_made[0] % ff == 0) { o->fiber = NULL; fib_note(o); RET(0); return; } }
@@ -879,7 +881,7 @@ long long g_r1_fls_stale;                              /* (R2) notes of a block 
 void *os_r1_fiber_fls(uint64_t key) { Obj *o = obj_peek(key); if (!o) return NULL; if (o->fls && o->fls_fiber != o->fiber) { g_r1_fls_stale++; return NULL; } return o->fls; }
 void os_r1_fiber_put_fls(uint64_t key, void *fiber, void *fls) { Obj *o = obj_peek(key); if (o) { o->fls = fls; o->fls_fiber = fls ? fiber : NULL; } }      /* (R2) ring load: the note goes back with the host fiber */
 void os_r1_fiber_get(uint64_t key, uint64_t v[6]) { Obj *o = obj_peek(key); if (!o) return; v[0] = (uint64_t)(uintptr_t)o->fiber; v[1] = (uint64_t)(uintptr_t)o->fctx; v[2] = o->fn; v[3] = o->arg; v[4] = o->stack; v[5] = o->stack_size; }
-void os_r1_fiber_put(uint64_t key, const uint64_t v[6]) { Obj *o = obj_peek(key); if (!o) return; o->fiber = (void *)(uintptr_t)v[0]; o->fctx = (Ctx *)(uintptr_t)v[1]; o->fn = v[2]; o->arg = v[3]; o->stack = v[4]; o->stack_size = v[5]; r1_stack_note(v[4], v[5]); InterlockedIncrement(&g_fib_gen); }
+void os_r1_fiber_put(uint64_t key, const uint64_t v[6]) { Obj *o = obj_peek(key); if (!o) return; o->fin = 0; o->fiber = (void *)(uintptr_t)v[0]; o->fctx = (Ctx *)(uintptr_t)v[1]; o->fn = v[2]; o->arg = v[3]; o->stack = v[4]; o->stack_size = v[5]; r1_stack_note(v[4], v[5]); InterlockedIncrement(&g_fib_gen); }
 /* R1 restore: give a guest fiber back the host fiber it had at the save (kept alive by g_r1_keep_fibers), or a fresh one */
 void os_r1_fiber_set(uint64_t key, void *fiber, Ctx *fctx, int fresh) {
     Obj *o = obj_peek(key); if (!o) return;
@@ -890,7 +892,12 @@ void os_r1_fiber_set(uint64_t key, void *fiber, Ctx *fctx, int fresh) {
 static void fib_current(Ctx *c) { RET(fiber_cur()); }
 int g_r1_keep_fibers;                                  /* R1 (r1_state.c, SSBU_R1 only): a finalized fiber's host fiber is kept, so a
                                                         * restore that brings the guest fiber back finds it (resumed, it starts over) */
-static void fib_finalize(Ctx *c) { Obj *o = obj(A0); if (o->fiber && !g_r1_keep_fibers) { DeleteFiber(o->fiber); o->fiber = NULL; InterlockedIncrement(&g_fib_gen); } }
+long long g_fib_fin_n;                                 /* (stability phase) fibers finalized with the ring on (left out of the list) */
+static void fib_finalize(Ctx *c) {
+    Obj *o = obj(A0);
+    if (o->fiber && !g_r1_keep_fibers) { DeleteFiber(o->fiber); o->fiber = NULL; InterlockedIncrement(&g_fib_gen); }
+    else if (o->fiber && g_r1_keep_fibers) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_FIBFIN"); on = !(e && e[0] == '0'); } if (on) { o->fin = 1; g_fib_fin_n++; } }
+}
 
 /* ---------------------------------------------------------------- reader/writer locks (nn::os::ReaderWriterLockType)
  * The plugins (smashline, stage_alts) only acquire / release / finalize: their locks are statically initialised (all zero

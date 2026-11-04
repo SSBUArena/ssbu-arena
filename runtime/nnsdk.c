@@ -158,7 +158,7 @@ static void os_FreeMemoryPages(Ctx *c) {
     mp_note(1, n, t0);
     RET(0);
 }
-static void os_FreeAddressRegion(Ctx *c) { cxxrt_mem_changed(A0, 0); VirtualFree(P(0), 0, MEM_RELEASE); cxxrt_mem_changed(A0, 0); RET(0); }      // PR #2 (jfb112697): size 0 = the whole region at A0
+static void os_FreeAddressRegion(Ctx *c) { cxxrt_mem_changed(A0, 0); { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note(P(0), 0, 2); } VirtualFree(P(0), 0, MEM_RELEASE); cxxrt_mem_changed(A0, 0); RET(0); }      // PR #2 (jfb112697): size 0 = the whole region at A0
 
 /* ---- more libc */
 static void c_strtol(Ctx *c) {
