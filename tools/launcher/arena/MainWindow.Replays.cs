@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -221,7 +222,7 @@ namespace Arena
             string f = RvFighterBox.SelectedItem as string, st = RvStageBox.SelectedItem as string, res = RvResultBox.SelectedItem as string;
             string q = (RvSearch.Text ?? "").Trim().ToLowerInvariant();
             var words = q.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            var rows = all.Where(r => scope == "all" || (scope == "mine" && ((r.C == null && r.R.Kind != 0) || (r.C != null && r.C.Mine) || r.MeWon != null)) || (scope == "public" && r.C != null && r.C.IsPublic) || (scope == "pc" && r.R != null))
+            var rows = all.Where(r => scope == "all" || (scope == "mine" && (r.C == null || r.C.Mine || r.MeWon != null)) || (scope == "public" && r.C != null && r.C.IsPublic) || (scope == "pc" && r.R != null))
                           .Where(r => words.All(w => r.Haystack.Contains(w)))
                           .Where(r => f == AllFighters || f == null || r.P1Fighter == f || r.P2Fighter == f)
                           .Where(r => st == AllStages || st == null || r.Stage == st)
@@ -241,7 +242,7 @@ namespace Arena
             double at = sv?.VerticalOffset ?? 0;
             ReplaysList.ItemsSource = items;
             if (sv != null && at > 0) { var k = at; Dispatcher.BeginInvoke(new Action(() => sv.ScrollToVerticalOffset(k)), System.Windows.Threading.DispatcherPriority.Loaded); }
-            bool narrowed = words.Length > 0 || scope != "all" || (f != null && f != AllFighters) || (st != null && st != AllStages) || (res != null && res != AnyResult);
+            bool narrowed = words.Length > 0 || scope != "mine" || (f != null && f != AllFighters) || (st != null && st != AllStages) || (res != null && res != AnyResult);
             ReplaysClear.Visibility = narrowed ? Visibility.Visible : Visibility.Collapsed;
             RvSearchBusy.Visibility = searching ? Visibility.Visible : Visibility.Collapsed;
             // the states: reading (the rows' shapes, only when nothing is there yet), empty, the banner for what cannot be reached
@@ -285,7 +286,7 @@ namespace Arena
 
         void ReplaysClear_Click(object sender, RoutedEventArgs e)
         {
-            RvFilterAll.IsChecked = true;
+            RvFilterMine.IsChecked = true;
             rvFilling = true;
             if (RvFighterBox.Items.Count > 0) RvFighterBox.SelectedIndex = 0;
             if (RvStageBox.Items.Count > 0) RvStageBox.SelectedIndex = 0;
@@ -459,16 +460,16 @@ namespace Arena
                     PreviewKeyDown += RvKey;
                     foreach (var sp in new[] { 0.25, 0.5, 1, 2, 4 })
                     {
-                        var b = new RadioButton { Content = sp.ToString(CultureInfo.InvariantCulture) + "x", Tag = sp, Style = (Style)FindResource("RvSpeed"), IsChecked = sp == 1, GroupName = "rvspeed" };
+                        var b = new RadioButton { Content = sp.ToString(CultureInfo.InvariantCulture) + "×", Tag = sp, Style = (Style)FindResource("RvSeg"), IsChecked = sp == 1, GroupName = "rvspeed" };
                         b.Checked += (s2, e2) => { rvSpeed = (double)((RadioButton)s2).Tag; };
                         RvSpeeds.Children.Add(b);
                     }
                 }
                 var a = r.Fighters.Count > 0 ? r.Fighters[0] : null; var b2 = r.Fighters.Count > 1 ? r.Fighters[1] : null;
                 string t1 = a?.FighterName ?? "?", t2 = b2?.FighterName ?? "?";
-                RvTitle.Text = t1.Length + t2.Length > 18 ? t1 + "\nvs " + t2 : t1 + " vs " + t2;      // long names: "vs" starts the second line
-                RvSub.Text = r.StageName + "  ·  " + r.When.ToString("dd MMM yyyy HH:mm", CultureInfo.InvariantCulture) + "  ·  " + r.Length + "  ·  " + r.FrameList.Count + " frames"
-                             + (r.Rollback ? "  ·  final frames of the rollback session" : "");
+                RvTitle.Text = t1 + " vs " + t2;
+                RvSub.Text = r.StageName + "  ·  " + r.When.ToString("dd MMM yyyy HH:mm", CultureInfo.InvariantCulture) + "  ·  " + r.Length;
+                RvSub.ToolTip = r.FrameList.Count + " frames" + (r.Rollback ? ", the final frames of the rollback session" : "");
                 BuildStats(r);
                 RvTotal.Text = RvClock(r.FrameList.Count - 1);
                 RvSet(frame);
@@ -489,8 +490,15 @@ namespace Arena
         {
             RvView.Frame = f;
             RvTimeline.Frame = RvView.Frame; RvTimeline.InvalidateVisual();
-            RvNow.Text = RvClock(RvView.Frame);
+            RvNow.Text = RvClock(RvView.Frame); RvFrameText();
             RefreshMoveInfo();
+        }
+
+        /// <summary>the game's own number of the frame shown (beside the playback buttons)</summary>
+        void RvFrameText()
+        {
+            var r = RvView.Replay; if (r == null || r.FrameList.Count == 0) return;
+            RvFrame.Text = r.FrameList[Math.Max(0, Math.Min((int)Math.Round(RvView.Frame), r.FrameList.Count - 1))].Number.ToString(CultureInfo.InvariantCulture);
         }
 
         static string RvClock(double frame) { int s = (int)(frame / 60); return (s / 60) + ":" + (s % 60).ToString("00"); }
@@ -512,6 +520,7 @@ namespace Arena
             RvView.Frame = f;
             RvTimeline.Frame = f; RvTimeline.InvalidateVisual();
             if (((int)f & 7) == 0) { RefreshMoveInfo(); RvNow.Text = RvClock(f); }
+            if (((int)f & 1) == 0) RvFrameText();
         }
 
         void RvPlay_Click(object sender, RoutedEventArgs e)
@@ -533,6 +542,7 @@ namespace Arena
         {
             if (ReplayViewer.Visibility != Visibility.Visible || PageReplays.Visibility != Visibility.Visible) return;
             if (e.Key == Key.Space) { RvPlay_Click(null, null); e.Handled = true; }
+            else if (e.Key == Key.Escape) { RvBack_Click(null, null); e.Handled = true; }
             else if (e.Key == Key.Left) { RvPause(true); RvSet(Math.Round(RvView.Frame) - (Keyboard.Modifiers == ModifierKeys.Shift ? 60 : 1)); e.Handled = true; }
             else if (e.Key == Key.Right) { RvPause(true); RvSet(Math.Round(RvView.Frame) + (Keyboard.Modifiers == ModifierKeys.Shift ? 60 : 1)); e.Handled = true; }
             else if (e.Key == Key.Home) { RvSet(0); e.Handled = true; }
@@ -542,6 +552,71 @@ namespace Arena
             else if (e.Key == Key.U) { RvHurt.IsChecked = RvHurt.IsChecked != true; e.Handled = true; }
             else if (e.Key == Key.G) { RvGrab.IsChecked = RvGrab.IsChecked != true; e.Handled = true; }
             else if (e.Key == Key.F) { RvFollow.IsChecked = RvFollow.IsChecked != true; e.Handled = true; }
+            else if (e.Key == Key.L) { RvLegendOn.IsChecked = RvLegendOn.IsChecked != true; e.Handled = true; }
+            else if (e.Key == Key.I) { RvInfo.IsChecked = RvInfo.IsChecked != true; e.Handled = true; }
+        }
+
+        /// <summary>(0.2.34) the Info switch: the side panel shown or the stage wide (the back button then sits in the controls);
+        /// the Legend switch: the legend over the stage</summary>
+        void RvPanels_Changed(object sender, RoutedEventArgs e)
+        {
+            if (RvSide == null || RvLegend == null || RvInfo == null || RvLegendOn == null) return;
+            bool info = RvInfo.IsChecked == true;
+            RvSide.Visibility = info ? Visibility.Visible : Visibility.Collapsed;
+            RvSideCol.Width = new GridLength(info ? 340 : 0); RvGapCol.Width = new GridLength(info ? 16 : 0);
+            if (RvLegendOn.IsChecked == true && RvLegendItems.Children.Count == 0) BuildLegend();
+            RvLegend.Visibility = RvLegendOn.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        }
+        void RvLegendClose_Click(object sender, RoutedEventArgs e) { RvLegendOn.IsChecked = false; }
+
+        /// <summary>the legend's rows: a small drawing in the viewer's own colours and what it means</summary>
+        void BuildLegend()
+        {
+            Color hot = RvPalette.Hex("#FF8A1F"), grab = RvPalette.Hex("#C77DFF"), p1 = RvPalette.Player[0], p2 = RvPalette.Player[1];
+            System.Windows.Shapes.Shape Circle(Color stroke, double fillA, double w = 2, DoubleCollection dash = null, Color? fill = null)
+            {
+                var c = new System.Windows.Shapes.Ellipse { Width = 18, Height = 18, Stroke = new SolidColorBrush(stroke), StrokeThickness = w, Fill = new SolidColorBrush(Color.FromArgb((byte)(fillA * 255), (fill ?? stroke).R, (fill ?? stroke).G, (fill ?? stroke).B)) };
+                if (dash != null) c.StrokeDashArray = dash;
+                return c;
+            }
+            System.Windows.Shapes.Shape Capsule(Color stroke, DoubleCollection dash = null, double w = 1.5)
+            {
+                var c = new System.Windows.Shapes.Rectangle { Width = 12, Height = 20, RadiusX = 6, RadiusY = 6, Stroke = new SolidColorBrush(stroke), StrokeThickness = w };
+                if (dash != null) c.StrokeDashArray = dash;
+                return c;
+            }
+            UIElement Pair(UIElement a, UIElement b) { var sp = new StackPanel { Orientation = Orientation.Horizontal }; sp.Children.Add(a); if (b is FrameworkElement fb) fb.Margin = new Thickness(3, 0, 0, 0); sp.Children.Add(b); return sp; }
+            var facing = new System.Windows.Shapes.Path { Data = Geometry.Parse("M0,0 L9,6 L0,12 Z"), Fill = new SolidColorBrush(p1), VerticalAlignment = VerticalAlignment.Center };
+            var tag = new Border { BorderBrush = new SolidColorBrush(p1), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(3), Padding = new Thickness(3, 0, 3, 0), Child = new TextBlock { Text = "P1", FontSize = 11, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(p1) } };
+            var blast = new System.Windows.Shapes.Line { X1 = 0, Y1 = 9, X2 = 24, Y2 = 9, Stroke = new SolidColorBrush(RvPalette.Hex("#FF6B6B")), StrokeThickness = 1.5, StrokeDashArray = new DoubleCollection { 3, 2.5 } };
+            var curve = new System.Windows.Shapes.Path { Data = Geometry.Parse("M0,16 L6,14 L9,8 L15,7 L17,2 L24,1"), Stroke = new SolidColorBrush(p1), StrokeThickness = 1.6 };
+            var rows = new List<Tuple<UIElement, string, string>>
+            {
+                Tuple.Create((UIElement)Circle(hot, .22, 2.4), "Hitbox", "Where an attack hits; big ones show their damage"),
+                Tuple.Create((UIElement)Circle(grab, .22, 2.4), "Grab box", "Where a grab can catch"),
+                Tuple.Create((UIElement)Circle(grab, .22, 2.4, new DoubleCollection { 1.6, 1 }), "Command grab", "A special that grabs (Bowser's Side B, Ridley's Side B...)"),
+                Tuple.Create(Pair(Capsule(p1), Capsule(p2)), "Hurtbox", "Where the fighter can be hit, in the player's colour"),
+                Tuple.Create((UIElement)Capsule(RvPalette.Hex("#8899AA"), new DoubleCollection { 2, 2 }), "Intangible", "Attacks pass through (dodges, ledge grab)"),
+                Tuple.Create((UIElement)Capsule(RvPalette.Hex("#3DDC97"), null, 1.8), "Invincible", "Hit, but no damage and no knockback"),
+                Tuple.Create((UIElement)Circle(p1, .22, 1.6), "Shield", "Smaller as the shield weakens"),
+                Tuple.Create((UIElement)Circle(RvPalette.Hex("#FFD27A"), .22, 1.4), "Projectile, item", "With its name when there is no model"),
+                Tuple.Create(Pair(tag, facing), "Player, facing", "The player's tag; the arrow: where they look"),
+                Tuple.Create((UIElement)blast, "Blast zone", "Crossing it is a KO (Follow off: the whole stage)"),
+                Tuple.Create((UIElement)curve, "Timeline", "Each player's damage; a mark in their colour: a KO"),
+            };
+            RvLegendItems.Children.Clear();
+            foreach (var row in rows)
+            {
+                var g = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+                g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) }); g.ColumnDefinitions.Add(new ColumnDefinition());
+                if (row.Item1 is FrameworkElement fe) { fe.HorizontalAlignment = HorizontalAlignment.Left; fe.VerticalAlignment = VerticalAlignment.Center; }
+                g.Children.Add(row.Item1);
+                var t = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center };
+                t.Inlines.Add(new System.Windows.Documents.Run(row.Item2) { FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("Text") });
+                t.Inlines.Add(new System.Windows.Documents.Run("  " + row.Item3) { Foreground = (Brush)FindResource("Muted") });
+                Grid.SetColumn(t, 1); g.Children.Add(t);
+                RvLegendItems.Children.Add(g);
+            }
         }
 
         // ------------------------------------------------------------ the side panel
@@ -552,37 +627,100 @@ namespace Arena
 
         TextBlock[] rvMoveInfo;
 
+        /// <summary>(0.2.34) one card per player: who (name, fighter, result), the move now, three numbers, the stocks lost
+        /// (each a link to it), the most used moves. Spacing: 16 inside the card, 12 between blocks, 4 between rows</summary>
         void BuildStats(ReplayState r)
         {
             RvStats.Children.Clear();
-            var muted = (Brush)FindResource("Muted");
+            var text = (Brush)FindResource("Text"); var muted = (Brush)FindResource("Muted"); var dim = (Brush)FindResource("Dim");
+            var cond = (FontFamily)FindResource("Condensed");
             rvMoveInfo = new TextBlock[r.Fighters.Count];
+            int best = r.Fighters.Count > 0 ? r.Fighters.Max(x => x.EndStocks) : 0;
+            bool oneWinner = best > 0 && r.Fighters.Count(x => x.EndStocks == best) == 1;
+            TextBlock Label(string s, double top = 12) => new TextBlock { Text = s, FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = dim, Margin = new Thickness(0, top, 0, 6) };
             for (int k = 0; k < r.Fighters.Count; k++)
             {
                 var f = r.Fighters[k]; var p = rvStats.P[k];
-                var col = new SolidColorBrush(RvPalette.Player[k % 4]);
-                var head = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, k == 0 ? 6 : 22, 0, 6) };
-                head.Children.Add(new Border { Width = 4, Height = 22, Background = col, CornerRadius = new CornerRadius(2), Margin = new Thickness(0, 0, 10, 0) });
-                head.Children.Add(Line(f.FighterName.ToUpperInvariant() + "   " + f.Name, 15, null, FontWeights.SemiBold, new Thickness(0)));
-                RvStats.Children.Add(head);
-                rvMoveInfo[k] = Line("", 13, col, null, new Thickness(0, 0, 0, 6));
-                rvMoveInfo[k].MinHeight = 34;              // (the lines below do not jump while it plays)
-                RvStats.Children.Add(rvMoveInfo[k]);
-                RvStats.Children.Add(Line(string.Format(CultureInfo.InvariantCulture, "Damage dealt  {0:0.0}%   ·   taken  {1:0.0}%", p.DamageDealt, p.DamageTaken), 14, muted));
+                var colC = RvPalette.Player[k % 4]; var col = new SolidColorBrush(colC);
+                if (k > 0) RvStats.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("Line"), Margin = new Thickness(-20, 24, -20, 24) });
+                var card = new StackPanel();
+                RvStats.Children.Add(card);
+
+                // who
+                var head = new Grid();
+                head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); head.ColumnDefinitions.Add(new ColumnDefinition()); head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                head.Children.Add(new Border { Width = 4, Background = col, CornerRadius = new CornerRadius(2), Margin = new Thickness(0, 2, 12, 2) });
+                var names = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+                names.Children.Add(new TextBlock { Text = f.Name, FontSize = 17, FontWeight = FontWeights.SemiBold, Foreground = text, TextTrimming = TextTrimming.CharacterEllipsis });
+                names.Children.Add(new TextBlock { Text = f.FighterName.ToUpperInvariant(), FontSize = 13, FontFamily = cond, FontWeight = FontWeights.Bold, Foreground = muted, Margin = new Thickness(0, -1, 0, 0) });
+                Grid.SetColumn(names, 1); head.Children.Add(names);
+                if (oneWinner)
+                {
+                    bool won = f.EndStocks == best;
+                    var pill = new Border { CornerRadius = new CornerRadius(10), Padding = new Thickness(9, 2, 9, 3), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0),
+                                            Background = won ? new SolidColorBrush(Color.FromArgb(0x26, 0x65, 0xC7, 0xFF)) : Brushes.Transparent, BorderBrush = won ? (Brush)FindResource("Accent") : (Brush)FindResource("Line"), BorderThickness = new Thickness(1),
+                                            Child = new TextBlock { Text = won ? "WIN" : "LOSS", FontSize = 11, FontWeight = FontWeights.Bold, Foreground = won ? (Brush)FindResource("Accent") : muted } };
+                    Grid.SetColumn(pill, 2); head.Children.Add(pill);
+                }
+                card.Children.Add(head);
+
+                // the move now (the same height while it plays)
+                card.Children.Add(Label("NOW", 20));
+                rvMoveInfo[k] = new TextBlock { FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Foreground = muted, LineHeight = 18, MinHeight = 54, Margin = new Thickness(0, -2, 0, 0) };
+                card.Children.Add(rvMoveInfo[k]);
+
+                // three numbers
+                var opp = r.Fighters.Count == 2 ? rvStats.P[1 - k] : null;
+                var tiles = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
+                void Tile(string v, string label, string tip)
+                {
+                    var sp = new StackPanel { ToolTip = tip, Background = Brushes.Transparent, Margin = new Thickness(0, 0, tiles.Children.Count < 2 ? 28 : 0, 0) };
+                    sp.Children.Add(new TextBlock { Text = v, FontSize = 22, FontFamily = cond, FontWeight = FontWeights.Bold, Foreground = text });
+                    sp.Children.Add(new TextBlock { Text = label, FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = dim, Margin = new Thickness(0, -2, 0, 0) });
+                    tiles.Children.Add(sp);
+                }
+                Tile(p.DamageDealt.ToString("0", CultureInfo.InvariantCulture) + "%", "DAMAGE DEALT", "Damage dealt to the other player (taken: " + p.DamageTaken.ToString("0", CultureInfo.InvariantCulture) + "%)");
+                Tile(p.Hits.ToString(CultureInfo.InvariantCulture), "HITS", "Frames in which the other player took damage (a multi-hit move counts each hit)");
+                Tile(opp != null && opp.StocksLost > 0 ? (p.DamageDealt / opp.StocksLost).ToString("0", CultureInfo.InvariantCulture) + "%" : "–", "PER KO", "Damage dealt for each stock taken: lower is more efficient");
+                card.Children.Add(tiles);
+
+                // the stocks lost: each a link to 1.5 s before it
                 var kos = rvStats.Kos.Where(x => x.Fighter == k).ToList();
-                RvStats.Children.Add(Line("Stocks lost  " + p.StocksLost + (f.EndStocks > 0 ? "   ·   left at the end  " + f.EndStocks : ""), 14, muted));
+                card.Children.Add(Label(kos.Count == 0 ? "NO STOCK LOST" : kos.Count == 1 ? "1 STOCK LOST" : kos.Count + " STOCKS LOST", 16));
                 foreach (var ko in kos)
                 {
-                    var b = new Button { Style = (Style)FindResource("Link"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(10, 2, 0, 0), Tag = ko };
                     int sec = ko.Frame / 60;
-                    b.Content = new TextBlock { Text = string.Format(CultureInfo.InvariantCulture, "KO at {0}:{1:00}, off the {2}", sec / 60, sec % 60, ko.Where), FontSize = 13 };
-                    b.Click += (s, e) => { var kk = (ReplayStats.Ko)((Button)s).Tag; int i = RvView.Replay.FrameList.FindIndex(x => x.Number >= kk.Frame); RvPause(true); RvSet(Math.Max(0, i - 90)); };
-                    RvStats.Children.Add(b);
+                    var g = new Grid();
+                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(46) }); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) }); g.ColumnDefinitions.Add(new ColumnDefinition());
+                    TextBlock C(string s, int c, Brush b) { var t = new TextBlock { Text = s, FontSize = 13 }; if (b != null) t.Foreground = b; Grid.SetColumn(t, c); g.Children.Add(t); return t; }
+                    C(string.Format(CultureInfo.InvariantCulture, "{0}:{1:00}", sec / 60, sec % 60), 0, null);
+                    C(ko.Damage.ToString("0", CultureInfo.InvariantCulture) + "%", 1, null);
+                    C("off the " + ko.Where, 2, null);
+                    var b2 = new Button { Style = (Style)FindResource("Link"), HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(0, 2, 0, 2), Tag = ko, ToolTip = "Watch it, from 1.5 seconds before", Content = g };
+                    b2.Click += (s, e) => { var kk = (ReplayStats.Ko)((Button)s).Tag; int i = RvView.Replay.FrameList.FindIndex(x => x.Number >= kk.Frame); RvPause(true); RvSet(Math.Max(0, i - 90)); };
+                    card.Children.Add(b2);
                 }
+
+                // the most used moves
                 if (p.Moves.Count > 0)
                 {
-                    RvStats.Children.Add(Line("Most used moves", 13, (Brush)FindResource("Dim"), FontWeights.SemiBold, new Thickness(0, 8, 0, 2)));
-                    foreach (var m in p.Moves) RvStats.Children.Add(Line(m.Value + "×  " + m.Key, 14, null, null, new Thickness(10, 1, 0, 0)));
+                    card.Children.Add(Label("MOST USED MOVES", 16));
+                    int top = p.Moves[0].Value;
+                    foreach (var m in p.Moves.Take(5))
+                    {
+                        var g = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+                        g.ColumnDefinitions.Add(new ColumnDefinition()); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
+                        g.RowDefinitions.Add(new RowDefinition()); g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                        g.Children.Add(new TextBlock { Text = m.Key, FontSize = 13, Foreground = text });
+                        var c = new TextBlock { Text = m.Value + "×", FontSize = 13, Foreground = muted, HorizontalAlignment = HorizontalAlignment.Right };
+                        Grid.SetColumn(c, 1); g.Children.Add(c);
+                        var track = new Grid { Height = 3, Margin = new Thickness(0, 4, 0, 0) };
+                        track.Children.Add(new Border { Background = new SolidColorBrush(RvPalette.Hex("#1C2836")), CornerRadius = new CornerRadius(1.5) });
+                        track.Children.Add(new Border { Background = col, Opacity = .6, CornerRadius = new CornerRadius(1.5), HorizontalAlignment = HorizontalAlignment.Left, Width = 0, Tag = (double)m.Value / top });
+                        track.SizeChanged += (s, e) => { var tr = (Grid)s; var fill = (Border)tr.Children[1]; fill.Width = Math.Max(3, tr.ActualWidth * (double)fill.Tag); };
+                        Grid.SetRow(track, 1); Grid.SetColumnSpan(track, 2); g.Children.Add(track);
+                        card.Children.Add(g);
+                    }
                 }
             }
         }
@@ -595,20 +733,24 @@ namespace Arena
             var fr = r.FrameList[Math.Max(0, Math.Min((int)Math.Round(RvView.Frame), r.FrameList.Count - 1))];
             for (int k = 0; k < rvMoveInfo.Length && k < fr.F.Length; k++)
             {
+                var t = rvMoveInfo[k]; t.Inlines.Clear();
                 var s = fr.F[k] ?? fr.Extra?.FirstOrDefault(e => e.Key == k).Value;
-                if (s == null) { rvMoveInfo[k].Text = ""; continue; }
+                if (s == null) continue;
+                var col = new SolidColorBrush(RvPalette.Player[k % 4]);
                 string mv = ReplayNames.MoveName(s.Motion);
-                string text = mv != null ? "Now: " + mv + "  (frame " + (int)Math.Floor(s.MotionFrame + 1) + " of the move)" : "Now: " + ReplayNames.ActionText(s);
-                var hb = s.Hits.Where(h => !h.Grab).ToArray(); var gb = s.Hits.Where(h => h.Grab).ToArray();
-                if (hb.Length > 0) text += "\nHitboxes now: " + hb.Length + ", radius " + string.Join(" / ", hb.Select(h => h.R.ToString("0.0", CultureInfo.InvariantCulture)));
-                if (gb.Length > 0) text += "\n" + ReplayView.GrabName(s) + " boxes now: " + gb.Length + ", radius " + string.Join(" / ", gb.Select(h => h.R.ToString("0.0", CultureInfo.InvariantCulture)));
+                t.Inlines.Add(new System.Windows.Documents.Run(mv ?? ReplayNames.ActionText(s)) { FontWeight = FontWeights.SemiBold, Foreground = col, FontSize = 14 });
+                if (mv != null) t.Inlines.Add(new System.Windows.Documents.Run("   frame " + (int)Math.Floor(s.MotionFrame + 1)));
                 var u = mv != null ? UfdMove(r.Fighters[k].FighterKey, mv) : null;
                 if (u != null)
                 {
                     string g(string key) => u.TryGetValue(key, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) : "-";
-                    text += "\nUFD " + g("name") + ": startup " + g("startup") + ", active " + g("active") + ", total " + g("total") + ", damage " + g("damage");
+                    string nm = g("name");
+                    int par = nm.IndexOf('('); if (par > 0 && nm.EndsWith(")")) t.Inlines.Add(new System.Windows.Documents.Run("  " + nm.Substring(par)));
+                    t.Inlines.Add(new System.Windows.Documents.LineBreak());
+                    t.Inlines.Add(new System.Windows.Documents.Run("Startup " + g("startup") + "  ·  active " + g("active") + "  ·  total " + g("total") + "  ·  " + g("damage") + "%"));
                 }
-                rvMoveInfo[k].Text = text;
+                var gb = s.Hits.Count(h => h.Grab);
+                if (gb > 0) { t.Inlines.Add(new System.Windows.Documents.LineBreak()); t.Inlines.Add(new System.Windows.Documents.Run(ReplayView.GrabName(s)) { Foreground = new SolidColorBrush(RvPalette.Hex("#C77DFF")) }); }
             }
         }
 
@@ -653,13 +795,15 @@ namespace Arena
             if (zo > 0 && zo + 1 < args.Length && int.TryParse(args[zo + 1], out int zk)) RvView.zoomOn = zk;
             int zu = Array.IndexOf(args, "--zoomup");       // --zoomup <game units>: the zoom's centre higher (a face)
             if (zu > 0 && zu + 1 < args.Length && double.TryParse(args[zu + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out double up)) RvView.ZoomUp = up;
-            int off = Array.IndexOf(args, "--off");          // --off hit,hurt,grab: those switches off (screenshots)
+            int off = Array.IndexOf(args, "--off");          // --off hit,hurt,grab,info: those switches off (screenshots)
+            if (Array.IndexOf(args, "--legend") > 0) RvLegendOn.IsChecked = true;
             if (off > 0 && off + 1 < args.Length)
                 foreach (var w in args[off + 1].Split(','))
                 {
                     if (w == "hit") RvHit.IsChecked = false;
                     else if (w == "hurt") RvHurt.IsChecked = false;
                     else if (w == "grab") RvGrab.IsChecked = false;
+                    else if (w == "info") RvInfo.IsChecked = false;
                 }
         }
     }

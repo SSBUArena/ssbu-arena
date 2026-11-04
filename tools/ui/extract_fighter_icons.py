@@ -6,7 +6,8 @@ repository, never uploaded; an account stores only the fighter's name).
 Writes <fighter>.png (ui/replace/chara/chara_4/chara_4_<fighter>_00.bntx, 162 x 162), icons.txt (<fighter>=<number of the fighter's
 icon in the game's own profile icons, ui_profile_icon_db: what the launcher writes in the save, Core.ApplyProfileIcon). icons.txt is
 written last: it also marks the work as done. more/<fighter>.png: the portraits of the fighters not offered as pictures (the ones from
-the updates, the select screen's shared panels), for the replay list; more/done.txt marks them as done."""
+the updates, the select screen's shared panels), for the replay list; more/done.txt marks them as done. (0.2.34) all/: every other
+icon of the game's profile icons (fighters' other colours, spirits, series emblems), all_icons()."""
 import argparse
 from pathlib import Path
 import struct
@@ -54,6 +55,9 @@ def prc_rows(d):
         if t == 11:
             n = struct.unpack_from('<I', d, pb + p + 1)[0]
             return [walk(p + struct.unpack_from('<I', d, pb + p + 5 + i * 4)[0]) for i in range(n)]
+        if t == 10:      # (0.2.34) a string: in the reference table
+            o = struct.unpack_from('<I', d, pb + p + 1)[0]
+            return d[base + o:d.index(b'\0', base + o)].decode('utf-8', 'replace')
         if t == 9:
             return hashes[struct.unpack_from('<I', d, pb + p + 1)[0]]
         if t in (6, 7):
@@ -74,6 +78,98 @@ def icon_numbers(arc):
         if r.get(F_SLOT) == 0:
             first.setdefault(r.get(F_CHARA), r.get(F_INDEX))
     return {f: first[hash40('ui_chara_' + f)] for f in FIGHTERS if hash40('ui_chara_' + f) in first}
+
+
+SPIRIT = ('ui/replace/spirits/spirits_1/spirits_1_%s.bntx', 'ui/replace/spirits/spirits_2/spirits_2_%s.bntx', 'ui/replace/spirits/spirits_0/spirits_0_%s.bntx', 'ui/replace_patch/spirits/spirits_1/spirits_1_%s.bntx', 'ui/replace_patch/spirits/spirits_2/spirits_2_%s.bntx')
+SERIES = ('ui/replace/series/series_0/series_0_%s.bntx', 'ui/replace/series/series_1/series_1_%s.bntx', 'ui/replace_patch/series/series_0/series_0_%s.bntx', 'ui/replace_patch/series/series_1/series_1_%s.bntx')
+
+
+def decode_bc4(bntx, base):
+    """a one-channel BC4 surface (the series' emblems) as white with that channel as its alpha, or None"""
+    from PIL import Image
+    from brawl.nutexb import swizzle      # (menu_recolor put its folder on the path)
+    fmt = struct.unpack_from('<I', bntx, base + 0x1c)[0]
+    if fmt not in (0x1d01, 0x1d02) or struct.unpack_from('<H', bntx, base + 0x16)[0] != 1:
+        return None
+    w, h = struct.unpack_from('<II', bntx, base + 0x24)
+    size = struct.unpack_from('<I', bntx, base + 0x50)[0]
+    offset = struct.unpack_from('<Q', bntx, struct.unpack_from('<Q', bntx, base + 0x70)[0])[0]
+    bw, bh = (w + 3) // 4, (h + 3) // 4
+    linear = swizzle(bytes(bntx[offset:offset + size]), bw, bh, bpp=8, to_linear=True)
+    a = Image.frombytes('L', (bw * 4, bh * 4), linear[:bw * bh * 8], 'bcn', 4).crop((0, 0, w, h))
+    im = Image.new('RGBA', (w, h), (238, 243, 247, 0))
+    im.putalpha(a)
+    return im
+
+
+def first_image(arc, paths, name):
+    for path in paths:
+        try:
+            bntx = bytearray(arc.get(path % name))
+        except KeyError:
+            continue
+        for _, base in texture_slots(bntx).items():
+            image = decode(bntx, base)
+            if image:
+                return image[0]
+            return decode_bc4(bntx, base)
+    return None
+
+
+def square(im, size=128):
+    """the picture in a square: scaled to fit, centred, transparent around it"""
+    from PIL import Image
+    im = im.convert('RGBA')
+    im.thumbnail((size, size), Image.LANCZOS)
+    out = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    out.paste(im, ((size - im.width) // 2, (size - im.height) // 2), im)
+    return out
+
+
+def all_icons(arc, out):
+    """(0.2.34) every icon of the game's profile icons (ui_profile_icon_db: the fighters in some of their colours, spirits,
+    the series' emblems): all/icon_<number>.png, all/icons.txt (icon_<number>=<number>,<fighter|spirit|series>,<name>,<colour>),
+    written last (it marks the work as done). Rows whose picture is not found are left out."""
+    def strings_of(path, prefix):
+        try:
+            rows = prc_rows(arc.get(path))
+        except KeyError:
+            return {}
+        names = {}
+        for r in rows:
+            for v in r.values():
+                if isinstance(v, str) and v:
+                    names[hash40(prefix + v)] = v
+        return names
+    fighters = {hash40('ui_chara_' + f): f for f in MORE}
+    fighters.update(strings_of('ui/param/database/ui_chara_db.prc', 'ui_chara_'))
+    spirits = strings_of('ui/param/database/ui_spirit_db.prc', '')
+    series = strings_of('ui/param/database/ui_series_db.prc', 'ui_series_')
+    dst = out / 'all'
+    dst.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for r in prc_rows(arc.get('ui/param/database/ui_profile_icon_db.prc')):
+        n, ch, slot = r.get(F_INDEX), r.get(F_CHARA), r.get(F_SLOT) or 0
+        if n is None:
+            continue
+        if ch in fighters:
+            kind, name, im = 'fighter', fighters[ch], None
+            path = (PORTRAIT[0].replace('_00.', '_%02d.' % slot), PORTRAIT[1].replace('_00.', '_%02d.' % slot))
+            im = first_image(arc, path, name)
+        elif ch in series:
+            kind, name = 'series', series[ch]
+            im = first_image(arc, SERIES, name)
+        elif ch in spirits:
+            kind, name = 'spirit', spirits[ch]
+            im = first_image(arc, SPIRIT, name)
+        else:
+            continue
+        if im is None:
+            continue
+        square(im).save(dst / ('icon_%d.png' % n))
+        lines.append('icon_%d=%d,%s,%s,%d\n' % (n, n, kind, name, slot))
+    (dst / 'icons.txt').write_text(''.join(lines))
+    return len(lines)
 
 
 def main():
@@ -120,6 +216,8 @@ def main():
                 break
             break
     (more / 'done.txt').write_text('ok')
+    if not (a.out / 'all' / 'icons.txt').exists():
+        print('all the profile icons: %d' % all_icons(arc, a.out))
 
 
 if __name__ == '__main__':

@@ -212,6 +212,18 @@ static volatile LONG g_hs_room;                         /* (pub2) the last set-u
                                                            * room's waiting-stage fight comes AFTER the room match's set-up, run rm4) */
 static volatile LONG g_hs_local;                        /* (0.2.11) the last set-up was a LOCAL fight (no room code, not a quick match): not a room */
 int rbn_local_fight(void) { return (int)g_hs_local; }
+/* (0.2.34) the opponent's name for the replay recorder (replay_state.c): the other player of this Local Wireless room, else
+ * the lobby's match; "" = not known (a local fight, more than two players) */
+const char *rbn_peer_name(void) {
+    static char n[33];
+    int nnldn_other_name(char *out, int max);
+    n[0] = 0;
+    if (nnldn_other_name(n, sizeof n) <= 0) {
+        NetMatch mm; net_match_get(&mm);
+        if ((mm.state == MM_MATCHED || mm.state == MM_TOGETHER) && mm.peer_name[0]) snprintf(n, sizeof n, "%.32s", mm.peer_name);
+    }
+    return n;
+}
 int rbn_match_cancelled(void) { return g_hs_room ? 2 : (int)g_hs_cancelled; }      /* 0, 1 (not agreed: walk off) or 2 (pub2: a room fight, the game's own netcode) */
 /* (R3 lwr) debug_mode.c tells which set-up this is: 1 = a Local Wireless room's waiting-stage fight (the record builder called from
  * the waiting-stage set-up, one player), 0 = any other (the select screens' "ready to fight", also the room's match) */

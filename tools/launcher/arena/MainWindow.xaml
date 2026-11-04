@@ -68,8 +68,8 @@
         <Border Width="1" Height="36" Background="{StaticResource Line}" Margin="34,0,26,0" VerticalAlignment="Center"/>
         <RadioButton x:Name="TabHome" Style="{StaticResource NavTab}" Content="Home" IsChecked="True" Checked="Tab_Checked"/>
         <RadioButton x:Name="TabReplays" Style="{StaticResource NavTab}" Content="Replays" Checked="Tab_Checked"/>
-        <RadioButton x:Name="TabCommunity" Style="{StaticResource NavTab}" Content="Community" Checked="Tab_Checked"/>
-        <RadioButton x:Name="TabChanges" Style="{StaticResource NavTab}" Content="What's new" Checked="Tab_Checked"/>
+        <RadioButton x:Name="TabCommunity" Style="{StaticResource NavTab}" Content="Community" Checked="Tab_Checked" Visibility="Collapsed"/>
+        <RadioButton x:Name="TabChanges" Style="{StaticResource NavTab}" Content="What's new" Checked="Tab_Checked" Visibility="Collapsed"/>
         <RadioButton x:Name="TabSettings" Style="{StaticResource NavTab}" Content="Settings" Checked="Tab_Checked" Visibility="Collapsed"/>
       </StackPanel>
       <Button x:Name="GearButton" Style="{StaticResource IconButton}" HorizontalAlignment="Right" VerticalAlignment="Center" Padding="8" Click="Gear_Click" ToolTip="Settings">
@@ -304,11 +304,31 @@
         </Grid>
         <Grid Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3">
           <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="36*"/>
+            <ColumnDefinition Width="30*"/>
             <ColumnDefinition Width="16"/>
-            <ColumnDefinition Width="64*"/>
+            <ColumnDefinition Width="30*"/>
+            <ColumnDefinition Width="16"/>
+            <ColumnDefinition Width="40*"/>
           </Grid.ColumnDefinitions>
-          <Button Style="{StaticResource CardButton}" Click="Project_Click">
+          <!-- (0.2.34) what's new: the changes of each version (the What's new page) -->
+          <Button Style="{StaticResource CardButton}" Click="Changes_Click">
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="118"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <Rectangle Margin="-1">
+                <Rectangle.Fill><ImageBrush ImageSource="{StaticResource ArenaArt}" Viewbox="0.55,0.2,0.35,0.5" Stretch="UniformToFill"/></Rectangle.Fill>
+                <Rectangle.OpacityMask><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="#FF000000" Offset="0.6"/><GradientStop Color="#00000000" Offset="1"/></LinearGradientBrush></Rectangle.OpacityMask>
+              </Rectangle>
+              <Rectangle Margin="-1" IsHitTestVisible="False" Fill="#99090D14"/>
+              <TextBlock x:Name="HomeNewsVersion" Text="NEW" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="24" Foreground="{StaticResource Accent}" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,12,0"/>
+              <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+                <TextBlock Text="What's new" FontSize="19" FontWeight="SemiBold"/>
+                <TextBlock Text="The changes of each version." FontSize="16" Foreground="#AEBBCA" Margin="0,6,0,0" TextTrimming="CharacterEllipsis"/>
+              </StackPanel>
+              <Path Grid.Column="2" Data="{StaticResource IcoArrow}" Stroke="{StaticResource Accent}" StrokeThickness="2" Width="20" Height="16" Stretch="Uniform" Margin="0,0,30,0"
+                    StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+            </Grid>
+          </Button>
+          <Button Grid.Column="2" Style="{StaticResource CardButton}" Click="Project_Click">
             <Grid>
               <Grid.ColumnDefinitions><ColumnDefinition Width="130"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <Rectangle Margin="-1">
@@ -326,7 +346,7 @@
                     StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
             </Grid>
           </Button>
-          <Button Grid.Column="2" Style="{StaticResource CardButton}" Click="Started_Click">
+          <Button Grid.Column="4" Style="{StaticResource CardButton}" Click="Started_Click">
             <Grid>
               <Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <Rectangle Margin="-1">
@@ -355,8 +375,7 @@
             <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
               <TextBlock Text="REPLAYS" Style="{StaticResource SectionTitle}" FontSize="36" VerticalAlignment="Center" ToolTip="Your matches, redrawn from what the game recorded frame by frame: positions, damage, hitboxes. No game start needed."/>
               <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <RadioButton x:Name="RvFilterAll" Style="{StaticResource RvSpeed}" Content="All" GroupName="rvfilter" IsChecked="True" Checked="ReplaysFilter_Checked"/>
-                <RadioButton x:Name="RvFilterMine" Style="{StaticResource RvSpeed}" Content="My matches" GroupName="rvfilter" Checked="ReplaysFilter_Checked" ToolTip="The matches you played"/>
+                <RadioButton x:Name="RvFilterMine" Style="{StaticResource RvSpeed}" Content="My matches" GroupName="rvfilter" IsChecked="True" Checked="ReplaysFilter_Checked" ToolTip="The matches you played"/>
                 <RadioButton x:Name="RvFilterPublic" Style="{StaticResource RvSpeed}" Content="Public" GroupName="rvfilter" Checked="ReplaysFilter_Checked" ToolTip="Replays every signed-in player can watch"/>
                 <RadioButton x:Name="RvFilterPc" Style="{StaticResource RvSpeed}" Content="On this PC" GroupName="rvfilter" Checked="ReplaysFilter_Checked" ToolTip="Recordings kept on this PC"/>
               </StackPanel>
@@ -507,64 +526,111 @@
           </DockPanel>
         </Border>
 
-        <!-- the viewer -->
+        <!-- the viewer (0.2.34): a header with the match and the view switches, the player (stage, then its controls under it),
+             the players' cards on the right (Players switch, I). Spacing on 4 / 8 / 12 / 16 / 24 -->
         <Grid x:Name="ReplayViewer" Visibility="Collapsed">
-          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="350"/></Grid.ColumnDefinitions>
-          <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-          <Border Style="{StaticResource Panel}" ClipToBounds="True" Background="#090E15">
-            <Grid>
-              <Viewport3D x:Name="RvScene" IsHitTestVisible="False" ClipToBounds="True"/>
-              <local:ReplayView x:Name="RvView"/>
-              <TextBlock x:Name="RvSceneNote" Style="{StaticResource Small}" Margin="16,40,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False"/>
-            </Grid>
-          </Border>
-          <!-- controls and timeline: one row of controls, the time on both sides of the timeline -->
-          <Border Grid.Row="1" Style="{StaticResource Panel}" Margin="0,10,0,0" Padding="14,10">
-            <StackPanel>
-              <Grid>
-                <StackPanel Orientation="Horizontal">
-                  <Button Style="{StaticResource Outline}" Width="38" Height="34" Padding="0" Click="RvStepBack_Click" ToolTip="One frame back (Left, Shift + Left: one second)"><Path Data="M14,6 L8,12 L14,18 M18,6 V18" Stroke="{StaticResource Text}" StrokeThickness="1.8" Width="13" Height="13" Stretch="Uniform"/></Button>
-                  <Button x:Name="RvPlay" Style="{StaticResource Primary}" Width="56" Height="34" Margin="6,0" Click="RvPlay_Click" ToolTip="Play / pause (Space)">
-                    <Path x:Name="RvPlayIcon" Data="{StaticResource IcoPlay}" Fill="#06121D" Width="13" Height="13" Stretch="Uniform"/>
-                  </Button>
-                  <Button Style="{StaticResource Outline}" Width="38" Height="34" Padding="0" Click="RvStepFwd_Click" ToolTip="One frame forward (Right, Shift + Right: one second)"><Path Data="M10,6 L16,12 L10,18 M6,6 V18" Stroke="{StaticResource Text}" StrokeThickness="1.8" Width="13" Height="13" Stretch="Uniform"/></Button>
-                  <Border Width="1" Height="24" Background="{StaticResource Line}" Margin="10,0"/>
-                  <StackPanel x:Name="RvSpeeds" Orientation="Horizontal" VerticalAlignment="Center"/>
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                  <CheckBox x:Name="RvModels" Style="{StaticResource RvChip}" Content="Models" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="The game's own fighters and stage, from your game files (M)"/>
-                  <CheckBox x:Name="RvHit" Style="{StaticResource RvChip}" Content="Hitboxes" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where the attacks hit (H)"/>
-                  <CheckBox x:Name="RvHurt" Style="{StaticResource RvChip}" Content="Hurtboxes" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where the fighters can be hit (U)"/>
-                  <CheckBox x:Name="RvGrab" Style="{StaticResource RvChip}" Content="Grabs" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where grabs and the specials that grab can catch, in violet; dashed: a command grab (G)"/>
-                  <CheckBox x:Name="RvFollow" Style="{StaticResource RvChip}" Content="Follow" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="The camera follows the fighters; off: the whole stage and its blast zones (F)"/>
-                </StackPanel>
-              </Grid>
-              <Grid Margin="0,8,0,0">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="44"/></Grid.ColumnDefinitions>
-                <TextBlock x:Name="RvNow" Text="0:00" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="16" Foreground="{StaticResource Text}" VerticalAlignment="Center"/>
-                <local:ReplayTimeline x:Name="RvTimeline" Grid.Column="1" Height="42" Cursor="Hand"/>
-                <TextBlock x:Name="RvTotal" Grid.Column="2" Text="0:00" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="16" Foreground="{StaticResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Right"/>
-              </Grid>
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+          <!-- header -->
+          <Grid Margin="0,0,0,16">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <Button Style="{StaticResource RvTool}" Width="40" Height="40" Click="RvBack_Click" ToolTip="All replays (Esc)" VerticalAlignment="Center" Margin="0,0,12,0">
+              <Path Data="{StaticResource IcoBack}" Style="{StaticResource Ico}" Width="16" Height="13"/>
+            </Button>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+              <TextBlock x:Name="RvTitle" Style="{StaticResource SectionTitle}" FontSize="26" TextTrimming="CharacterEllipsis"/>
+              <TextBlock x:Name="RvSub" Style="{StaticResource Small}" FontSize="13.5" Margin="1,1,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
             </StackPanel>
-          </Border>
-          <!-- side panel: the match, the stats, the move data -->
-          <Border Grid.Column="2" Grid.RowSpan="2" Style="{StaticResource Panel}" Padding="22,20">
-            <DockPanel>
-              <Button DockPanel.Dock="Top" Style="{StaticResource Link}" HorizontalAlignment="Left" Click="RvBack_Click" Margin="0,0,0,14">
-                <StackPanel Orientation="Horizontal">
-                  <Path Data="{StaticResource IcoBack}" Style="{StaticResource Ico}" Width="16" Height="13"/>
-                  <TextBlock Text="All replays" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Margin="10,0,0,0" FontSize="16"/>
-                </StackPanel>
-              </Button>
-              <TextBlock DockPanel.Dock="Top" x:Name="RvTitle" Style="{StaticResource SectionTitle}" FontSize="28" TextWrapping="Wrap"/>
-              <TextBlock DockPanel.Dock="Top" x:Name="RvSub" Style="{StaticResource Small}" Margin="0,4,0,12"/>
-              <TextBlock DockPanel.Dock="Bottom" x:Name="RvCredit" Style="{StaticResource Small}" FontSize="12.5" Foreground="{StaticResource Dim}" Margin="0,12,0,0"
-                         Text="Hitboxes, hurtboxes, positions and damage: as the game reported them during the match. Move names and frame data: Ultimate Frame Data / MetalMusicMan; Smash Ultimate hitboxes: Zeckemyro (ultimateframedata.com)."/>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
+              <CheckBox x:Name="RvModels" Style="{StaticResource RvToggle}" Content="Models" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="The game's own fighters and stage, from your game files (M)"/>
+              <CheckBox x:Name="RvFollow" Style="{StaticResource RvToggle}" Content="Follow" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="The camera follows the fighters; off: the whole stage and its blast zones (F)"/>
+              <Border Width="1" Height="20" Background="{StaticResource Line}" Margin="6,0,12,0"/>
+              <CheckBox x:Name="RvLegendOn" Style="{StaticResource RvToggle}" Content="Legend" IsChecked="False" Checked="RvPanels_Changed" Unchecked="RvPanels_Changed" ToolTip="What each colour and shape means (L)"/>
+              <CheckBox x:Name="RvInfo" Style="{StaticResource RvToggle}" Content="Players" IsChecked="True" Margin="0" Checked="RvPanels_Changed" Unchecked="RvPanels_Changed" ToolTip="The players' cards on the right: the move they are making, their stats (I)"/>
+            </StackPanel>
+          </Grid>
+          <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="RvGapCol" Width="16"/><ColumnDefinition x:Name="RvSideCol" Width="340"/></Grid.ColumnDefinitions>
+            <!-- the player: the stage, its controls under it in the same card -->
+            <Border Style="{StaticResource Panel}" ClipToBounds="True" Background="#090E15">
+              <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Grid ClipToBounds="True">
+                  <Viewport3D x:Name="RvScene" IsHitTestVisible="False" ClipToBounds="True"/>
+                  <local:ReplayView x:Name="RvView"/>
+                  <TextBlock x:Name="RvSceneNote" Style="{StaticResource Small}" FontSize="13" Margin="16,14,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False"/>
+                  <!-- the legend: what each colour and shape of the drawing means (L) -->
+                  <Border x:Name="RvLegend" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,12,12,12" Width="300"
+                          Background="#F20D151F" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="16,12,8,12">
+                    <DockPanel>
+                      <Grid DockPanel.Dock="Top" Margin="0,0,8,8">
+                        <TextBlock Text="LEGEND" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                        <Button Style="{StaticResource RvTool}" Width="24" Height="24" HorizontalAlignment="Right" Click="RvLegendClose_Click" ToolTip="Close (L)">
+                          <Path Data="M6,6 L18,18 M18,6 L6,18" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="9" Height="9" Stretch="Uniform"/>
+                        </Button>
+                      </Grid>
+                      <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+                        <StackPanel>
+                          <StackPanel x:Name="RvLegendItems"/>
+                          <Border Height="1" Background="{StaticResource Line}" Margin="0,10,0,10"/>
+                          <TextBlock Style="{StaticResource Small}" FontSize="11.5" Foreground="{StaticResource Dim}" TextWrapping="Wrap" LineHeight="16"
+                                     Text="Hitboxes, hurtboxes, positions and damage: as the game reported them during the match. Move names and frame data: Ultimate Frame Data / MetalMusicMan; Smash Ultimate hitboxes: Zeckemyro (ultimateframedata.com)."/>
+                        </StackPanel>
+                      </ScrollViewer>
+                    </DockPanel>
+                  </Border>
+                </Grid>
+                <!-- controls: the timeline, then one row: playback and frame | speed | what is drawn -->
+                <Border Grid.Row="1" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="16,12,16,12">
+                  <StackPanel>
+                    <Grid>
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*"/><ColumnDefinition Width="48"/></Grid.ColumnDefinitions>
+                      <TextBlock x:Name="RvNow" Text="0:00" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="15" Foreground="{StaticResource Text}" VerticalAlignment="Center"/>
+                      <local:ReplayTimeline x:Name="RvTimeline" Grid.Column="1" Height="36" Cursor="Hand"/>
+                      <TextBlock x:Name="RvTotal" Grid.Column="2" Text="0:00" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="15" Foreground="{StaticResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                    </Grid>
+                    <Grid Margin="0,10,0,0">
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Style="{StaticResource RvTool}" Click="RvStepBack_Click" ToolTip="One frame back (Left; Shift + Left: one second)">
+                          <Path Data="M14,6 L8,12 L14,18 M18,6 V18" Style="{StaticResource Ico}" Width="12" Height="12"/>
+                        </Button>
+                        <Button x:Name="RvPlay" Style="{StaticResource Primary}" Width="44" Height="36" Margin="4,0" Click="RvPlay_Click" ToolTip="Play / pause (Space)">
+                          <Path x:Name="RvPlayIcon" Data="{StaticResource IcoPlay}" Fill="#06121D" Width="12" Height="12" Stretch="Uniform"/>
+                        </Button>
+                        <Button Style="{StaticResource RvTool}" Click="RvStepFwd_Click" ToolTip="One frame forward (Right; Shift + Right: one second)">
+                          <Path Data="M10,6 L16,12 L10,18 M6,6 V18" Style="{StaticResource Ico}" Width="12" Height="12"/>
+                        </Button>
+                        <StackPanel Margin="12,0,0,0" VerticalAlignment="Center" MinWidth="58">
+                          <TextBlock Text="FRAME" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
+                          <TextBlock x:Name="RvFrame" Text="0" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="16" Foreground="{StaticResource Text}" Margin="0,-2,0,0"/>
+                        </StackPanel>
+                      </StackPanel>
+                      <Border Grid.Column="1" Background="{StaticResource BgDeep}" CornerRadius="6" Padding="2" Margin="12,0,0,0" VerticalAlignment="Center" ToolTip="Playback speed">
+                        <StackPanel x:Name="RvSpeeds" Orientation="Horizontal"/>
+                      </Border>
+                      <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                        <CheckBox x:Name="RvHit" Style="{StaticResource RvToggle}" Content="Hitboxes" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where the attacks hit (H)">
+                          <CheckBox.Tag><SolidColorBrush Color="#FF8A1F"/></CheckBox.Tag>
+                        </CheckBox>
+                        <CheckBox x:Name="RvHurt" Style="{StaticResource RvToggle}" Content="Hurtboxes" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where the fighters can be hit (U)">
+                          <CheckBox.Tag><SolidColorBrush Color="#B6D4E8"/></CheckBox.Tag>
+                        </CheckBox>
+                        <CheckBox x:Name="RvGrab" Style="{StaticResource RvToggle}" Content="Grabs" IsChecked="True" Margin="0" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where grabs and the specials that grab can catch; dashed: a command grab (G)">
+                          <CheckBox.Tag><SolidColorBrush Color="#C77DFF"/></CheckBox.Tag>
+                        </CheckBox>
+                      </StackPanel>
+                    </Grid>
+                  </StackPanel>
+                </Border>
+              </Grid>
+            </Border>
+            <!-- the players: one card each (BuildStats) -->
+            <Border x:Name="RvSide" Grid.Column="2" Style="{StaticResource Panel}" ClipToBounds="True">
               <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <StackPanel x:Name="RvStats"/>
+                <StackPanel x:Name="RvStats" Margin="20,20,20,20"/>
               </ScrollViewer>
-            </DockPanel>
-          </Border>
+            </Border>
+          </Grid>
         </Grid>
       </Grid>
 
@@ -622,7 +688,7 @@
               </StackPanel>
             </Button>
             <StackPanel>
-              <RadioButton x:Name="SecPlayer" Style="{StaticResource SideTab}" Content="Player" IsChecked="True" Checked="Section_Checked"/>
+              <RadioButton x:Name="SecPlayer" Style="{StaticResource SideTab}" Content="Account" IsChecked="True" Checked="Section_Checked"/>
               <RadioButton x:Name="SecOnline" Style="{StaticResource SideTab}" Content="Online" Checked="Section_Checked"/>
               <RadioButton x:Name="SecReplays" Style="{StaticResource SideTab}" Content="Replays" Checked="Section_Checked"/>
               <RadioButton x:Name="SecVideo" Style="{StaticResource SideTab}" Content="Video" Checked="Section_Checked"/>
@@ -642,7 +708,7 @@
 
               <!-- player -->
               <StackPanel x:Name="BoxPlayer">
-                <TextBlock Text="PLAYER" Style="{StaticResource SectionTitle}"/>
+                <TextBlock Text="ACCOUNT" Style="{StaticResource SectionTitle}"/>
                 <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,26" Text="Your SSBU Arena account: its name is the one other players see online."/>
                 <!-- signed in -->
                 <StackPanel x:Name="AccountBox">
@@ -651,6 +717,9 @@
                   <TextBlock x:Name="AccountEmail" Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,0"/>
                   <TextBlock Text="PROFILE PICTURE" Style="{StaticResource FieldLabel}" Margin="0,22,0,4"/>
                   <TextBlock x:Name="AvatarNote" Style="{StaticResource Small}" Margin="0,0,0,10" TextWrapping="Wrap" MaxWidth="700" HorizontalAlignment="Left"/>
+                  <Border x:Name="AvatarTabsWell" Background="{StaticResource BgDeep}" CornerRadius="6" Padding="2" Margin="0,0,0,12" HorizontalAlignment="Left">
+                    <StackPanel x:Name="AvatarTabs" Orientation="Horizontal"/>
+                  </Border>
                   <WrapPanel x:Name="AvatarGrid"/>
                   <WrapPanel Margin="0,22,0,0">
                     <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="ManageAccount_Click" FontSize="16">Manage account</Button>
