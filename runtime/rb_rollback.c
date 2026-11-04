@@ -715,6 +715,8 @@ static void rbg_fight_off(void) {
 static int cmp_f(const void *a, const void *b) { float x = *(const float *)a, y = *(const float *)b; return x < y ? -1 : x > y; }
 /* (OpenSmash phase, from Rsoto95 ec9e39e) os_threads.c: may a network thread go on after a sleep? Only once no load can go back before
  * the frame now on: in a rollback match, the next real pass's frame has both players' pads. 1 = yes. */
+/* (OpenSmash phase) nnhid.c: ports 1 and 2 get the same pad on both games (an online rollback match is on: rbg_pad gives them) */
+int rbg_pad_synced(int id) { return (id == 0 || id == 1) && g_rbg > 0 && g_rbg_in_match == 1; }
 int rbg_net_thread_may_run(void) {
     if (g_rbg_in_match != 1 || !g_rg_ready || g_rbg_noring || g_rgs_next < 1) return 1;
     return rbn_confirmed() >= g_rgs_next;

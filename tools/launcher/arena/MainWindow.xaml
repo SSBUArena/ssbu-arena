@@ -792,6 +792,37 @@
                   <TextBlock x:Name="DeadZoneText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
                 </StackPanel>
                 <TextBlock Style="{StaticResource Small}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="How far a stick moves before the game sees it. In the test the gray dot is the real stick, the blue one what the game gets, and the dashed circle the dead zone. Raise it if your character moves by itself. It applies in the game within a second, also while it runs. A value set for one controller in the game's menu wins over this one."/>
+                <TextBlock Text="STICK OUTER ZONE" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
+                <StackPanel Orientation="Horizontal">
+                  <Slider x:Name="OuterZoneSlider" Width="300" Minimum="60" Maximum="100" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="PadGeneral_Changed"/>
+                  <TextBlock x:Name="OuterZoneText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
+                </StackPanel>
+                <TextBlock Style="{StaticResource Small}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="How far a stick must go for a full tilt. Lower it if a worn stick never reaches the edge (no dash, no smash attack). 98 % is the default."/>
+                <TextBlock Text="TRIGGERS (ZL / ZR) PRESSED FROM" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
+                <StackPanel Orientation="Horizontal">
+                  <Slider x:Name="TriggerSlider" Width="300" Minimum="5" Maximum="95" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="PadGeneral_Changed"/>
+                  <TextBlock x:Name="TriggerText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
+                </StackPanel>
+                <TextBlock Style="{StaticResource Small}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="How far an analog trigger must be pressed to count as ZL / ZR. Lower = lighter press. 33 % is the default."/>
+                <CheckBox x:Name="RumbleBox" Style="{StaticResource Switch}" Margin="0,24,0,0" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed">
+                  <StackPanel>
+                    <TextBlock Text="Vibration" FontSize="16"/>
+                    <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="The controller vibrates when the game asks for it."/>
+                  </StackPanel>
+                </CheckBox>
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                  <Slider x:Name="RumbleSlider" Width="300" Minimum="0" Maximum="200" SmallChange="5" LargeChange="25" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="PadGeneral_Changed"/>
+                  <TextBlock x:Name="RumbleText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
+                </StackPanel>
+                <TextBlock Style="{StaticResource Small}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="Vibration strength (100 % = as the game asks)."/>
+                <TextBlock Text="INVERT STICK AXES" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
+                <WrapPanel>
+                  <CheckBox x:Name="InvLX" Style="{StaticResource Switch}" Margin="0,0,24,8" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Left stick left / right" FontSize="16"/></CheckBox>
+                  <CheckBox x:Name="InvLY" Style="{StaticResource Switch}" Margin="0,0,24,8" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Left stick up / down" FontSize="16"/></CheckBox>
+                  <CheckBox x:Name="InvRX" Style="{StaticResource Switch}" Margin="0,0,24,8" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Right stick left / right" FontSize="16"/></CheckBox>
+                  <CheckBox x:Name="InvRY" Style="{StaticResource Switch}" Margin="0,0,24,8" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Right stick up / down" FontSize="16"/></CheckBox>
+                </WrapPanel>
+                <TextBlock Style="{StaticResource Small}" Margin="0,2,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="For every controller. All these settings apply in the game within a second, also while it runs, and only on this PC: online the other player gets your moves, not your settings."/>
                 <TextBlock Text="BUTTONS" Style="{StaticResource FieldLabel}" Margin="0,30,0,6"/>
                 <TextBlock Style="{StaticResource Small}" Margin="0,0,0,14" TextWrapping="Wrap"
                            Text="Which button of your controller presses each button of the game (Xbox, PlayStation and other controllers). Smash's own Options > Controls can still change what each button does."/>

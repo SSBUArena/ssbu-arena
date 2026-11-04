@@ -80,6 +80,11 @@ namespace Arena
         public static bool CloseToTray;                                   // (0.2.26) launcher.ini close_to_tray: the X leaves the launcher in the notification area
         public static int StageBg;                                        // (0.2.20) launcher.ini stage_bg: 0 original, 1 black, 2 custom (SSBU_STAGE_BG)
         public static double DeadZone = 0.10;                             // (0.2.20) controllers.ini [general] deadzone
+        public static double OuterZone = 0.98;                            // (0.2.31) controllers.ini [general] outer_zone: full deflection from there
+        public static double TriggerThreshold = 0.33;                     // (0.2.31) [general] trigger_threshold: ZL / ZR count as pressed from there
+        public static bool Rumble = true;                                 // (0.2.31) [general] rumble
+        public static double RumbleStrength = 1.0;                        // (0.2.31) [general] rumble_strength (0..2)
+        public static bool[] Invert = new bool[4];                        // (0.2.31) [general] invert.LX / LY / RX / RY (on top of a device's own setting)
         public static int ShaderLoad;                                     // (0.2.19) launcher.ini shader_load: 0 automatic, 1 all at the start, 2 per match (graphics.ini shader_load)
         public static bool CrashReports = true;                           // (0.2.18) launcher.ini crash_reports (CrashReport.cs)
         public static int InputDelay;                                     // (0.2.14) launcher.ini input_delay: 0 automatic, 1..5 frames (SSBU_RB_NET_DELAY)
@@ -180,7 +185,12 @@ namespace Arena
                 if (kv.Key.StartsWith("map.") && DefaultButtons.ContainsKey(kv.Key.Substring(4).ToUpperInvariant()) && PadSources.Any(x => x.Item1 == kv.Value.Trim().ToLowerInvariant()))
                     Buttons[kv.Key.Substring(4).ToUpperInvariant()] = kv.Value.Trim().ToLowerInvariant();
             var P = ReadIni(PadIni);
-            { var gen = ReadIniSection(PadIni, "general"); if (gen.TryGetValue("deadzone", out var dz) && double.TryParse(dz, NumberStyles.Float, CultureInfo.InvariantCulture, out var dzv)) DeadZone = Math.Max(0, Math.Min(0.4, dzv)); }
+            { var gen = ReadIniSection(PadIni, "general"); if (gen.TryGetValue("deadzone", out var dz) && double.TryParse(dz, NumberStyles.Float, CultureInfo.InvariantCulture, out var dzv)) DeadZone = Math.Max(0, Math.Min(0.4, dzv));
+              double D(string k, double def, double lo, double hi) => gen.TryGetValue(k, out var v) && double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? Math.Max(lo, Math.Min(hi, d)) : def;
+              bool B(string k, bool def) { if (!gen.TryGetValue(k, out var v)) return def; v = v.Trim().ToLowerInvariant(); return v == "on" || v == "1" || v == "true" || v == "yes"; }
+              OuterZone = D("outer_zone", 0.98, 0.5, 1.0); TriggerThreshold = D("trigger_threshold", 0.33, 0.05, 0.95);
+              Rumble = B("rumble", true); RumbleStrength = D("rumble_strength", 1.0, 0, 2.0);
+              for (int i = 0; i < 4; i++) Invert[i] = B("invert." + StickAxes[i], false); }
             Player1 = (Get(P, "player1") ?? "auto").ToLowerInvariant();
             Player2 = (Get(P, "player2") ?? "auto").ToLowerInvariant();
             string kb = Get(P, "player");
@@ -233,6 +243,17 @@ namespace Arena
 
         /// <summary>(0.2.20) the game reloads controllers.ini within a second</summary>
         public static void SaveDeadZone() { SetIniValues(PadIni, "general", new Dictionary<string, string> { { "deadzone", DeadZone.ToString("0.00", CultureInfo.InvariantCulture) } }); }
+        public static readonly string[] StickAxes = { "LX", "LY", "RX", "RY" };
+        /// <summary>(0.2.31) the other [general] keys of controllers.ini the Controllers page shows (the game reloads the file within a second)</summary>
+        public static void SavePadGeneral()
+        {
+            var inv = CultureInfo.InvariantCulture;
+            var d = new Dictionary<string, string> {
+                { "outer_zone", OuterZone.ToString("0.00", inv) }, { "trigger_threshold", TriggerThreshold.ToString("0.00", inv) },
+                { "rumble", Rumble ? "on" : "off" }, { "rumble_strength", RumbleStrength.ToString("0.00", inv) } };
+            for (int i = 0; i < 4; i++) d["invert." + StickAxes[i]] = Invert[i] ? "on" : "off";
+            SetIniValues(PadIni, "general", d);
+        }
 
         public static void Save()
         {

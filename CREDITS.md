@@ -53,5 +53,9 @@ Rewritten for this runtime from the commits named here; their authors keep the c
   final (ec9e39e), received socket bytes through a host buffer before they reach guest memory (fb34212).
   The on-screen warning when the two games of an online match stop agreeing, with sample values in the log (f04166e,
   b085359, c83f0d3).
+  A GameCube trigger pressed past 25% as its L / R button in an online rollback match, and the GameCube ports' triggers from
+  the synced L / R (1888e14, 47a25a5).
+- **OpenSmash-Ultimate** (runtime/hle_pad.c, gpu_menu.c): the idea of inverting the stick axes for every controller from the
+  settings.
 - **Tintae** (branch rb6-rollback-fixes, 4ab16ea): reading the lifted code (game library and nro modules) in ahead on a
   background thread with background-priority I/O, against freezes on hard drives at the first use of a move.
