@@ -2342,7 +2342,11 @@ static void dch_print(uint64_t addr) {
                 g_dch[i].f, nm ? nm : "a host thread", (now - g_dch[i].ms) / 1000.0); } }
     if (!shown) LOG("r1: CRASH address history: none of the last %d game commits / decommits covers it\n", tot);
 }
-void r1_on_decommit(void *p, size_t n) { dch_note(p, n, 1); lb_open((uint64_t)(uintptr_t)p, n); r1_mark_range((uint64_t)(uintptr_t)p, n); ls_range((uint64_t)(uintptr_t)p, n, 1); dc_set(p, n, 1); }
+void r1_on_decommit(void *p, size_t n) {
+    {   static int lg = -1; static volatile LONG k; if (lg < 0) { const char *e = getenv("SSBU_RB_DCLOG"); lg = e && e[0] == '1'; }      /* (TEST) every game decommit */
+        long long rbn_now(void); if (lg && rbn_now() > 0 && InterlockedIncrement(&k) <= 2000) { const char *guest_thread_name_of(DWORD tid); const char *nm = guest_thread_name_of(GetCurrentThreadId());
+            uint8_t *a = (uint8_t *)p; LOG("r1: DCLOG decommit %s+%llx size %zx at net frame %lld by %s\n", g_win1 && a >= g_win1 && a < g_win1 + g_wn1 ? "window1" : "addr", (unsigned long long)(g_win1 && a >= g_win1 && a < g_win1 + g_wn1 ? (uint64_t)(a - g_win1) : (uint64_t)(uintptr_t)a), n, rbn_now(), nm ? nm : "host"); } }
+    dch_note(p, n, 1); lb_open((uint64_t)(uintptr_t)p, n); r1_mark_range((uint64_t)(uintptr_t)p, n); ls_range((uint64_t)(uintptr_t)p, n, 1); dc_set(p, n, 1); }
 void dch_print_fwd(uint64_t a) {
     dch_print(a);
     for (int i = 0; i < g_nr; i++) if (a >= (uint64_t)(uintptr_t)g_r[i].a && a < (uint64_t)(uintptr_t)g_r[i].a + g_r[i].n)
