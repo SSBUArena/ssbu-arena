@@ -51,5 +51,7 @@ Rewritten for this runtime from the commits named here; their authors keep the c
 
 - **Rsoto95** (fork of ssbu-recomp): the game's network threads (NetSystem, Pia) going on after a sleep only once the frame is
   final (ec9e39e), received socket bytes through a host buffer before they reach guest memory (fb34212).
+  The on-screen warning when the two games of an online match stop agreeing, with sample values in the log (f04166e,
+  b085359, c83f0d3).
 - **Tintae** (branch rb6-rollback-fixes, 4ab16ea): reading the lifted code (game library and nro modules) in ahead on a
   background thread with background-priority I/O, against freezes on hard drives at the first use of a move.
