@@ -671,7 +671,12 @@ static void rv_begin(void) {
         const char *n = getenv("SSBU_ONLINE_NAME"); if (!n || !*n) n = getenv("SSBU_NICKNAME");
         if (n) snprintf(g_rv_head.local_name, sizeof g_rv_head.local_name, "%.31s", n);
         if (n && *n && g_rv_head.kind && g_rv_head.local_player < g_rv_head.nfighters)
-            snprintf(g_rv_head.fighter[g_rv_head.local_player].name, sizeof g_rv_head.fighter[0].name, "%.31s", n); }
+            snprintf(g_rv_head.fighter[g_rv_head.local_player].name, sizeof g_rv_head.fighter[0].name, "%.31s", n);
+        /* (0.2.34) the opponent of an online 1v1 by their name (the room's other player, or the lobby's match), not "Player N" */
+        const char *rbn_peer_name(void); const char *pn = g_rv_head.kind && g_rv_head.nfighters == 2 && g_rv_head.local_player < 2 ? rbn_peer_name() : NULL;
+        int other = 1 - (int)g_rv_head.local_player;
+        if (pn && *pn && g_rv_head.fighter[other].type == 0)
+            snprintf(g_rv_head.fighter[other].name, sizeof g_rv_head.fighter[0].name, "%.31s", pn); }
     if (!g_rv_buf) { g_rv_cap = (size_t)8 << 20; g_rv_buf = malloc(g_rv_cap); if (!g_rv_buf) g_rv_cap = 0; }      /* (about 7 minutes: no growth on the main thread in most matches) */
     printf("[rv] recording the match state (%s): %d fighters, stage %llx\n", g_rv_mrb ? "final frames of the rollback session" : "every frame", g_rv_head.nfighters, (unsigned long long)g_rv_head.ui_stage);
     fflush(stdout);

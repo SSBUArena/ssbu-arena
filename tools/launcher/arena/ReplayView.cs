@@ -456,15 +456,16 @@ namespace Arena
         void DrawHud(DrawingContext dc, RvFrame fr, double W, double H, double hudH)
         {
             int n = r.Fighters.Count;
-            double cardW = Math.Min(270, (W - 40) / Math.Max(n, 1) - 12), total = n * (cardW + 12) - 12, x = (W - total) / 2, y = H - hudH + 8;
-            dc.DrawRectangle(RvPalette.B(RvPalette.Navy, .92), null, new Rect(0, H - hudH, W, hudH));
-            dc.DrawLine(RvPalette.P(RvPalette.Line, 1, 1), new Point(0, H - hudH), new Point(W, H - hudH));
-            for (int k = 0; k < n; k++, x += cardW + 12)
+            double cardW = Math.Min(240, (W - 40) / Math.Max(n, 1) - 32), total = n * (cardW + 32) - 32, x = (W - total) / 2, y = H - hudH + 8;
+            // (0.2.34) a fade under the cards, not a band: the stage stays visible down to the controls
+            var fade = new LinearGradientBrush(new GradientStopCollection { new GradientStop(Color.FromArgb(0, 9, 14, 21), 0), new GradientStop(Color.FromArgb(215, 9, 14, 21), .4), new GradientStop(Color.FromArgb(245, 9, 14, 21), 1) }, 90); fade.Freeze();
+            dc.DrawRectangle(fade, null, new Rect(0, H - hudH - 24, W, hudH + 24));
+            for (int k = 0; k < n; k++, x += cardW + 32)
             {
                 var f = r.Fighters[k]; var s = fr.F[k] ?? fr.Extra?.FirstOrDefault(e => e.Key == k).Value; int pc = k % 4;      // (a Pokemon Trainer's other Pokemon)
                 var rect = new Rect(x, y, cardW, hudH - 16);
-                dc.DrawRoundedRectangle(RvPalette.B(RvPalette.Surface), RvPalette.P(RvPalette.Line, 1, 1), rect, 6, 6);
-                dc.DrawRectangle(playerB[pc], null, new Rect(x, y + 7, 3, rect.Height - 14));
+                // (0.2.34) no card: the player's bar and the text straight on the fade
+                dc.DrawRoundedRectangle(playerB[pc], null, new Rect(x, y + 6, 3, rect.Height - 12), 1.5, 1.5);
                 double nameW = Math.Max(20, cardW - 112);      // (the damage has the right side)
                 var fn = Text(f.FighterName.ToUpperInvariant(), 13, MutedB, UiBold); fn.MaxTextWidth = nameW; fn.MaxLineCount = 1; fn.Trimming = TextTrimming.CharacterEllipsis;
                 var pn = Text(f.Name, 14, TextB, Ui); pn.MaxTextWidth = nameW; pn.MaxLineCount = 1; pn.Trimming = TextTrimming.CharacterEllipsis;
@@ -485,10 +486,7 @@ namespace Arena
                     if (mv != null) { var m = Text(mv, 12, playerB[pc], Ui); dc.DrawText(m, new Point(x + cardW - 10 - m.Width, y + rect.Height - 19)); }
                 }
             }
-            // the frame (the time is beside the timeline)
-            dc.DrawText(Text("FRAME " + fr.Number, 13, MutedB, UiBold), new Point(16, 12));
-            var st = Text(r.StageName.ToUpperInvariant(), 13, DimB, UiBold);
-            dc.DrawText(st, new Point(W - st.Width - 16, 12));
+            // (the frame number is beside the playback buttons, the stage in the header)
         }
 
         static Color DamageColour(double d)

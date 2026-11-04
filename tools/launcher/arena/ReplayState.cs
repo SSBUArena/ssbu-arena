@@ -312,7 +312,7 @@ namespace Arena
     /// <summary>the match's numbers for the side panel</summary>
     public sealed class ReplayStats
     {
-        public sealed class Ko { public int Frame, Fighter; public float X, Y; public string Where; }
+        public sealed class Ko { public int Frame, Fighter; public float X, Y, Damage; public string Where; }      // Damage: the percent the fighter had when the stock was lost
         public sealed class PerFighter { public float DamageDealt, DamageTaken; public int StocksLost, Hits; public List<KeyValuePair<string, int>> Moves = new List<KeyValuePair<string, int>>(); }
         public List<Ko> Kos = new List<Ko>();
         public PerFighter[] P;
@@ -344,7 +344,7 @@ namespace Arena
                         {
                             st.P[k].StocksLost += p.Stocks - s.Stocks;
                             var a = lastAlive[k] ?? p;
-                            st.Kos.Add(new Ko { Frame = fr.Number, Fighter = k, X = a.X, Y = a.Y, Where = KoSide(r, a) });
+                            st.Kos.Add(new Ko { Frame = fr.Number, Fighter = k, X = a.X, Y = a.Y, Damage = Math.Max(a.Damage, p.Damage), Where = KoSide(r, a) });
                         }
                         if (s.Motion != p.Motion && s.Hits.Length >= 0)
                         {

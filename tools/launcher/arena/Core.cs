@@ -354,6 +354,9 @@ namespace Arena
         {
             try
             {
+                // (0.2.34) any of the game's profile icons: icon_<number> (avatars\all, its picture there)
+                if (fighter != null && fighter.StartsWith("icon_", StringComparison.Ordinal) && int.TryParse(fighter.Substring(5), out int any))
+                    return any >= 0 && any < 0x10000 && File.Exists(Path.Combine(AvatarsDir, "all", fighter + ".png")) ? any : -1;
                 string f = Path.Combine(AvatarsDir, "icons.txt");
                 if (string.IsNullOrEmpty(fighter) || !File.Exists(f)) return -1;
                 foreach (var l in File.ReadAllLines(f))
@@ -395,7 +398,7 @@ namespace Arena
         {
             try
             {
-                if ((File.Exists(Path.Combine(AvatarsDir, "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "more", "done.txt"))) || Repo == null || RomFS == null) return;
+                if ((File.Exists(Path.Combine(AvatarsDir, "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "more", "done.txt")) && File.Exists(Path.Combine(AvatarsDir, "all", "icons.txt"))) || Repo == null || RomFS == null) return;      // (0.2.34: all, every profile icon)
                 string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\ui\extract_fighter_icons.py"), arc = Path.Combine(RomFS, "data.arc");
                 if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return;
                 var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + AvatarsDir + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };

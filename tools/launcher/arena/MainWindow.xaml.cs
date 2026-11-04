@@ -27,7 +27,7 @@ namespace Arena
         public MainWindow()
         {
             InitializeComponent();
-            VersionText.Text = "v" + Updater.Current.ToString(3);      // (0.2.11) the release in use, in the status bar after the online state
+            VersionText.Text = "v" + Updater.Current.ToString(3); HomeNewsVersion.Text = Updater.Current.ToString(3);      // (0.2.11) the release in use, in the status bar after the online state
             // (0.2.18) opens at the design size (DesignW x DesignH under the title bar: the page is not scaled, its text is sharp) when
             // the screen has room, else at 88 % of the work area in the same shape
             {   var wa = SystemParameters.WorkArea; double dw = DesignW, dh = DesignH + 36, k = Math.Min(1.0, Math.Min(wa.Width * 0.88 / dw, wa.Height * 0.88 / dh));
@@ -560,6 +560,7 @@ namespace Arena
         void Controller_Click(object sender, RoutedEventArgs e) { OpenSettings(SecPads); FindPads(); }
         void Files_Click(object sender, RoutedEventArgs e) { OpenSettings(SecFiles); }
         void Community_Click(object sender, RoutedEventArgs e) { TabCommunity.IsChecked = true; }
+        void Changes_Click(object sender, RoutedEventArgs e) { TabChanges.IsChecked = true; }      // (0.2.34) the home page's What's new card
         void Site_Click(object sender, RoutedEventArgs e) { Core.Open(Core.Site); }
         void Project_Click(object sender, RoutedEventArgs e) { Core.Open(Core.Site + "project"); }
         void Started_Click(object sender, RoutedEventArgs e) { Core.Open(Core.Site + "getting-started"); }

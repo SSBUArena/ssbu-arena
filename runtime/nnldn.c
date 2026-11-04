@@ -493,6 +493,21 @@ uint32_t nnldn_other_ip(void) {
     ReleaseSRWLockShared(&L.lock);
     return n == 1 ? r : 0;
 }
+/* (0.2.34) the user name of THE other player of this room (as nnldn_other_ip: exactly one other node), for the replay
+ * recorder; returns its length, 0 = none or more than one */
+int nnldn_other_name(char *out, int max) {
+    uint32_t me = net_my_ip(); int n = 0, len = 0;
+    if (max <= 0) return 0;
+    out[0] = 0;
+    AcquireSRWLockShared(&L.lock);
+    if (in_network()) for (int i = 0; i < 8; i++) if (L.net[NODE(i) + 0xb]) {
+        uint32_t ip = u32at(L.net + NODE(i));
+        if (ip && ip != me) { n++; len = (int)strnlen((const char *)L.net + NODE(i) + 0xc, 32); if (len > max - 1) len = max - 1; memcpy(out, L.net + NODE(i) + 0xc, len); out[len] = 0; }
+    }
+    ReleaseSRWLockShared(&L.lock);
+    if (n != 1) { out[0] = 0; return 0; }
+    return len;
+}
 /* the address of each node of this player's room (0 = no node in that slot), in the room's node order; 0 = not in a room */
 int nnldn_node_ips(uint32_t *ips, int max) {
     int n = 0;
