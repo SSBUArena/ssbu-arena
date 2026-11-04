@@ -1282,7 +1282,8 @@ static int ini_player_name(char *out, size_t n) {          /* `player_name = <na
     return found;
 }
 /* The nickname of the console user: SSBU_NICKNAME, else the name chosen in the settings menu (graphics.ini player_name),
- * else the name of the Windows user: UTF-8, at most 32 bytes, NUL-terminated, in the 33-byte Nickname. */
+ * else "Player": UTF-8, at most 32 bytes, NUL-terminated, in the 33-byte Nickname. Never the name of the Windows user
+ * (0.2.29): an empty SSBU_NICKNAME from the launcher showed it to the other players in online rooms. */
 static void acc_GetNickname(Ctx *c) {
     static char name[33];
     static volatile LONG ready;
@@ -1294,12 +1295,7 @@ static void acc_GetNickname(Ctx *c) {
         if (online) env = online;
 #endif
         if (env && env[0]) snprintf(utf8, sizeof utf8, "%s", env);
-        else if (ini_player_name(utf8, sizeof utf8)) {}                  /* F1 > Experimental > Your name (graphics.ini player_name) */
-        else {
-            wchar_t wname[257] = L"";
-            DWORD n = 257;
-            if (GetUserNameW(wname, &n)) WideCharToMultiByte(CP_UTF8, 0, wname, -1, utf8, sizeof utf8, NULL, NULL);
-        }
+        else ini_player_name(utf8, sizeof utf8);                          /* F1 > Experimental > Your name (graphics.ini player_name) */
         if (!utf8[0]) strcpy(utf8, "Player");
         size_t len = strlen(utf8);
         if (len > 32) { len = 32; while (len > 0 && ((unsigned char)utf8[len] & 0xc0) == 0x80) len--; }   /* cut between characters */
