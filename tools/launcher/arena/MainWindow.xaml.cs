@@ -268,8 +268,9 @@ namespace Arena
                 pair.Item1.ItemsSource = names.ToList();
                 pair.Item1.SelectedIndex = padGuids.IndexOf(pair.Item2);
             }
-            PadsHelp.Text = "Controllers found: " + pads.Count + ". Automatic: the first controller that connects. None: the slot stays empty.";
+            PadsHelp.Text = pads.Count == 0 ? "No controller found yet: connect one, it appears by itself." : pads.Count + (pads.Count == 1 ? " controller found." : " controllers found.") + " Automatic: the first one that connects; None: the player has none.";
             loading = was;
+            RefreshPads();
         }
 
         // ---------------------------------------------------------------- settings
@@ -365,7 +366,9 @@ namespace Arena
             foreach (var b in Core.GameButtons)
             {
                 var sp = new StackPanel { Margin = new Thickness(0, 0, 18, 12) };
-                sp.Children.Add(new TextBlock { Text = b.Item2, FontSize = 15, Foreground = Res("Muted"), Margin = new Thickness(0, 0, 0, 4) });
+                // (0.2.33) the game button and what it does in Smash's default controls
+                string act = PadDiagram.Action.TryGetValue(b.Item1, out var a) && a != "" ? "  ·  " + a : "";
+                sp.Children.Add(new TextBlock { Text = b.Item2 + act, FontSize = 15, Foreground = Res("Muted"), Margin = new Thickness(0, 0, 0, 4) });
                 var cb = new ComboBox { Tag = b.Item1, Width = 330, HorizontalAlignment = HorizontalAlignment.Left, ItemsSource = Core.PadSources.Select(x => x.Item2).ToList() };
                 cb.SelectedIndex = Math.Max(0, Core.PadSources.FindIndex(x => x.Item1 == (Core.Buttons.TryGetValue(b.Item1, out var v) ? v : "")));
                 cb.SelectionChanged += (s, e) => Field_Changed(s, e);

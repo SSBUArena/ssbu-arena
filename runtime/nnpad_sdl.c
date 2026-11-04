@@ -872,7 +872,14 @@ static int pad_test(int seconds) {
  * right stick before the dead zone x, y, the analog triggers L, R (0..32767, -1 none), the kind of controller (0 Xbox, 1 PlayStation,
  * 2 Switch, 3 GameCube, 4 other pad, 5 joystick), outer zone, trigger threshold. Ends when stdin closes (the launcher went away).
  * SSBU_PAD_LIVE_VIRTUAL=1: a virtual pad that moves by itself (test). */
-static DWORD WINAPI live_stdin(void *u) { char b[64]; (void)u; while (fgets(b, sizeof b, stdin)) { } ExitProcess(0); return 0; }
+/* (0.2.33) stdin: "rumble <player>" = the page's "Test vibration": that player's controller vibrates half a second, with its vibration
+ * settings (on / off, strength) as the game would use them */
+static volatile LONG g_live_rumble;
+static DWORD WINAPI live_stdin(void *u) {
+    char b[64]; (void)u;
+    while (fgets(b, sizeof b, stdin)) { int p; if (sscanf(b, "rumble %d", &p) == 1 && p >= 1 && p <= 8) InterlockedExchange(&g_live_rumble, p); }
+    ExitProcess(0); return 0;
+}
 static int pad_live(void) {
     uint64_t last[MAXDEV]; int ls[MAXDEV][10]; ULONGLONG at = 0;
     memset(last, 0xff, sizeof last); memset(ls, 0, sizeof ls);
@@ -884,7 +891,11 @@ static int pad_live(void) {
         d.type = SDL_JOYSTICK_TYPE_GAMEPAD; d.vendor_id = 0x1209; d.product_id = 0x0777; d.naxes = SDL_GAMEPAD_AXIS_COUNT; d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT; d.name = "Virtual test pad";
         SDL_JoystickID id = SDL_AttachVirtualJoystick(&d); Sleep(50); nnpad_poll(1); vj = id ? SDL_OpenJoystick(id) : NULL;
     }
+    int rumbling = 0; ULONGLONG rumble_end = 0;
     for (long long tick = 0;; tick++) {
+        {   LONG p = InterlockedExchange(&g_live_rumble, 0);
+            if (p) { if (rumbling) nnpad_rumble(rumbling - 1, 0, 0); rumbling = (int)p; rumble_end = GetTickCount64() + 500; nnpad_rumble(rumbling - 1, 0.8f, 0.8f); printf("rumble\t%d\n", rumbling); }
+            else if (rumbling && GetTickCount64() >= rumble_end) { nnpad_rumble(rumbling - 1, 0, 0); rumbling = 0; } }
         if (vj) {
             SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_SOUTH, (tick / 60) % 2 == 0);
             SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_DPAD_LEFT, (tick / 90) % 2 == 1);
