@@ -19,7 +19,7 @@ using System.Windows.Media.Media3D;
 namespace Arena
 {
     sealed class RvBone { public int Parent; public float[] Local, Inv; }
-    sealed class RvMesh { public int Tex, Vis; public bool Default; public float[] Pos, Nor; public byte[] SkinB; public float[] SkinW; public Int32Collection Idx; public PointCollection Uv; public GeometryModel3D Model; public MeshGeometry3D Geo; }
+    sealed class RvMesh { public int Tex, Vis; public bool Default, Layer; public float[] Pos, Nor; public byte[] SkinB; public float[] SkinW; public Int32Collection Idx; public PointCollection Uv; public GeometryModel3D Model; public MeshGeometry3D Geo; }
     sealed class RvModel
     {
         public RvBone[] Bones; public string[] Vis; public List<RvMesh> Meshes = new List<RvMesh>(); public List<string> Tex = new List<string>();
@@ -40,7 +40,7 @@ namespace Arena
                 for (int i = 0; i < nm; i++)
                 {
                     int tex = b.ReadInt32(), vis = b.ReadInt32(), def = b.ReadInt32(), nv = b.ReadInt32(), ni = b.ReadInt32();
-                    var g = new RvMesh { Tex = tex, Vis = vis, Default = def != 0, Pos = Floats(b, nv * 3), Nor = Floats(b, nv * 3) };
+                    var g = new RvMesh { Tex = tex, Vis = vis, Default = (def & 1) != 0, Layer = (def & 2) != 0, Pos = Floats(b, nv * 3), Nor = Floats(b, nv * 3) };      // (flags 2: replay_assets.py _v4)
                     var uv = Floats(b, nv * 2);
                     g.SkinB = b.ReadBytes(nv * 4); g.SkinW = Floats(b, nv * 4);
                     var idx = new Int32Collection(ni);
@@ -110,6 +110,8 @@ namespace Arena
         }
 
         public bool On = true;
+        /// <summary>the files' folder names of this launcher (replay_assets.py: replays4, _v4)</summary>
+        public const string ListFolder = "replays4";
         public bool StageShown => On && stageOn;
         public bool FighterShown(int k) => On && k < fighters.Length && fighters[k] != null;
         public bool OtherShown(int slot) => On && others.ContainsKey(slot);
@@ -210,9 +212,10 @@ namespace Arena
             }
         }
 
-        static Material Mat(BitmapSource tex)
+        /// <summary>layer: a texture drawn over the mesh under it with its alpha, not repeated (the eyes' iris: transparent around it)</summary>
+        static Material Mat(BitmapSource tex, bool layer = false)
         {
-            Brush b = tex != null ? new ImageBrush(tex) { ViewportUnits = BrushMappingMode.Absolute, TileMode = TileMode.Tile, Viewport = new Rect(0, 0, 1, 1), Stretch = Stretch.Fill }
+            Brush b = tex != null ? new ImageBrush(tex) { ViewportUnits = BrushMappingMode.Absolute, TileMode = layer ? TileMode.None : TileMode.Tile, Viewport = new Rect(0, 0, 1, 1), Stretch = Stretch.Fill }
                                   : (Brush)new SolidColorBrush(Color.FromRgb(0xB0, 0xB0, 0xB0));
             b.Freeze();
             var m = new DiffuseMaterial(b); m.Freeze();
@@ -288,8 +291,8 @@ namespace Arena
                 foreach (var m in f.Model.Meshes)
                 {
                     m.Geo = new MeshGeometry3D { TriangleIndices = m.Idx, TextureCoordinates = m.Uv };
-                    var mat = Mat(TexOf(l, f.Folder, m.Tex));
-                    m.Model = new GeometryModel3D { Material = mat, BackMaterial = mat };
+                    var mat = Mat(TexOf(l, f.Folder, m.Tex), m.Layer);
+                    m.Model = new GeometryModel3D { Material = mat, BackMaterial = m.Layer ? null : mat };
                     f.Group.Children.Add(m.Model);
                 }
                 f.World = new float[f.Model.Bones.Length * 12]; f.Skin = new float[f.Model.Bones.Length * 12];
@@ -297,7 +300,7 @@ namespace Arena
             }
             fighters = l.F;
             foreach (var o in l.Others) if (o.Value != null) others[o.Key] = o.Value;
-            foreach (var o in l.Objects) { objectKinds[o.Key] = o.Value; if (o.Value.Source != null) for (int t = 0; t < o.Value.Source.Tex.Count; t++) { var tx = TexOf(l, o.Value.Folder, t); if (tx != null) o.Value.Mats[t] = Mat(tx); } }
+            foreach (var o in l.Objects) { objectKinds[o.Key] = o.Value; if (o.Value.Source != null) for (int t = 0; t < o.Value.Source.Tex.Count; t++) { var tx = TexOf(l, o.Value.Folder, t); if (tx != null) o.Value.Mats[t] = Mat(tx, o.Value.Source.Meshes.Any(q => q.Tex == t && q.Layer)); } }
         }
 
         static BitmapSource TexOf(Loaded l, string dir, int i)
@@ -374,10 +377,10 @@ namespace Arena
             var f = new Fighter { Model = model, Folder = k.Folder, Group = new Model3DGroup() };
             foreach (var m in k.Source.Meshes)
             {
-                var c = new RvMesh { Tex = m.Tex, Vis = m.Vis, Default = m.Default, Pos = m.Pos, Nor = m.Nor, SkinB = m.SkinB, SkinW = m.SkinW, Idx = m.Idx, Uv = m.Uv };
+                var c = new RvMesh { Tex = m.Tex, Vis = m.Vis, Default = m.Default, Layer = m.Layer, Pos = m.Pos, Nor = m.Nor, SkinB = m.SkinB, SkinW = m.SkinW, Idx = m.Idx, Uv = m.Uv };
                 k.Mats.TryGetValue(m.Tex, out var mat);
                 if (mat == null) mat = Mat(null);
-                c.Model = new GeometryModel3D { Material = mat, BackMaterial = mat };
+                c.Model = new GeometryModel3D { Material = mat, BackMaterial = m.Layer ? null : mat };
                 f.Group.Children.Add(c.Model);
                 model.Meshes.Add(c);
             }

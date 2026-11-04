@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SSBU Arena launcher: the schematic replay view (ReplayState.cs): the stage drawn from the collision lines the game
 // reported, the blast zones, the fighters as their hurt volumes in the player's colour with name and a facing mark, the
-// hitboxes as wireframe spheres (the website's HitSphere style), the damage and stocks; and the timeline under it. Weapons and items without
+// hitboxes as wireframe spheres (the website's HitSphere style), the grab boxes in a colour of their own, the damage and stocks; and the timeline under it. Weapons and items without
 // a model: a shape with the name of their kind. Each frame is drawn from its own data only, so seeking backwards shows the same as playing.
 // Everything is drawn in OnRender from frozen pens / brushes, at the display's rate while playing.
 using System;
@@ -29,7 +29,7 @@ namespace Arena
         public ReplayState Replay { get => r; set { r = value; Prepare(); InvalidateVisual(); } }
         double frame;
         public double Frame { get => frame; set { frame = Math.Max(0, Math.Min(value, (r?.FrameList.Count ?? 1) - 1)); InvalidateVisual(); } }
-        public bool ShowHit = true, ShowHurt = true, Follow = true;
+        public bool ShowHit = true, ShowHurt = true, ShowGrab = true, Follow = true;
         public ReplayScene Scene;                           // (0.2.21) the game's models, under this
 
         static readonly Typeface Ui = new Typeface(new FontFamily(new Uri("pack://application:,,,/"), "./Assets/Fonts/#Barlow"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
@@ -54,13 +54,18 @@ namespace Arena
         static readonly Pen ItemEdge = RvPalette.P(RvPalette.Hex("#FFD27A"), .9, 1.4);
         Brush[] playerB, playerFill, hitFill; Pen[] playerP, hitP, hitInner, hurtP;
         static readonly Color Hot = RvPalette.Hex("#FF8A1F"), HotPale = RvPalette.Hex("#FFD27A");
+        // (file version 4) grab boxes: violet, apart from the hot hitboxes and the players' colours; a command grab (a special that catches) dashed
+        static readonly Color GrabC = RvPalette.Hex("#C77DFF");
+        static readonly Brush GrabFill = RvPalette.B(GrabC, .22);
+        static readonly Pen GrabP = RvPalette.P(GrabC, 1, 2.4), GrabCmdP = RvPalette.P(GrabC, 1, 2.4, new DashStyle(new double[] { 3, 1.6 }, 0)), GrabInner = RvPalette.P(RvPalette.Hex("#E9D2FF"), .6, 1.2);
+        static readonly Brush GrabText = RvPalette.B(RvPalette.Hex("#E9D2FF"));
 
         Geometry stageBody; RvLine[] floorLines;
         float[] blast;
         Rect worldAll;
 
         public ReplayView() { ClipToBounds = true; Focusable = true; SnapsToDevicePixels = false; }
-        double zoom = 1; public int zoomOn = -1;
+        double zoom = 1; public int zoomOn = -1; public double ZoomUp;      // ZoomUp: the zoom's centre that much higher (--zoomup, screenshots of faces)
         public double Zoom { get => zoom; set { zoom = Math.Max(1, Math.Min(8, value)); InvalidateVisual(); } }
         protected override void OnMouseWheel(MouseWheelEventArgs e) { Zoom = zoom * (e.Delta > 0 ? 1.25 : 0.8); e.Handled = true; }
         protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -212,6 +217,7 @@ namespace Arena
                 double cx = view.Left + view.Width / 2, cy = view.Top + view.Height / 2;
                 foreach (var f0 in fr.F) if (f0 != null && InBlast(f0.X, f0.Y)) { cx = f0.X; cy = f0.Y + 10; break; }
                 if (zoomOn >= 0 && zoomOn < fr.F.Length && fr.F[zoomOn] != null) { cx = fr.F[zoomOn].X; cy = fr.F[zoomOn].Y + 10; }
+                cy += ZoomUp;
                 view = new Rect(cx - view.Width / zoom / 2, cy - view.Height / zoom / 2, view.Width / zoom, view.Height / zoom);
             }
             double aw = W, ah = H - hudH;
@@ -286,15 +292,14 @@ namespace Arena
             if (fr.Objects != null)
                 foreach (var o in fr.Objects)
                     if (!r.HelperKinds.Contains(o.Cat * 65536 + o.Kind) && (Scene == null || !Scene.ObjectShown(o)) && (o.IsItem || o.Hits.Length > 0)) DrawObjectShape(dc, o);
-            if (ShowHit && fr.Objects != null)
-                foreach (var o in fr.Objects) foreach (var h in o.Hits) DrawHitSphere(dc, h, (o.Owner == 0xff ? 0 : o.Owner) % 4);
-            if (ShowHit)
-                for (int k = 0; k < fr.F.Length && k < r.Fighters.Count; k++)
-                {
-                    var s = fr.F[k]; if (s == null) continue;
-                    foreach (var h in s.Hits) DrawHitSphere(dc, h, k % 4);
-                }
-            if (ShowHit && fr.Extra != null) foreach (var e in fr.Extra) foreach (var h in e.Value.Hits) DrawHitSphere(dc, h, e.Key % 4);
+            if (fr.Objects != null)
+                foreach (var o in fr.Objects) DrawBoxes(dc, o.Hits, (o.Owner == 0xff ? 0 : o.Owner) % 4, null);
+            for (int k = 0; k < fr.F.Length && k < r.Fighters.Count; k++)
+            {
+                var s = fr.F[k]; if (s == null) continue;
+                DrawBoxes(dc, s.Hits, k % 4, s);
+            }
+            if (fr.Extra != null) foreach (var e in fr.Extra) DrawBoxes(dc, e.Value.Hits, e.Key % 4, e.Value);
 
             DrawHud(dc, fr, W, H, hudH);
         }
@@ -321,6 +326,56 @@ namespace Arena
             dc.PushTransform(new TranslateTransform(a.X, a.Y)); dc.PushTransform(new RotateTransform(ang));
             dc.DrawRoundedRectangle(fill, pen, new Rect(-R, -R, len + 2 * R, 2 * R), R, R);
             dc.Pop(); dc.Pop();
+        }
+
+        /// <summary>one fighter's or object's boxes: the grab boxes under the hitboxes (each kind with its own switch), the grab's name once over them</summary>
+        void DrawBoxes(DrawingContext dc, RvHit[] hits, int pc, RvFighterFrame s)
+        {
+            if (ShowGrab)
+            {
+                bool any = false; double top = double.MaxValue, cx = 0;
+                string name = GrabName(s);
+                bool command = s != null && !IsCommonGrab(s);
+                foreach (var h in hits)
+                {
+                    if (!h.Grab) continue;
+                    DrawGrabBox(dc, h, command);
+                    var c = S(h.X, Math.Max(h.Y, h.Y2)); double R = Math.Max(h.R * sc, 2);
+                    if (c.Y - R < top) { top = c.Y - R; cx = S((h.X + h.X2) / 2, 0).X; }
+                    any = true;
+                }
+                if (any)
+                {
+                    var t = Text(name.ToUpperInvariant(), 11, GrabText, UiBold);
+                    dc.DrawText(t, new Point(cx - t.Width / 2, top - t.Height - 1));
+                }
+            }
+            if (ShowHit) foreach (var h in hits) if (!h.Grab) DrawHitSphere(dc, h, pc);
+        }
+
+        static bool IsCommonGrab(RvFighterFrame s) { var m = ReplayNames.MotionText(s.Motion); return m == "catch" || m == "catch_dash" || m == "catch_turn"; }
+
+        /// <summary>what a grab is: the common grabs by their motion; anything else of a fighter that catches (a special) a command grab; a weapon's: a tether</summary>
+        public static string GrabName(RvFighterFrame s)
+        {
+            if (s == null) return "Grab";
+            switch (ReplayNames.MotionText(s.Motion))
+            {
+                case "catch": return "Grab";
+                case "catch_dash": return "Dash grab";
+                case "catch_turn": return "Pivot grab";
+            }
+            return (ReplayNames.MoveName(s.Motion) ?? ReplayNames.SpecialName(s.Motion)) is string m ? "Command grab (" + m + ")" : "Command grab";
+        }
+
+        void DrawGrabBox(DrawingContext dc, RvHit h, bool command)
+        {
+            double R = Math.Max(h.R * sc, 2);
+            Point c = S(h.X, h.Y);
+            var pen = command ? GrabCmdP : GrabP;
+            if (h.X2 != h.X || h.Y2 != h.Y) { DrawCapsule(dc, h.X, h.Y, h.X2, h.Y2, h.R, pen, GrabFill); DrawCapsule(dc, h.X, h.Y, h.X2, h.Y2, h.R * .5f, GrabInner, null); return; }
+            dc.DrawEllipse(GrabFill, pen, c, R, R);
+            dc.DrawEllipse(null, GrabInner, c, R * .5, R * .5);
         }
 
         void DrawHitSphere(DrawingContext dc, RvHit h, int pc)

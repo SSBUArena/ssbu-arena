@@ -5,6 +5,7 @@
     python tools/replay/ssbv.py info <file.ssbv>                 header, stage lines, a summary
     python tools/replay/ssbv.py frames <file.ssbv> [from] [to]   one line per fighter per frame
     python tools/replay/ssbv.py ff <file.ssbv> <fight frame>     the frame whose fighter frame count is that (screenshots)
+(version 4: hit records with flags 4 are grab boxes)
 """
 import struct
 import sys
@@ -69,7 +70,7 @@ class Ssbv:
                 hits = []
                 for _ in range(nhit):
                     hx, hy, hx2, hy2, r, hid, hfl, d10, ang, kbg, bkb = struct.unpack_from("<4hHBBHhHH", body, o)
-                    hits.append(dict(x=hx / 16, y=hy / 16, x2=hx2 / 16, y2=hy2 / 16, r=r / 16, id=hid, dmg=d10 / 10, angle=ang, kbg=kbg, bkb=bkb))
+                    hits.append(dict(x=hx / 16, y=hy / 16, x2=hx2 / 16, y2=hy2 / 16, r=r / 16, id=hid, flags=hfl, dmg=d10 / 10, angle=ang, kbg=kbg, bkb=bkb))
                     o += 20
                 hurts = []
                 for _ in range(nhurt):
@@ -84,7 +85,7 @@ class Ssbv:
                 hits = []
                 for _ in range(nhit):
                     hx, hy, hx2, hy2, r, hid, hfl, d10, ang, kbg, bkb = struct.unpack_from("<4hHBBHhHH", body, o)
-                    hits.append(dict(x=hx / 16, y=hy / 16, x2=hx2 / 16, y2=hy2 / 16, r=r / 16, id=hid, dmg=d10 / 10, angle=ang))
+                    hits.append(dict(x=hx / 16, y=hy / 16, x2=hx2 / 16, y2=hy2 / 16, r=r / 16, id=hid, flags=hfl, dmg=d10 / 10, angle=ang))
                     o += 20
                 objs.append(dict(id=oid, kind=kind, cat=cat, lr=lr, x=ox / 16, y=oy / 16, mf=mf8 / 8, rot=rot10 / 10, motion=mot | mot_hi << 32, owner=owner, scale=scale32 / 32, hits=hits))
             self.frames.append(dict(frame=fr, moved=mv, valid=valid, f=fs, o=objs))
@@ -96,6 +97,9 @@ def line(fr):
         out.append("| k%d ff %5d x %8.3f y %8.3f %6.1f%% st %3x mot %010x mf %5.1f lr %2d sit %d stk %d sh %5.1f hit %d hurt %d" % (
             k, s["ff"], s["x"], s["y"], s["dmg"], s["status"], s["motion"] & 0xffffffffff, s["mf"], s["lr"], s["situation"], s["stocks"], s["shield"], len(s["hits"]), len(s["hurts"])))
         for h in s["hits"]:
+            if h["flags"] & 4:          # (version 4) a grab box: angle = the status the caught one gets, kbg = the situation mask
+                out.append("   [grab %d (%.1f,%.1f)-(%.1f,%.1f) r %.2f status %d sit %d]" % (h["id"], h["x"], h["y"], h["x2"], h["y2"], h["r"], h["angle"], h["kbg"]))
+                continue
             out.append("   [hit %d %.1f%% (%.1f,%.1f)-(%.1f,%.1f) r %.2f a %d kbg %d bkb %d]" % (h["id"], h["dmg"], h["x"], h["y"], h["x2"], h["y2"], h["r"], h["angle"], h["kbg"], h["bkb"]))
     return " ".join(out)
 

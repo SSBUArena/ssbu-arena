@@ -21,6 +21,7 @@
  *   SSBU_RV_RESEARCH=1            (test only) print the raw values the recorder reads, every 2 frames
  *   SSBU_RV_TIMING=1              (test only) the main-thread cost of the recorder, printed at each match end
  *   SSBU_RV_NO_OBJECTS=1          (test only) the frames have no objects: the cost of the recorder without them
+ *   SSBU_RV_GRABS=0               no grab boxes in the file (version 4: they are on by default)
  *
  * File (.ssbv, little endian): header 0x200 bytes (RvHead), then the body (codec 0 raw; the launcher may store it deflated,
  * codec 1): RvLine[nlines] (the stage lines: found by rays at the match start and every half second after), then per final
@@ -30,12 +31,20 @@
  *
  * Objects (version 3): the game's weapons, enemies, gimmicks and items that are active at the start of the frame, read from the battle
  * object tables (rv_objects). They go the same way as the fighters' samples: into g_rv_acc, so a frame simulated again replaces its entry, and to
- * the file only when the frame is final. */
+ * the file only when the frame is final.
+ *
+ * Grab boxes (version 4): the GrabModule's active boxes (the game's CATCH: grab, dash grab, pivot grab, and the specials that catch
+ * the same way: Bowser's and Ganondorf's side specials, Kirby's and Dedede's inhale, Incineroar's, Ridley's ...; a tether's box on its
+ * weapon object) go with the hitboxes of the fighter or object, as RvHit with flags 4: id = the grab id, angle = the status the
+ * caught one gets (the CATCH's status argument), kbg = its situation mask, dmg10 / bkb 0. A fighter's are read at three points (see
+ * g_rv_pend: a catch clears them before the next frame line), an object's with its hitboxes. An older viewer would not know flag 4: the
+ * version is 4 (the launcher of the same release reads 1..4). */
 #include <time.h>
 #include <xmmintrin.h>
 uint64_t rbn_match_seed(void); int rbn_on(void); int rbn_local_player(void); int rbn_loop(void); int rbn_match_number(void);   /* rb_net.c */
 #pragma pack(push, 1)
-typedef struct { int16_t x, y, x2, y2; uint16_t r; uint8_t id, flags; uint16_t dmg10; int16_t angle; uint16_t kbg, bkb; } RvHit;   /* 20 B; flags 1 = capsule, 2 = bkb holds the fixed knockback */
+typedef struct { int16_t x, y, x2, y2; uint16_t r; uint8_t id, flags; uint16_t dmg10; int16_t angle; uint16_t kbg, bkb; } RvHit;   /* 20 B; flags 1 = capsule, 2 = bkb holds the fixed knockback, 4 = a grab box (version 4) */
+#define RV_HIT_GRAB 4
 typedef struct { int16_t x, y, x2, y2; uint16_t r; uint8_t part, status; } RvHurt;                                                   /* 12 B; status 0 normal 1 invincible 2 intangible */
 typedef struct {
     float x, y, dmg, mframe;        /* PostureModule::pos, DamageModule::damage, MotionModule::frame */
@@ -73,13 +82,14 @@ _Static_assert(sizeof(RvFig) == 44, "RvFig");
 _Static_assert(sizeof(RvObj) == 24, "RvObj");
 
 #define RV_MAXF 4
-#define RV_MAXHIT 16
+#define RV_MAXHIT 24                                   /* (version 4) 16 attack ids and the grab boxes */
 #define RV_MAXHURT 32
 #define RV_MAXLINE 64
 #define RV_RING 512
 #define RV_MAXOBJ 48
 #define RV_MAXOHIT 64
 #define RV_OBJHIT 8                                    /* one object's hitboxes */
+#define RV_MAXGRAB 8                                   /* grab ids read per fighter / object */
 typedef struct { RvFig f; RvHit hit[RV_MAXHIT]; RvHurt hurt[RV_MAXHURT]; } RvSample;
 typedef struct { long long frame; uint8_t mask; uint64_t valid; RvSample s[RV_MAXF]; float lines[RV_MAXLINE][4]; uint16_t nobj, nohit; RvObj obj[RV_MAXOBJ]; RvHit ohit[RV_MAXOHIT]; } RvSlot;
 
@@ -194,7 +204,7 @@ static uint64_t rv_info_record(int entry) {             /* debug_mode.c fighter_
 static void rv_head_start(void) {
     RvHead *h = &g_rv_head;
     memset(h, 0, sizeof *h);
-    memcpy(h->magic, "SSBV", 4); h->version = 3;      /* 3: the objects; 2: the frame header has the lines-on mask (1: test files of the first builds) */ h->header_size = sizeof *h;
+    memcpy(h->magic, "SSBV", 4); h->version = 4;      /* 4: grab boxes (RvHit flags 4); 3: the objects; 2: the frame header has the lines-on mask (1: test files of the first builds) */ h->header_size = sizeof *h;
     { FILETIME ft; GetSystemTimeAsFileTime(&ft); h->unix_time = (int64_t)((((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 10000000ull) - 11644473600ll; }
     h->game_build = (uint32_t)g_game_build;
     uint64_t mb = GA(0x71052c41b0ULL);                 /* the game's global match block (debug_mode.c MELEE_INFO) */
@@ -287,6 +297,66 @@ static void rv_scan_step(Ctx *c, uint64_t boma) {
     }
 }
 
+/* ---------------------------------------------------------------- grab boxes (version 4)
+ * The GrabModule (module accessor + 0x158; lua_bind GrabModule::is_grab / size / center_pos are its virtual calls 0x78 / 0x80 / 0x98).
+ * Its layout, read from those functions (main 0x45be20 .. 0x45bf70, the CATCH set call 0x45b9b0): + 0x10 the number of grab ids (u64),
+ * + 0x18 the entries, 0x50 each (+ 0x20 size, + 0x28 the joint, + 0x30 the caught one's status (u16), + 0x34 the situation mask,
+ * + 0x40 on), + 0x36f set: no grab at all (is_grab says 0); + 0x70 the collision part: + 0x30 + 8 * id the box's collision object,
+ * the same kind as an attack's (+ 0x10 the start point, + 0xb0 the vector to the end point, + 0xa0 the radius). Only reads; no
+ * getter is called. checked: an object's module (rv_ptr_ok on every pointer, as rv_obj_hits); a fighter's modules are always there. */
+static int g_rv_grabs = -1;
+static int rv_grabs(uint64_t boma, RvHit *out, int max, long long frame, int checked) {
+    if (g_rv_grabs < 0) { const char *e = getenv("SSBU_RV_GRABS"); g_rv_grabs = !(e && e[0] == '0'); }
+    if (!g_rv_grabs || max <= 0) return 0;
+    uint64_t gm = rd64(boma + 0x158);
+    if (!gm || (checked && (!rv_ptr_ok(gm, 0x370, frame) || !rv_ptr_ok(rd64(gm), 0xa0, frame)))) return 0;
+    if (rd8(gm + 0x36f)) return 0;
+    uint64_t n = rd64(gm + 0x10), ents = rd64(gm + 0x18), col = rd64(gm + 0x70);
+    if (!n || !ents) return 0;
+    if (n > RV_MAXGRAB) n = RV_MAXGRAB;
+    if (checked && (!rv_ptr_ok(ents, 0x50 * (size_t)n, frame) || (col && !rv_ptr_ok(col, 0x30 + 8 * (size_t)n, frame)))) return 0;
+    int k = 0;
+    for (uint64_t id = 0; id < n && k < max; id++) {
+        uint64_t e = ents + 0x50 * id;
+        if (!rd32(e + 0x40)) continue;
+        uint64_t obj = col ? rd64(col + 0x30 + 8 * id) : 0;
+        if (!obj || (checked && !rv_ptr_ok(obj, 0xc0, frame))) continue;
+        float p0[3], dv[3], r;
+        memcpy(p0, (void *)(uintptr_t)(obj + 0x10), 12); memcpy(dv, (void *)(uintptr_t)(obj + 0xb0), 12); memcpy(&r, (void *)(uintptr_t)(obj + 0xa0), 4);
+        if (!(r > 0 && r < 200)) continue;
+        RvHit *h = &out[k++];
+        memset(h, 0, sizeof *h);
+        h->x = rv_q(p0[0]); h->y = rv_q(p0[1]); h->x2 = rv_q(p0[0] + dv[0]); h->y2 = rv_q(p0[1] + dv[1]);
+        h->r = (uint16_t)(r * 16.0f);
+        h->flags = RV_HIT_GRAB | (dv[0] != 0 || dv[1] != 0 ? 1 : 0);
+        h->id = (uint8_t)id; h->angle = (int16_t)rd16(e + 0x30); h->kbg = rd8(e + 0x34);
+    }
+    return k;
+}
+
+/* A fighter's grab boxes are read at three points: at the entry of its frame line (rv_sample, with the hitboxes), at the end of
+ * it (rv_frame_line_end) and when the game clears them (rv_grab_clear: GrabModule::clear_all / clear, main 0x45b940 / 0x45b980, hooked
+ * by fighter_host.c). A grab that catches on its first active frame is set by the line's scripts and cleared at the catch, before
+ * the next entry (run g8: Mario's grab, Ganondorf's side special): only the clear sees it. The boxes seen after the entry wait in
+ * g_rv_pend and go into the next sample of that fighter, like the hitboxes (the state the frame left); in a rollback session into
+ * the frame they were seen in (rv_pass: the next pass may be a re-simulation of an earlier frame). Only reads. */
+static RvHit g_rv_pend[RV_MAXF][RV_MAXGRAB]; static int g_rv_npend[RV_MAXF];
+static void rv_merge(RvHit *dst, int *n, int max, const RvHit *src, int ns) {      /* grab boxes by id: a later one replaces */
+    for (int i = 0; i < ns; i++) {
+        int j = 0;
+        while (j < *n && !((dst[j].flags & RV_HIT_GRAB) && dst[j].id == src[i].id)) j++;
+        if (j < *n) dst[j] = src[i]; else if (*n < max) dst[(*n)++] = src[i];
+    }
+}
+static void rv_pend_read(uint64_t boma, int k, long long ff) {
+    RvHit tmp[RV_MAXGRAB];
+    int ng = rv_grabs(boma, tmp, RV_MAXGRAB, ff, 0);
+    static int research = -1; if (research < 0) research = getenv("SSBU_RV_RESEARCH") != NULL;
+    for (int i = 0; research && i < ng; i++)
+        printf("[rv]   f %lld k %d grab %d (%.2f,%.2f)-(%.2f,%.2f) r %.2f status %d sit %d\n", ff, k, tmp[i].id, tmp[i].x / 16.0, tmp[i].y / 16.0, tmp[i].x2 / 16.0, tmp[i].y2 / 16.0, tmp[i].r / 16.0, tmp[i].angle, tmp[i].kbg);
+    rv_merge(g_rv_pend[k], &g_rv_npend[k], RV_MAXGRAB, tmp, ng);
+}
+
 /* ---------------------------------------------------------------- one fighter's state (at the entry of its frame line) */
 static void rv_sample(Ctx *c, uint64_t boma, int slot, long long ff) {
     RvSample *s = &g_rv_acc.s[slot];
@@ -354,6 +424,10 @@ static void rv_sample(Ctx *c, uint64_t boma, int slot, long long ff) {
         }
         nh++;
     }
+    {   RvHit now[RV_MAXGRAB], g[RV_MAXGRAB]; int ng = rv_grabs(boma, now, RV_MAXGRAB, ff, 0), n = 0;      /* (version 4) the grab boxes: seen since the last entry, and now */
+        rv_merge(g, &n, RV_MAXGRAB, g_rv_pend[slot], g_rv_npend[slot]); rv_merge(g, &n, RV_MAXGRAB, now, ng);
+        for (int i = 0; i < n && nh < RV_MAXHIT; i++) s->hit[nh++] = g[i];
+        g_rv_npend[slot] = 0; }
     f->nhit = (uint8_t)nh;
     int n = (int)rv_call(c, g_rvf.hitn, boma, 0, 0, 0, NULL), nu = 0;
     uint64_t hm = rd64(boma + 0xb0), htab = hm ? rd64(hm + 40) : 0, hgrp = hm ? rd64(hm + 96) : 0;
@@ -421,6 +495,8 @@ static int rv_obj_hits(Ctx *c, uint64_t boma, RvSlot *sl, long long frame) {
         if (rd32(ent + 0x30)) { h->bkb = (uint16_t)rd32(ent + 0x30); h->flags |= 2; } else h->bkb = (uint16_t)rd32(ent + 0x34);
         sl->nohit++; nh++;
     }
+    {   int room = RV_MAXOHIT - sl->nohit, ng = rv_grabs(boma, &sl->ohit[sl->nohit], room < RV_OBJHIT - nh ? room : RV_OBJHIT - nh, frame, 1);      /* (version 4) a tether's grab box */
+        sl->nohit = (uint16_t)(sl->nohit + ng); nh += ng; }
     return nh;
 }
 static void rv_objects(Ctx *c, RvSlot *sl) {
@@ -580,7 +656,7 @@ static void rv_begin(void) {
     g_rv_active = 1; g_rv_frames = 0; g_rv_len = 0; g_rv_last_final = 0; g_rv_direct_n = 0;
     g_rv_nlines = 0; g_rv_scan_x = 0; g_rv_scan_done = 0; g_rv_scan_final = 0; g_rv_cost_ticks = g_rv_cost_n = g_rv_cost_max = g_rv_scan_ticks = g_rv_lines_ticks = 0; memset(g_rv_cost_hist, 0, sizeof g_rv_cost_hist);
     g_rv_obj_ticks = g_rv_obj_max = g_rv_obj_frames = g_rv_obj_sum = g_rv_obj_lost = 0; g_rv_obj_peak = 0; memset(g_rv_obj_owner, 0, sizeof g_rv_obj_owner);
-    memset(&g_rv_acc, 0, sizeof g_rv_acc);
+    memset(&g_rv_acc, 0, sizeof g_rv_acc); memset(g_rv_npend, 0, sizeof g_rv_npend);
     for (int k = 0; k < RV_MAXF; k++) { g_rv_boma[k] = 0; g_rv_slot_entry[k] = -1; }
     if (g_rv_ring) for (int i = 0; i < RV_RING; i++) g_rv_ring[i].frame = -1;
     rv_head_start();
@@ -722,12 +798,38 @@ static void rv_frame_line(Ctx *c, uint64_t boma, int k, long long ff) {
         g_rv_cost_hist[us < 20 ? 0 : us < 50 ? 1 : us < 100 ? 2 : 3]++;
     }
 }
+/* fh_hook, at the END of fighter k's frame line (version 4): its grab boxes as its status and scripts left them (see g_rv_pend) */
+static void rv_frame_line_end(uint64_t boma, int k, long long ff) {
+    if (g_rv_on <= 0 || !g_rv_active || k < 0 || k >= RV_MAXF || g_rv_boma[k] != boma) return;
+    AcquireSRWLockExclusive(&g_rv_lock);
+    rv_pend_read(boma, k, ff);
+    ReleaseSRWLockExclusive(&g_rv_lock);
+}
+/* fighter_host.c's hooks on GrabModule::clear_all / clear (x0 the module, + 8 its module accessor): the boxes about to go */
+static void rv_grab_clear(uint64_t module) {
+    if (g_rv_on <= 0 || !g_rv_active || !g_rv_grabs || !module) return;
+    uint64_t boma = rd64(module + 8);
+    for (int k = 0; k < RV_MAXF; k++)
+        if (g_rv_boma[k] == boma && boma) {
+            AcquireSRWLockExclusive(&g_rv_lock);
+            rv_pend_read(boma, k, -1);
+            ReleaseSRWLockExclusive(&g_rv_lock);
+            break;
+        }
+}
 /* rb_net.c rbn_pass_hash: the safe point after pass f (0 = the base state: a new match) */
 void rv_pass(long long f) {
     if (!rv_enabled() || !rv_match_rb()) return;
     AcquireSRWLockExclusive(&g_rv_lock);
     if (f == 0) { ReleaseSRWLockExclusive(&g_rv_lock); rv_begin(); AcquireSRWLockExclusive(&g_rv_lock); }
-    else if (g_rv_active && g_rv_ring) { RvSlot *s = &g_rv_ring[f % RV_RING]; memcpy(s, &g_rv_acc, sizeof *s); s->frame = g_rv_acc.mask ? f : -1; }
+    else if (g_rv_active && g_rv_ring) {
+        for (int k = 0; k < RV_MAXF; k++) {             /* (version 4) the grab boxes seen after the entry: this frame's */
+            if (!(g_rv_acc.mask & (1 << k)) || !g_rv_npend[k]) { g_rv_npend[k] = 0; continue; }
+            RvSample *q = &g_rv_acc.s[k]; int n = q->f.nhit;
+            rv_merge(q->hit, &n, RV_MAXHIT, g_rv_pend[k], g_rv_npend[k]); q->f.nhit = (uint8_t)n; g_rv_npend[k] = 0;
+        }
+        RvSlot *s = &g_rv_ring[f % RV_RING]; memcpy(s, &g_rv_acc, sizeof *s); s->frame = g_rv_acc.mask ? f : -1;
+    }
     g_rv_acc.mask = 0; g_rv_acc.nobj = g_rv_acc.nohit = 0;
     ReleaseSRWLockExclusive(&g_rv_lock);
 }

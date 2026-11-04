@@ -2,7 +2,8 @@
 // SSBU Arena launcher: the schematic replays (.ssbv). Each game writes one per match into <Saves>\replays
 // (fighter_sdk/replay_state.c documents the layout): the state of each fighter in every final frame as the game itself
 // reported it (position, damage, action, shield, stocks, hit and hurt boxes), the stage's collision lines and blast zones,
-// and (version 3) the weapons and items of each frame (the files of older versions have none and still open).
+// and (version 3) the weapons and items of each frame, (version 4) the grab boxes among the hitboxes (the files of older versions
+// have none and still open).
 // Here: reading (the raw body is deflated in place the first time, codec 1), the list, names, and the match statistics.
 using System;
 using System.Collections.Generic;
@@ -14,7 +15,12 @@ using System.Text;
 
 namespace Arena
 {
-    public struct RvHit { public float X, Y, X2, Y2, R; public int Id, Flags; public float Damage; public int Angle; }
+    public struct RvHit
+    {
+        public float X, Y, X2, Y2, R; public int Id, Flags; public float Damage; public int Angle;
+        /// <summary>(file version 4) a grab box (the game's CATCH: the grabs and the specials that catch); Angle is then the status the caught one gets</summary>
+        public bool Grab => (Flags & 4) != 0;
+    }
     public struct RvHurt { public float X, Y, X2, Y2, R; public int Part, Status; }
     public sealed class RvFighterFrame
     {
@@ -86,7 +92,7 @@ namespace Arena
             if (f.Length < HeaderSize || Encoding.ASCII.GetString(f, 0, 4) != "SSBV") throw new Exception("not an SSBU Arena match state file");
             var r = new ReplayState { Path = path, FileSize = size };
             r.Version = BitConverter.ToUInt16(f, 4);
-            if (r.Version < 1 || r.Version > 3) throw new Exception("match state format " + r.Version + ": update SSBU Arena");
+            if (r.Version < 1 || r.Version > 4) throw new Exception("match state format " + r.Version + ": update SSBU Arena");
             int hs = BitConverter.ToUInt16(f, 6);
             r.Flags = (int)BitConverter.ToUInt32(f, 8); r.Frames = (int)BitConverter.ToUInt32(f, 0xc); r.UnixTime = BitConverter.ToInt64(f, 0x10);
             uint stored = BitConverter.ToUInt32(f, 0x18), raw = BitConverter.ToUInt32(f, 0x1c);
@@ -476,6 +482,24 @@ namespace Arena
                 for (int i = 0; i < Moves.GetLength(0); i++) moveByHash[Hash40(Moves[i, 0])] = Moves[i, 1];
             }
             return moveByHash.TryGetValue(motion & 0xffffffffffUL, out var s) ? s : null;
+        }
+
+        static Dictionary<ulong, string> specialByHash;
+        /// <summary>which special a motion of it is (special_s_catch: "Side B"), by the usual names of the specials' motions; null if none.
+        /// Only for labels (the grab boxes): the statistics count the moves of MoveName</summary>
+        public static string SpecialName(ulong motion)
+        {
+            if (specialByHash == null)
+            {
+                specialByHash = new Dictionary<ulong, string>();
+                var parts = new[] { "n", "s", "hi", "lw" }; var names = new[] { "Neutral B", "Side B", "Up B", "Down B" };
+                var steps = new[] { "", "_start", "_catch", "_loop", "_end", "_hold", "_fall", "_landing", "_throw", "_failure", "_jump", "_hit", "_attack", "_eat", "_drink", "_turn",
+                                    "_shoot", "_capture", "_pull", "_drag", "_miss", "_swallow", "_spit", "_charge", "_dash", "_run", "_rush", "_wall", "_f", "_b", "_hold_loop", "_catch_start" };
+                foreach (var a in new[] { "special_", "special_air_" })
+                    for (int i = 0; i < parts.Length; i++)
+                        foreach (var st in steps) specialByHash[Hash40(a + parts[i] + st)] = names[i];
+            }
+            return specialByHash.TryGetValue(motion & 0xffffffffffUL, out var s) ? s : null;
         }
 
         /// <summary>(0.2.26) a fighter that cannot act, by the game's common status kinds (they are the same for every fighter): the shield

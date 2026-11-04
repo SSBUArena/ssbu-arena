@@ -633,7 +633,9 @@ namespace Arena
             {
                 ApplyAccount();
                 SetState();
-                if (!t.Result.Item1) ShowLogin(t.Result.Item2 != null ? "Cannot reach the Arena server: " + t.Result.Item2 : null);
+                // (a launcher opened on a replay or a page is a tool's, App.OnlyLauncher: no sign-in screen over it)
+                bool tool = Environment.GetCommandLineArgs().Any(x => x == "--replay" || x == "--page");
+                if (!t.Result.Item1 && !tool) ShowLogin(t.Result.Item2 != null ? "Cannot reach the Arena server: " + t.Result.Item2 : null);
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 

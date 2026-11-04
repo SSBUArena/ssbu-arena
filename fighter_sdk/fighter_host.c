@@ -1183,6 +1183,7 @@ static uint64_t fh_rng_base(void) {
 static void fh_hook(Ctx *c, void *user) {
     (void)user;
     uint64_t agent = c->x[0], boma = agent ? rd64(agent + 0x40) : 0;
+    int rv_k = -1; uint64_t rv_boma = 0;
     { static int dn; if (agent && dn < 12 && g_fh_n) { uint64_t key[2] = {agent, boma}; static uint64_t seen[16][2]; int f = 0; for (int q = 0; q < dn; q++) if (seen[q][0] == key[0]) f = 1; if (!f) { seen[dn][0] = agent; seen[dn][1] = boma; dn++; printf("[fight] S20t: frame line, agent %llx boma %llx category word %x, first fighter frame %lld\n", (unsigned long long)agent, (unsigned long long)boma, boma ? rd32(boma + 8) : 0, g_fh_f[0].frame); fflush(stdout); } } }
     if (boma && (rd32(boma + 8) >> 28) == 0) {
         int k = 0;
@@ -1291,9 +1292,10 @@ static void fh_hook(Ctx *c, void *user) {
                        g_fh_poll_hist[0], g_fh_poll_hist[1], g_fh_poll_hist[2], g_fh_poll_hist[3], g_fh_frame_ends, g_fh_drop_calls, g_fh_drop_frames);
             }
         }
-        if (k < g_fh_n) rv_frame_line(c, boma, k, g_fh_f[k].frame);      /* (Arena) the replay viewer's per-frame state (replay_state.c) */
+        if (k < g_fh_n) { rv_frame_line(c, boma, k, g_fh_f[k].frame); rv_k = k; rv_boma = boma; }      /* (Arena) the replay viewer's per-frame state (replay_state.c) */
     }
     g_fh_orig(c);
+    if (rv_k >= 0) rv_frame_line_end(rv_boma, rv_k, g_fh_f[rv_k].frame);      /* (Arena, version 4) the grab boxes this frame line made */
 }
 /* SSBU_DETERMINISTIC: main 0x710386fc30 (frame end of the graphics module: acquires the window texture) compares the
  * refresh count of the game's VSync Count Thread (window + 0x138) with the count at the last frame (+ 0x140) and
@@ -1337,6 +1339,11 @@ int fight_seq_ticks(void) {
     g_fh_poll_hist[n < 0 ? 0 : n > 3 ? 3 : n]++; g_fh_poll_tid = GetCurrentThreadId();
     return n < 0 ? 0 : n > 100000 ? 100000 : (int)n;
 }
+/* (Arena, replay version 4) GrabModule::clear_all / clear (main 0x45b940 / 0x45b980): the recorder reads the boxes first (replay_state.c
+ * rv_grab_clear: a catch clears them in the same frame they were made). Only reads; the original runs as always. SSBU_RV_GRABS=0: not installed */
+static ImportFn g_rv_orig_clear_all, g_rv_orig_clear;
+static void rv_hook_clear_all(Ctx *c, void *user) { (void)user; rv_grab_clear(c->x[0]); g_rv_orig_clear_all(c); }
+static void rv_hook_clear(Ctx *c, void *user) { (void)user; rv_grab_clear(c->x[0]); g_rv_orig_clear(c); }
 static void fh_exit(void) { if (g_fh_out) { fflush(g_fh_out); if (g_fh_out != stdout) fclose(g_fh_out); g_fh_out = NULL; } }
 static void fight_hash_start(void) {
     const char *h = getenv("SSBU_FIGHT_HASH"), *d = getenv("SSBU_DETERMINISTIC"), *o = getenv("SSBU_DET_OFF");
@@ -1350,6 +1357,10 @@ static void fight_hash_start(void) {
                          hook_install(GA(0x710386fc30ull), fh_frame_end, NULL, &g_fh_orig_frame_end) ? "installed" : hook_error());
     atexit(fh_exit);
     if (rv_enabled()) atexit(rv_exit);
+    if (rv_enabled() && !(getenv("SSBU_RV_GRABS") && getenv("SSBU_RV_GRABS")[0] == '0')) {
+        int a = hook_install(GA(0x710045b940ull), rv_hook_clear_all, NULL, &g_rv_orig_clear_all), b = hook_install(GA(0x710045b980ull), rv_hook_clear, NULL, &g_rv_orig_clear);
+        printf("[rv] grab boxes: hooks on GrabModule::clear_all / clear: %s / %s\n", a ? "installed" : hook_error(), b ? "installed" : hook_error());
+    }
 }
 static void fd_exit(void) { printf("[debug] %lld commands executed, %lld frames skipped because a differential recording was open\n", g_fd_done, g_fd_waited); fflush(stdout); }
 static void fighter_debug_start(void) {
