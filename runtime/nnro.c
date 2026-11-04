@@ -457,6 +457,7 @@ static int attach_dll(NroModule *m) {
         dll = LoadLibraryA(path);
     }
     if (!dll) return 0;
+    { void code_prefetch(HMODULE m); code_prefetch(dll); }      /* (OpenSmash phase) its code read in ahead in the background (boot.c) */
     NroBindFn bind = (NroBindFn)(void *)GetProcAddress(dll, "nro_bind");
     if (!bind) { FreeLibrary(dll); return 0; }
     { void r1_module_loaded(void *, int); r1_module_loaded(dll, 0); }      /* (0.2.11) r1_state.c: its mark maps at once, no snapshot at the next base */
