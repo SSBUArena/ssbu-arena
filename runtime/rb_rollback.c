@@ -713,6 +713,12 @@ static void rbg_fight_off(void) {
     rbn_match_reset();
 }
 static int cmp_f(const void *a, const void *b) { float x = *(const float *)a, y = *(const float *)b; return x < y ? -1 : x > y; }
+/* (OpenSmash phase, from Rsoto95 ec9e39e) os_threads.c: may a network thread go on after a sleep? Only once no load can go back before
+ * the frame now on: in a rollback match, the next real pass's frame has both players' pads. 1 = yes. */
+int rbg_net_thread_may_run(void) {
+    if (g_rbg_in_match != 1 || !g_rg_ready || g_rbg_noring || g_rgs_next < 1) return 1;
+    return rbn_confirmed() >= g_rgs_next;
+}
 static void rbg_dist(const char *what, const float *v, int n, const unsigned char *kk, int want) {
     if (g_rep_win > 0 && n > g_rep_win) { v += n - g_rep_win; if (kk) kk += n - g_rep_win; n = g_rep_win; }      /* (stability phase) periodic report: the newest samples */
     float *w = malloc((size_t)(n ? n : 1) * sizeof *w); int m = 0; double s = 0, over = 0;
@@ -748,6 +754,7 @@ static void rbg_report(void) {
         LOG("r1: RB NET TIMING real pass end after its scheduled tick (%d): median %.2f p90 %.2f p99 %.2f ms; past the 16.67 ms deadline %d (%.1f%%), past 20 ms %d (%.1f%%)\n", n, rg_pct(v, n, 50), rg_pct(v, n, 90), rg_pct(v, n, 99), o1, 100.0 * o1 / n, o2, 100.0 * o2 / n); }
     r1_hold_prof_report(); rg_meta_prof_report();
     LOG("r1: RB NET report: live host stack check (hs16): thread contexts taken from the hold %lld, asked again %lld (SSBU_R1_LIVECACHE %s)\n", g_live_cached, g_live_asked, g_live_cache ? "on" : "OFF");
+    { extern long long g_net_gate_n, g_net_gate_us, g_net_gate_to; if (g_net_gate_n) LOG("r1: RB NET report: network threads held after a sleep until the frame was final: %lld times, %.2f ms each on average, %lld at the 100 ms limit\n", g_net_gate_n, g_net_gate_us / 1000.0 / (double)g_net_gate_n, g_net_gate_to); }
     rbg_dist("work per tick (real pass + its rollback, without waits)", g_rbg_work, g_rbg_nw, g_rbg_wk, -1);
     rbg_dist("work per tick without rollback", g_rbg_work, g_rbg_nw, g_rbg_wk, 0);
     rbg_dist("work per tick with rollback", g_rbg_work, g_rbg_nw, g_rbg_wk, 1);

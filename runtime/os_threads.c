@@ -462,7 +462,24 @@ static void movie_preroll_diag(Ctx *c) {
         (long long)((rd64(ar + 0x78) - rd64(ar + 0x70)) / 0x40), (long long)((rd64(ar + 0x60) - rd64(ar + 0x58)) / 0x18), (int)rd32(ar + 0x40));
     printf("%c", 10);
 }
-static void os_SleepThread(Ctx *c) { movie_preroll_diag(c); sleep_ns((int64_t)A0); }
+/* (OpenSmash phase, from Rsoto95 ec9e39e) the game's network threads (NetSystem, Pia) waking from a sleep in a rollback match go on only
+ * once the frame now on is final (rb_rollback.c rbg_net_thread_may_run), at most 100 ms: their work after a capture was undone by a load
+ * while the packets they had taken were not given back. SSBU_RB_NET_GATE=0: off. */
+long long g_net_gate_n, g_net_gate_us, g_net_gate_to;
+static Obj *obj_peek(uint64_t key);
+static void net_thread_gate(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_NET_GATE"); on = !(e && e[0] == '0'); }
+    static __declspec(thread) int is = -1;
+    if (!on) return;
+    if (is < 0) { Obj *o = t_thread ? obj_peek(t_thread) : NULL; const char *n = o && o->name ? (const char *)(uintptr_t)o->name : NULL; if (!n) return; is = strstr(n, "NetSystem") || strstr(n, "Pia"); }
+    if (!is) return;
+    int rbg_net_thread_may_run(void);
+    if (rbg_net_thread_may_run()) return;
+    LARGE_INTEGER f, t0, t1; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t0); double ms = 0;
+    while (!rbg_net_thread_may_run()) { Sleep(1); QueryPerformanceCounter(&t1); ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart; if (ms >= 100.0) break; }
+    InterlockedIncrement64(&g_net_gate_n); InterlockedAdd64(&g_net_gate_us, (LONG64)(ms * 1000.0)); if (ms >= 100.0) InterlockedIncrement64(&g_net_gate_to);
+}
+static void os_SleepThread(Ctx *c) { movie_preroll_diag(c); sleep_ns((int64_t)A0); net_thread_gate(); }
 static void os_GetCurrentStackInfo(Ctx *c) {
     Obj *o = t_thread ? obj(t_thread) : NULL;
     if (A0) wr64(A0, o ? o->stack : g_main_stack_base);

@@ -44,3 +44,10 @@ And those OpenSmash-Ultimate credits in turn:
   [Ultimate Frame Data](https://ultimateframedata.com/) (MetalMusicMan; Smash Ultimate hitboxes: Zeckemyro; the site credits
   its further sources), kept in `tools/launcher/arena/Assets/ufd_moves.json` by `tools/replay/ufd_moves.py`. The hitboxes,
   hurtboxes, positions and damage it draws come from the game itself during the match (`fighter_sdk/replay_state.c`).
+
+## Ideas and code from other ssbu-recomp forks (GPL-3.0)
+
+Rewritten for this runtime from the commits named here; their authors keep the credit for the idea and the first implementation.
+
+- **Rsoto95** (fork of ssbu-recomp): the game's network threads (NetSystem, Pia) going on after a sleep only once the frame is
+  final (ec9e39e), received socket bytes through a host buffer before they reach guest memory (fb34212).
