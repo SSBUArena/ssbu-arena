@@ -795,6 +795,7 @@ namespace Arena
             if (Online && HasOnline && Account.SignedIn)
             {
                 string n = Account.Me.Username;
+                if (string.IsNullOrWhiteSpace(n)) throw new Exception("Your Arena name could not be read. Sign in again from the account page, then press PLAY.");      // never online without the player's own name
                 env["SSBU_ONLINE_TICKET"] = Ticket ?? "";              // the lobby takes the player's name from it (rb_lobby.c)
                 env["SSBU_ONLINE"] = Server.Trim();
                 env["SSBU_ONLINE_NAME"] = n;
