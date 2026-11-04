@@ -788,11 +788,15 @@ RbPad rbn_pad(int player, long long f) {
     if (player >= 0 && player < 2) { if (g_acc_n[player] && !rb_pad_equal(&g_acc_pad[player], &p)) g_acc_var[player] = 1; g_acc_pad[player] = p; g_acc_n[player]++; }
     return p;
 }
+static void desync_sample(long long f);                  /* below */
 static void on_check(long long cf, uint32_t ck) {
     if (cf <= 0 || cf > g_hfinal_upto || g_hframe[cf % HR] != cf) { g_peer_check_f = cf; g_peer_check = ck; return; }      /* not final here yet: kept for later */
     uint32_t mine = (uint32_t)(g_hash[cf % HR] ^ (g_hash[cf % HR] >> 32));
     if (mine == ck) g_check_ok++;
-    else { g_desync++; if (g_desync_first < 0) { g_desync_first = cf; printf("[rbnet] DESYNC: frame %lld checksum here %08x, the other game %08x\n", cf, mine, ck); fflush(stdout); } }
+    else { g_desync++; if (g_desync_first < 0) { g_desync_first = cf; printf("[rbnet] DESYNC: frame %lld checksum here %08x, the other game %08x\n", cf, mine, ck);
+        desync_sample(cf); fflush(stdout);
+        static int note = -1; if (note < 0) { const char *e = getenv("SSBU_RB_NET_DESYNC_NOTE"); note = !(e && e[0] == '0'); }      /* (OpenSmash phase, idea: Rsoto95 f04166e) */
+        if (note) { char t[300]; snprintf(t, sizeof t, "From frame %lld the two games no longer show the same match. It goes on, but its result may differ between the two players. Both logs have the details.", cf); void menu_popup(const char *title, const char *text); menu_popup("Out of sync", t); } } }
 }
 /* (hs15, test) SSBU_RB_NET_LOOP_BOT2=<seed>: the loop test's other player is the bot of that seed (11 = the joiner of a pair) */
 static unsigned loop_bot2(void) {
@@ -905,6 +909,15 @@ void rbn_pass_hash(long long f) {
         memcpy(g_ulines[x], g_lacc, sizeof g_lacc); g_unl[x] = g_lacc_n; }
     memset(g_acc_n, 0, sizeof g_acc_n); memset(g_acc_var, 0, sizeof g_acc_var); g_lacc_n = 0;
     g_hacc = 0xcbf29ce484222325ull; g_hlines = 0;
+}
+static void desync_sample(long long f) {             /* (OpenSmash phase) the first frame whose checksums differ: what this game had there */
+    int x = (int)(f % HR2);
+    printf("[rbnet] DESYNC sample, frame %lld: p1 %llx %d %d %d %d (reads %d), p2 %llx %d %d %d %d (reads %d)\n", f,
+        (unsigned long long)g_upad[x][0].buttons, g_upad[x][0].lx, g_upad[x][0].ly, g_upad[x][0].rx, g_upad[x][0].ry, g_un[x][0],
+        (unsigned long long)g_upad[x][1].buttons, g_upad[x][1].lx, g_upad[x][1].ly, g_upad[x][1].rx, g_upad[x][1].ry, g_un[x][1]);
+    for (int l = 0; l < g_unl[x]; l++) { const uint8_t *b = g_ulines[x][l]; int k, st; uint64_t mot, rh; float mf, px, py, dmg;
+        memcpy(&k, b, 4); memcpy(&st, b + 4, 4); memcpy(&mot, b + 8, 8); memcpy(&mf, b + 16, 4); memcpy(&px, b + 20, 4); memcpy(&py, b + 24, 4); memcpy(&dmg, b + 28, 4); memcpy(&rh, b + 32, 8);
+        printf("[rbnet] DESYNC sample, frame %lld, fighter %d: status %x motion %llx frame %.3f x %.4f y %.4f damage %.3f random %016llx\n", f, k, st, (unsigned long long)mot, mf, px, py, dmg, (unsigned long long)rh); }
 }
 static void detail_frame(long long f) {              /* frame f is final: the pads its last simulation used against the final ones */
     int x = (int)(f % HR2);
