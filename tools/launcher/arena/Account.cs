@@ -156,18 +156,29 @@ namespace Arena
             refresh = (string)r["refresh_token"];
             accessUntil = DateTime.UtcNow.AddSeconds(Convert.ToDouble(r["expires_in"]) - 60);
             var user = (Dictionary<string, object>)r["user"];
-            Me = new Profile { Id = (string)user["id"], Email = user.ContainsKey("email") ? user["email"] as string : "" };
+            string id = (string)user["id"], email = user.ContainsKey("email") ? user["email"] as string : "";
+            // a refresh (EnsureAccess, about every hour) keeps the profile already read: a new one had no username, and the next
+            // PLAY gave the game an empty name, so it showed the Windows user name (0.2.28)
+            if (Me != null && Me.Id == id) Me.Email = email;
+            else Me = new Profile { Id = id, Email = email };
             SaveRefresh(refresh);
         }
 
+        /// <summary>a session whose profile cannot be read is no session (Me = null): signed in always means a username</summary>
         static void LoadProfile()
         {
-            var rows = Json.Deserialize<List<Dictionary<string, object>>>(Http("GET", "/rest/v1/profiles?select=username,tag,elo,avatar&id=eq." + Me.Id, null, access));
-            if (rows.Count == 0) throw new Exception("This account has no Arena profile.");
-            Me.Username = (string)rows[0]["username"];
-            Me.Avatar = rows[0].TryGetValue("avatar", out var av) ? av as string : null;
-            Me.Tag = Convert.ToInt32(rows[0]["tag"]);
-            Me.Elo = Convert.ToInt32(rows[0]["elo"]);
+            try
+            {
+                var rows = Json.Deserialize<List<Dictionary<string, object>>>(Http("GET", "/rest/v1/profiles?select=username,tag,elo,avatar&id=eq." + Me.Id, null, access));
+                if (rows.Count == 0) throw new Exception("This account has no Arena profile.");
+                string name = rows[0]["username"] as string;
+                if (string.IsNullOrWhiteSpace(name)) throw new Exception("This account has no username.");
+                Me.Username = name;
+                Me.Avatar = rows[0].TryGetValue("avatar", out var av) ? av as string : null;
+                Me.Tag = Convert.ToInt32(rows[0]["tag"]);
+                Me.Elo = Convert.ToInt32(rows[0]["elo"]);
+            }
+            catch { Me = null; throw; }
         }
 
         sealed class ArenaHttpException : Exception
