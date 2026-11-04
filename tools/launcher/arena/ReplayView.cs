@@ -353,18 +353,28 @@ namespace Arena
             if (ShowHit) foreach (var h in hits) if (!h.Grab) DrawHitSphere(dc, h, pc);
         }
 
-        static bool IsCommonGrab(RvFighterFrame s) { var m = ReplayNames.MotionText(s.Motion); return m == "catch" || m == "catch_dash" || m == "catch_turn"; }
-
-        /// <summary>what a grab is: the common grabs by their motion; anything else of a fighter that catches (a special) a command grab; a weapon's: a tether</summary>
-        public static string GrabName(RvFighterFrame s)
+        static bool IsCommonGrab(RvFighterFrame s) => CommonGrab(s) != null;
+        static readonly ulong CatchPull = ReplayNames.Hash40("catch_pull"), CatchDashPull = ReplayNames.Hash40("catch_dash_pull");
+        /// <summary>the common grabs by their motion; a grab that caught is drawn in the frame after, already pulling (catch_pull)</summary>
+        static string CommonGrab(RvFighterFrame s)
         {
-            if (s == null) return "Grab";
+            ulong m = s.Motion & 0xffffffffffUL;
+            if (m == CatchPull) return "Grab";
+            if (m == CatchDashPull) return "Dash grab";
             switch (ReplayNames.MotionText(s.Motion))
             {
                 case "catch": return "Grab";
                 case "catch_dash": return "Dash grab";
                 case "catch_turn": return "Pivot grab";
             }
+            return null;
+        }
+
+        /// <summary>what a grab is: the common grabs by their motion; anything else of a fighter that catches (a special) a command grab; a weapon's: a tether</summary>
+        public static string GrabName(RvFighterFrame s)
+        {
+            if (s == null) return "Grab";
+            if (CommonGrab(s) is string g) return g;
             return (ReplayNames.MoveName(s.Motion) ?? ReplayNames.SpecialName(s.Motion)) is string m ? "Command grab (" + m + ")" : "Command grab";
         }
 
