@@ -7,6 +7,8 @@
 #include <math.h>
 #include <windows.h>
 #include <psapi.h>
+/* (OpenSmash phase, idea: Tintae 4ab16ea) the lifted code read in ahead, see code_prefetch below */
+void code_prefetch(HMODULE m);
 #include <time.h>
 #include "runtime.h"
 #include "hostrt.h"
@@ -485,6 +487,18 @@ int main(int argc, char **argv) {
     cxxrt_install_data();
     check_romfs();
     runtime_init(g_elf, getenv("SSBU_TRACE") ? getenv("SSBU_TRACE") : "boot_trace.txt");
+#ifdef _WIN32
+    {   /* (OpenSmash phase) the exe folder's big modules (the game library) read in ahead in the background */
+        char exe[MAX_PATH], name[MAX_PATH]; DWORD n = GetModuleFileNameA(NULL, exe, MAX_PATH), need = 0; HMODULE mods[256];
+        while (n && exe[n - 1] != '\\') n--;
+        if (n && EnumProcessModules(GetCurrentProcess(), mods, sizeof mods, &need))
+            for (DWORD i = 0; i < need / sizeof mods[0] && i < 256; i++) {
+                if (!GetModuleFileNameA(mods[i], name, MAX_PATH) || _strnicmp(name, exe, n) || strchr(name + n, '\\')) continue;
+                const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const char *)mods[i] + ((const IMAGE_DOS_HEADER *)mods[i])->e_lfanew);
+                if (nt->OptionalHeader.SizeOfImage >= (16u << 20)) code_prefetch(mods[i]);
+            }
+    }
+#endif
     if (getenv("SSBU_CRASH_TEST")) CloseHandle(CreateThread(NULL, 0, crash_test, NULL, 0, NULL));
     register_imports(base_imports, (int)(sizeof base_imports / sizeof base_imports[0]));
     register_sdk_imports();
@@ -603,3 +617,42 @@ int main(int argc, char **argv) {
     }
     return 0;
 }
+
+#ifdef _WIN32
+/* (OpenSmash phase 2026-11-04, idea and approach: Tintae's fork 4ab16ea, GPL-3.0) THE LIFTED CODE READ IN AHEAD. ~1.8 GB of DLLs are read
+ * from disk at the first call of each page: the first time a move's code runs in a match it waits for the disk (seconds on a hard
+ * drive). One background thread, background-priority I/O (the game's own reads go first), one module at a time: PrefetchVirtualMemory
+ * of its whole image (file pages: nothing private). Queued by boot (the game library) and nnro.c (each nro module). SSBU_CODE_PREFETCH=0: off. */
+typedef BOOL (WINAPI *PrefetchFn)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
+static HMODULE g_pf_q[512]; static volatile LONG g_pf_head, g_pf_tail; static HANDLE g_pf_ev; static SRWLOCK g_pf_lock = SRWLOCK_INIT;
+static long long g_pf_mb, g_pf_ms; static int g_pf_n;
+static DWORD WINAPI code_prefetch_thread(LPVOID arg) {
+    (void)arg;
+    PrefetchFn pf = (PrefetchFn)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "PrefetchVirtualMemory");
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+    for (;;) {
+        HMODULE m = NULL;
+        AcquireSRWLockExclusive(&g_pf_lock); if (g_pf_tail != g_pf_head) { m = g_pf_q[g_pf_tail & 511]; g_pf_tail++; } ReleaseSRWLockExclusive(&g_pf_lock);
+        if (!m) { WaitForSingleObject(g_pf_ev, INFINITE); continue; }
+        const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const char *)m + ((const IMAGE_DOS_HEADER *)m)->e_lfanew);
+        WIN32_MEMORY_RANGE_ENTRY r = {(PVOID)m, nt->OptionalHeader.SizeOfImage};
+        DWORD t0 = GetTickCount(); BOOL ok = pf && pf(GetCurrentProcess(), 1, &r, 0);
+        g_pf_n++; g_pf_mb += (long long)(r.NumberOfBytes >> 20); g_pf_ms += GetTickCount() - t0;
+        if (g_pf_n <= 3 || (r.NumberOfBytes >> 20) >= 100) { char nm[MAX_PATH] = "?"; GetModuleFileNameA(m, nm, MAX_PATH); const char *b = strrchr(nm, '\\');
+            printf("code prefetch: %s, %.0f MB %s in %lu ms (%d modules, %lld MB so far)\n", b ? b + 1 : nm, r.NumberOfBytes / 1048576.0, ok ? "asked to be read" : "NOT read", GetTickCount() - t0, g_pf_n, g_pf_mb); fflush(stdout); }
+    }
+    return 0;
+}
+void code_prefetch(HMODULE m) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_CODE_PREFETCH"); on = !(e && e[0] == '0'); }
+    if (!on || !m) return;
+    AcquireSRWLockExclusive(&g_pf_lock);
+    if (!g_pf_ev) { g_pf_ev = CreateEventA(NULL, FALSE, FALSE, NULL); HANDLE t = CreateThread(NULL, 0, code_prefetch_thread, NULL, 0, NULL); if (t) CloseHandle(t); }
+    if (g_pf_head - g_pf_tail < 512) { g_pf_q[g_pf_head & 511] = m; g_pf_head++; }
+    ReleaseSRWLockExclusive(&g_pf_lock);
+    SetEvent(g_pf_ev);
+}
+#else
+void code_prefetch(HMODULE m) { (void)m; }
+#endif
