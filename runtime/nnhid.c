@@ -597,7 +597,7 @@ static void fill_pad(uint64_t out, uint32_t id, int kind) {
     memset((void *)(uintptr_t)out, 0, size);
     wr64(out, (uint64_t)InterlockedIncrement64(&g_sampling));
     if (id > 7 || !kind) return;                              /* the other styles are never filled */
-    unsigned trig_l = 0, trig_r = 0;
+    unsigned trig_l = 0, trig_r = 0, gc_l = 0, gc_r = 0;   /* (gc_l / gc_r: a GameCube controller's analog triggers, any style) */
     static long long l1_ticks;                               /* L1: fight-frame ticks seen at player 1's polls (SSBU_L1 report) */
     int r1_on(void), r1_poll(int ticks); void r1_pad(uint64_t *b, int *lx, int *ly, int *rx, int *ry);    /* R1 (r1_state.c, SSBU_R1 only) */
     if (id == 0) { int fight_seq_ticks(void); int nt = fight_seq_ticks();
@@ -629,6 +629,7 @@ static void fill_pad(uint64_t out, uint32_t id, int kind) {
                 if (ps.lx || ps.ly) { lx = ps.lx; ly = ps.ly; }
                 if (ps.rx || ps.ry || !rx) { rx = ps.rx; ry = ps.ry; }
                 if (kind == 2 && ps.gc) { trig_l = (unsigned)ps.trig_l; trig_r = (unsigned)ps.trig_r; }
+                if (ps.gc) { gc_l = (unsigned)ps.trig_l; gc_r = (unsigned)ps.trig_r; }
             }
         }
     } else if (x_present(slot) && devices_live() && !menu_input_blocked()) {
@@ -649,8 +650,18 @@ static void fill_pad(uint64_t out, uint32_t id, int kind) {
         wired = !g_x[slot].wireless;
     }
     if (id == 0) record_or_replay(&buttons, &lx, &ly);
+    static int gct = -1; if (gct < 0) { const char *e = getenv("SSBU_RB_GCTRIG"); gct = !(e && e[0] == '0'); }
+    int rbg_pad_synced(int id);                          /* rb_rollback.c: this port's pad is the same on both games (online rollback match) */
+    if (gct && id == 0 && r1_on() && rbg_pad_synced(0)) {     /* (OpenSmash phase, Rsoto95 1888e14) a GameCube trigger past 25% is also L / R */
+        if (gc_l > 0x7fff / 4) buttons |= 1ull << BTN_L;
+        if (gc_r > 0x7fff / 4) buttons |= 1ull << BTN_R;
+    }
     if (id == 0 && r1_on()) r1_pad(&buttons, &lx, &ly, &rx, &ry);
     if (id == 1 && r1_on()) { void r1_pad_id(int id, uint64_t *b, int *lx, int *ly, int *rx, int *ry); r1_pad_id(1, &buttons, &lx, &ly, &rx, &ry); }      /* R3: port 2 in an online rollback match */
+    if (gct && kind == 2 && (id == 0 || id == 1) && r1_on() && rbg_pad_synced((int)id)) {      /* the triggers from the synced L / R */
+        trig_l = (buttons >> BTN_L & 1) ? 0x7fff : 0;
+        trig_r = (buttons >> BTN_R & 1) ? 0x7fff : 0;
+    }
     if (id == 0) g_port1_buttons = buttons;
     if (id == 1 && room_after_on()) buttons |= g_port1_buttons & (1ull << BTN_A);      /* (0.2.17) the result screen's second player */
     if (lx < -STICK_MAX / 2) buttons |= 1ull << BTN_SL_LEFT;

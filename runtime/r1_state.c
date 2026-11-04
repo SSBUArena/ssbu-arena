@@ -46,6 +46,7 @@ void r1_dc_begin(void) {}
 void r1_dc_end(void) {}
 void r1_on_commit(void *p, size_t n) { (void)p; (void)n; }
 int rbg_net_thread_may_run(void) { return 1; }
+int rbg_pad_synced(int id) { (void)id; return 0; }
 void r1_mem_note(void *p, size_t n, int kind) { (void)p; (void)n; (void)kind; }
 void r1_wrote(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void r1_module_loaded(void *h, int fighter) { (void)h; (void)fighter; }

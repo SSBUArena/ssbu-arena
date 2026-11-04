@@ -128,6 +128,25 @@ namespace Arena
             v.Update(player, c[2], b, int.Parse(c[4], inv), int.Parse(c[5], inv), int.Parse(c[6], inv), int.Parse(c[7], inv), int.Parse(c[8], inv), int.Parse(c[9], inv), dz);
         }
 
+        /// <summary>(0.2.31) outer zone, trigger threshold, vibration, invert: the texts follow, then [general] is saved</summary>
+        void FillPadGeneralTexts()
+        {
+            if (OuterZoneText != null && OuterZoneSlider != null) OuterZoneText.Text = (int)Math.Round(OuterZoneSlider.Value) + " %";
+            if (TriggerText != null && TriggerSlider != null) TriggerText.Text = (int)Math.Round(TriggerSlider.Value) + " %";
+            if (RumbleText != null && RumbleSlider != null) RumbleText.Text = (int)Math.Round(RumbleSlider.Value) + " %";
+            if (RumbleSlider != null && RumbleBox != null) RumbleSlider.IsEnabled = RumbleBox.IsChecked == true;
+        }
+        void PadGeneral_Changed(object sender, RoutedEventArgs e)
+        {
+            FillPadGeneralTexts();
+            if (loading || OuterZoneSlider == null || TriggerSlider == null || RumbleBox == null || RumbleSlider == null || InvLX == null || InvLY == null || InvRX == null || InvRY == null) return;
+            Core.OuterZone = Math.Round(OuterZoneSlider.Value) / 100.0;
+            Core.TriggerThreshold = Math.Round(TriggerSlider.Value) / 100.0;
+            Core.Rumble = RumbleBox.IsChecked == true;
+            Core.RumbleStrength = Math.Round(RumbleSlider.Value) / 100.0;
+            Core.Invert[0] = InvLX.IsChecked == true; Core.Invert[1] = InvLY.IsChecked == true; Core.Invert[2] = InvRX.IsChecked == true; Core.Invert[3] = InvRY.IsChecked == true;
+            try { Core.SavePadGeneral(); } catch { }
+        }
         void DeadZone_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             if (DeadZoneText != null) DeadZoneText.Text = (int)Math.Round(e.NewValue) + " %";

@@ -236,7 +236,7 @@ static void cfg_set(Cfg *c, DevCfg *d, int in_dev, const char *key, char *val) {
     else if (!_stricmp(key, "rumble")) d->rumble = parse_bool(val);
     else if (!_stricmp(key, "rumble_strength")) d->rstr = (float)atof(val);
     else if (in_dev && !_stricmp(key, "name")) snprintf(d->name, sizeof d->name, "%s", val);
-    else if (in_dev && !_strnicmp(key, "invert.", 7)) { for (int i = 0; i < 4; i++) if (!_stricmp(key + 7, g_stk[i])) d->inv[i] = parse_bool(val); }
+    else if (!_strnicmp(key, "invert.", 7)) { for (int i = 0; i < 4; i++) if (!_stricmp(key + 7, g_stk[i])) d->inv[i] = parse_bool(val); }      /* (0.2.31) also [general]: every controller */
     else if (in_dev && !_strnicmp(key, "axis.", 5)) { for (int i = 0; i < 4; i++) if (!_stricmp(key + 5, g_stk[i]) && src_parse(val, &d->axis[i])) d->has_axis[i] = d->axis[i].kind != SK_NONE; }
     else if (in_dev && !_strnicmp(key, "map.", 4)) {
         for (int b = 0; b < 24; b++) {
@@ -596,7 +596,7 @@ static int stick_src(const Dev *d, int i, Src *s) {
     if (!d->gp && i >= 2 && d->naxes >= 6) *s = mk(SK_AXF, i == 2 ? 2 : 3, 1);
     return d->gp || d->naxes > i;
 }
-static int stick_inv(const Dev *d, int i) { const DevCfg *c = dev_cfg(d), *t = type_cfg(d); return c && (c->has_axis[i] || c->inv[i]) ? c->inv[i] : t->inv[i]; }
+static int stick_inv(const Dev *d, int i) { const DevCfg *c = dev_cfg(d), *t = type_cfg(d); int v = c && (c->has_axis[i] || c->inv[i]) ? c->inv[i] : t->inv[i]; return v ^ (g_cfg.def.inv[i] > 0); }      /* (0.2.31) [general] invert on top */
 /* U1: the sources of a target (0..15 Pro button, 16..23 stick direction): device section, type profile, built-in default.
  * *from = 2 device, 1 type profile, 0 built-in. A stick direction has no built-in source: the stick's axis drives it. */
 static int prof_map(const Dev *d, int b, Src *s, int *from) {

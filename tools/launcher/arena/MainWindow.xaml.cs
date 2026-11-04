@@ -298,6 +298,10 @@ namespace Arena
             FpsBox.IsChecked = Core.Fps;
             KbBox.SelectedIndex = Core.Keyboard;
             DeadZoneSlider.Value = Math.Round(Core.DeadZone * 100); DeadZoneText.Text = (int)DeadZoneSlider.Value + " %";
+            OuterZoneSlider.Value = Math.Round(Core.OuterZone * 100); TriggerSlider.Value = Math.Round(Core.TriggerThreshold * 100);      // (0.2.31)
+            RumbleBox.IsChecked = Core.Rumble; RumbleSlider.Value = Math.Round(Core.RumbleStrength * 100);
+            InvLX.IsChecked = Core.Invert[0]; InvLY.IsChecked = Core.Invert[1]; InvRX.IsChecked = Core.Invert[2]; InvRY.IsChecked = Core.Invert[3];
+            FillPadGeneralTexts();
             VolSlider.Value = Math.Max(0, Math.Min(100, Core.Volume)); VolText.Text = (int)VolSlider.Value + " %";      // (0.2.16) steps of 1
             filledSize = SizeBox.SelectedIndex; filledVol = (int)VolSlider.Value;
             FillButtons();
