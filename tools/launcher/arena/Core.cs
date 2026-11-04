@@ -59,7 +59,7 @@ namespace Arena
         static readonly string LauncherIni = Path.Combine(Cfg, "launcher.ini");
         static readonly string OnlineIni = Path.Combine(Cfg, "online.ini");
         static readonly string GfxIni = Path.Combine(Cfg, "graphics.ini");
-        static readonly string PadIni = Path.Combine(Cfg, "controllers.ini");
+        internal static readonly string PadIni = Path.Combine(Cfg, "controllers.ini");
         static readonly string DlcFile = Path.Combine(Cfg, "dlc.txt");
         static readonly string CompDir = Path.Combine(Build, @"characters\competitive");
 
@@ -426,7 +426,7 @@ namespace Arena
         }
 
         /// <summary>the keys of one [section] of an ini file (lower case), the others ignored</summary>
-        static Dictionary<string, string> ReadIniSection(string path, string section)
+        internal static Dictionary<string, string> ReadIniSection(string path, string section)
         {
             var h = new Dictionary<string, string>();
             if (!File.Exists(path)) return h;

@@ -772,90 +772,132 @@
 
               <!-- controllers -->
               <StackPanel x:Name="BoxPads" Visibility="Collapsed">
-                <TextBlock Text="CONTROLLERS" Style="{StaticResource SectionTitle}"/>
-                <TextBlock x:Name="PadsHelp" Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,24" Text="Automatic: the first controller that connects."/>
-                <!-- (0.2.33) who plays with what, on one row when it fits -->
-                <WrapPanel>
-                  <StackPanel Margin="0,0,20,14">
-                    <TextBlock Text="PLAYER 1" Style="{StaticResource FieldLabel}"/>
-                    <ComboBox x:Name="P1Box" Width="260" HorizontalAlignment="Left" SelectionChanged="Field_Changed"/>
+                <!-- (0.2.33) the controllers page, top to bottom: who plays with what (a card per player and the keyboard), the selected player's
+                     controller drawn and live, the settings it shows, the buttons (MainWindow.PadTest.cs, PadDiagram.cs) -->
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <StackPanel>
+                    <TextBlock Text="CONTROLLERS" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock x:Name="PadsHelp" Style="{StaticResource Small}" Margin="0,2,0,0" Text="Looking for controllers..."/>
                   </StackPanel>
-                  <StackPanel Margin="0,0,20,14">
-                    <TextBlock Text="PLAYER 2" Style="{StaticResource FieldLabel}"/>
-                    <ComboBox x:Name="P2Box" Width="260" HorizontalAlignment="Left" SelectionChanged="Field_Changed"/>
-                  </StackPanel>
-                  <StackPanel Margin="0,0,20,14">
-                    <TextBlock Text="KEYBOARD" Style="{StaticResource FieldLabel}"/>
-                    <ComboBox x:Name="KbBox" Width="200" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
-                      <ComboBoxItem>Automatic</ComboBoxItem><ComboBoxItem>Player 1</ComboBoxItem><ComboBoxItem>Player 2</ComboBoxItem><ComboBoxItem>None</ComboBoxItem>
-                    </ComboBox>
-                  </StackPanel>
-                </WrapPanel>
-                <WrapPanel>
-                  <Button Style="{StaticResource Outline}" Height="42" HorizontalAlignment="Left" Margin="0,0,16,0" Click="FindPads_Click" FontSize="16">Find controllers</Button>
-                  <TextBlock Style="{StaticResource Small}" VerticalAlignment="Center" MaxWidth="520" TextWrapping="Wrap" Text="Automatic: the keyboard is the first free player after the controllers connected at start."/>
-                </WrapPanel>
-                <!-- (0.2.33) the live test (each connected controller drawn: buttons, sticks and triggers as the game gets them, MainWindow.PadTest.cs,
-                     PadDiagram.cs) and beside it the settings it shows, under it when the page is narrow -->
-                <WrapPanel Margin="0,28,0,0">
-                  <StackPanel Width="450" Margin="0,0,20,0">
-                    <TextBlock Text="TEST" Style="{StaticResource FieldLabel}" Margin="0,0,0,6"/>
-                    <TextBlock x:Name="PadLiveNote" Style="{StaticResource Small}" Margin="0,0,0,12" TextWrapping="Wrap"/>
-                    <StackPanel x:Name="PadLiveList"/>
-                    <TextBlock Style="{StaticResource Small}" Margin="0,0,0,16" TextWrapping="Wrap"
-                               Text="Lit: what the game gets, through the buttons below. Sticks: gray the real stick, blue what the game gets, dashed yellow the dead zone, the thin ring the outer zone (a full tilt from there). Triggers: the bar is how far it is pressed, the yellow mark where it counts as pressed."/>
-                  </StackPanel>
-                  <StackPanel Width="380">
-                    <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="20,16" Margin="0,0,0,16" Width="380" VerticalAlignment="Top">
+                  <Button Grid.Column="1" Style="{StaticResource Outline}" Height="40" Padding="18,0" VerticalAlignment="Center" Click="FindPads_Click" FontSize="15"
+                          ToolTip="Looks again for connected controllers (USB, Bluetooth, GameCube adapter). A controller you connect while this page is open also appears by itself.">Find controllers</Button>
+                </Grid>
+                <UniformGrid Columns="3" Margin="0,12,0,0">
+                  <Border x:Name="P1Card" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1.5" CornerRadius="8" Padding="14,9" Margin="0,0,10,0" Cursor="Hand" MouseLeftButtonDown="PadCard_Click" Tag="1"
+                          ToolTip="Player 1's controller. Click the card to see it below.">
+                    <StackPanel>
+                      <DockPanel Margin="0,0,0,6">
+                        <TextBlock Text="PLAYER 1" Style="{StaticResource FieldLabel}" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="P1Dot" DockPanel.Dock="Right" Width="9" Height="9" Margin="8,0,0,0" Fill="{StaticResource Muted}" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="P1State" FontSize="14" TextTrimming="CharacterEllipsis" TextAlignment="Right" VerticalAlignment="Center" Text="Not connected"/>
+                      </DockPanel>
+                      <ComboBox x:Name="P1Box" HorizontalAlignment="Stretch" SelectionChanged="Field_Changed"/>
+                    </StackPanel>
+                  </Border>
+                  <Border x:Name="P2Card" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1.5" CornerRadius="8" Padding="14,9" Margin="5,0,5,0" Cursor="Hand" MouseLeftButtonDown="PadCard_Click" Tag="2"
+                          ToolTip="Player 2's controller. Click the card to see it below.">
+                    <StackPanel>
+                      <DockPanel Margin="0,0,0,6">
+                        <TextBlock Text="PLAYER 2" Style="{StaticResource FieldLabel}" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="P2Dot" DockPanel.Dock="Right" Width="9" Height="9" Margin="8,0,0,0" Fill="{StaticResource Muted}" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="P2State" FontSize="14" TextTrimming="CharacterEllipsis" TextAlignment="Right" VerticalAlignment="Center" Text="Not connected"/>
+                      </DockPanel>
+                      <ComboBox x:Name="P2Box" HorizontalAlignment="Stretch" SelectionChanged="Field_Changed"/>
+                    </StackPanel>
+                  </Border>
+                  <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1.5" CornerRadius="8" Padding="14,9" Margin="10,0,0,0"
+                          ToolTip="Automatic: the keyboard plays as the first player without a controller at the start (player 1 when there is none). It counts only while the game window has the focus.">
+                    <StackPanel>
+                      <DockPanel Margin="0,0,0,6">
+                        <TextBlock Text="KEYBOARD" Style="{StaticResource FieldLabel}" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="KbState" FontSize="14" TextTrimming="CharacterEllipsis" TextAlignment="Right" VerticalAlignment="Center" Text="Plays as player 1"/>
+                      </DockPanel>
+                      <ComboBox x:Name="KbBox" HorizontalAlignment="Stretch" SelectionChanged="Field_Changed">
+                        <ComboBoxItem>Automatic</ComboBoxItem><ComboBoxItem>Player 1</ComboBoxItem><ComboBoxItem>Player 2</ComboBoxItem><ComboBoxItem>None</ComboBoxItem>
+                      </ComboBox>
+                    </StackPanel>
+                  </Border>
+                </UniformGrid>
+                <!-- the selected player's controller, big and live; the keyboard's keys when the keyboard is that player's; what to do without one -->
+                <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="16,8,16,6" Margin="0,10,0,0">
+                  <StackPanel>
+                    <DockPanel>
+                      <TextBlock DockPanel.Dock="Right" Style="{StaticResource Small}" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{StaticResource Accent}" Cursor="Help" Text="ⓘ What the drawing shows"
+                                 ToolTip="Lit: what the game gets. Labels: what each button does with Smash's default controls (Smash's Options › Controls can change them). Sticks: the gray dot is the real stick, the blue one what the game gets; the dashed yellow circle is the dead zone, the thin ring the outer zone (a full tilt from there). Triggers: the bar is how far they are pressed, the yellow mark where they count as pressed."/>
+                      <TextBlock x:Name="PadLiveNote" DockPanel.Dock="Right" Style="{StaticResource Small}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                      <TextBlock x:Name="PadStageTitle" FontSize="16" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Text="Player 1"/>
+                    </DockPanel>
+                    <Grid x:Name="PadStage" Height="296" Margin="0,2,0,0">
+                      <StackPanel x:Name="PadLiveList"/>
+                      <Border x:Name="PadEmpty" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed" Width="440" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="10" Padding="22,16">
                       <StackPanel>
-                        <TextBlock Text="STICKS" Style="{StaticResource FieldLabel}" Margin="0,0,0,10" Foreground="{StaticResource Accent}"/>
-                        <TextBlock Text="DEAD ZONE" Style="{StaticResource FieldLabel}" Margin="0,0,0,4"/>
-                        <StackPanel Orientation="Horizontal">
-                          <Slider x:Name="DeadZoneSlider" Width="250" Minimum="0" Maximum="40" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="DeadZone_Changed"/>
-                          <TextBlock x:Name="DeadZoneText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
-                        </StackPanel>
-                        <TextBlock Style="{StaticResource Small}" Margin="0,4,0,0" TextWrapping="Wrap" Text="How far a stick moves before the game sees it (the dashed circle). Raise it if your character moves by itself. A value set for one controller in the game's menu wins over this one."/>
-                        <TextBlock Text="OUTER ZONE" Style="{StaticResource FieldLabel}" Margin="0,16,0,4"/>
-                        <StackPanel Orientation="Horizontal">
-                          <Slider x:Name="OuterZoneSlider" Width="250" Minimum="60" Maximum="100" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="PadGeneral_Changed"/>
-                          <TextBlock x:Name="OuterZoneText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
-                        </StackPanel>
-                        <TextBlock Style="{StaticResource Small}" Margin="0,4,0,0" TextWrapping="Wrap" Text="How far a stick must go for a full tilt (the thin ring). Lower it if a worn stick never reaches the edge (no dash, no smash attack). 98 % is the default."/>
-                        <TextBlock Text="INVERT" Style="{StaticResource FieldLabel}" Margin="0,16,0,6"/>
-                        <UniformGrid Columns="2">
-                          <CheckBox x:Name="InvLX" Style="{StaticResource Switch}" Margin="0,0,12,8" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Left stick ↔" FontSize="15"/></CheckBox>
-                          <CheckBox x:Name="InvLY" Style="{StaticResource Switch}" Margin="0,0,12,8" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Left stick ↕" FontSize="15"/></CheckBox>
-                          <CheckBox x:Name="InvRX" Style="{StaticResource Switch}" Margin="0,0,12,8" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Right stick ↔" FontSize="15"/></CheckBox>
-                          <CheckBox x:Name="InvRY" Style="{StaticResource Switch}" Margin="0,0,12,8" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Right stick ↕" FontSize="15"/></CheckBox>
-                        </UniformGrid>
+                        <TextBlock x:Name="PadEmptyTitle" Text="No controller for this player" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                        <TextBlock x:Name="PadEmptyText" Style="{StaticResource Small}" FontSize="14" Margin="0,8,0,0" TextWrapping="Wrap" TextAlignment="Center"
+                                   Text="Connect a controller by USB or Bluetooth (or a GameCube adapter) and press a button: it appears here by itself. Then choose it in the card above, or leave Automatic. No controller at all? The keyboard can play: see its card."/>
                       </StackPanel>
-                    </Border>
-                    <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="20,16" Margin="0,0,0,16" Width="380" VerticalAlignment="Top">
-                      <StackPanel>
-                        <TextBlock Text="TRIGGERS AND VIBRATION" Style="{StaticResource FieldLabel}" Margin="0,0,0,10" Foreground="{StaticResource Accent}"/>
-                        <TextBlock Text="TRIGGERS (ZL / ZR) PRESSED FROM" Style="{StaticResource FieldLabel}" Margin="0,0,0,4"/>
-                        <StackPanel Orientation="Horizontal">
-                          <Slider x:Name="TriggerSlider" Width="250" Minimum="5" Maximum="95" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="PadGeneral_Changed"/>
-                          <TextBlock x:Name="TriggerText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
-                        </StackPanel>
-                        <TextBlock Style="{StaticResource Small}" Margin="0,4,0,0" TextWrapping="Wrap" Text="How far an analog trigger must be pressed to count as ZL / ZR (the yellow mark). Lower = lighter press. 33 % is the default."/>
-                        <CheckBox x:Name="RumbleBox" Style="{StaticResource Switch}" Margin="0,18,0,0" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed">
-                          <StackPanel>
-                            <TextBlock Text="Vibration" FontSize="16"/>
-                            <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="The controller vibrates when the game asks for it."/>
-                          </StackPanel>
+                      </Border>
+                      <Grid x:Name="PadKeys" Visibility="Collapsed" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                    </Grid>
+                  </StackPanel>
+                </Border>
+                <!-- the settings the drawing shows: dragging a slider moves its ring or mark on the drawing at once -->
+                <UniformGrid Columns="2" Margin="0,14,0,0">
+                  <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="18,14" Margin="0,0,7,0">
+                    <StackPanel>
+                      <TextBlock Text="STICKS" Style="{StaticResource FieldLabel}" Margin="0,0,0,8" Foreground="{StaticResource Accent}"/>
+                      <DockPanel ToolTip="How far a stick moves before the game sees it: the dashed yellow circle on the drawing. Raise it if your character moves by itself. A value set for one controller in the game's menu wins over this one.">
+                        <TextBlock x:Name="DeadZoneText" DockPanel.Dock="Right" Width="48" TextAlignment="Right" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
+                        <TextBlock Text="Dead zone" FontSize="15" VerticalAlignment="Center"/>
+                      </DockPanel>
+                      <Slider x:Name="DeadZoneSlider" Minimum="0" Maximum="40" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,4,0,0" Foreground="{StaticResource Accent}" ValueChanged="DeadZone_Changed"/>
+                      <TextBlock Style="{StaticResource Small}" Margin="0,2,0,10" Text="Raise it if your character moves by itself."/>
+                      <DockPanel ToolTip="How far a stick must go for a full tilt: the thin ring on the drawing. Lower it if a worn stick never reaches the edge (no dash, no smash attack). 98 % is the default.">
+                        <TextBlock x:Name="OuterZoneText" DockPanel.Dock="Right" Width="48" TextAlignment="Right" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
+                        <TextBlock Text="Outer zone" FontSize="15" VerticalAlignment="Center"/>
+                      </DockPanel>
+                      <Slider x:Name="OuterZoneSlider" Minimum="60" Maximum="100" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,4,0,0" Foreground="{StaticResource Accent}" ValueChanged="PadGeneral_Changed"/>
+                      <TextBlock Style="{StaticResource Small}" Margin="0,2,0,10" Text="Lower it if a worn stick never reaches a full tilt."/>
+                      <TextBlock Text="Invert" FontSize="15" Margin="0,0,0,6" ToolTip="Turns a stick's direction around, for every controller."/>
+                      <UniformGrid Columns="2">
+                        <CheckBox x:Name="InvLX" Style="{StaticResource Switch}" Margin="0,0,12,6" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Left stick ↔" FontSize="14"/></CheckBox>
+                        <CheckBox x:Name="InvLY" Style="{StaticResource Switch}" Margin="0,0,12,6" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Left stick ↕" FontSize="14"/></CheckBox>
+                        <CheckBox x:Name="InvRX" Style="{StaticResource Switch}" Margin="0,0,12,6" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Right stick ↔" FontSize="14"/></CheckBox>
+                        <CheckBox x:Name="InvRY" Style="{StaticResource Switch}" Margin="0,0,12,6" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed"><TextBlock Text="Right stick ↕" FontSize="14"/></CheckBox>
+                      </UniformGrid>
+                    </StackPanel>
+                  </Border>
+                  <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="18,14" Margin="7,0,0,0">
+                    <StackPanel>
+                      <TextBlock Text="TRIGGERS AND VIBRATION" Style="{StaticResource FieldLabel}" Margin="0,0,0,8" Foreground="{StaticResource Accent}"/>
+                      <DockPanel ToolTip="How far an analog trigger (ZL / ZR, LT / RT, L2 / R2) must be pressed to count: the yellow mark on the drawn triggers. Lower = a lighter press. 33 % is the default.">
+                        <TextBlock x:Name="TriggerText" DockPanel.Dock="Right" Width="48" TextAlignment="Right" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
+                        <TextBlock Text="Triggers count from" FontSize="15" VerticalAlignment="Center"/>
+                      </DockPanel>
+                      <Slider x:Name="TriggerSlider" Minimum="5" Maximum="95" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,4,0,0" Foreground="{StaticResource Accent}" ValueChanged="PadGeneral_Changed"/>
+                      <TextBlock Style="{StaticResource Small}" Margin="0,2,0,12" Text="Lower it for a lighter shield press."/>
+                      <DockPanel>
+                        <Button x:Name="RumbleTest" DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="34" Padding="12,0" FontSize="14" Click="RumbleTest_Click" VerticalAlignment="Center"
+                                ToolTip="The selected player's controller vibrates for half a second, with these settings.">Test vibration</Button>
+                        <CheckBox x:Name="RumbleBox" Style="{StaticResource Switch}" Checked="PadGeneral_Changed" Unchecked="PadGeneral_Changed" ToolTip="The controller vibrates when the game asks for it.">
+                          <TextBlock Text="Vibration" FontSize="15"/>
                         </CheckBox>
-                        <TextBlock Text="STRENGTH" Style="{StaticResource FieldLabel}" Margin="0,14,0,4"/>
-                        <StackPanel Orientation="Horizontal">
-                          <Slider x:Name="RumbleSlider" Width="250" Minimum="0" Maximum="200" SmallChange="5" LargeChange="25" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center" Foreground="{StaticResource Accent}" ValueChanged="PadGeneral_Changed"/>
-                          <TextBlock x:Name="RumbleText" Width="60" Margin="14,0,0,0" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
-                        </StackPanel>
-                        <TextBlock Style="{StaticResource Small}" Margin="0,4,0,0" TextWrapping="Wrap" Text="100 % = as the game asks."/>
-                      </StackPanel>
-                    </Border>
-                  </StackPanel>
-                </WrapPanel>
-                <TextBlock Style="{StaticResource Small}" Margin="0,0,0,0" TextWrapping="Wrap" MaxWidth="680" HorizontalAlignment="Left" Text="For every controller. All these settings apply in the game within a second, also while it runs, and only on this PC: online the other player gets your moves, not your settings."/>
+                      </DockPanel>
+                      <DockPanel Margin="0,10,0,0" ToolTip="Vibration strength: 100 % is as the game asks.">
+                        <TextBlock x:Name="RumbleText" DockPanel.Dock="Right" Width="48" TextAlignment="Right" VerticalAlignment="Center" FontSize="16" Foreground="{StaticResource Text}"/>
+                        <TextBlock Text="Strength" FontSize="15" VerticalAlignment="Center"/>
+                      </DockPanel>
+                      <Slider x:Name="RumbleSlider" Minimum="0" Maximum="200" SmallChange="5" LargeChange="25" TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,0" Foreground="{StaticResource Accent}" ValueChanged="PadGeneral_Changed"/>
+                      <TextBlock Style="{StaticResource Small}" Margin="0,2,0,0" Text="100 % is as the game asks."/>
+                    </StackPanel>
+                  </Border>
+                </UniformGrid>
+                <DockPanel Margin="0,12,0,0">
+                  <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="38" Padding="16,0" FontSize="15" Click="PadReset_Click"
+                          ToolTip="Dead zone 10 %, outer zone 98 %, triggers 33 %, vibration on at 100 %, no inverted stick. The buttons below have their own reset.">Reset to defaults</Button>
+                  <TextBlock Style="{StaticResource Small}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"
+                             Text="For every controller, on this PC only. Changes apply in the game within a second, also while it runs."/>
+                </DockPanel>
                 <TextBlock Text="BUTTONS" Style="{StaticResource FieldLabel}" Margin="0,30,0,6"/>
                 <TextBlock Style="{StaticResource Small}" Margin="0,0,0,14" TextWrapping="Wrap"
                            Text="Which button of your controller presses each button of the game (Xbox, PlayStation and other controllers). Smash's own Options > Controls can still change what each button does."/>
