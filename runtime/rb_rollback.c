@@ -109,6 +109,21 @@ static int rbg_peek_idle(void) {                        /* (phase 3 v2) no other
     return 1;
 }
 void rbn_put_mismatch(int m);
+/* (8 ms phase, idea: OpenSmash #55) SSBU_RB_CAPSKIP (default 1): a real pass's state (frame i) is not captured when the other
+ * player's pads of frame i + 1 are already here: frame i + 1 then runs on known pads, so no wrong guess can be at i + 1, and a
+ * wrong guess at a later frame m loads the state of m - 1 or older, captured at the first real pass that ended without the next
+ * frame's pads (that one always captures). The marks keep the pages written since the last capture: the next capture takes
+ * them all. Not with the ring short of memory (a capture must succeed first) nor with a refused load pending. 0 = every one.
+ * Default 8: a capture anyway after 8 skipped in a row (loop bench with ping spikes: with no limit the capture after a long run
+ * took every page written since, and the rollback ticks p99 15.3 -> 21 ms; with 8, 14.6 ms; frames without a rollback 5.2 -> 3.6). */
+static int g_rbg_capskip_on = -1, g_rbg_capskip_run; static long long g_rbg_capskip_real;
+static int rbg_real_skip(long long i) {      /* SSBU_RB_CAPSKIP=<n> (n >= 2): a capture anyway after n skipped in a row (the pages written pile up) */
+    if (g_rbg_capskip_on < 0) { const char *e = getenv("SSBU_RB_CAPSKIP"); g_rbg_capskip_on = e && *e ? atoi(e) : 8; }
+    int skip = g_rbg_capskip_on && g_rg_ready && !g_rg_short && g_rbg_pend <= 0 && g_rg_count > 0 && rbn_confirmed() > i
+            && (g_rbg_capskip_on < 2 || g_rbg_capskip_run < g_rbg_capskip_on);
+    g_rbg_capskip_run = skip ? g_rbg_capskip_run + 1 : 0;
+    return skip;
+}
 static int rbg_capture(long long i, Ctx *c) { g_rg_need = rbn_confirmed(); if (g_rbg_pend > 0 && g_rbg_pend - 1 < g_rg_need) g_rg_need = g_rbg_pend - 1; return r1_ring_capture(i, c); }
 void rbn_stats(int *delay, int *last, int *maxk) { *delay = rbn_delay(); *last = (int)g_rbg_last_k; *maxk = (int)g_rbg_max_k; }   /* net_relay.c net_stats_get (F2) */
 
@@ -452,7 +467,8 @@ static void rbg_step_body(Ctx *c) {
             if (rbg_rollback(c, i, m)) return;
             r1_ring_let_go();
             if (g_rbg_keep != 1 && !rbg_capture(i, c)) g_rbg_capfail++;
-        } else if (!rbg_capture(i, c)) g_rbg_capfail++;
+        } else if (rbg_real_skip(i)) g_rbg_capskip_real++;
+        else if (!rbg_capture(i, c)) g_rbg_capfail++;
         if (g_rbg_test_f == -2) { const char *e = getenv("SSBU_RB_NET_TEST"); g_rbg_test_f = -1; if (e && *e) { long long tf = -1; int ms = 0, k = 0; sscanf(e, "%lld,%d,%d", &tf, &ms, &k); g_rbg_test_f = tf; g_rbg_test_ms = ms; g_rbg_test_k = k; } }
         if (g_rbg_test_f > 0 && i >= g_rbg_test_f && !g_rbg_noring) {    /* (the first real pass from that frame on without a rollback of its own) */
             g_rbg_test_f = -1;                        /* test: a long stall at this safe point, then a rollback (same pads: the timeline must not change) */
@@ -704,7 +720,7 @@ static void rbg_fight_off(void) {
     if (g_fd_on > 0) LOG("r1: FONTDIAG: font job runs %lld, in progress at loads %lld, at the idle collector %lld, at other safe points %lld; list broken %lld times\n", g_fd_runs, g_fd_atload, g_fd_atgc, g_fd_atcap, g_fd_bad);
     g_rbg_gc_L = 0; g_rbg_gc_frame = -1;
     g_rbg_in_match = 0; g_rbg_ff_first = -1;
-    g_rbg_rb = 0; memset(g_rbg_k, 0, sizeof g_rbg_k); g_rbg_rerun = g_rbg_miss = g_rbg_stalls = g_rbg_capfail = g_rbg_capskip = g_rbg_lastlocal = g_rbg_real = g_rbg_gone = 0;
+    g_rbg_rb = 0; memset(g_rbg_k, 0, sizeof g_rbg_k); g_rbg_rerun = g_rbg_miss = g_rbg_stalls = g_rbg_capfail = g_rbg_capskip = g_rbg_capskip_real = g_rbg_lastlocal = g_rbg_real = g_rbg_gone = 0;
     g_rbg_stall_ms = g_rbg_load_ms = g_rbg_tick0 = g_rbg_next = g_rbg_last_go = 0;
     g_rbg_last_k = 0; g_rbg_max_k = 0; g_rbg_short_waits = 0; g_rg_short = 0; g_rg_need = -1; g_rbg_nw = g_rbg_ng = g_rbg_tick_k = 0; g_rbg_rb_unheld = 0; g_rbg_recap_first = 0;
     g_rbg_t_pre = g_rbg_t_load = g_rbg_t_rerun = g_rbg_t_recap = g_rbg_t_pass0 = 0; g_rbg_n_rerun = g_rbg_n_recap = 0;
@@ -736,6 +752,7 @@ static void rbg_report(void) {
         g_rbg_real, g_rbg_rb, g_rbg_rerun, g_rbg_k[1], g_rbg_k[2], g_rbg_k[3], g_rbg_k[4], g_rbg_k[5], g_rbg_k[6], g_rbg_k[7], g_rbg_k[RG_MAXSLOT + 1] + g_rbg_k[8], g_rbg_miss);
     LOG("r1: RB NET report: stalls for the other player %lld (%.1f ms in all; %lld of them because the ring was short of memory); captures failed %lld, re-run captures not needed %lld; load mean %.3f ms; peer silent %lld\n",
         g_rbg_stalls, g_rbg_stall_ms, g_rbg_short_waits, g_rbg_capfail, g_rbg_capskip, g_rbg_rb ? g_rbg_load_ms / g_rbg_rb : 0.0, g_rbg_gone);
+    LOG("r1: RB NET report: real-pass captures not needed (next frame's pads already here, SSBU_RB_CAPSKIP %d) %lld of %lld real frames\n", g_rbg_capskip_on, g_rbg_capskip_real, g_rbg_real);
     LOG("r1: RB NET report: ring memory (hs14, fix %s): captures given up %lld, old states freed early %lld, captures skipped to keep the oldest needed state %lld\n",
         g_rg_poolfix ? "on" : "OFF", g_rg_short_n, g_rg_freed_slots, g_rg_skip_full);
     LOG("r1: RB NET report: task-worker watchdog releases %lld (since the process start), rollbacks with the workers not held %lld (watchdog paused at H2: %s)\n", g_ra_wd_fired, g_rbg_rb_unheld, g_rbg_wdfix ? "yes" : "NO");
