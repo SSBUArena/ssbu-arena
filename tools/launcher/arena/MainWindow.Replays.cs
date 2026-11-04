@@ -523,9 +523,9 @@ namespace Arena
         void RvStepFwd_Click(object sender, RoutedEventArgs e) { RvPause(true); RvSet(Math.Round(RvView.Frame) + 1); }
         void RvToggle_Changed(object sender, RoutedEventArgs e)
         {
-            if (RvView == null || RvHit == null || RvHurt == null || RvFollow == null) return;
+            if (RvView == null || RvHit == null || RvHurt == null || RvGrab == null || RvFollow == null) return;
             if (rvScene != null) rvScene.On = RvModels.IsChecked == true;
-            RvView.ShowHit = RvHit.IsChecked == true; RvView.ShowHurt = RvHurt.IsChecked == true; RvView.Follow = RvFollow.IsChecked == true;
+            RvView.ShowHit = RvHit.IsChecked == true; RvView.ShowHurt = RvHurt.IsChecked == true; RvView.ShowGrab = RvGrab.IsChecked == true; RvView.Follow = RvFollow.IsChecked == true;
             RvView.InvalidateVisual();
         }
 
@@ -540,6 +540,7 @@ namespace Arena
             else if (e.Key == Key.M) { RvModels.IsChecked = RvModels.IsChecked != true; e.Handled = true; }
             else if (e.Key == Key.H) { RvHit.IsChecked = RvHit.IsChecked != true; e.Handled = true; }
             else if (e.Key == Key.U) { RvHurt.IsChecked = RvHurt.IsChecked != true; e.Handled = true; }
+            else if (e.Key == Key.G) { RvGrab.IsChecked = RvGrab.IsChecked != true; e.Handled = true; }
             else if (e.Key == Key.F) { RvFollow.IsChecked = RvFollow.IsChecked != true; e.Handled = true; }
         }
 
@@ -598,7 +599,9 @@ namespace Arena
                 if (s == null) { rvMoveInfo[k].Text = ""; continue; }
                 string mv = ReplayNames.MoveName(s.Motion);
                 string text = mv != null ? "Now: " + mv + "  (frame " + (int)Math.Floor(s.MotionFrame + 1) + " of the move)" : "Now: " + ReplayNames.ActionText(s);
-                if (s.Hits.Length > 0) text += "\nHitboxes now: " + s.Hits.Length + ", radius " + string.Join(" / ", s.Hits.Select(h => h.R.ToString("0.0", CultureInfo.InvariantCulture)));
+                var hb = s.Hits.Where(h => !h.Grab).ToArray(); var gb = s.Hits.Where(h => h.Grab).ToArray();
+                if (hb.Length > 0) text += "\nHitboxes now: " + hb.Length + ", radius " + string.Join(" / ", hb.Select(h => h.R.ToString("0.0", CultureInfo.InvariantCulture)));
+                if (gb.Length > 0) text += "\n" + ReplayView.GrabName(s) + " boxes now: " + gb.Length + ", radius " + string.Join(" / ", gb.Select(h => h.R.ToString("0.0", CultureInfo.InvariantCulture)));
                 var u = mv != null ? UfdMove(r.Fighters[k].FighterKey, mv) : null;
                 if (u != null)
                 {
@@ -648,6 +651,16 @@ namespace Arena
             if (z > 0 && z + 1 < args.Length && double.TryParse(args[z + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out double zf)) RvView.Zoom = zf;
             int zo = Array.IndexOf(args, "--zoomon");
             if (zo > 0 && zo + 1 < args.Length && int.TryParse(args[zo + 1], out int zk)) RvView.zoomOn = zk;
+            int zu = Array.IndexOf(args, "--zoomup");       // --zoomup <game units>: the zoom's centre higher (a face)
+            if (zu > 0 && zu + 1 < args.Length && double.TryParse(args[zu + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out double up)) RvView.ZoomUp = up;
+            int off = Array.IndexOf(args, "--off");          // --off hit,hurt,grab: those switches off (screenshots)
+            if (off > 0 && off + 1 < args.Length)
+                foreach (var w in args[off + 1].Split(','))
+                {
+                    if (w == "hit") RvHit.IsChecked = false;
+                    else if (w == "hurt") RvHurt.IsChecked = false;
+                    else if (w == "grab") RvGrab.IsChecked = false;
+                }
         }
     }
 }

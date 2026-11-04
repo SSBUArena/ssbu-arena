@@ -325,7 +325,7 @@ namespace Arena
         /// list of its files, made if missing; null if it cannot be made.</summary>
         public static string MakeReplayAssets(string replay)
         {
-            string dir = Path.Combine(Build, "replay_assets"), list = Path.Combine(dir, "replays3", Path.GetFileName(replay) + ".txt");
+            string dir = Path.Combine(Build, "replay_assets"), list = Path.Combine(dir, ReplayScene.ListFolder, Path.GetFileName(replay) + ".txt");
             if (File.Exists(list) && ReplayAssetsThere(dir, list)) return list;
             if (Repo == null || RomFS == null) return File.Exists(list) ? list : null;
             string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\replay\replay_assets.py"), arc = Path.Combine(RomFS, "data.arc");

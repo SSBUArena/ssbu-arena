@@ -535,6 +535,7 @@
                   <CheckBox x:Name="RvModels" Style="{StaticResource RvChip}" Content="Models" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="The game's own fighters and stage, from your game files (M)"/>
                   <CheckBox x:Name="RvHit" Style="{StaticResource RvChip}" Content="Hitboxes" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where the attacks hit (H)"/>
                   <CheckBox x:Name="RvHurt" Style="{StaticResource RvChip}" Content="Hurtboxes" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where the fighters can be hit (U)"/>
+                  <CheckBox x:Name="RvGrab" Style="{StaticResource RvChip}" Content="Grabs" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="Where grabs and the specials that grab can catch, in violet; dashed: a command grab (G)"/>
                   <CheckBox x:Name="RvFollow" Style="{StaticResource RvChip}" Content="Follow" IsChecked="True" Checked="RvToggle_Changed" Unchecked="RvToggle_Changed" ToolTip="The camera follows the fighters; off: the whole stage and its blast zones (F)"/>
                 </StackPanel>
               </Grid>
