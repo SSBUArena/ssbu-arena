@@ -501,6 +501,14 @@ static void so_name(Ctx *c, int peer) {                   /* (fd, sockaddr *, so
 static void socket_GetSockName(Ctx *c) { so_name(c, 0); }
 static void socket_GetPeerName(Ctx *c) { so_name(c, 1); }
 static int so_host_flags(int f) { return (f & 2 ? MSG_PEEK : 0) | (f & 1 ? MSG_OOB : 0) | (f & 0x40 ? MSG_WAITALL : 0); }
+/* (OpenSmash phase, from Rsoto95 fb34212) received bytes: through a host buffer, then marked for the rollback ring and copied */
+static int so_mark_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_NET_RECVMARK"); on = !(e && e[0] == '0'); } return on; }
+static char *so_bounce(size_t n) {
+    static __declspec(thread) char *b; static __declspec(thread) size_t cap;
+    if (n > cap) { free(b); b = (char *)malloc(n); cap = b ? n : 0; }
+    return b;
+}
+static void so_guest_write(uint64_t dst, const void *src, size_t n) { void r1_wrote(uint64_t, uint64_t); if (!n) return; r1_wrote(dst, n); memcpy((void *)(uintptr_t)dst, src, n); }
 static void so_recv(Ctx *c, uint64_t addr, uint64_t lenp) {   /* (fd, buf, size, flags [, sockaddr *, socklen_t *]) */
     uint64_t buf = A1, size = A2;
     int gf = (int)A3, flags = 0;
@@ -525,14 +533,18 @@ static void so_recv(Ctx *c, uint64_t addr, uint64_t lenp) {   /* (fd, buf, size,
             a.sin_family = AF_INET;
             memcpy(&a.sin_addr.s_addr, tmp, 4); memcpy(&a.sin_port, tmp + 4, 2);
             n -= 6;
-            memcpy((void *)(uintptr_t)buf, tmp + 6, n);
+            if (so_mark_on()) so_guest_write(buf, tmp + 6, (size_t)n); else memcpy((void *)(uintptr_t)buf, tmp + 6, n);
         } else if (n >= 0) n = 0;
         free(tmp);
     }
     else
 #endif
-    if (addr) n = recvfrom(o->s, (char *)(uintptr_t)buf, (int)(size > 0x7fffffff ? 0x7fffffff : size), so_host_flags(gf), (struct sockaddr *)&a, &alen);
-    else n = recv(o->s, (char *)(uintptr_t)buf, (int)(size > 0x7fffffff ? 0x7fffffff : size), so_host_flags(gf));
+    {   int want = (int)(size > 0x7fffffff ? 0x7fffffff : size); char *dst = (char *)(uintptr_t)buf;
+        if (so_mark_on()) { if (want > (1 << 20)) want = 1 << 20; char *t = so_bounce((size_t)want); if (t) dst = t; else want = (int)(size > 0x7fffffff ? 0x7fffffff : size); }
+        if (addr) n = recvfrom(o->s, dst, want, so_host_flags(gf), (struct sockaddr *)&a, &alen);
+        else n = recv(o->s, dst, want, so_host_flags(gf));
+        if (n < 0 && WSAGetLastError() == WSAEMSGSIZE) n = want;      /* (datagram longer than the buffer: truncated, as below) */
+        if (n > 0 && dst != (char *)(uintptr_t)buf) so_guest_write(buf, dst, (size_t)n); }
     if (n < 0) {
         int w = WSAGetLastError();
         if (w == WSAEMSGSIZE) n = (int)size;              /* datagram longer than the buffer: BSD truncates silently */

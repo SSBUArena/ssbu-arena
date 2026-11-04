@@ -625,6 +625,7 @@ static void write_sa(uint64_t a, uint64_t lenp, uint32_t ip, uint16_t port) {
     memcpy(b + 2, &p, 2);
     memcpy(b + 4, &i, 4);
     uint32_t cap = lenp ? ld32(lenp) : 16;
+    { void r1_wrote(uint64_t, uint64_t); r1_wrote(a, cap < 16 ? cap : 16); }      /* (OpenSmash phase) marked for the rollback ring */
     memcpy(PTR(a), b, cap < 16 ? cap : 16);
     if (lenp) st32(lenp, 16);
 }
@@ -777,6 +778,8 @@ static void do_recv(Ctx *c, int fd, uint64_t buf, uint64_t len, int flags, uint6
     Dgram *d = s->head;
     uint32_t n = d->len < len ? d->len : (uint32_t)len, ip = d->src;
     uint16_t port = d->sport;
+    {   static int mk = -1; if (mk < 0) { const char *e = getenv("SSBU_NET_RECVMARK"); mk = !(e && e[0] == '0'); }      /* (OpenSmash phase) marked for the rollback ring */
+        if (mk && n) { void r1_wrote(uint64_t, uint64_t); r1_wrote(buf, n); } }
     memcpy(PTR(buf), d->data, n);
     if (!(flags & 2)) {
         s->head = d->next;
