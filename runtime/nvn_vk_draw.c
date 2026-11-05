@@ -3164,6 +3164,59 @@ static void dt_vk(int fight, int idx, int ok, const Cmd *m, int indexed, const B
 }
 static void replay(uint64_t handle, int depth);
 static volatile int g_bg_frame;                    /* frames presented: the black stage background (OP_TARGETS) */
+/* (0.2.36) SSBU_VK_ZEROIDX, the black stage background as a performance mode. tools\stages\extract_backgrounds.py serves the
+ * background meshes with their indices zeroed (same size: the game's memory stays the same as with the original files), and the
+ * game still draws them (in a fight on Battlefield ~70 of ~275 draws a frame, Town and City ~140 of ~335), each one preparing its
+ * textures, copying its vertex and index buffers into the stream ring, binding a pipeline. An indexed triangle draw whose indices are all 0 makes only degenerate
+ * triangles: the GPU rasterises nothing, so leaving it out here gives the same pixels (the shadow passes too) and is only on this
+ * PC: the guest's memory and the match do not see it. Not left out: points / lines (a point at vertex 0 would be drawn), a vertex
+ * stage that writes storage buffers, indices that compute work of this batch or a kept compute buffer may hold (guest memory is
+ * not what the GPU would read; the bounds of the live buffers span most of the heap: the exact walk). The check: the first 8
+ * bytes (any real mesh has a non-zero index there), then a cache of the ranges found all zero, checked whole again every 64
+ * frames and at its two ends and middle every frame.
+ * Default: on with SSBU_STAGE_BG=off / custom; =0 off (the draws as before), =1 on whatever the background. */
+static LONG64 g_zidx_n, g_zidx_full, g_zidx_why[5];      /* draws left out, whole-range checks made; why a draw whose first indices are 0 was drawn: 0 live compute, 1 kept, 2 vertex storage, 3 not all 0, 4 first 8 bytes 0 */
+static int zidx_zero(const uint8_t *p, uint64_t n) {
+    uint64_t acc = 0, i = 0;
+    for (; i + 32 <= n; i += 32) { uint64_t w[4]; memcpy(w, p + i, 32); acc |= w[0] | w[1] | w[2] | w[3]; if (acc) return 0; }
+    for (; i < n; i++) acc |= p[i];
+    return acc == 0;
+}
+static int zidx_skip(unsigned prim, uint64_t addr, uint64_t n) {
+    static int on = -1;
+    static struct { uint64_t addr, n; LONG64 frame; int zero; } z[4096];
+    if (on < 0) {
+        const char *e = getenv("SSBU_VK_ZEROIDX"), *bg = getenv("SSBU_STAGE_BG");
+        on = e && *e ? atoi(e) != 0 : (bg && (!strcmp(bg, "off") || !strcmp(bg, "custom")));
+        printf("nvn_vk: SSBU_VK_ZEROIDX=%d: indexed triangle draws whose indices are all 0 (the black stage background) %s\n", on, on ? "are left out" : "are drawn");
+    }
+    if (!on || prim < 4 || prim > 6 || n < 8) return 0;
+    const uint8_t *p = P(addr);
+    uint64_t w0; memcpy(&w0, p, 8);
+    if (w0) return 0;                              /* every real mesh: one load */
+    g_zidx_why[4]++;
+    if (g_cb_live && addr < g_live_hi && addr + n > g_live_lo && cb_overlap(addr, n)) { g_zidx_why[0]++; return 0; }
+    if (g_cb_nkept && addr < g_kept_hi && addr + n > g_kept_lo)
+        for (int k = 0; k < g_kept_n; k++) { CB *c = &g_cb[g_kept_idx[k]]; if (c->state >= 3 && addr < c->addr + c->size && c->addr < addr + n) { g_zidx_why[1]++; return 0; } }
+    if (!R.prog[0] || !R.prog[0]->st[0].vk || ((VStage *)R.prog[0]->st[0].vk)->ssbo_w) { g_zidx_why[2]++; return 0; }
+    unsigned set = ((unsigned)(((addr >> 4) ^ (n * 0x9E3779B1u)) * 2654435761u) >> 22) * 4, h = set;      /* 1024 sets of 4: a direct map made ranges that share a slot check each other out every frame */
+    for (unsigned w = set; w < set + 4; w++) {
+        if (z[w].addr == addr && z[w].n == n) {
+            if (g_cur_frame - z[w].frame < 64 && g_cur_frame >= z[w].frame) {
+                if (!z[w].zero) return 0;
+                uint64_t m = (n / 2) & ~7ull, w1, w2; memcpy(&w1, p + n - 8, 8); memcpy(&w2, p + m, 8);
+                if (!(w1 | w2)) return 1;
+            }
+            h = w; goto check;
+        }
+        if (z[w].frame < z[h].frame) h = w;        /* else the oldest of the set is replaced */
+    }
+check:
+    g_zidx_full++;
+    z[h].addr = addr; z[h].n = n; z[h].frame = g_cur_frame; z[h].zero = zidx_zero(p, n);
+    if (!z[h].zero) g_zidx_why[3]++;
+    return z[h].zero;
+}
 static void exec(const Cmd *m, int depth) {
     const uint8_t *blob = BLOB(m);
     const uint64_t *a = m->a;
@@ -3337,6 +3390,7 @@ static void exec(const Cmd *m, int depth) {
         int count = (int)a[2];
         if (count <= 0 || !a[3]) { int dtag = nvn_front_draw_tag(); if (dtag) dt_vk(dtag, nvn_front_draw_tag_next(), 0, m, 0, NULL); R.frame_skipped++; nvn_front_count(1, 1); break; }
         if (t == 0 && !D.has_iu8) { nvn_vk_missing("8-bit indices on a GPU without VK_EXT_index_type_uint8"); break; }
+        if (zidx_skip((unsigned)a[0], a[3], (uint64_t)count << t)) { int dtag = nvn_front_draw_tag(); if (dtag) dt_vk(dtag, nvn_front_draw_tag_next(), 0, m, 0, NULL); R.frame_skipped++; g_zidx_n++; nvn_front_count(1, 1); break; }
         BufRef ib;
         buf_ref(a[3], (uint64_t)count << t, (uint64_t)1 << t, &ib);    /* before the draw is prepared: a ring wrap submits */
         { LONG64 t0 = tk(); int ok = draw_prepare((unsigned)a[0]); g_tm[8] += tk() - t0; { int dtag = nvn_front_draw_tag(); if (dtag) dt_vk(dtag, nvn_front_draw_tag_next(), ok, m, 1, &ib); } if (!ok) { R.frame_skipped++; nvn_front_count(1, 1); break; } }
@@ -4141,6 +4195,12 @@ swap: ;
                (long long)frame - 300, (long long)frame, (double)(g_tm[3] - last[3]) * k, (double)(g_tm[2] - last[2]) * k, (double)(g_tm[8] - last[8]) * k, (double)(g_tm[5] - last[5]) * k, (double)(g_tm[6] - last[6]) * k,
                (double)(g_tm[0] - last[0]) * k, (double)(g_tm[1] - last[1]) * k, (double)(g_tm[7] - last[7]) * k, (double)(g_tm[4] - last[4]) * k, (double)(R.dispatches - last_disp) / 300.0, (double)(R.sets - last_sets) / 300.0, (double)(R.sets_reused - last_reused) / 300.0, (double)(R.flushes - last_flush) / 300.0, (long long)g_pipe_miss,
                (long long)(g_hold_n[0] + g_hold_n[1] + g_hold_n[2] + g_hold_n[3]), (double)(g_hold_tk[0] + g_hold_tk[1] + g_hold_tk[2] + g_hold_tk[3]) * k * 300.0, (double)g_hold_max * k * 300.0);
+        {   static LONG64 zn_last, zf_last;
+            if (g_zidx_why[4]) printf("nvn_vk_zidx: frames %lld..%lld: %.1f draws per frame left out (all indices 0, SSBU_VK_ZEROIDX), %.1f whole-range checks per frame | so far, first indices 0: %lld, drawn: live compute %lld, kept compute %lld, vertex storage %lld, not all 0 %lld\n",
+                                     (long long)frame - 300, (long long)frame, (double)(g_zidx_n - zn_last) / 300.0, (double)(g_zidx_full - zf_last) / 300.0,
+                                     (long long)g_zidx_why[4], (long long)g_zidx_why[0], (long long)g_zidx_why[1], (long long)g_zidx_why[2], (long long)g_zidx_why[3]);
+            zn_last = g_zidx_n; zf_last = g_zidx_full;
+        }
         if (g_tl_n) {
             double q = 1000.0 / (double)fq.QuadPart / (double)g_tl_n;
             printf("nvn_vk_timeline: frames %lld..%lld, %lld frames with fighters, ms after the start of the batch replay: first submission to the GPU %.2f, last (the frame is complete on the GPU's queue) %.2f, present job begins %.2f | per frame %.2f submissions between passes (SSBU_VK_SPLIT=%d) | the game's fence waits that had to wait: %.2f per frame, %.2f ms each, ending %.2f ms after the batch start\n",
