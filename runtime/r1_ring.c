@@ -625,6 +625,8 @@ static int lb_commit(uint32_t id) {
     uint8_t *cm = id < g_rg_n1 ? g_sh1c : g_sh2c; size_t pi = id < g_rg_n1 ? id : id - g_rg_n1;
     if (cm[pi]) return 1;
     size_t c0 = pi & ~(size_t)15;
+    {   static int skip = -1; static long long n; if (skip < 0) { const char *e = getenv("SSBU_RB_TEST_SHSKIP"); skip = e ? atoi(e) : 0; }      /* (TEST ONLY, see sh_commit) */
+        if (skip > 0 && ++n % skip == 0) { memset(cm + c0, 1, 16); return 1; } }
     /* (rollback 8 ms) two crashes of a copy thread here (memcmp on a shadow page not committed, 1 run in ~30, r11 = STATUS_COMMITMENT_LIMIT): the commit
      * was refused for a moment (the page file growing). Tried again for up to ~200 ms; only then it counts as out of memory. */
     for (int t = 0; t < 40; t++) {
@@ -659,10 +661,12 @@ static int lb_take(uint32_t id) {
  * r11 = STATUS_COMMITMENT_LIMIT each time: a commit refused for a moment while the page file grows). A READ fault inside the shadow while the lazy base runs:
  * the 64 KB chunk is committed (tried again for up to 2 s; logged with what the OS said) and the read goes on: a fresh page reads zeros, so the copy thread
  * finds it different and copies the page, which is the right value. SSBU_RB_SHVEH=0: off. */
-static volatile LONG g_shveh_n;
+/* (0.2.38, mcmp60 again, 0.2.35 test: main's memcmp right after "MARK on", no lazy base running) the same for ANY access to the shadow at any
+ * time: a page whose commit was refused (sh_commit, lb_commit) is committed here, its commit flags set, and the access goes on. */
+static volatile LONG g_shveh_n; static int g_lbveh_added;
 static LONG lb_shadow_fault(EXCEPTION_POINTERS *e) {
     static int on = -1; if (on < 0) { const char *v = getenv("SSBU_RB_SHVEH"); on = !(v && v[0] == '0'); }
-    if (!on || !g_lb_active || e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
+    if (!on || e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
     uint8_t *a = (uint8_t *)(uintptr_t)e->ExceptionRecord->ExceptionInformation[1], *base = NULL; size_t n = 0;
     if (g_sh1 && a >= g_sh1 && a < g_sh1 + g_wn1) { base = g_sh1; n = g_wn1; } else if (g_sh2 && a >= g_sh2 && a < g_sh2 + WN2) { base = g_sh2; n = WN2; }
     if (!base) return EXCEPTION_CONTINUE_SEARCH;
@@ -670,6 +674,7 @@ static LONG lb_shadow_fault(EXCEPTION_POINTERS *e) {
     MEMORY_BASIC_INFORMATION mi; memset(&mi, 0, sizeof mi); VirtualQuery(a, &mi, sizeof mi);
     for (int t = 0; t < 400; t++) {
         if (VirtualAlloc(c0, 0x10000, MEM_COMMIT, PAGE_READWRITE)) {
+            { uint8_t *cm = base == g_sh1 ? g_sh1c : g_sh2c; if (cm) memset(cm + ((size_t)(c0 - base) >> 12), 1, 16); }
             if (InterlockedIncrement(&g_shveh_n) <= 20) LOG("r1: LAZY BASE: a shadow page not committed was read (%p, state %lx protect %lx, flag %d): committed after %d tries\n", (void *)a, mi.State, mi.Protect,
                 (int)((base == g_sh1 ? g_sh1c : g_sh2c)[(size_t)(a - base) >> 12]), t + 1);
             return EXCEPTION_CONTINUE_EXECUTION;
@@ -750,7 +755,7 @@ static int lb_prepare(size_t np) {
         g_lb_go = CreateSemaphoreA(NULL, 0, 64, NULL);
         if (!g_lb_st || !g_lb_go) { g_lb_on = 0; LOG("r1: LAZY BASE: allocation FAILED: the shadow is brought up to date during the hold\n"); return 0; }
         for (int k = 0; k < g_lb_nth; k++) { HANDLE t = CreateThread(NULL, 0, lb_thread, NULL, 0, NULL); if (t) CloseHandle(t); }
-        AddVectoredExceptionHandler(1, lb_veh);
+        if (!g_lbveh_added) { g_lbveh_added = 1; AddVectoredExceptionHandler(1, lb_veh); }
     }
     if (g_lb_cap < np) { uint32_t *nl = realloc(g_lb_list, np * sizeof *nl); if (!nl) { g_lb_on = 0; return 0; } g_lb_list = nl; g_lb_cap = np; }
     g_lb_n = 0; g_lb_ns = 0;

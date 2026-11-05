@@ -1095,12 +1095,28 @@ static uint8_t *in_shadow(uint8_t *a, uint8_t **cmap, size_t *pi) {
     return NULL;
 }
 static long long g_sh_fail;                             /* (hs13) shadow commits that failed */
+/* (0.2.38, "mcmp60": a memcmp on a shadow page not committed, r11 = STATUS_COMMITMENT_LIMIT, right after "MARK on") a commit refused for a
+ * moment while the page file grows: tried again for up to ~200 ms, as the lazy base does (lb_commit); what still fails is caught by the
+ * shadow handler (r1_ring.c lb_shadow_fault). SSBU_RB_TEST_SHSKIP=<n> (TEST ONLY): every n-th commit is NOT made but counted as made
+ * (the old failure, on purpose: the handler must take it). */
+static long long g_sh_retry, g_sh_skip_n;
 static int sh_commit(uint8_t *sh, uint8_t *cmap, size_t pi) {
     if (cmap[pi]) return 1;
     size_t c0 = pi & ~(size_t)15;                         /* 64 KB at a time */
-    if (rb_test_nomem() == 4 || !VirtualAlloc(sh - (pi - c0) * PG, 16 * PG, MEM_COMMIT, PAGE_READWRITE)) { g_sh_fail++; return 0; }
-    memset(cmap + c0, 1, 16);
-    return 1;
+    if (rb_test_nomem() == 4) { g_sh_fail++; return 0; }
+    {   static int skip = -1; if (skip < 0) { const char *e = getenv("SSBU_RB_TEST_SHSKIP"); skip = e ? atoi(e) : 0; }
+        if (skip > 0 && ++g_sh_skip_n % skip == 0) { memset(cmap + c0, 1, 16); return 1; } }
+    for (int t = 0; t < 40; t++) {
+        if (VirtualAlloc(sh - (pi - c0) * PG, 16 * PG, MEM_COMMIT, PAGE_READWRITE)) {
+            if (t && ++g_sh_retry <= 20) LOG("r1: MARK: a shadow commit refused %d times, then made\n", t);
+            memset(cmap + c0, 1, 16);
+            return 1;
+        }
+        {   static int on = -1; if (on < 0) { const char *v = getenv("SSBU_RB_SHVEH"); on = !(v && v[0] == '0'); }
+            if (!on) break; }
+        Sleep(5);
+    }
+    g_sh_fail++; return 0;
 }
 /* R3 (hs13 crash, 2026-10-20): window 2 (0x7100000000 + 8 GB) is the guest image + the script modules, but the OS may put HOST
  * memory in its free parts: in hs13 the main thread's own Windows stack was at 0x72659f4000. Marked by instrumented code (a host
@@ -2219,6 +2235,7 @@ void r1_init(void) {
     if (!r1_on()) return;
     if (getenv("SSBU_R1_PARK_MS")) g_park_ms = atoi(getenv("SSBU_R1_PARK_MS"));
     AddVectoredExceptionHandler(1, r1_veh);
+    if (!g_lbveh_added) { g_lbveh_added = 1; AddVectoredExceptionHandler(1, lb_veh); }      /* (0.2.38) the shadow handler from the start, before r1_veh */
     atexit(r1_stats_report);
     g_audio_free = getenv("SSBU_R1_AUDIO_FREE") != NULL; g_async_cap = 65536; g_async = malloc(g_async_cap * sizeof *g_async);
     g_mark = getenv("SSBU_R1_MARK") != NULL;
