@@ -61,7 +61,7 @@ settings stay.
 | | Feature | State |
 |---|---|---|
 | 🌐 | **Rollback netcode online**: the game's own Local Wireless rooms played over the internet, with rollback instead of the game's delay-based netcode | Live |
-| 🛡️ | **Relay-only server** ([`tools/net/rb_lobby.c`](tools/net/rb_lobby.c)): every packet goes through the server, no hole punching, no player ever learns another player's IP | Live |
+| 🛡️ | **Relay-only server**: every packet goes through the server, no hole punching, no player ever learns another player's IP | Live |
 | 📶 | **Ping on screen** in every online match, next to each player | Live |
 | 🏆 | **Competitive mode**: the six legal stages (Battlefield, Small Battlefield, Final Destination, Pokémon Stadium 2, Smashville, Town and City), no items, no Final Smash meter, no hazards | Live |
 | 🖥️ | **SSBU Arena launcher** ([`tools/launcher/arena`](tools/launcher/arena)): one-file download, guided setup, automatic updates, account sign-in, controllers, video and audio settings, shader preparation | Live |

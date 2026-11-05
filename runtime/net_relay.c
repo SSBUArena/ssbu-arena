@@ -156,7 +156,7 @@ static int g_nmods;
 static uint32_t g_mods_hash;
 static uint8_t g_mods_wire[1 + MODS_MAX * (5 + MOD_NAME)];
 /* SSBU Arena: the signed-in player's lobby ticket (SSBU_ONLINE_TICKET, from the launcher: "<id>|<name>|<expiry>.<HMAC>");
- * sent after the mod set as "TK" + u16 length + bytes. A lobby that requires tickets (rb_lobby.c --ticket-secret-file) refuses a
+ * sent after the mod set as "TK" + u16 length + bytes. A lobby that requires tickets (the SSBU Arena lobby) refuses a
  * game without a valid one and lists the player under the name in it. */
 static char g_ticket[320];
 static int g_mods_wire_len = 1;                        /* (count 0) */
@@ -1470,7 +1470,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
                 InterlockedExchange(&g_players, g16(buf + 12));
                 InterlockedExchange(&g_rooms, g16(buf + 14));
                 if (n >= 20) { InterlockedExchange(&g_searching, g16(buf + 16)); InterlockedExchange(&g_code_players, g16(buf + 18)); }   /* O2 (a newer lobby) */
-                if (n >= 23 && buf[20] == 'P' && buf[21] == 'R') peer_rtts(buf + 23, buf[22], n - 23);      /* rb_lobby.c: the others' round trips */
+                if (n >= 23 && buf[20] == 'P' && buf[21] == 'R') peer_rtts(buf + 23, buf[22], n - 23);      /* the SSBU Arena lobby: the others' round trips */
             }
             break;
         case T_MATCH_STATE:
@@ -1551,7 +1551,7 @@ void net_start(void) {
 }
 
 /* ---------------------------------------------------------------- the ping overlay (nvn_vk_draw.c ldn_ping_draw)
- * Every game puts its round trip to the lobby in its PING; our lobby (tools/net/rb_lobby.c) answers each PONG with the
+ * Every game puts its round trip to the lobby in its PING; the SSBU Arena lobby answers each PONG with the
  * round trips of the players of the same Local Wireless room or rollback match (vip u32, ms u16). net_ping_overlay()
  * hands the renderer one value per player slot: each player's ping to the server, -1 not known yet, -2 no player there.
  * Shown in a room (its players in node order) and in an online rollback match (players 1 and 2). SSBU_NET_PING=0: off. */

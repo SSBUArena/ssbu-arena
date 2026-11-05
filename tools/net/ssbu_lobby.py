@@ -14,8 +14,8 @@ own wire protocol ("SU" version 1, described at the top of recomp-study/net_rela
 
 --status-port starts a small HTTP endpoint, GET /status, that answers with counts only (players, rooms, searching,
 version, uptime_s, up) and Access-Control-Allow-Origin: * so a web page (the project site) can show the lobby's state. It never
-returns addresses, names or codes. It listens on 127.0.0.1 by default, to sit behind a TLS reverse proxy (Caddy, see
-deploy_lobby.sh); --status-bind 0.0.0.0 serves it directly over plain HTTP.
+returns addresses, names or codes. It listens on 127.0.0.1 by default, to sit behind a TLS reverse proxy (Caddy
+for example); --status-bind 0.0.0.0 serves it directly over plain HTTP.
 
 Room browser (O1, lobby 1.2): every room stays listed to every player of the same lobby code whatever its game version
 or mod set (ROOMS, and LIST with flag 1); joining stays within one build (the build id carries the game version and a

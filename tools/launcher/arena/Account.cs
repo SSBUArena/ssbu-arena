@@ -3,7 +3,7 @@
 // CAPTCHA needs one: SignInWithBrowser) or with email and password where no CAPTCHA is asked, keep the session
 // (the refresh token, encrypted for this Windows user with DPAPI, in config\session.dat), read the player's profile and
 // ask for a lobby ticket. The ticket ("<user id>|<name>|<expiry>.<HMAC>") is signed by the database (public.lobby_ticket)
-// and checked by the lobby server (tools/net/rb_lobby.c): online play needs a signed-in player. The publishable key below
+// and checked by the SSBU Arena lobby: online play needs a signed-in player. The publishable key below
 // is meant for clients; what it can do is decided by Row Level Security and the database functions.
 using System;
 using System.Collections.Generic;

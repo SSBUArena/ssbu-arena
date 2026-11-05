@@ -31,7 +31,7 @@ namespace Arena
 
     public static class Core
     {
-        public const string DefaultServer = "eu-germany.ssbuarena.com:39010";      // our lobby (tools/net/rb_lobby.c, relay only)
+        public const string DefaultServer = "eu-germany.ssbuarena.com:39010";      // the SSBU Arena lobby (relay only)
         /// <summary>the Arena servers the player picks from (Settings > Online), by region: relay only, never another
         /// player's address</summary>
         public static readonly (string Name, string Address)[] Servers = { ("Europe", DefaultServer) };
@@ -833,7 +833,7 @@ namespace Arena
             {
                 string n = Account.Me.Username;
                 if (string.IsNullOrWhiteSpace(n)) throw new Exception("Your Arena name could not be read. Sign in again from the account page, then press PLAY.");      // never online without the player's own name
-                env["SSBU_ONLINE_TICKET"] = Ticket ?? "";              // the lobby takes the player's name from it (rb_lobby.c)
+                env["SSBU_ONLINE_TICKET"] = Ticket ?? "";              // the lobby takes the player's name from it
                 env["SSBU_ONLINE"] = Server.Trim();
                 env["SSBU_ONLINE_NAME"] = n;
                 env["SSBU_NICKNAME"] = n;

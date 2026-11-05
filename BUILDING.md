@@ -326,17 +326,13 @@ about 4 + half the round trip (measured: 5-6 frames from a press to the fighter'
 hook on guest 0x71016ccae0). 0 gives 2 frames in all; with it the fight hashes of both games stayed identical. Too low
 for the ping makes the games wait for each other.
 
-The game's own **Local Wireless** mode, carried through a room server you host (`tools/online/ldn_room_server.py`,
-Python 3, no dependencies; `tools/online/test_room_server.py` is its protocol and fuzz test). For a server with many rooms
-on Linux, `tools/online/ldn_relay.c` is the same server in C (`cc -O2 -o ldn_relay ldn_relay.c`, same options, plus
-`--per-ip N`, 32 connections from one address by default; `test_room_server.py --server ./ldn_relay` tests it): on one
-vCPU it relayed 200 two-player matches (24 000 game datagrams a second) with 19 % of the core and none lost, where the
-Python server already lost 3 % at 100. It is the game's own
-delay-based sync over a relay, not netcode of this project, and no Nintendo service is contacted. Off by default and
-absent from the default exe:
+The game's own **Local Wireless** mode, carried through a room server (the old LDN online path; SSBU Arena now plays
+Local Wireless through its lobby instead, see docs/ONLINE.md). Its room server is no longer part of this repository
+(2026-11-05). It is the game's own delay-based sync over a relay, not netcode of this project, and no Nintendo service is
+contacted. Off by default and absent from the default exe:
 
 - `python scripts/setup.py ... --ldn-online on` builds it into the exe (`off` removes it again; the choice is kept).
-- `build\config\online.ini` (template: `tools/online/online.ini.example`): `server = host:port`, `room = <password>`,
+- `build\config\online.ini`: `server = host:port`, `room = <password>`,
   `nickname = <name others see>`. All three are needed; the nickname replaces the account nickname while online (the
   Windows user name is never sent). Environment: `SSBU_LDN_SERVER`, `SSBU_LDN_ROOM`, `SSBU_LDN_NICKNAME`.
 - Refused while `runahead = on` in `graphics.ini`, and by the server when the other side's build differs (fingerprint

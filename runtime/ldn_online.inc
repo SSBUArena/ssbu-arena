@@ -3,10 +3,10 @@
  *   Eden  src/core/hle/service/ldn/ldn_types.h      (GPL-3.0-or-later; yuzu lineage)
  *   Eden  src/core/hle/service/ldn/ldn_results.h    (GPL-2.0-or-later / GPL-3.0-or-later)
  *   Eden  src/core/hle/service/ldn/lan_discovery.cpp (GPL-2.0-or-later, yuzu Emulator Project)
- * See tools/online/NOTICE. Compiled only into a build made with scripts\setup.py --ldn-online on (SSBU_LDN_ONLINE).
+ * (The room server is no longer in this repository, 2026-11-05.) Compiled only into a build made with scripts\setup.py --ldn-online on (SSBU_LDN_ONLINE).
  *
  * Included by nnnet_c4a.inc: nn::ldn (local wireless) carried over the internet through a room server
- * (tools/online/ldn_room_server.py), and the virtual-address path of the socket layer that goes with it.
+ * (the room server), and the virtual-address path of the socket layer that goes with it.
  *
  * Configuration: <exe folder>\..\config\online.ini (or the environment, which wins):
  *     server   = host:port        SSBU_LDN_SERVER     a host the user types; there is no default server
@@ -15,7 +15,7 @@
  *                                                     game's account nickname); the Windows user name is never sent
  * Without a server, a room and a nickname, nothing changes: nn::ldn::Initialize answers "wireless off" (0x2ecb).
  * Refused as well while runahead = on (graphics.ini): a speculative frame would send and receive the game's packets,
- * and rolling it back would not roll back the other player. tools/online/online.ini.example is a template.
+ * and rolling it back would not roll back the other player.
  * SSBU_LDN_TRACE=1 logs every nn::ldn call and every game datagram. The log never holds the server address, the room
  * password or a real network address (virtual addresses 169.254.1.N only).
  *
@@ -651,7 +651,7 @@ static int ldn_connect_server(void) {
         closesocket(g_ldn.tcp); g_ldn.tcp = INVALID_SOCKET;
         return 0;
     }
-    /* HELLO, protocol 2: version, room password, nickname, build fingerprint (tools/online/ldn_room_server.py) */
+    /* HELLO, protocol 2: version, room password, nickname, build fingerprint (the room server) */
     uint8_t hello[1 + 1 + 127 + 1 + 32 + 8];
     size_t rl = strlen(g_ldn.room), nl = strlen(g_ldn.nickname);
     if (rl > 127) rl = 127;

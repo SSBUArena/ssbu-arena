@@ -34,8 +34,8 @@ And those OpenSmash-Ultimate credits in turn:
 
 ## SSBU Arena
 
-- **Acid236**: Local Wireless over the internet, the relay lobby servers (`tools/online/ldn_relay.c`,
-  `tools/net/rb_lobby.c`), online rollback through the relay, the ping overlay, the competitive mode and light archive,
+- **Acid236**: Local Wireless over the internet, the relay lobby servers (private since
+  2026-11-05), online rollback through the relay, the ping overlay, the competitive mode and light archive,
   the launchers.
 - The SSBU Arena launcher uses the **Barlow** and **Barlow Condensed** fonts by Jeremy Tribby, under the SIL Open Font
   License 1.1 (`tools/launcher/arena/Assets/Fonts/OFL.txt`), and the artwork of [ssbuarena.com](https://ssbuarena.com/).

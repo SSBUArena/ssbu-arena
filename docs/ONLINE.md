@@ -80,16 +80,19 @@ other, so SSBU Arena does not use them; they are kept for testing on one network
 
 ## Advanced: run a relay server
 
-Our server runs [`tools/net/rb_lobby.c`](../tools/net/rb_lobby.c): the lobby protocol of `tools/net/ssbu_lobby.py`
-(which stays its description) in C for Linux, **relay only**. One thread, a few MB of memory.
+The SSBU Arena server (accounts, matchmaking with recorded results, replays) is not part of this repository since
+2026-11-05: it runs only on our servers. It speaks the lobby protocol of OpenSmash-Ultimate's
+[`tools/net/ssbu_lobby.py`](../tools/net/ssbu_lobby.py), which stays its description, plus the messages the game itself
+sends and reads (`runtime/net_relay.c`, `runtime/rb_net.c`).
+
+To play among friends or to test, host OpenSmash-Ultimate's lobby (Python 3, no dependencies, **relay only**):
 
 ```bash
-cc -O2 -o rb_lobby tools/net/rb_lobby.c
-./rb_lobby --port 39010
+python tools/net/ssbu_lobby.py --port 39010
 ```
 
-Open that UDP port on the machine and in its provider's firewall. Tests: `tools/net/test_rb_lobby_ticket.py`,
-`tools/net/test_rb_lobby_ping.py`, `tools/net/test_ssbu_lobby.py`.
+Open that UDP port on the machine and in its provider's firewall, and point the launcher's server field at it. Test:
+`tools/net/test_ssbu_lobby.py`.
 
 ## Credit
 

@@ -38,7 +38,7 @@ $O = Read-Ini $OnlineIni
 $DefaultSaves = if ($Portable) { Join-Path (Split-Path $Build -Parent) 'saves' } else { Join-Path $Build 'saves' }
 $Saves = if ($L['saves']) { $L['saves'] } else { $DefaultSaves }
 $HasOnline = (Test-Path $Exe) -and ([System.IO.File]::ReadAllText($Exe, [System.Text.Encoding]::ASCII).Contains('SSBU_ONLINE'))
-$DefaultServer = 'eu-germany.ssbuarena.com:39010'                    # our lobby (tools/net/rb_lobby.c, relay only)
+$DefaultServer = 'eu-germany.ssbuarena.com:39010'                    # the SSBU Arena lobby (relay only)
 # the rollback build: the game DLL and script modules with dirty-page marks (setup.py --rollback of upstream's recipe);
 # without it the normal build runs rollback too (upstream's learned-set save)
 $RbExe = Join-Path $Work 'ssbu_native_rb.exe'
@@ -89,7 +89,7 @@ $uidLabel = Add-Label $gp '' 130 52 380
 function Update-Uid { $uidLabel.Text = if ($name.Text.Trim()) { 'ID giocatore (dal nome): ' + (Get-UidFromName $name.Text.Trim()).Substring(0, 16) + '...' } else { 'Scrivi un nome' } }
 $name.Add_TextChanged({ Update-Uid }); Update-Uid
 
-# online: everything goes through the lobby server (tools/net/rb_lobby.c on our VPS): no player ever sees another one's
+# online: everything goes through the lobby server (the SSBU Arena lobby): no player ever sees another one's
 # address. Local Wireless rooms use the game's own netcode; rollback matches are Smash > Versus (the lobby finds the
 # opponent with the same friends code). Old installs: server / room of online.ini are taken over once.
 $go = Add-Group 'Online (tramite il server)' 100 150

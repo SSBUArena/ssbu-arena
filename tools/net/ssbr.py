@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""SSBU Arena replay files (.ssbr, written by the lobby: tools/net/rb_replay_rec.c, which documents the layout; played by
+"""SSBU Arena replay files (.ssbr, written by the SSBU Arena lobby; the layout is the one read below; to be played by
 runtime/rb_replay.c). Reading, (de)compressing the body, a summary.
 
     python ssbr.py info <file.ssbr>             header summary (no IPs exist in the file: names and account ids only)
