@@ -34,16 +34,28 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x2c55e0, 0x2c55e0},       /* nninitStartup */
     {0x2c5620, 0x2c5620},       /* nnMain */
     {0x653240, 0x653240},       /* entry set-up (debug_mode.c) */
+    /* (the entries marked "starts") each 13.0.5 address is a function start of 13.0.5's .eh_frame_hdr, and the 16 lifted
+     * 13.0.4 functions around it (tools/lifter/coverage/13.0.4.txt) start there at the same delta */
+    {0x134c690, 0x134c690},     /* fight scene clean-up (debug_mode.c, room rollback), starts: 12,080 bytes in 13.0.5, 0x2f30 to the next 13.0.4 function */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
+    {0x14e58f0, 0x14e58f0},     /* battle builder (competitive.c), starts */
     {0x1519430, 0x1519430},     /* hook self-test function (hook_host.c) */
+    {0x16ccae0, 0x16cc940},     /* input delay of a local-wireless match (ldn_online.inc), starts; 400 bytes in both */
     {0x1780440, 0x17802a0},     /* match controls set-up (debug_mode.c, room rollback: each player's own controls; 63 / 63 words) */
     {0x1788260, 0x17880c0},     /* player record builder (debug_mode.c) */
     {0x17911dc, 0x17910fc},     /* return address of the room's waiting-stage record build (debug_mode.c; 43 / 43 words) */
     {0x179e440, 0x179e400},     /* select screen table entry copy (debug_mode.c, R3 online: player 2's panel) */
     {0x17df5f0, 0x17df5b0},     /* path sub-builder (newmodule_host.c) */
     {0x17dfe50, 0x17dfe10},     /* path sub-builder 2 (newmodule_host.c) */
+    {0x1af97f0, 0x1af97f0},     /* PalletMenu layout controller (competitive.c comp_pallet_ready, and a function pointer comp_pallet checks), starts */
+    {0x1af9ee0, 0x1af9ee0},     /* the other function pointer comp_pallet checks (competitive.c), starts */
+    {0x1bef020, 0x1bef020},     /* the Lua C function behind prg_func.open_pallet (competitive.c comp_open_local), starts */
     {0x1ea04d0, 0x1ea04d0},     /* formatter (newmodule_host.c) */
     {0x22b67d4, 0x22b67d4},     /* worker return address (newmodule_host.c) */
+    {0x232ce40, 0x232d290},     /* menu hook of the Arena UI (competitive.c comp_menu), starts */
+    {0x23343e0, 0x2334830},     /* Smash versus: Rulesets state (competitive.c), starts */
+    {0x23353d0, 0x2335820},     /* Smash versus: stage state (competitive.c), starts */
+    {0x235cbf0, 0x235d040},     /* scene dispatcher (competitive.c), starts; 25,696 bytes in 13.0.5 */
     {0x32384c0, 0x3238a70}, /* fighter picture path (newmodule_host.c) */
     {0x3261d60, 0x3262310}, /* name_id getter (newmodule_host.c) */
     {0x353e330, 0x353e8e0},     /* path -> file index (newmodule_host.c) */
@@ -54,6 +66,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x35456d8, 0x3545c88},     /* and the end of its range (loose_files.c) */
     {0x3548240, 0x35487f0}, /* job runner (r1_ring.c, profile 2) */
     {0x3549170, 0x3549720}, /* worker kick 2 (r1_state.c) */
+    {0x354a5ac, 0x354ab5c},     /* task workers' idle wait, a return address (r1_ring.c); the 17 lifted starts around it at +0x5b0 */
     {0x354c720, 0x354ccd0}, /* worker kick (r1_state.c) */
     {0x3559e08, 0x355a3b8},     /* allocation site of an 8 MB block (rb_learned.c) */
     {0x355b540, 0x355baf0}, /* EffectManager update (r1_ring.c, profile 2) */
@@ -117,6 +130,8 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x392dd80, 0x392e330},     /* jemalloc realloc (rb_learned.c) */
     {0x392e590, 0x392eb40},     /* free_default (the game's free) */
     {0x392e8a0, 0x392ee50},     /* jemalloc malloc_size (rb_learned.c) */
+    {0x3931cb0, 0x3932260},     /* jemalloc, the alloc check's arena hook (debug_mode.c ac_fill_hook), starts; 412 bytes in both */
+    {0x3931e50, 0x3932400},     /* jemalloc extent_nfree_get (debug_mode.c, alloc check), starts; 36 bytes in both */
     {0x39a3e70, 0x39a4420},     /* zstd: free stream (nvn_vk_store.c) */
     {0x39a4040, 0x39a45f0},     /* zstd: decompress stream (nvn_vk_store.c) */
     {0x39bfb30, 0x39c00e0}, /* raw copy of uncompressed files (loose_files.c) */

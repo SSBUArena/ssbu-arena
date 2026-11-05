@@ -25,7 +25,7 @@ typedef void (*HookFn)(Ctx *c, void *user);
 int hook_install(uint64_t addr, HookFn repl, void *user, ImportFn *orig);      /* fighter_sdk\hook_host.c */
 
 static const uint64_t k_rules[] = {0x710530454cull, 0x7105309924ull, 0x710530f49cull};
-#define MATCH_ITEM_APPEAR 0x71052c4204ull     /* the global match block 0x71052c41b0 + 0x54: item frequency (0 none; tests/DEBUG_MODE.md).
+#define MATCH_ITEM_APPEAR GA(0x71052c4204ull) /* the global match block 0x71052c41b0 + 0x54: item frequency (0 none; tests/DEBUG_MODE.md).
                                                  A saved ruleset keeps its own frequency and item list: a Poke Ball still came out
                                                  with item_switch 0 and the item switch list empty. */
 static ImportFn g_battle_orig;
@@ -43,20 +43,20 @@ static uint64_t comp_h40(const char *s) {
     return ((uint64_t)n << 32) | (uint32_t)~crc;
 }
 static void comp_stage(void) {
-    uint32_t cur = *(volatile uint32_t *)(uintptr_t)0x7105309968ull;
+    uint32_t cur = *(volatile uint32_t *)(uintptr_t)GA(0x7105309968ull);
     for (uint32_t e = 0; e < 3; e++) {
-        volatile uint64_t *id = (volatile uint64_t *)(uintptr_t)(0x71053097c0ull + 0x20ull * e);
+        volatile uint64_t *id = (volatile uint64_t *)(uintptr_t)(GA(0x71053097c0ull) + 0x20ull * e);
         uint64_t h = *id & 0xffffffffffull;
         if (!h) continue;
         int ok = 0; char nm[48];
         for (int k = 0; k < 6; k++) { snprintf(nm, sizeof nm, "ui_stage_%s", k_stages[k]); if (h == comp_h40(nm)) ok = 1; }
         if (ok) continue;
-        uint64_t mix = *id ^ (uint64_t)e * 0x9e3779b97f4a7c15ull ^ *(volatile uint64_t *)(uintptr_t)(0x71053097c0ull + 0x20ull * e + 0x10);
+        uint64_t mix = *id ^ (uint64_t)e * 0x9e3779b97f4a7c15ull ^ *(volatile uint64_t *)(uintptr_t)(GA(0x71053097c0ull) + 0x20ull * e + 0x10);
         mix ^= mix >> 29; mix *= 0xbf58476d1ce4e5b9ull; mix ^= mix >> 32;
         int k = (int)(mix % 6);
         snprintf(nm, sizeof nm, "ui_stage_%s", k_stages[k]);
         *id = 0x6900000000000000ull | comp_h40(nm);
-        *(volatile uint32_t *)(uintptr_t)(0x71053097c0ull + 0x20ull * e + 8) = 0;      /* normal form */
+        *(volatile uint32_t *)(uintptr_t)(GA(0x71053097c0ull) + 0x20ull * e + 8) = 0;      /* normal form */
         if (e == cur || cur >= 3) printf("competitive: stage choice %llx is not one of the 6 (random?): %s instead\n", (unsigned long long)h, k_stages[k]);
     }
 }
@@ -66,7 +66,7 @@ static void comp_stage(void) {
  * 0x04.. Games & More, 0x05.. Vault, 0x06.. Options, 0x07.. Online). The scene dispatcher 0x710235cbf0 reads it and
  * creates <name>SequenceScene; any other id is put back to the menus there: the game returns to the main menu instead of
  * opening a mode whose data the light archive does not have. */
-#define CURRENT_SEQUENCE 0x71053040f0ull
+#define CURRENT_SEQUENCE GA(0x71053040f0ull)
 static ImportFn g_scene_orig;
 static ImportFn g_menu_orig;
 static ImportFn g_pallet_orig;
@@ -76,11 +76,11 @@ static uint8_t *g_local_pending;
  * consumed by 0x71032ecc80 and broadcast as PalletCommandMessage. Local Wireless
  * is command 3 (the third sidebar button, with one-based native IDs). */
 static uint8_t *comp_pallet(void) {
-    uint64_t owner = *(uint64_t *)(uintptr_t)0x710532e7f0ull;
+    uint64_t owner = *(uint64_t *)(uintptr_t)GA(0x710532e7f0ull);
     uint64_t service = owner ? *(uint64_t *)(uintptr_t)(owner+8) : 0;
     uint64_t layout = service ? *(uint64_t *)(uintptr_t)(service+8) : 0;
     uint8_t *p = layout ? *(uint8_t **)(uintptr_t)(layout+128) : NULL;
-    if (!p || *(uint64_t *)(p+72) != 0x7101af97f0ull || *(uint64_t *)(p+120) != 0x7101af9ee0ull) return NULL;
+    if (!p || *(uint64_t *)(p+72) != GA(0x7101af97f0ull) || *(uint64_t *)(p+120) != GA(0x7101af9ee0ull)) return NULL;
     return p;
 }
 /* The side bar command the Arena menu asks for: the fourth argument of prg_func.open_pallet (tools/ui/menu_actions_classic.py:
@@ -174,14 +174,14 @@ static int g_quick_kind = -1, g_quick_time = -1;            /* the values writte
 int comp_quickplay(void) { return g_quick != 0; }
 static void comp_rule_dump(const char *why) {
     for (int i = 0; i < 3; i++) {
-        volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)k_rules[i];
+        volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[i]);
         printf("competitive: rule copy %d (%s): + 0x50: %02x %02x %02x %02x %02x %02x %02x %02x\n", i, why, r[0x50], r[0x51], r[0x52], r[0x53], r[0x54], r[0x55], r[0x56], r[0x57]);
     }
     fflush(stdout);
 }
 static void comp_quick_rules(void) {          /* (comp_keep, every 2 ms while the flag is on) */
     for (int i = 0; i < 3; i++) {
-        volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)k_rules[i];
+        volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[i]);
         if (g_quick_kind >= 0 && r[RULE_KIND] != (uint8_t)g_quick_kind) r[RULE_KIND] = (uint8_t)g_quick_kind;
         if (g_quick_time >= 0 && *(volatile uint16_t *)(r + RULE_TIME) != (uint16_t)g_quick_time) *(volatile uint16_t *)(r + RULE_TIME) = (uint16_t)g_quick_time;
         if (r[RULE_STOCK] != 3) r[RULE_STOCK] = 3;
@@ -191,8 +191,8 @@ static void comp_quick_end(const char *why) {
     if (!InterlockedExchange(&g_quick, 0)) return;
     if (g_quick_have) for (int k = 0; k < 2; k++) {             /* (twice: comp_keep may have been inside comp_quick_rules) */
         if (k) Sleep(5);
-        for (int i = 0; i < 3; i++) memcpy((void *)(uintptr_t)(k_rules[i] + 0x50), g_quick_saved[i], 8);
-        *(volatile uint8_t *)(uintptr_t)(k_rules[1] + 0x4b) = g_quick_saved_4b;
+        for (int i = 0; i < 3; i++) memcpy((void *)(uintptr_t)(GA(k_rules[i]) + 0x50), g_quick_saved[i], 8);
+        *(volatile uint8_t *)(uintptr_t)(GA(k_rules[1]) + 0x4b) = g_quick_saved_4b;
     }
     if (g_quick_have) comp_rule_dump("put back");
     g_quick_have = 0;
@@ -213,8 +213,8 @@ static int comp_quick_begin(void) {           /* 1 = the quick match starts (the
     }
     {   const char *e = getenv("SSBU_QUICK_RULE_KIND"); g_quick_kind = e && *e ? atoi(e) : 1; }
     {   const char *e = getenv("SSBU_QUICK_RULE_TIME"); g_quick_time = e && *e ? atoi(e) : 420; }
-    for (int i = 0; i < 3; i++) memcpy(g_quick_saved[i], (const void *)(uintptr_t)(k_rules[i] + 0x50), 8);
-    g_quick_saved_4b = *(volatile uint8_t *)(uintptr_t)(k_rules[1] + 0x4b);
+    for (int i = 0; i < 3; i++) memcpy(g_quick_saved[i], (const void *)(uintptr_t)(GA(k_rules[i]) + 0x50), 8);
+    g_quick_saved_4b = *(volatile uint8_t *)(uintptr_t)(GA(k_rules[1]) + 0x4b);
     g_quick_have = 1;
     comp_rule_dump("the player's own");
     InterlockedExchange(&g_quick, 1);
@@ -259,7 +259,7 @@ static void comp_battle(Ctx *c, void *user) {
     int changed = 0;
     comp_stage();
     for (int i = 0; i < 3; i++) {
-        volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)k_rules[i];
+        volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[i]);
         if (r[0x5f] || r[0x68] || r[0x61] || r[0x63]) changed++;
         r[0x5f] = 0;            /* charge: Final Smash meter */
         r[0x68] = 0;            /* item_switch */
@@ -274,7 +274,7 @@ static void comp_battle(Ctx *c, void *user) {
 
 static void comp_clear(void) {
     for (int i = 0; i < 3; i++) {
-        volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)k_rules[i];
+        volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[i]);
         if (r[0x5f]) r[0x5f] = 0;
         if (r[0x68]) r[0x68] = 0;
         if (r[0x61]) r[0x61] = 0;
@@ -290,7 +290,7 @@ static DWORD WINAPI comp_keep(LPVOID arg) {
     (void)arg;
     for (;;) {
         int ok = 1;
-        for (int i = 0; i < 3; i++) ok &= comp_mapped(k_rules[i]) && comp_mapped(k_rules[i] + 0x68);
+        for (int i = 0; i < 3; i++) ok &= comp_mapped(GA(k_rules[i])) && comp_mapped(GA(k_rules[i]) + 0x68);
         ok &= comp_mapped(MATCH_ITEM_APPEAR);
         if (ok) break;
         Sleep(20);
@@ -319,7 +319,7 @@ static DWORD WINAPI comp_keep(LPVOID arg) {
  * that screen (the light archive's list has no stage pictures). Without the Rulesets screen the byte became 0 after the fight
  * (run ui2/ui3: the stage select came after the results, before the character select): in a quick match it is kept out of
  * 0..2 at that state's start (the game's own path then: next state 5, the character select). Put back at the main menu. */
-#define RULE1_STAGE_SELECT 0x710530996full       /* (k_rules[1] + 0x4b) */
+#define RULE1_STAGE_SELECT GA(0x710530996full)   /* (k_rules[1] + 0x4b) */
 static ImportFn g_rule_state_orig, g_stage_state_orig;
 static void comp_rule_state(Ctx *c, void *user) {
     (void)user;
@@ -345,15 +345,18 @@ static void comp_stage_state(Ctx *c, void *user) {
 }
 static DWORD WINAPI comp_wait(LPVOID arg) {
     (void)arg;
+    /* started by a constructor, before main.elf is read: GA() needs the game build (it stops the program before that) */
+    for (int i = 0; i < 6000 && g_game_build < 0; i++) Sleep(10);
+    if (g_game_build < 0) { printf("competitive: main.elf was not read in time: OFF\n"); return 0; }
     for (int i = 0; i < 3000; i++) {        /* the hook table answers once the game's function table is set up */
-        if (hook_install(0x71014e58f0ull, comp_battle, NULL, &g_battle_orig)) {
-            if (!hook_install(0x710235cbf0ull, comp_scene, NULL, &g_scene_orig)) printf("competitive: scene hook FAILED: every mode can be opened\n");
+        if (hook_install(GA(0x71014e58f0ull), comp_battle, NULL, &g_battle_orig)) {
+            if (!hook_install(GA(0x710235cbf0ull), comp_scene, NULL, &g_scene_orig)) printf("competitive: scene hook FAILED: every mode can be opened\n");
             const char *arena_ui = getenv("SSBU_COMPETITIVE_UI");
             if (arena_ui && arena_ui[0] == '1') {
-                int menu_hook = hook_install(0x710232ce40ull, comp_menu, NULL, &g_menu_orig);
-                int local_hook = hook_install(0x7101bef020ull, comp_open_local, NULL, &g_pallet_orig);
-                int ready_hook = hook_install(0x7101af97f0ull, comp_pallet_ready, NULL, &g_pallet_ready_orig);
-                if (!hook_install(0x71023343e0ull, comp_rule_state, NULL, &g_rule_state_orig) || !hook_install(0x71023353d0ull, comp_stage_state, NULL, &g_stage_state_orig))
+                int menu_hook = hook_install(GA(0x710232ce40ull), comp_menu, NULL, &g_menu_orig);
+                int local_hook = hook_install(GA(0x7101bef020ull), comp_open_local, NULL, &g_pallet_orig);
+                int ready_hook = hook_install(GA(0x7101af97f0ull), comp_pallet_ready, NULL, &g_pallet_ready_orig);
+                if (!hook_install(GA(0x71023343e0ull), comp_rule_state, NULL, &g_rule_state_orig) || !hook_install(GA(0x71023353d0ull), comp_stage_state, NULL, &g_stage_state_orig))
                     printf("competitive UI: Smash versus state hooks FAILED (a quick match shows the Rulesets screen)\n");
                 printf("competitive UI: menu hook %d; trace %s\n", menu_hook, getenv("SSBU_UI_TRACE") ? getenv("SSBU_UI_TRACE") : "off");
                 if (!local_hook || !ready_hook) printf("competitive UI: Local Wireless action hook FAILED\n");

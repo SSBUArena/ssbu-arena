@@ -98,7 +98,7 @@ static void ldn_delay_install(void) {
     static int done;
     if (done) return;
     done = 1;
-    int id = hook_install(0x71016ccae0ull, ldn_delay_hook, NULL, &g_ldn_delay_orig);
+    int id = hook_install(GA(0x71016ccae0ull), ldn_delay_hook, NULL, &g_ldn_delay_orig);
     printf("nn::ldn: input delay %s%s\n", g_ldn_delay == -2 ? "min (from the ping: half the round trip + 1 frame)" : g_ldn_delay < 0 ? "auto (the game's own)" : "fixed by online.ini input_delay", id ? "" : " (hook FAILED: the game's own)");
 }
 static void ldn_peer_ping(uint32_t vip, int ms) {          /* g_ldn.cs held */
