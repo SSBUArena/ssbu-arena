@@ -17,6 +17,7 @@
 int rbn_on(void); void rbn_init(void); void rbn_start(long long f0); int rbn_started(void); int rbn_local_player(void); int rbn_ahead(void);
 void rbn_local_pad(long long f, RbPad now); RbPad rbn_pad(int player, long long f);
 void rbn_drain(long long cur); int rbn_take_mismatch(void); long long rbn_confirmed(void); int rbn_peer_gone(void);
+static double g_rbg_go_sched = -1;                    /* (0.2.38) when this tick was due on the match clock (now_ms; the present queue) */
 void rbn_pass_hash(long long f); void rbn_finalize(long long cur); double rbn_pace_extra(long long f); void rbn_report(FILE *o, long long frames);
 int rbn_delay(void); int rbn_rtt_ms(void); double rbn_offset_ms(void); void rbn_resend(void); void rbn_status(char *out, size_t n); void rbn_hello(void); int rbn_peer_started(void); void rbn_choose_delay(void);
 
@@ -587,6 +588,7 @@ static void rbg_step_body(Ctx *c) {
         g_rbg_next += period;
     }
     double go = now_ms();
+    g_rbg_go_sched = g_rbg_pace && g_rbg_sched > 0 ? g_rbg_sched : go;      /* (0.2.38) the present queue counts from the tick's place on the match clock */
     if (g_rbg_last_go > 0 && g_rbg_ng < RBG_NT) g_rbg_gap[g_rbg_ng++] = (float)(go - g_rbg_last_go);
     g_rbg_last_go = go; g_rbg_tick0 = go; g_rbg_tick_k = 0; g_rbg_cyc_go = rgs_cyc_now();
     if (g_rbg_gocheck < 0) { const char *e = getenv("SSBU_RB_NET_GOCHECK"); g_rbg_gocheck = !e || atoi(e) != 0; e = getenv("SSBU_RB_NET_TEST_GOLATE"); g_rbg_golate = e ? atoi(e) : 0; }
@@ -795,6 +797,15 @@ static void rbg_report(void) {
 /* (Arena perf) nvn_gl.c sync_wait: the main thread in a re-run pass of a paced rollback match */
 int r1_rb_paced(void);
 int r1_rb_rerun_main(void) { return g_ra_phase == 2 && g_rgp_main && GetCurrentThreadId() == g_rgp_main && r1_rb_paced(); }
+/* (0.2.38) THE 1-FRAME PRESENT QUEUE of a rollback match: a tick's picture goes to the screen (1 + n) frames of refreshes after the refresh the tick began at
+ * (display.c display_present_plan holds it for that refresh), not as soon as it is ready: a tick of up to ~2 refreshes (a long rollback)
+ * no longer shows as a hitch, at the cost of one frame of picture latency. A picture ready after that refresh goes out at once.
+ * SSBU_RB_PRESENTQ=<n> refreshes of queue (default 1; 0 = as soon as ready, the old way). */
+int r1_rb_present_queue(double *sched_ms) {        /* the queue in frames (0: off), and when this tick was due (QPC ms) */
+    static int q = -1; if (q < 0) { const char *e = getenv("SSBU_RB_PRESENTQ"); q = e ? atoi(e) : 1; if (q < 0) q = 0; if (q > 3) q = 3; }
+    if (!q || g_rbg_go_sched < 0 || !r1_rb_paced()) return 0;
+    if (sched_ms) *sched_ms = g_rbg_go_sched; return q;
+}
 int r1_rb_paced(void) {
     static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RB_NET_VSYNC"); v = e && atoi(e) != 0; }
     return !v && g_rbg_in_match == 1 && g_rbg_pace > 0 && !g_rbg_noring;

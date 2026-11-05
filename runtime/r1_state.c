@@ -34,6 +34,7 @@ int r1_on(void) {
 int r1_ra_phase(void) { return 0; }
 int r1_ra_quiet(void) { return 0; }
 int r1_rb_paced(void) { return 0; }
+int r1_rb_present_queue(double *sched_ms) { (void)sched_ms; return 0; }
 int r1_rb_feat(int bit, int dflt) { (void)bit; return dflt; }
 int r1_rb_rerun_main(void) { return 0; }
 int r1_ra_present_mode(void) { return 0; }

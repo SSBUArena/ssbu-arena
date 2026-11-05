@@ -92,6 +92,7 @@ static volatile LONG g_lock_k;                         /* display lock: refreshe
 static double g_lock_phase = 0.5;                      /* the tick's place between two vblanks */
 static volatile LONG64 g_hold_target;                  /* tick the planned present waits for, 0 = present at once */
 static volatile LONG64 g_defer_target;                 /* a finished frame is kept on the render thread for this tick (display_present_defer) */
+#define TQ_FLAG (1LL << 62)                             /* (0.2.38) a kept frame's target that is a QPC time, not one of our ticks */
 void nvn_front_post_present_flush(void);               /* nvn_gl.c: the kept present, as a job of the render thread */
 static volatile LONG g_planned;
 volatile LONG g_display_close;                         /* the window was closed (WM_CLOSE): nvn_vk_m4.c ends its first-run hold */
@@ -749,7 +750,7 @@ static DWORD WINAPI vsync_thread(LPVOID arg) {
             { LARGE_INTEGER tq; QueryPerformanceCounter(&tq); g_tick_at[n & 15] = tq.QuadPart; }      /* L1: when this tick was given */
             InterlockedExchange64(&g_vsync_n, n);
             ReleaseSRWLockExclusive(&g_vsync_lock);
-            { LONG64 dt = g_defer_target; if (dt && n >= dt) nvn_front_post_present_flush(); }      /* session 14: the frame kept for this tick goes to the window now */
+            { LONG64 dt = g_defer_target; if (dt && !(dt & TQ_FLAG) && n >= dt) nvn_front_post_present_flush(); }      /* session 14: the frame kept for this tick goes to the window now */
             WakeAllConditionVariable(&g_vsync_cv);
             vsync_test_key();
         }
@@ -1071,6 +1072,24 @@ static void l1_report(FILE *out) {
 /* Session 14, game thread, BEFORE the present job goes to the render thread (Vulkan only; OpenGL keeps the path above):
  * the refresh that shows this frame, by the same rule as frame_queued, and whether the present is held for it. A frame
  * queued before the tick it is due at (on time) is held until that tick; a late one is presented at once. */
+static LONG64 g_hold_q, g_hold_q_late;                 /* (0.2.38) frames held by the rollback present queue / too late for it */
+static int tgt_due(LONG64 t) { if (!t) return 0; if (t & TQ_FLAG) { LARGE_INTEGER n; QueryPerformanceCounter(&n); return n.QuadPart >= (t & ~TQ_FLAG); } return g_vsync_n >= t; }
+static HANDLE g_tq_ev;
+static DWORD WINAPI tq_thread(LPVOID u) {                /* (0.2.38) the present queue's clock: the oldest kept frame with a time target, at that time */
+    (void)u;
+    HANDLE timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002, TIMER_ALL_ACCESS);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    for (;;) {
+        LONG64 t = g_defer_target;
+        if (!(t & TQ_FLAG)) { WaitForSingleObject(g_tq_ev, 20); continue; }
+        precise_wait_until((LONGLONG)(t & ~TQ_FLAG), timer);
+        if (g_defer_target != t) continue;                 /* (presented meanwhile: the next one) */
+        nvn_front_post_present_flush();
+        for (int i = 0; i < 40 && g_defer_target == t; i++) WaitForSingleObject(g_tq_ev, 1);      /* until the render thread took it */
+    }
+    return 0;
+}
+long long display_hold_q(int late) { return late ? g_hold_q_late : g_hold_q; }
 void display_present_plan(int vulkan) {
     if (!g_la_first) la_stop();                            /* U3: the first present: the loading animation stops before it (loading_anim.c) */
     if (!vulkan || old_pacing()) return;
@@ -1087,7 +1106,18 @@ void display_present_plan(int vulkan) {
      * beat (a frame finished just past this tick waited a whole frame, the next one came right after it: 0.7 ms apart, one
      * picture never on screen, for minutes while the phases stayed close). There the frame goes out as soon as it is ready. */
     int paced; { int r1_rb_paced(void); paced = r1_rb_paced() && !getenv("SSBU_PACE_HOLD"); }
-    InterlockedExchange64(&g_hold_target, on_time && g_hold_on && !g_lockstep && !paced ? at : 0);
+    LONG64 tgt = on_time && g_hold_on && !g_lockstep && !paced ? at : 0;
+    if (paced && !g_lockstep) {                            /* (0.2.38) the rollback match's 1-frame present queue (rb_rollback.c r1_rb_present_target) */
+        /* the picture is due (1 + q) frames after its tick's place on the MATCH clock (1 ms early): the tick of ours at or after that.
+         * (Counted from the match clock, not from our ticks: the time sync stretches the match clock and the two drift apart.) */
+        int r1_rb_present_queue(double *sched_ms); double sch = 0; int q = r1_rb_present_queue(&sch);
+        if (q) {          /* a TIME target (TQ_FLAG | QPC): the present-queue thread hands the picture to the window then, not at one of our ticks */
+            LARGE_INTEGER nq; QueryPerformanceCounter(&nq);
+            LONG64 due = (LONG64)((sch + (1 + q) * (1000.0 / 60.0) - 1.0) * (double)g_freq.QuadPart / 1000.0);
+            if (due > nq.QuadPart) { tgt = TQ_FLAG | due; g_hold_q++; } else g_hold_q_late++;
+        }
+    }
+    InterlockedExchange64(&g_hold_target, tgt);
     InterlockedExchange(&g_planned, 1);
 }
 /* Render thread, at the place of vkQueuePresentKHR. Returns 1 when the finished frame is to be KEPT for the tick decided
@@ -1099,19 +1129,35 @@ void display_present_plan(int vulkan) {
  * Now the game's thread returns from its present at once and waits where it always did (the window texture's sync). */
 static volatile LONG64 g_defer_target;                 /* a finished frame is kept on the render thread for this tick */
 void nvn_front_post_present_flush(void);               /* nvn_gl.c: the kept present, as a job of the render thread */
+/* (0.2.38) up to 2 kept frames, oldest first: the rollback present queue keeps a frame while the next one is already finished
+ * (r1_rb_present_queue); elsewhere one at most, as before. g_defer_target is the oldest one's tick (the vsync thread reads it). */
+static SRWLOCK g_dq_lock = SRWLOCK_INIT; static LONG64 g_dq[2]; static int g_dqn;
+int display_present_depth(void) { int r1_rb_present_queue(double *sched_ms); return r1_rb_present_queue(NULL) > 0 ? 2 : 1; }
 int display_present_defer(void) {
     { static DWORD tid; if (tid != GetCurrentThreadId()) { tid = GetCurrentThreadId(); display_perf_thread(); } }      /* the render thread: performance cores */
     LONG64 tgt = InterlockedExchange64(&g_hold_target, 0);
-    l1_ready(tgt);
-    if (!tgt || g_vsync_n >= tgt) return 0;
-    InterlockedExchange64(&g_defer_target, tgt);
+    l1_ready(tgt & TQ_FLAG ? 0 : tgt);
+    if (!tgt || tgt_due(tgt)) return 0;
+    if ((tgt & TQ_FLAG) && !g_tq_ev) { g_tq_ev = CreateEventA(NULL, FALSE, FALSE, NULL); HANDLE th = CreateThread(NULL, 0, tq_thread, NULL, 0, NULL); if (th) CloseHandle(th); }
+    AcquireSRWLockExclusive(&g_dq_lock);
+    if (g_dqn >= 2) { ReleaseSRWLockExclusive(&g_dq_lock); return 0; }      /* (the caller made room first: not reached) */
+    g_dq[g_dqn++] = tgt;
+    InterlockedExchange64(&g_defer_target, g_dq[0]);
+    ReleaseSRWLockExclusive(&g_dq_lock);
+    if (g_tq_ev) SetEvent(g_tq_ev);
     g_hold_n++;
     return 1;
 }
 /* Render thread, after it has stored the kept present: 1 = the tick came meanwhile, present now. (The vsync thread looks
  * at g_defer_target AFTER it has published the tick, this looks at the tick AFTER the target is set: one of the two sees it.) */
-int display_present_due(void) { LONG64 t = g_defer_target; return t && g_vsync_n >= t; }
-void display_present_flushed(void) { InterlockedExchange64(&g_defer_target, 0); }
+int display_present_due(void) { return tgt_due(g_defer_target); }
+void display_present_flushed(void) {                   /* the oldest kept frame went to the window */
+    AcquireSRWLockExclusive(&g_dq_lock);
+    if (g_dqn > 0) { g_dq[0] = g_dq[1]; g_dqn--; }
+    InterlockedExchange64(&g_defer_target, g_dqn ? g_dq[0] : 0);
+    ReleaseSRWLockExclusive(&g_dq_lock);
+    if (g_tq_ev) SetEvent(g_tq_ev);
+}
 /* Render thread, right after vkQueuePresentKHR returned: what the screen gets (see the comment at the top). */
 static void pace_stat_line(FILE *out, const char *what, int i, int since) {
     LONG64 n = g_ps[i].n - (since ? g_ps_last[i].n : 0), h[PS_HIST];

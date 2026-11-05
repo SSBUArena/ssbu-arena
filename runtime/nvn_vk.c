@@ -234,7 +234,9 @@ static int swapchain_create(void) {
     memset(&ci, 0, sizeof ci);
     ci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     ci.surface = V.surface;
-    ci.minImageCount = caps.minImageCount + 1 < 3 ? 3 : caps.minImageCount + 1;
+    {   /* (0.2.38) 4 with the rollback present queue: the picture on screen, two kept for their ticks, one being drawn */
+        const char *e = getenv("SSBU_RB_PRESENTQ"); uint32_t want = e && atoi(e) <= 0 ? 3 : 4;
+        ci.minImageCount = caps.minImageCount + 1 < want ? want : caps.minImageCount + 1; }
     if (caps.maxImageCount && ci.minImageCount > caps.maxImageCount) ci.minImageCount = caps.maxImageCount;
     ci.imageFormat = V.format.format; ci.imageColorSpace = V.format.colorSpace;
     ci.imageExtent = ext;

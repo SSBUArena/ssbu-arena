@@ -87,7 +87,7 @@ namespace Arena
         public static bool[] Invert = new bool[4];                        // (0.2.31) [general] invert.LX / LY / RX / RY (on top of a device's own setting)
         public static int ShaderLoad;                                     // (0.2.19) launcher.ini shader_load: 0 automatic, 1 all at the start, 2 per match (graphics.ini shader_load)
         public static bool CrashReports = true;                           // (0.2.18) launcher.ini crash_reports (CrashReport.cs)
-        public static int InputDelay;                                     // (0.2.14) launcher.ini input_delay: 0 automatic, 1..5 frames (SSBU_RB_NET_DELAY)
+        public static int InputDelay = 2;                                 // (0.2.14) launcher.ini input_delay: 1..5 frames (SSBU_RB_NET_DELAY); (0.2.38) no automatic any more, 2 by default
         public static bool Fps;                                           // graphics.ini stats_overlay: the FPS counter in the game                                   // graphics.ini volume (0..100), the game's start volume
         // (0.2.8) which controller button presses each game button ([type ...] map.* of controllers.ini, written for the
         // Xbox, PlayStation, Switch and other pads alike; GameCube controllers keep their own); the default is the
@@ -178,7 +178,7 @@ namespace Arena
             CloseToTray = Get(L, "close_to_tray") == "on";
             ShaderLoad = Get(L, "shader_load") == "start" ? 1 : Get(L, "shader_load") == "loading" ? 2 : 0;
             CrashReports = Get(L, "crash_reports") != "off";
-            InputDelay = int.TryParse(Get(L, "input_delay"), out var idl) && idl >= 1 && idl <= 5 ? idl : 0;
+            InputDelay = int.TryParse(Get(L, "input_delay"), out var idl) && idl >= 1 && idl <= 5 ? idl : 2;      // ("auto" of 0.2.37 and older: 2)
             RecMatchmaking = Get(L, "replay_matchmaking") != "off"; RecLdn = Get(L, "replay_ldn") != "off"; RecArena = Get(L, "replay_arena") != "off";
             RecLocal = Get(L, "replay_local") != "off";
             ShaderStamp = Get(L, "shaders") ?? "";
@@ -284,7 +284,7 @@ namespace Arena
             File.WriteAllLines(LauncherIni, new[] {
                 "# written by the launcher", "saves = " + Saves, "nickname = " + n,
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
-                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + (InputDelay >= 1 ? InputDelay.ToString() : "auto"), "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
+                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + InputDelay, "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off") }, Encoding.ASCII);
             var gfx = GfxValues();
@@ -801,7 +801,7 @@ namespace Arena
             env["SSBU_USERDATA"] = Saves;
             env["SSBU_FONTS"] = Fonts;
             env["SSBU_LOOSE_FILES"] = Competitive ? "1" : "0";      // build\characters\competitive (runtime/loose_files.c)
-            if (InputDelay >= 1) env["SSBU_RB_NET_DELAY"] = InputDelay.ToString();      // (0.2.14) the player's choice; unset: from the round trip (rb_net.c auto_delay)
+            env["SSBU_RB_NET_DELAY"] = Math.Max(1, Math.Min(5, InputDelay)).ToString();      // (0.2.14) the player's choice; (0.2.38) always set, at least 1
             if (StageBg > 0 && MakeStages()) env["SSBU_STAGE_BG"] = StageBg == 1 ? "off" : "custom";      // (0.2.20) runtime/loose_files.c: local graphics only
             env["SSBU_LATENCY"] = "normal";                          // wins over a latency = low / lowest written by hand in graphics.ini
             env["SSBU_COMPETITIVE"] = env["SSBU_LOOSE_FILES"];       // no FS meter, no random items (runtime/competitive.c)

@@ -3824,23 +3824,25 @@ static void vk_present2(void *arg, int progress);
  * at the next tick, vkQueuePresentKHR is not called there: what it needs is kept here and the vsync thread posts
  * nvn_vk_present_flush_job at the tick (render thread, between two other jobs). An out-of-date swapchain found here is
  * made again at the next present (not in the middle of a frame's commands). */
-int display_present_defer(void); int display_present_due(void); void display_present_flushed(void); void display_present_done(int fight);      /* display.c */
-static struct { int on, suboptimal, fight, recreate; VkSwapchainKHR sc; uint32_t index; VkSemaphore rend; } g_pend;
+int display_present_defer(void); int display_present_due(void); void display_present_flushed(void); void display_present_done(int fight); int display_present_depth(void);      /* display.c */
+/* (0.2.38) up to 2 kept presents, oldest first (the rollback present queue, display.c display_present_depth); one elsewhere */
+typedef struct { int suboptimal, fight; VkSwapchainKHR sc; uint32_t index; VkSemaphore rend; } PendPresent;
+static PendPresent g_pq[2]; static int g_pqn, g_pend_recreate;
 static volatile LONG64 g_gap_prev, g_gap_max, g_wd_beat;
-static void present_flush(void) {
-    if (!g_pend.on) return;
-    g_pend.on = 0;
+static void present_flush(void) {                       /* the OLDEST kept present */
+    if (!g_pqn) return;
+    PendPresent p = g_pq[0]; g_pq[0] = g_pq[1]; g_pqn--;
     display_present_flushed();
-    if (g_pend.sc != V.swapchain || !V.swapchain) return;      /* the swapchain was made again meanwhile: the image went with it */
+    if (p.sc != V.swapchain || !V.swapchain) return;      /* the swapchain was made again meanwhile: the image went with it */
     VkPresentInfoKHR pr = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-    pr.waitSemaphoreCount = 1; pr.pWaitSemaphores = &g_pend.rend; pr.swapchainCount = 1; pr.pSwapchains = &g_pend.sc; pr.pImageIndices = &g_pend.index;
+    pr.waitSemaphoreCount = 1; pr.pWaitSemaphores = &p.rend; pr.swapchainCount = 1; pr.pSwapchains = &p.sc; pr.pImageIndices = &p.index;
     VkResult r = vkQueuePresentKHR(V.queue, &pr);
-    display_present_done(g_pend.fight);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || g_pend.suboptimal) g_pend.recreate = 1;
+    display_present_done(p.fight);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || p.suboptimal) g_pend_recreate = 1;
     else vk_ok("vkQueuePresentKHR", r);
     if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) { LONG64 nowt = tk(); if (g_gap_prev && nowt - g_gap_prev > g_gap_max) g_gap_max = nowt - g_gap_prev; g_gap_prev = nowt; g_wd_beat = nowt; }
 }
-void nvn_vk_present_flush_job(void *arg) { (void)arg; if (V.alive) present_flush(); }
+void nvn_vk_present_flush_job(void *arg) { (void)arg; if (!V.alive) return; present_flush(); while (g_pqn && display_present_due()) present_flush(); }
 #include "nvn_vk_menu.c"                          /* U1: the settings menu over the picture (menu.cpp builds it) */
 #include "nvn_vk_flash.c"                         /* session 13: the white-flash detector (fl_pass, fl_capture, fl_shutdown) */
 /* nvn_vk_m4.c m4_barrier, render thread, g_sh_lock NOT held: the held loading screen once more, with the bar at `frac` */
@@ -4038,9 +4040,9 @@ static void vk_present2(void *arg, int progress) {
 swap: ;
     pass_end();
     tp[1] = tk();
-    present_flush();
+    { int d = display_present_depth(); while (g_pqn >= d) present_flush(); }      /* (0.2.38) room for this one: with the queue one stays kept */
     tp[2] = tk();                               /* session 14: a present still kept for its tick goes out before the next one is made */
-    if (g_pend.recreate) { g_pend.recreate = 0; cmd_wait_all(); swapchain_destroy(); InterlockedIncrement64(&g_vk_recreated); }
+    if (g_pend_recreate) { while (g_pqn) present_flush(); g_pend_recreate = 0; cmd_wait_all(); swapchain_destroy(); InterlockedIncrement64(&g_vk_recreated); }
     /* an extra present of a held loading screen: everything submitted so far is waited for first, so that the semaphore pair
      * taken below has no pending operation (validation run s11v2: VUID-vkAcquireNextImageKHR-semaphore-01779, three times,
      * all at such presents: with one submission a present the pair came round before its command buffer had been waited for) */
@@ -4128,8 +4130,8 @@ swap: ;
         pr.waitSemaphoreCount = 1; pr.pWaitSemaphores = &rend; pr.swapchainCount = 1; pr.pSwapchains = &V.swapchain; pr.pImageIndices = &index;
         g_wd_where = 4;
         if (!progress && display_present_defer()) {      /* session 14: the finished frame goes to the window AT THE TICK (display.c): kept here, presented by present_flush */
-            g_pend.sc = V.swapchain; g_pend.index = index; g_pend.rend = rend; g_pend.suboptimal = suboptimal; g_pend.fight = g_in_fight; g_pend.on = 1;
-            if (display_present_due()) present_flush();
+            PendPresent *q = &g_pq[g_pqn < 2 ? g_pqn++ : 1]; q->sc = V.swapchain; q->index = index; q->rend = rend; q->suboptimal = suboptimal; q->fight = g_in_fight;
+            while (g_pqn && display_present_due()) present_flush();
             r = VK_SUCCESS;
         } else {
         r = vkQueuePresentKHR(V.queue, &pr);
