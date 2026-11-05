@@ -30,6 +30,20 @@ typedef struct {
 } Ctx;
 
 void call_indirect(Ctx *c, uint64_t addr);
+/* (game code +30%) RECOMP_ICACHE (build_opt.py, the game's units only; RECOMP_ICACHE=0 there: none): every indirect call
+ * site of the lifted code has its own one-word cache, (target - 0x7100000000) << 32 | the lifted function's offset from
+ * rt_ic_miss (game_shim.c). A hit calls the function directly; a miss goes the usual way (call_indirect in the exe) through
+ * rt_ic_miss, which fills the word when the exe turned the cache on (rt_ic_on: never with SSBU_ICALLS / SSBU_ICALLS_STEP /
+ * SSBU_EXPERIMENT_POKE, which must see every call, or SSBU_ICACHE=0) and the target is a function of main's image (the
+ * exe's own first case: there it only looks the function up and calls it). One aligned word: threads need no lock. */
+#if defined(RECOMP_ICACHE) && !defined(RECOMP_ICACHE_OFF)
+void rt_ic_miss(Ctx *c, uint64_t addr, uint64_t *slot);
+#define call_indirect(c, a) do { \
+    static uint64_t rt_ic_; uint64_t rt_a_ = (a), rt_e_ = *(volatile uint64_t *)&rt_ic_; \
+    if (rt_e_ && (rt_e_ >> 32) == rt_a_ - 0x7100000000ull) \
+        ((void (*)(Ctx *))((uintptr_t)rt_ic_miss + (uintptr_t)(intptr_t)(int32_t)(uint32_t)rt_e_))(c); \
+    else rt_ic_miss((c), rt_a_, &rt_ic_); } while (0)
+#endif
 void host_import(Ctx *c, int sym);          /* call to a symbol another module provides */
 typedef struct { uint64_t addr; void (*fn)(Ctx *); } FnEntry;
 typedef struct { const char *name; uint64_t value; int defined; } DynSym;
@@ -213,6 +227,41 @@ static inline uint32_t f2s32(double v) { if (v != v) return 0; if (v >= 21474836
 static inline uint32_t f2u32(double v) { if (v != v || v <= 0) return 0; if (v >= 4294967295.0) return 0xffffffffu; return (uint32_t)v; }
 static inline uint64_t f2s64(double v) { if (v != v) return 0; if (v >= 9223372036854775807.0) return 0x7fffffffffffffffull; if (v <= -9223372036854775808.0) return 0x8000000000000000ull; return (uint64_t)(int64_t)v; }
 static inline uint64_t f2u64(double v) { if (v != v || v <= 0) return 0; if (v >= 18446744073709551615.0) return ~0ull; return (uint64_t)v; }
+
+/* (game code +30%) fmaf without a call to the C library (sampled ~1% of the game code's time in ucrt's fmaf; NEON FMLA
+ * calls it per lane, and a call makes the lanes around it go through memory): the product of two floats is exact in a double, so x * y + z in double arithmetic is the exact
+ * result rounded once; rounding that double to float gives the correctly rounded fmaf unless the double fell exactly on a
+ * halfway point between two floats (low 29 bits 0x10000000: double rounding), or the result is not a normal float
+ * (subnormal: the halfway bits are elsewhere; NaN / infinity: the library's NaN). Those few go to the library: the result
+ * is bit for bit the library's. -DRECOMP_FMAF_LIBM (build_opt.py RECOMP_FAST_FMAF=0): the library for every call. */
+#if !defined(RECOMP_FMAF_LIBM) && !defined(__cplusplus)
+static inline float rt_fmaf(float x, float y, float z) {
+    double r = (double)x * (double)y + (double)z;
+    uint64_t u; memcpy(&u, &r, sizeof u);
+    uint32_t e = (uint32_t)(u >> 52) & 0x7ff;
+    if ((u & 0x1fffffffull) != 0x10000000ull && e >= 0x3ff - 126 && e <= 0x3ff + 127) return (float)r;
+    return fmaf(x, y, z);
+}
+#define fmaf rt_fmaf
+#endif
+
+/* (game code +30%) RT_LANES(i, first, end, body): for (int i = first; i < end; i++) body, for the lane loops of neon.h
+ * (end at most 16). Written out once per possible lane, each under an if: after inlining the lane count is a constant,
+ * the dead lanes go and the rest is straight code, with no loop pass (the build has none: LLVM's loop passes need LCSSA,
+ * which made some lifted functions 6x larger). The body must not use continue / break of the loop.
+ * -DRECOMP_LANES_LOOP (build_opt.py RECOMP_LANES=0): the plain loop, as before. */
+#ifdef RECOMP_LANES_LOOP
+#define RT_LANES(i, first, end, ...) { for (int i = (first); i < (end); i++) { __VA_ARGS__ } }
+#else
+#define RT_LANE_(i, k, first, end, ...) if ((first) + (k) < (end)) { const int i = (first) + (k); __VA_ARGS__ }
+#define RT_LANES(i, first, end, ...) { \
+    RT_LANE_(i, 0, first, end, __VA_ARGS__) RT_LANE_(i, 1, first, end, __VA_ARGS__) RT_LANE_(i, 2, first, end, __VA_ARGS__) \
+    RT_LANE_(i, 3, first, end, __VA_ARGS__) RT_LANE_(i, 4, first, end, __VA_ARGS__) RT_LANE_(i, 5, first, end, __VA_ARGS__) \
+    RT_LANE_(i, 6, first, end, __VA_ARGS__) RT_LANE_(i, 7, first, end, __VA_ARGS__) RT_LANE_(i, 8, first, end, __VA_ARGS__) \
+    RT_LANE_(i, 9, first, end, __VA_ARGS__) RT_LANE_(i, 10, first, end, __VA_ARGS__) RT_LANE_(i, 11, first, end, __VA_ARGS__) \
+    RT_LANE_(i, 12, first, end, __VA_ARGS__) RT_LANE_(i, 13, first, end, __VA_ARGS__) RT_LANE_(i, 14, first, end, __VA_ARGS__) \
+    RT_LANE_(i, 15, first, end, __VA_ARGS__) }
+#endif
 
 #include "fpexact.h"
 #include "neon.h"

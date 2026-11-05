@@ -236,17 +236,19 @@ static DWORD WINAPI p8_thread(LPVOID arg) {
     p15_modules(); p15_pick_threads();
     if (!g_p15_nthr) return 0;
     HANDLE h = g_p15_thr[0].h;
+    const char *re = getenv("SSBU_RB8PROF_RIP"); int rip = re && *re && *re != '0';
     size_t cap = 256u << 20, used = 0; char *buf = VirtualAlloc(NULL, cap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); if (!buf) return 0;
     memset(buf, 0, cap);
     timeBeginPeriod(1);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     double t0 = (double)GetTickCount64();
     while ((double)GetTickCount64() - t0 < dur * 1000.0 && used + 8192 < cap) {
-        CONTEXT ctx; uint64_t keys[200]; int k = 0;
+        CONTEXT ctx; uint64_t keys[200]; int k = 0; uint64_t rip0 = 0;
         memset(&ctx, 0, sizeof ctx); ctx.ContextFlags = CONTEXT_FULL;
         if (SuspendThread(h) == (DWORD)-1) break;
         int kind = r1_rb_pass_kind(), seg = g_rgp_seg;
         if (GetThreadContext(h, &ctx)) {
+            rip0 = ctx.Rip;
             for (int depth = 0; depth < 800 && k < 200; depth++) {
                 uint64_t g = guest_function_of(ctx.Rip), key; DWORD64 base = 0;
                 RUNTIME_FUNCTION *rf = RtlLookupFunctionEntry(ctx.Rip, &base, NULL);
@@ -264,6 +266,8 @@ static DWORD WINAPI p8_thread(LPVOID arg) {
             if (keys[i] & P15_GUEST) used += (size_t)sprintf(buf + used, " g%llx", (unsigned long long)(keys[i] & ~P15_GUEST));
             else { uint64_t off; const char *m = p15_mod_of(keys[i], &off); used += (size_t)sprintf(buf + used, " %.12s+%llx", m, (unsigned long long)off); }
         }
+        /* SSBU_RB8PROF_RIP=1 (TEST): the sampled instruction itself, " @<module>+<offset>" at the end of the line */
+        if (rip && rip0) { uint64_t off; const char *m = p15_mod_of(rip0, &off); used += (size_t)sprintf(buf + used, " @%.12s+%llx", m, (unsigned long long)off); }
         buf[used++] = '\n';
         Sleep(1);
     }
