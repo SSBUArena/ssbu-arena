@@ -1800,7 +1800,6 @@ static void draw_arena(int cw, int ch) {
     ImGui::TextDisabled("Saved at once to config\\graphics.ini");
     if (g_exit_popup) { g_exit_popup = 0; g_exit_asked = 1; ImGui::OpenPopup("Exit the game?"); }
     if (ImGui::BeginPopupModal("Exit the game?", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Are you sure? Progress not saved by the game is lost.");
         if (ImGui::Button("Yes, exit")) { exit_game(); ImGui::CloseCurrentPopup(); }
         ImGui::SameLine();
         if (ImGui::Button("No") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
