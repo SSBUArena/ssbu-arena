@@ -286,7 +286,7 @@ namespace Arena
                 foreach (var e in fr.Extra)
                 {
                     if (ShowHurt) foreach (var u in e.Value.Hurts) DrawCapsule(dc, u.X, u.Y, u.X2, u.Y2, u.R, hurtP[e.Key % 4], null);
-                    DrawFighter(dc, e.Value, e.Key, e.Key % 4, false);
+                    DrawFighter(dc, e.Value, e.Key, e.Key % 4, fr.F.Length > e.Key && fr.F[e.Key] == null, true);      // (0.2.37) the player's only body now (the Trainer's next Pokemon): its name tag
                 }
             // the weapons and items of this frame: their model is in the scene; without one, a plain shape with the kind's name
             if (fr.Objects != null)
@@ -406,10 +406,10 @@ namespace Arena
             }
         }
 
-        void DrawFighter(DrawingContext dc, RvFighterFrame s, int k, int pc, bool tagged)
+        void DrawFighter(DrawingContext dc, RvFighterFrame s, int k, int pc, bool tagged, bool other = false)
         {
             Point feet = S(s.X, s.Y);
-            bool model = Scene != null && (tagged ? Scene.FighterShown(k) : Scene.OtherShown(s.Slot));
+            bool model = Scene != null && (other ? Scene.OtherShown(s.Slot) : Scene.FighterShown(k));
             // body: the hurt volumes' extent (else a capsule of a typical size), filled in the player's colour
             double x0 = s.X - 4, x1 = s.X + 4, y0 = s.Y, y1 = s.Y + 14;
             foreach (var u in s.Hurts) { x0 = Math.Min(x0, Math.Min(u.X, u.X2) - u.R); x1 = Math.Max(x1, Math.Max(u.X, u.X2) + u.R); y0 = Math.Min(y0, Math.Min(u.Y, u.Y2) - u.R); y1 = Math.Max(y1, Math.Max(u.Y, u.Y2) + u.R); }
@@ -462,12 +462,12 @@ namespace Arena
             dc.DrawRectangle(fade, null, new Rect(0, H - hudH - 24, W, hudH + 24));
             for (int k = 0; k < n; k++, x += cardW + 32)
             {
-                var f = r.Fighters[k]; var s = fr.F[k] ?? fr.Extra?.FirstOrDefault(e => e.Key == k).Value; int pc = k % 4;      // (a Pokemon Trainer's other Pokemon)
+                var f = r.Fighters[k]; var s = fr.Of(k); int pc = k % 4;      // (a Pokemon Trainer's other Pokemon)
                 var rect = new Rect(x, y, cardW, hudH - 16);
                 // (0.2.34) no card: the player's bar and the text straight on the fade
                 dc.DrawRoundedRectangle(playerB[pc], null, new Rect(x, y + 6, 3, rect.Height - 12), 1.5, 1.5);
                 double nameW = Math.Max(20, cardW - 112);      // (the damage has the right side)
-                var fn = Text(f.FighterName.ToUpperInvariant(), 13, MutedB, UiBold); fn.MaxTextWidth = nameW; fn.MaxLineCount = 1; fn.Trimming = TextTrimming.CharacterEllipsis;
+                var fn = Text(r.BodyName(k, s).ToUpperInvariant(), 13, MutedB, UiBold);      // (0.2.37) the Pokemon in play, Pyra or Mythra fn.MaxTextWidth = nameW; fn.MaxLineCount = 1; fn.Trimming = TextTrimming.CharacterEllipsis;
                 var pn = Text(f.Name, 14, TextB, Ui); pn.MaxTextWidth = nameW; pn.MaxLineCount = 1; pn.Trimming = TextTrimming.CharacterEllipsis;
                 dc.DrawText(fn, new Point(x + 12, y + 5));
                 dc.DrawText(pn, new Point(x + 12, y + 21));

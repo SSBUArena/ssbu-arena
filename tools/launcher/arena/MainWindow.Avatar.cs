@@ -85,7 +85,7 @@ namespace Arena
                             int o = order.TryGetValue(name, out int fo) ? fo * 16 + 1 + slot : 100000 + n;
                             list.Add(new AvatarEntry { Key = key, Kind = kind, Label = ReplayNames.FighterName(ReplayNames.Hash40("ui_chara_" + name), 0) + ", colour " + (slot + 1), Order = o });
                         }
-                        else list.Add(new AvatarEntry { Key = key, Kind = kind, Label = Pretty(kind == "series" ? name : name), Order = 200000 + n });
+                        else list.Add(new AvatarEntry { Key = key, Kind = kind, Label = kind == "assist" ? name : Pretty(name), Order = 200000 + n });
                     }
             }
             catch { }
@@ -105,7 +105,7 @@ namespace Arena
             AvatarTabsWell.Visibility = entries.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             if (entries.Count == 0) { ShowAvatar(); return; }
             if (avatarTab == null) avatarTab = entries.FirstOrDefault(x => x.Key == Account.Me?.Avatar)?.Kind ?? "fighter";
-            foreach (var t in new[] { ("fighter", "Fighters"), ("spirit", "Spirits"), ("series", "Series") })
+            foreach (var t in new[] { ("fighter", "Fighters"), ("spirit", "Spirits"), ("assist", "Assists"), ("series", "Series") })
             {
                 int n = entries.Count(x => x.Kind == t.Item1); if (n == 0) continue;
                 var rb = new RadioButton { Content = t.Item2 + "  " + n, Tag = t.Item1, Style = (Style)FindResource("RvSeg"), GroupName = "avatartab", IsChecked = avatarTab == t.Item1, Padding = new Thickness(14, 0, 14, 0) };

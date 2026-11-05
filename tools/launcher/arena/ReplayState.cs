@@ -43,6 +43,8 @@ namespace Arena
         public int Number;
         public RvFighterFrame[] F;                      // by fighter (its main slot; null: not in this frame)
         public List<KeyValuePair<int, RvFighterFrame>> Extra;   // a player's other bodies (Nana of the Ice Climbers): fighter index, state
+        /// <summary>(0.2.37) the player's body in this frame: its main slot, else its other body (the Trainer's next Pokemon, Mythra after Pyra)</summary>
+        public RvFighterFrame Of(int k) => k < F.Length && F[k] != null ? F[k] : Extra?.FirstOrDefault(e => e.Key == k).Value;
         public float[][] Lines;                         // the stage lines' end points at this frame (shared arrays when unchanged)
         public ulong LinesOn;                           // the lines that exist at this frame (bit per line)
         public RvObject[] Objects;                      // weapons and items at this frame (null: none, or a file before version 3)
@@ -58,6 +60,40 @@ namespace Arena
     {
         public const int HeaderSize = 0x200;
         public string Path;
+
+        // (0.2.37) a player's other bodies in the order the recorder found them (tools/replay/replay_assets.py OTHER_BODIES / UI_FOLDER)
+        static readonly Dictionary<string, string[]> OtherBodies = new Dictionary<string, string[]>
+        {
+            { "popo", new[] { "nana" } }, { "eflame", new[] { "elight" } }, { "elight", new[] { "eflame" } },
+            { "pzenigame", new[] { "pfushigisou", "plizardon" } }, { "pfushigisou", new[] { "plizardon", "pzenigame" } }, { "plizardon", new[] { "pzenigame", "pfushigisou" } },
+        };
+        static readonly Dictionary<string, string> MainBody = new Dictionary<string, string>
+        {
+            { "ice_climber", "popo" }, { "eflame_first", "eflame" }, { "elight_first", "elight" }, { "eflame_only", "eflame" }, { "elight_only", "elight" },
+            { "element", "eflame" }, { "ptrainer", "pzenigame" }, { "ptrainer_low", "pzenigame" },
+        };
+        /// <summary>(0.2.37) which fighter a state of player k is: its own, or one of its other bodies (Nana, the Trainer's Pokemon, Pyra / Mythra)</summary>
+        public string BodyKey(int k, RvFighterFrame s)
+        {
+            if (k < 0 || k >= Fighters.Count) return null;
+            var f = Fighters[k];
+            string main = ReplayNames.FighterKey(f.UiChara);
+            if (main == null) return null;
+            if (MainBody.TryGetValue(main, out var mb)) main = mb;
+            if (s == null || s.Slot == f.Slot) return main;
+            var others = Enumerable.Range(0, SlotEntry.Length).Where(x => x != f.Slot && SlotEntry[x] == f.Entry).ToList();
+            int i = others.IndexOf(s.Slot);
+            return OtherBodies.TryGetValue(main, out var list) && i >= 0 && i < list.Length ? list[i] : main;
+        }
+        /// <summary>the name of that body ("Ivysaur"); the player's own fighter name when it is its usual one</summary>
+        public string BodyName(int k, RvFighterFrame s)
+        {
+            if (k < 0 || k >= Fighters.Count) return "";
+            var f = Fighters[k];
+            if (s == null || s.Slot == f.Slot) return f.FighterName;
+            string key = BodyKey(k, s);
+            return key == null ? f.FighterName : ReplayNames.FighterName(ReplayNames.Hash40("ui_chara_" + key), f.Kind);
+        }
         public byte[] SlotEntry = { 0xff, 0xff, 0xff, 0xff };
         public uint MatchId; public int Kind; public string LocalName = "";      // online: the handshake's match id; 0 local 1 matchmaking 2 LDN room 3 other online
         public int Version, Flags, Frames, Codec, RuleKind, Stocks, GameBuild, LocalPlayer, MatchNumber, FirstFf, EndedFrame, Winner, RecUs;
@@ -329,7 +365,7 @@ namespace Arena
                 var fr = r.FrameList[fi];
                 for (int k = 0; k < n; k++)
                 {
-                    var s = fr.F[k];
+                    var s = fr.Of(k);                   // (0.2.37) the Trainer's other Pokemon and Pyra / Mythra count for the player too
                     if (s == null) continue;
                     var p = last[k];
                     if (p != null)

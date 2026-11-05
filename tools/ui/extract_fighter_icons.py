@@ -81,6 +81,9 @@ def icon_numbers(arc):
 
 
 SPIRIT = ('ui/replace/spirits/spirits_1/spirits_1_%s.bntx', 'ui/replace/spirits/spirits_2/spirits_2_%s.bntx', 'ui/replace/spirits/spirits_0/spirits_0_%s.bntx', 'ui/replace_patch/spirits/spirits_1/spirits_1_%s.bntx', 'ui/replace_patch/spirits/spirits_2/spirits_2_%s.bntx')
+# (0.2.37) the Assist Trophies among the profile icons: rows ui_item_assist_<name> (ui_item_db), picture item_0_assist_<name>,
+# English name nam_item_assist_<name> in msg_name (region 2, US English)
+ASSIST = ('ui/replace/item/item_0/item_0_%s.bntx', 'ui/replace_patch/item/item_0/item_0_%s.bntx')
 SERIES = ('ui/replace/series/series_0/series_0_%s.bntx', 'ui/replace/series/series_1/series_1_%s.bntx', 'ui/replace_patch/series/series_0/series_0_%s.bntx', 'ui/replace_patch/series/series_1/series_1_%s.bntx')
 
 
@@ -126,10 +129,27 @@ def square(im, size=128):
     return out
 
 
+def message_names(arc, prefix):
+    """{label without the prefix: English text} of ui/message/msg_name.msbt (the game's own words, read from data.arc)"""
+    try:
+        import msbt_patch
+        names, chunks = msbt_patch.messages(arc.get('ui/message/msg_name.msbt', 2))
+    except Exception:
+        return {}
+    out = {}
+    for k, i in names.items():
+        if k.startswith(prefix):
+            t = chunks[i].decode('utf-16-le', 'replace').split('\x0e')[0].rstrip('\x00').strip()
+            if t:
+                out[k[len(prefix):]] = t
+    return out
+
+
 def all_icons(arc, out):
     """(0.2.34) every icon of the game's profile icons (ui_profile_icon_db: the fighters in some of their colours, spirits,
-    the series' emblems): all/icon_<number>.png, all/icons.txt (icon_<number>=<number>,<fighter|spirit|series>,<name>,<colour>),
-    written last (it marks the work as done). Rows whose picture is not found are left out."""
+    the series' emblems, 0.2.37 the Assist Trophies): all/icon_<number>.png, all/icons.txt
+    (icon_<number>=<number>,<fighter|spirit|series|assist>,<name>,<colour>), written last (it marks the work as done), then
+    all/v2.txt (0.2.37: made again once for the Assist Trophies). Rows whose picture is not found are left out."""
     def strings_of(path, prefix):
         try:
             rows = prc_rows(arc.get(path))
@@ -145,6 +165,8 @@ def all_icons(arc, out):
     fighters.update(strings_of('ui/param/database/ui_chara_db.prc', 'ui_chara_'))
     spirits = strings_of('ui/param/database/ui_spirit_db.prc', '')
     series = strings_of('ui/param/database/ui_series_db.prc', 'ui_series_')
+    assists = {h: v for h, v in strings_of('ui/param/database/ui_item_db.prc', 'ui_item_').items() if v.startswith('assist_')}
+    assist_names = message_names(arc, 'nam_item_assist_')
     dst = out / 'all'
     dst.mkdir(parents=True, exist_ok=True)
     lines = []
@@ -159,6 +181,10 @@ def all_icons(arc, out):
         elif ch in series:
             kind, name = 'series', series[ch]
             im = first_image(arc, SERIES, name)
+        elif ch in assists:
+            kind, key = 'assist', assists[ch]
+            name = assist_names.get(key[len('assist_'):], key[len('assist_'):]).replace(',', ' ')
+            im = first_image(arc, ASSIST, key)
         elif ch in spirits:
             kind, name = 'spirit', spirits[ch]
             im = first_image(arc, SPIRIT, name)
@@ -168,7 +194,8 @@ def all_icons(arc, out):
             continue
         square(im).save(dst / ('icon_%d.png' % n))
         lines.append('icon_%d=%d,%s,%s,%d\n' % (n, n, kind, name, slot))
-    (dst / 'icons.txt').write_text(''.join(lines))
+    (dst / 'icons.txt').write_text(''.join(lines), encoding='utf-8')
+    (dst / 'v2.txt').write_text('ok')
     return len(lines)
 
 
@@ -216,7 +243,7 @@ def main():
                 break
             break
     (more / 'done.txt').write_text('ok')
-    if not (a.out / 'all' / 'icons.txt').exists():
+    if not (a.out / 'all' / 'icons.txt').exists() or not (a.out / 'all' / 'v2.txt').exists():
         print('all the profile icons: %d' % all_icons(arc, a.out))
 
 

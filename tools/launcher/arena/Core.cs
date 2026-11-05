@@ -382,7 +382,7 @@ namespace Arena
         const long SaveSize = 5982968, SaveProfileIcon = 0x424080;      // 13.0.4's system_data.bin and where the player's profile icon is in it (u16)
 
         /// <summary>(0.2.20) the picture of the account as the game's own profile icon: the game shows it in its rooms and sends it to the
-        /// other players itself. In the save, before the game starts; a save not yet made by the game stays as it is.</summary>
+        /// other players itself. In the save, before the game starts (0.2.37: after the base save, so a first start has it too).</summary>
         public static bool WriteProfileIcon(string fighter)
         {
             try
@@ -411,7 +411,7 @@ namespace Arena
         {
             try
             {
-                if ((File.Exists(Path.Combine(AvatarsDir, "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "more", "done.txt")) && File.Exists(Path.Combine(AvatarsDir, "all", "icons.txt"))) || Repo == null || RomFS == null) return;      // (0.2.34: all, every profile icon)
+                if ((File.Exists(Path.Combine(AvatarsDir, "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "more", "done.txt")) && File.Exists(Path.Combine(AvatarsDir, "all", "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "all", "v2.txt"))) || Repo == null || RomFS == null) return;      // (0.2.34: all, every profile icon; 0.2.37: v2, with the Assist Trophies)
                 string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\ui\extract_fighter_icons.py"), arc = Path.Combine(RomFS, "data.arc");
                 if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return;
                 var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + AvatarsDir + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
@@ -819,10 +819,10 @@ namespace Arena
         /// cmd.exe (whose exit code is the game's)</summary>
         public static Process Launch()
         {
-            if (Account.SignedIn) WriteProfileIcon(Account.Me.Avatar);
             Directory.CreateDirectory(Saves);
             Directory.CreateDirectory(Path.Combine(Build, "cache"));
             PrepareSave();
+            if (Account.SignedIn) WriteProfileIcon(Account.Me.Avatar);      // (0.2.37) after PrepareSave: on a first start the base save is there now
             var psi = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe")) { WorkingDirectory = Work, UseShellExecute = false, CreateNoWindow = true };
             var env = psi.EnvironmentVariables;
             GameEnv(env);

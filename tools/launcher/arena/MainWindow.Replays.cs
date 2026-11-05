@@ -703,13 +703,13 @@ namespace Arena
             for (int k = 0; k < rvMoveInfo.Length && k < fr.F.Length; k++)
             {
                 var t = rvMoveInfo[k]; t.Inlines.Clear();
-                var s = fr.F[k] ?? fr.Extra?.FirstOrDefault(e => e.Key == k).Value;
+                var s = fr.Of(k);
                 if (s == null) continue;
                 var col = new SolidColorBrush(RvPalette.Player[k % 4]);
                 string mv = ReplayNames.MoveName(s.Motion);
                 t.Inlines.Add(new System.Windows.Documents.Run(mv ?? ReplayNames.ActionText(s)) { FontWeight = FontWeights.SemiBold, Foreground = col, FontSize = 14 });
                 if (mv != null) t.Inlines.Add(new System.Windows.Documents.Run("   frame " + (int)Math.Floor(s.MotionFrame + 1)));
-                var u = mv != null ? UfdMove(r.Fighters[k].FighterKey, mv) : null;
+                var u = mv != null ? UfdMove(r.BodyKey(k, s) ?? r.Fighters[k].FighterKey, mv) : null;      // (0.2.37) the frame data of the body in play
                 if (u != null)
                 {
                     string g(string key) => u.TryGetValue(key, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) : "-";
