@@ -159,6 +159,9 @@ static uint8_t g_mods_wire[1 + MODS_MAX * (5 + MOD_NAME)];
  * sent after the mod set as "TK" + u16 length + bytes. A lobby that requires tickets (the SSBU Arena lobby) refuses a
  * game without a valid one and lists the player under the name in it. */
 static char g_ticket[320];
+/* (0.2.37) this game's online level, sent after the ticket as "CV" + u16: the SSBU Arena lobby refuses games below its
+ * min_client_level (a game without it, 0.2.36 and older, is level 1). 2: renews its pass, shows the lobby's states 7 / 8. */
+#define NET_CLIENT_LEVEL 2
 /* (0.2.37) SSBU_ONLINE_TICKET_FILE: a file the launcher writes again with a fresh ticket while the game runs (its pass is short);
  * read again when it changes (every 5 s at most) and sent at once with the same nonce: the lobby takes it as a renewal */
 static char g_ticket_file[MAX_PATH];
@@ -1387,7 +1390,7 @@ static int setup(void) {                        /* (client thread) where the lob
 
 static void send_join(void) {
     enum { BASE = 4 + 8 + 2 * NAME_LEN + BUILD_LEN + 4 + 2 + 1 };
-    uint8_t p[BASE + 2 + sizeof g_mods_wire + 4 + sizeof g_ticket] = {0};
+    uint8_t p[BASE + 2 + sizeof g_mods_wire + 4 + sizeof g_ticket + 4] = {0};
     hdr(p, T_JOIN);
     s64(p + 4, g_nonce);
     memcpy(p + 12, g_code, strlen(g_code));
@@ -1400,6 +1403,7 @@ static void send_join(void) {
     memcpy(p + BASE + 2, g_mods_wire, (size_t)g_mods_wire_len);
     int n = BASE + 2 + g_mods_wire_len, tl = (int)strlen(g_ticket);
     if (tl) { p[n] = 'T'; p[n + 1] = 'K'; s16(p + n + 2, (uint16_t)tl); memcpy(p + n + 4, g_ticket, (size_t)tl); n += 4 + tl; }
+    p[n] = 'C'; p[n + 1] = 'V'; s16(p + n + 2, NET_CLIENT_LEVEL); n += 4;      /* (0.2.37; an older lobby ignores it) */
     tx(p, n, &g_lobby);
 }
 
