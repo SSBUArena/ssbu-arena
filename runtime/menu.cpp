@@ -1589,6 +1589,8 @@ static uint32_t sec_match(void) {
         else if (m.state == MM_PEER_LEFT) ImGui::TextColored(amber, "%s cancelled the match or left.", m.peer_name);
         else if (m.state == MM_EXPIRED) ImGui::TextColored(amber, "The match with %s expired: you did not meet in a room in time.", m.peer_name);
         else if (m.state == MM_OLD_LOBBY) ImGui::TextColored(amber, "This lobby server is an older version: it cannot find opponents. Create a room or join one.");
+        else if (m.state == MM_NO_ACCOUNT) ImGui::TextColored(amber, "This search needs your SSBU Arena account: sign in in the launcher, then press PLAY.");
+        else if (m.state == MM_BLOCKED) ImGui::TextColored(amber, "Matchmaking is blocked for your account for now (fair play). Rooms with friends still work.");
         if (ImGui::Button(m.state == MM_IDLE ? "Find an opponent##mm" : "Search again##mm", ImVec2(bw, 0))) net_match_find();
         help("The lobby pairs you with another player of the same version and mods who is searching too, and says who hosts the room.");
         break;

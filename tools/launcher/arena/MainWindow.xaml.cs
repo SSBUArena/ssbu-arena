@@ -621,18 +621,7 @@ namespace Arena
                 Start();
             };
             Core.Ticket = null;
-            if (!(Core.Online && Core.HasOnline)) { go(); return; }
-            // online: a fresh lobby ticket for this start (the lobby refuses a game without one)
-            PlayButton.IsEnabled = false;
-            Status("Checking your account...", "busy");
-            Task.Run(() => Account.LobbyTicket()).ContinueWith(t =>
-            {
-                PlayButton.IsEnabled = true;
-                if (t.IsFaulted) { SetState(); Show("Online", "Could not get your online pass: " + t.Exception.GetBaseException().Message, null, ("Play offline", () => { Core.Online = false; OnlineBox.IsChecked = false; SaveQuiet(); RefreshOnline(); go(); }, false), ("OK", null, true)); return; }
-                Core.Ticket = t.Result;
-                SetState();
-                go();
-            }, TaskScheduler.FromCurrentSynchronizationContext());
+            go();      // (0.2.37) the online pass is asked in Start, after the shader preparation: just before the game starts
         }
 
         // ---------------------------------------------------------------- account (Account.cs)
@@ -994,7 +983,52 @@ namespace Arena
             StartPrep(false);
         }
 
+        /// <summary>(0.2.37) online: a fresh lobby ticket right before the game starts (the lobby refuses a game without one, and a new
+        /// game only with a ticket made a short time ago), then the game; offline: the game</summary>
         void Start()
+        {
+            Core.Ticket = null;
+            if (!(Core.Online && Core.HasOnline)) { StartGame(); return; }
+            PlayButton.IsEnabled = false;
+            Status("Checking your account...", "busy");
+            Task.Run(() => Account.LobbyTicket()).ContinueWith(t =>
+            {
+                PlayButton.IsEnabled = true;
+                if (t.IsFaulted) { SetState(); Show("Online", "Could not get your online pass: " + t.Exception.GetBaseException().Message, null, ("Play offline", () => { Core.Online = false; OnlineBox.IsChecked = false; SaveQuiet(); RefreshOnline(); StartGame(); }, false), ("OK", null, true)); return; }
+                Core.Ticket = t.Result;
+                SetState();
+                StartGame();
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        // (0.2.37) the online pass renewed while the game runs: a new ticket at half its life into Core.TicketFile, which the game reads
+        // again (runtime/net_relay.c SSBU_ONLINE_TICKET_FILE) and sends to the lobby; a failed try again a minute later
+        System.Windows.Threading.DispatcherTimer ticketTimer;
+        void RenewTicketLater(TimeSpan after)
+        {
+            if (ticketTimer == null)
+            {
+                ticketTimer = new System.Windows.Threading.DispatcherTimer();
+                ticketTimer.Tick += (s, e) =>
+                {
+                    ticketTimer.Stop();
+                    if (game == null || Core.Ticket == null) return;
+                    Task.Run(() => Account.LobbyTicket()).ContinueWith(t =>
+                    {
+                        if (game == null || Core.Ticket == null) return;
+                        if (t.IsFaulted) { Updater.Log("online pass: renewal failed (" + t.Exception.GetBaseException().Message + "), again in a minute"); RenewTicketLater(TimeSpan.FromMinutes(1)); return; }
+                        Core.Ticket = t.Result;
+                        Core.WriteTicketFile(t.Result);
+                        RenewTicketLater(Core.TicketRenewAfter(t.Result));
+                    }, TaskScheduler.FromCurrentSynchronizationContext());
+                };
+            }
+            ticketTimer.Stop();
+            ticketTimer.Interval = after;
+            ticketTimer.Start();
+        }
+
+        void StartGame()
         {
             bool first = Core.FirstRun();
             PadLiveStop();
@@ -1002,6 +1036,7 @@ namespace Arena
             try { game = Core.Launch(); }
             catch (Exception ex) { Show("Could not start the game", ex.Message, null, ("OK", null, true)); return; }
             game.Exited += (s, e) => Dispatcher.Invoke(GameExited);
+            if (Core.Ticket != null) RenewTicketLater(Core.TicketRenewAfter(Core.Ticket));
             SetState();
             if (first) StatusText.Text = "First start: preparing the shaders";
             ToTray();
@@ -1045,6 +1080,7 @@ namespace Arena
         void GameExited()
         {
             game = null;
+            ticketTimer?.Stop(); Core.Ticket = null; Core.DeleteTicketFile();      // (0.2.37) the pass leaves the PC with the game
             {   // (0.2.18) the game crashed: its report to the server (CrashReport.cs)
                 var started = gameStarted;
                 Task.Run(() => { bool sent = CrashReport.SendIfCrashed(started, out bool crashed); return Tuple.Create(crashed, sent); }).ContinueWith(t =>

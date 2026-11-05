@@ -362,6 +362,35 @@ namespace Arena
 
         public static string AvatarsDir => Path.Combine(Build, "avatars");
 
+        /// <summary>(0.2.37) the online pass of the running game (runtime/net_relay.c reads it again when it changes); deleted when the game ends</summary>
+        public static string TicketFile => Path.Combine(Build, "cache", "online_pass.txt");
+        public static bool WriteTicketFile(string ticket)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(TicketFile));
+                string tmp = TicketFile + ".part";
+                File.WriteAllText(tmp, ticket, new UTF8Encoding(false));
+                if (File.Exists(TicketFile)) File.Replace(tmp, TicketFile, null); else File.Move(tmp, TicketFile);
+                return true;
+            }
+            catch (Exception e) { Updater.Log("online pass file: " + e.Message); return false; }
+        }
+        public static void DeleteTicketFile() { try { File.Delete(TicketFile); File.Delete(TicketFile + ".part"); } catch { } }
+        /// <summary>when to ask for the next pass: at half the life of this one ("id|name|expiry|issued.HMAC"; without the issue time:
+        /// 8 hours), at least 1 minute, and 2 minutes before it expires at the latest</summary>
+        public static TimeSpan TicketRenewAfter(string ticket)
+        {
+            try
+            {
+                var p = ticket.Substring(0, ticket.LastIndexOf('.')).Split('|');
+                long exp = long.Parse(p[2]), iat = p.Length > 3 ? long.Parse(p[3]) : exp - 8 * 3600, now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                long at = Math.Min(iat + (exp - iat) / 2, exp - 120) - now;
+                return TimeSpan.FromSeconds(Math.Max(60, at));
+            }
+            catch { return TimeSpan.FromMinutes(10); }
+        }
+
         /// <summary>the fighter's number among the game's own profile icons (avatars\icons.txt, ui_profile_icon_db); -1: none</summary>
         public static int ProfileIconOf(string fighter)
         {
@@ -766,7 +795,7 @@ namespace Arena
         static void GameEnv(System.Collections.Specialized.StringDictionary env)
         {
             foreach (var v in new[] { "SSBU_ONLINE", "SSBU_ONLINE_CODE", "SSBU_ONLINE_NAME", "SSBU_ONLINE_DIRECT", "SSBU_NICKNAME", "SSBU_RB_NET", "SSBU_R1_GAMEDLL", "SSBU_NRO_BIN", "SSBU_NET_PING", "SSBU_COMPETITIVE_UI",
-                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_TICKET", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG" })
+                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_TICKET", "SSBU_ONLINE_TICKET_FILE", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG" })
                 env.Remove(v);
             env["SSBU_ROMFS"] = RomFS ?? "";
             env["SSBU_USERDATA"] = Saves;
@@ -834,6 +863,7 @@ namespace Arena
                 string n = Account.Me.Username;
                 if (string.IsNullOrWhiteSpace(n)) throw new Exception("Your Arena name could not be read. Sign in again from the account page, then press PLAY.");      // never online without the player's own name
                 env["SSBU_ONLINE_TICKET"] = Ticket ?? "";              // the lobby takes the player's name from it
+                if (Ticket != null && WriteTicketFile(Ticket)) env["SSBU_ONLINE_TICKET_FILE"] = TicketFile;      // (0.2.37) renewed while the game runs
                 env["SSBU_ONLINE"] = Server.Trim();
                 env["SSBU_ONLINE_NAME"] = n;
                 env["SSBU_NICKNAME"] = n;

@@ -476,8 +476,11 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
                 printf("[rbnet] handshake %ld: the lobby found an opponent after %.1f s: %s (10.13.%u.%u); this game is the %s\n", (long)round, (now - t0) / 1000.0, mm.peer_name, mm.peer >> 8 & 255, mm.peer & 255, want ? "joiner (player 2)" : "host (player 1)");
                 fflush(stdout);
                 phase = 1; t0 = now; last_note = 0;
-            } else if (mm.state == MM_TIMEOUT || mm.state == MM_OLD_LOBBY || mm.state == MM_PEER_LEFT || mm.state == MM_EXPIRED || mm.state == MM_OFFLINE || (mm.kind != 2 && mm.state != MM_ASKING)) {
+            } else if (mm.state == MM_TIMEOUT || mm.state == MM_OLD_LOBBY || mm.state == MM_PEER_LEFT || mm.state == MM_EXPIRED || mm.state == MM_OFFLINE
+                       || mm.state == MM_NO_ACCOUNT || mm.state == MM_BLOCKED || (mm.kind != 2 && mm.state != MM_ASKING)) {
                 snprintf(g_hs_why, sizeof g_hs_why, "%s", mm.state == MM_TIMEOUT ? "no opponent found in time (nobody with your version and mods searched)" :
+                         mm.state == MM_NO_ACCOUNT ? "this search needs your SSBU Arena account: sign in in the launcher" :
+                         mm.state == MM_BLOCKED ? "matchmaking is blocked for your account for now (fair play)" :
                          mm.state == MM_OLD_LOBBY ? "the lobby server is an older version (it cannot find rollback opponents): use a room code" :
                          mm.state == MM_OFFLINE ? "online play is off" : mm.kind != 2 ? "another search was started (F1 > Online)" : "the opponent left");
                 break;

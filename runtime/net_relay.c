@@ -159,6 +159,10 @@ static uint8_t g_mods_wire[1 + MODS_MAX * (5 + MOD_NAME)];
  * sent after the mod set as "TK" + u16 length + bytes. A lobby that requires tickets (the SSBU Arena lobby) refuses a
  * game without a valid one and lists the player under the name in it. */
 static char g_ticket[320];
+/* (0.2.37) SSBU_ONLINE_TICKET_FILE: a file the launcher writes again with a fresh ticket while the game runs (its pass is short);
+ * read again when it changes (every 5 s at most) and sent at once with the same nonce: the lobby takes it as a renewal */
+static char g_ticket_file[MAX_PATH];
+static FILETIME g_ticket_ft;
 static int g_mods_wire_len = 1;                        /* (count 0) */
 static char g_mods_text[512] = "none";
 #define FNV0 0xcbf29ce484222325ull
@@ -332,6 +336,7 @@ static void configure(void) {
     else if (ini_value("player_name", v, sizeof v) && *v) snprintf(g_name, sizeof g_name, "%s", v);    /* F1 > Experimental > Your name */
     else snprintf(g_name, sizeof g_name, "Player-%04x", (unsigned)(rnd64() & 0xffff));
     if ((e = getenv("SSBU_ONLINE_TICKET")) && *e) snprintf(g_ticket, sizeof g_ticket, "%s", e);
+    if ((e = getenv("SSBU_ONLINE_TICKET_FILE")) && *e) snprintf(g_ticket_file, sizeof g_ticket_file, "%s", e);
     if ((e = getenv("SSBU_ONLINE_CODE")) && *e) snprintf(g_code, sizeof g_code, "%s", e);
     else if (ini_value("online_code", v, sizeof v) && *v) snprintf(g_code, sizeof g_code, "%s", v);
     if ((e = getenv("SSBU_ONLINE_DIRECT"))) g_direct = !is_off(e);
@@ -905,8 +910,9 @@ static volatile LONG g_mm_kind = 1;                     /* (R3 net3) MATCH op of
 static uint64_t g_mm_tx, g_mm_asked;                    /* (client thread) last MATCH sent; when the search was asked (no answer yet) */
 static int g_mm_room_said;
 static const char *mm_name(int st) {
-    static const char *n[] = {"idle", "searching", "matched", "timeout", "the other player left", "together", "expired", "asking", "older lobby", "off"};
-    return st >= 0 && st <= MM_OFFLINE ? n[st] : "?";
+    static const char *n[] = {"idle", "searching", "matched", "timeout", "the other player left", "together", "expired", "asking", "older lobby", "off",
+                              "needs an account", "blocked (fair play)"};
+    return st >= 0 && st <= MM_BLOCKED ? n[st] : "?";
 }
 static void mm_find(int kind) {
     if (!net_online()) return;
@@ -981,7 +987,8 @@ static void mm_tick(uint64_t t) {                       /* (client thread, joine
 static void mm_state(const uint8_t *p, uint64_t t) {    /* (client thread) a MATCH_STATE body */
     uint32_t id = g32(p);
     int st = p[4], role = p[5], flags = p[6];
-    if (id != g_mm_id || st > MM_EXPIRED) return;
+    if (st == 7) st = MM_NO_ACCOUNT; else if (st == 8) st = MM_BLOCKED;      /* (0.2.37) the lobby's 7 / 8: this game's own numbers are taken */
+    if (id != g_mm_id || (st > MM_EXPIRED && st != MM_NO_ACCOUNT && st != MM_BLOCKED)) return;
     char name[NAME_LEN + 1];
     for (int k = 0; k < NAME_LEN; k++) name[k] = p[11 + k] && p[11 + k] < 0x20 ? '?' : (char)p[11 + k];
     name[NAME_LEN] = 0;
@@ -1012,6 +1019,7 @@ static void mm_state(const uint8_t *p, uint64_t t) {    /* (client thread) a MAT
     if (rbk) {                                          /* (R3 net3) a rollback-match search: rb_net.c's box shows every step; log lines + a mark only */
         if (st == MM_MATCHED && was != MM_MATCHED) { uint32_t ip = g32(p + 7);
             say("match: matched with %s (10.13.%u.%u) for a rollback match: this game is player %d", name, ip >> 8 & 255, ip & 255, role == MM_ROLE_HOST ? 1 : 2); input_mark("match:rb"); }
+        else if (st != was && (st == MM_NO_ACCOUNT || st == MM_BLOCKED)) say("match (rollback): %s", mm_name(st));
         else if (st != was && st >= MM_TIMEOUT) {
             static const char *line[] = {"", "", "", "no opponent found in time", "the other player cancelled or left", "both games exchange rollback messages", "the match expired"};
             say("match (rollback): %s%s%s", line[st], st == MM_TIMEOUT ? "" : ": ", st == MM_TIMEOUT ? "" : name);
@@ -1040,6 +1048,12 @@ static void mm_state(const uint8_t *p, uint64_t t) {    /* (client thread) a MAT
         snprintf(title, sizeof title, "%s's room is open", name);
         menu_popup(title, "Local Wireless > Rooms List: their room is first. Join it.");
         input_mark("match:room-open");
+    } else if (st != was && st == MM_NO_ACCOUNT) {
+        say("match: the lobby needs a signed-in account for this search");
+        menu_popup("Sign in to play online", "This search needs your SSBU Arena account.\nClose the game, sign in in the SSBU Arena launcher and press PLAY.");
+    } else if (st != was && st == MM_BLOCKED) {
+        say("match: blocked by the fair play record");
+        menu_popup("Matchmaking blocked", "Your account cannot search for matches for now (fair play: too many disputed or unfinished matches).\nRooms with friends still work.");
     } else if (st != was && st >= MM_TIMEOUT) {
         static const char *line[] = {"", "", "", "no opponent found in time", "the other player cancelled or left", "both in the same room", "the match expired (no room together in time)"};
         say("match: %s%s%s", line[st], st == MM_TIMEOUT ? "" : ": ", st == MM_TIMEOUT ? "" : name);
@@ -1398,7 +1412,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
     }
     g_reject[0] = 0;
     { char a[16]; say("UDP port %u, lobby %s:%u", g_lan_port, ip_text(ntohl(g_lobby.sin_addr.s_addr), a), ntohs(g_lobby.sin_port)); }
-    uint64_t last_join = 0, last_ping = 0, last_tick = 0, said_blocked = 0;
+    uint64_t last_join = 0, last_ping = 0, last_tick = 0, said_blocked = 0, last_ticket_look = 0;
     for (;;) {
         uint64_t t = ms_now();
         lan_switch_if_asked();
@@ -1410,6 +1424,25 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             snprintf(g_reject, sizeof g_reject, "no answer from the host (router?)");
         }
         if (!g_joined && t - last_join >= 500) { send_join(); last_join = t; }
+        if (g_ticket_file[0] && t - last_ticket_look >= 5000) {      /* (0.2.37) the launcher's renewed pass */
+            last_ticket_look = t;
+            WIN32_FILE_ATTRIBUTE_DATA fa;
+            if (GetFileAttributesExA(g_ticket_file, GetFileExInfoStandard, &fa) && CompareFileTime(&fa.ftLastWriteTime, &g_ticket_ft) != 0) {
+                char nt[sizeof g_ticket] = ""; FILE *f = fopen(g_ticket_file, "rb");
+                if (f) { size_t r = fread(nt, 1, sizeof nt - 1, f); nt[r] = 0; fclose(f); }
+                nt[strcspn(nt, "\r\n \t")] = 0;
+                int ok = nt[0] && strchr(nt, '|') && strchr(nt, '.');
+                for (const char *q = nt; ok && *q; q++) if (*q < 0x20 || *q > 0x7e) ok = 0;
+                if (ok) {
+                    g_ticket_ft = fa.ftLastWriteTime;
+                    if (strcmp(nt, g_ticket)) {
+                        snprintf(g_ticket, sizeof g_ticket, "%s", nt);
+                        say("lobby pass renewed by the launcher");
+                        if (g_joined) send_join();         /* the same nonce: the lobby renews the pass of this game */
+                    }
+                }
+            }
+        }
         if (g_joined && t - last_ping >= 1000) {
             uint8_t p[4 + 8 + 8 + 1 + 2];                   /* (+2: our round trip to the lobby, for the others' ping overlay; an older lobby ignores it) */
             int nd = 0;

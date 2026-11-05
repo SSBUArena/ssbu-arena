@@ -40,7 +40,9 @@ const char *net_mods_text(void);            /* this game's mods ("none" or "name
  * of the same build id and lobby code and says who hosts; the host creates the Local Wireless room, the other finds it
  * first in the game's Rooms List. */
 enum { MM_IDLE = 0, MM_SEARCHING, MM_MATCHED, MM_TIMEOUT, MM_PEER_LEFT, MM_TOGETHER, MM_EXPIRED,   /* (the lobby's states) */
-       MM_ASKING, MM_OLD_LOBBY, MM_OFFLINE };                               /* asked, no answer yet; an older lobby; online off / not joined */
+       MM_ASKING, MM_OLD_LOBBY, MM_OFFLINE,                                 /* asked, no answer yet; an older lobby; online off / not joined */
+       MM_NO_ACCOUNT, MM_BLOCKED };                                         /* (0.2.37) the lobby's states 7 (a signed-in account needed) and 8
+                                                                               (blocked by the fair play record), kept apart from this game's own */
 enum { MM_ROLE_HOST = 1, MM_ROLE_JOIN = 2 };
 typedef struct {
     int state, role, room_open;             /* MM_*, MM_ROLE_* (MATCHED / TOGETHER), the host's room is open (listed) */

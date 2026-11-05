@@ -39,6 +39,10 @@ namespace Arena
             Add(Environment.UserName, "<user>"); Add(Environment.MachineName, "<pc>");
             foreach (var w in words.OrderByDescending(w => w.Key.Length))
                 t = Regex.Replace(t, Regex.Escape(w.Key), w.Value, RegexOptions.IgnoreCase);
+            if (!string.IsNullOrEmpty(Core.Ticket)) t = t.Replace(Core.Ticket, "<pass>");
+            // (0.2.37) any online pass ("<account id>|<name>|<expiry>[|<issued>].<HMAC>") and any other 64-hex signature
+            t = Regex.Replace(t, @"[0-9a-fA-F-]{36}\|[^|\s]{1,64}\|\d+(\|\d+)?\.[0-9a-fA-F]{64}", "<pass>");
+            t = Regex.Replace(t, @"\b[0-9a-fA-F]{64}\b", "<signature>");
             t = Regex.Replace(t, @"\b(?!10\.)(?!0\.0\.0\.0\b)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "<address>");
             return Regex.Replace(t, @"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "<email>");
         }
