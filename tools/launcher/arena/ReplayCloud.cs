@@ -5,7 +5,7 @@
 // and one player's game recording (.ssbv, uploaded here with the player's OWN session: never a service key). Rows are
 // readable by the match's players, or by every signed-in player once one of them made the replay public.
 //   upload:   storage object replays/state/<my uid>/<yyyymmdd-hhmmss>-<match id>.ssbv, then rpc replay_attach_state
-//   list:     /rest/v1/replays (the rows the database lets this player read)
+//   list:     /rest/v1/replays (the rows the database lets this player read; 0.2.37: only those changed since the last reading)
 //   download: /storage/v1/object/authenticated/replays/<path> into <Saves>\replays\cloud
 //   public:   rpc replay_set_public (players only)
 using System;
@@ -35,12 +35,14 @@ namespace Arena
 
         static string S(Dictionary<string, object> r, string k) => r.TryGetValue(k, out var v) && v != null ? Convert.ToString(v, CultureInfo.InvariantCulture) : null;
 
+        const string Columns = "id,match_id,played_at,p1_name,p2_name,p1_uid,p2_uid,ssbv_uid,p1_chara,p2_chara,stage,frames,flags,winner,is_public,path,ssbv_path,updated_at";
+
         /// <summary>the replays this player may read: its own matches and the public ones (newest first)</summary>
         /// <param name="player">(0.2.11) only the matches of a player whose name holds this text (the server's search: every public replay of
         /// that player, not only the newest rows)</param>
         public static List<CloudReplay> List(int limit = 200, string player = null)
         {
-            string q = "/rest/v1/replays?select=id,match_id,played_at,p1_name,p2_name,p1_uid,p2_uid,ssbv_uid,p1_chara,p2_chara,stage,frames,flags,winner,is_public,path,ssbv_path&order=played_at.desc&limit=" + limit;
+            string q = "/rest/v1/replays?select=" + Columns + "&order=played_at.desc&limit=" + limit;
             string p = new string((player ?? "").Where(ch => char.IsLetterOrDigit(ch) || ch == ' ' || ch == '_' || ch == '-' || ch == '.').ToArray()).Trim();
             if (p.Length > 0)
             {
@@ -50,19 +52,66 @@ namespace Arena
                 foreach (var id in ReplayNames.StageIdsNamed(p).Take(4)) or.Add("stage.like.*" + id);
                 q += "&or=" + Uri.EscapeDataString("(" + string.Join(",", or) + ")");
             }
-            var rows = Json.Deserialize<List<Dictionary<string, object>>>(Account.Rest("GET", q, null));
-            return rows.Select(r =>
+            return Rows(q).Select(Parse).ToList();
+        }
+
+        static List<Dictionary<string, object>> Rows(string q) => Json.Deserialize<List<Dictionary<string, object>>>(Account.Rest("GET", q, null));
+
+        static CloudReplay Parse(Dictionary<string, object> r)
+        {
+            DateTime.TryParse(S(r, "played_at"), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var t);
+            return new CloudReplay
             {
-                DateTime.TryParse(S(r, "played_at"), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var t);
-                return new CloudReplay
-                {
-                    Id = S(r, "id"), MatchId = Convert.ToInt64(r["match_id"]), PlayedAt = DateTime.SpecifyKind(t, DateTimeKind.Utc),
-                    P1Name = S(r, "p1_name"), P2Name = S(r, "p2_name"), P1Uid = S(r, "p1_uid"), P2Uid = S(r, "p2_uid"), SsbvUid = S(r, "ssbv_uid"),
-                    P1Chara = S(r, "p1_chara"), P2Chara = S(r, "p2_chara"), Stage = S(r, "stage"), Frames = Convert.ToInt32(r["frames"]),
-                    Flags = Convert.ToInt32(r["flags"]), Winner = r["winner"] == null ? (int?)null : Convert.ToInt32(r["winner"]),
-                    IsPublic = r["is_public"] is bool b && b, Path = S(r, "path"), SsbvPath = S(r, "ssbv_path"),
-                };
-            }).ToList();
+                Id = S(r, "id"), MatchId = Convert.ToInt64(r["match_id"]), PlayedAt = DateTime.SpecifyKind(t, DateTimeKind.Utc),
+                P1Name = S(r, "p1_name"), P2Name = S(r, "p2_name"), P1Uid = S(r, "p1_uid"), P2Uid = S(r, "p2_uid"), SsbvUid = S(r, "ssbv_uid"),
+                P1Chara = S(r, "p1_chara"), P2Chara = S(r, "p2_chara"), Stage = S(r, "stage"), Frames = Convert.ToInt32(r["frames"]),
+                Flags = Convert.ToInt32(r["flags"]), Winner = r["winner"] == null ? (int?)null : Convert.ToInt32(r["winner"]),
+                IsPublic = r["is_public"] is bool b && b, Path = S(r, "path"), SsbvPath = S(r, "ssbv_path"),
+            };
+        }
+
+        /// <summary>(0.2.37) the list of the Replays page, kept on this PC (<Saves>\replays\cloud\list-<uid>.json): each reading asks the
+        /// server only for the rows changed since the last one (public.replays.updated_at, moved by the database at every change), not
+        /// the newest 200 rows again (the server's monthly traffic). Once a day, or with no list yet, every row again: so the rows this
+        /// player may no longer read (made private by the other player) leave the list. SSBU_ARENA_REPLAY_LIST=full reads all every time.</summary>
+        public static List<CloudReplay> ListCached(int keep = 300)
+        {
+            string file = Path.Combine(ReplayLibrary.Folder, "cloud", "list-" + Account.Me.Id + ".json");
+            Dictionary<string, object> cache = null;
+            try { if (File.Exists(file)) cache = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(file)); } catch { cache = null; }
+            string at = cache != null ? S(cache, "at") : null;
+            DateTime.TryParse(cache != null ? S(cache, "full") : null, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var full);
+            var rows = new Dictionary<string, Dictionary<string, object>>();
+            bool whole = cache == null || string.IsNullOrEmpty(at) || (DateTime.UtcNow - full).TotalHours >= 24
+                         || string.Equals(Environment.GetEnvironmentVariable("SSBU_ARENA_REPLAY_LIST"), "full", StringComparison.OrdinalIgnoreCase);
+            if (!whole)
+            {
+                foreach (var o in (cache.TryGetValue("rows", out var v) ? v as System.Collections.ArrayList : null) ?? new System.Collections.ArrayList())
+                    if (o is Dictionary<string, object> d && S(d, "id") != null) rows[S(d, "id")] = d;
+                var changed = Rows("/rest/v1/replays?select=" + Columns + "&updated_at=gt." + Uri.EscapeDataString(at) + "&order=updated_at.asc&limit=500");
+                if (changed.Count >= 500) whole = true;     // (a long time away: read everything once)
+                else foreach (var d in changed) rows[S(d, "id")] = d;
+            }
+            if (whole)
+            {
+                rows.Clear();
+                foreach (var d in Rows("/rest/v1/replays?select=" + Columns + "&order=played_at.desc&limit=" + keep)) rows[S(d, "id")] = d;
+                full = DateTime.UtcNow;
+            }
+            var list = rows.Values.OrderByDescending(d => S(d, "played_at"), StringComparer.Ordinal).Take(keep).ToList();
+            string newest = rows.Values.Select(d => S(d, "updated_at")).Where(u => u != null)
+                                .OrderByDescending(u => DateTime.Parse(u, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal)).FirstOrDefault() ?? at;
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(file));
+                string tmp = file + ".part";
+                File.WriteAllText(tmp, Json.Serialize(new Dictionary<string, object>
+                    { { "at", newest }, { "full", full.ToString("o", CultureInfo.InvariantCulture) }, { "rows", list } }));
+                if (File.Exists(file)) File.Delete(file);
+                File.Move(tmp, file);
+            }
+            catch { }
+            return list.Select(Parse).ToList();
         }
 
         /// <summary>the local files already on the server: file name -> row id</summary>

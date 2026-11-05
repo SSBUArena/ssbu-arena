@@ -126,8 +126,6 @@ namespace Arena
             : IsPublic ? "Public: every signed-in player can find it by name. Click to make it private."
             : C == null ? "Only on this PC. Click to make it public: it goes to the Arena server and every signed-in player can watch it."
             : "Private: it stays on your PC and your opponent's. Click to make it public.";
-        public Visibility UploadVisible => Visibility.Collapsed;      // (0.2.36) no private uploads: the visibility pill makes it public (and uploads it)
-        public string UploadTip => "Upload it to the Arena server" + (Core.RecPublic ? " as public" : ": private, only you and your opponent see it");
         public Visibility DeleteVisible => R != null && Busy == null ? Visibility.Visible : Visibility.Collapsed;
         public string DeleteTip => "Delete it from this PC" + (IsPublic && C.HasState ? " (the public copy on the Arena server stays)" : "");
         /// <summary>what the search box looks in (lower case)</summary>
@@ -171,11 +169,10 @@ namespace Arena
             Task.Run(() =>
             {
                 ReplayLibrary.Cap();
-                if (signed) UploadPending();                // (0.2.11) the ones left behind, before the list is read
                 var local = ReplayLibrary.List();
                 var up = ReplayCloud.Uploaded();
                 List<CloudReplay> cloud = null; string err = null;
-                if (signed) { try { cloud = ReplayCloud.List(); } catch (Exception e) { err = e.Message; } }
+                if (signed) { try { cloud = ReplayCloud.ListCached(); } catch (Exception e) { err = e.Message; } }
                 var rows = new List<ReplayRow>();
                 foreach (var c in cloud ?? new List<CloudReplay>())
                 {
@@ -367,21 +364,6 @@ namespace Arena
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
-        void ReplayUpload_Click(object sender, RoutedEventArgs e)
-        {
-            e.Handled = true;
-            var row = (sender as Button)?.Tag as ReplayRow;
-            if (row?.R == null) return;
-            row.Busy = "Uploading..."; row.Changed();
-            bool pub = Core.RecPublic;
-            Task.Run(() => { string id = ReplayCloud.Upload(row.R); if (pub) ReplayCloud.SetPublic(id, true); }).ContinueWith(t =>
-            {
-                if (t.IsFaulted) { RowFailed(row, "Could not upload it", t.Exception); return; }
-                row.Busy = null; row.Uploaded = true; row.Changed();
-                LoadReplays();
-            }, TaskScheduler.FromCurrentSynchronizationContext());
-        }
-
         void ReplayDelete_Click(object sender, RoutedEventArgs e)
         {
             e.Handled = true;
@@ -398,32 +380,12 @@ namespace Arena
                  }, true), ("Cancel", null, false));
         }
 
-        /// <summary>(GameExited) the cap on this PC's files, then the new online matches to the server (when chosen and signed in)</summary>
+        /// <summary>(GameExited) the cap on this PC's files (0.2.37: nothing goes to the server by itself, only a replay made public)</summary>
         void ReplaysAfterGame()
         {
-            Task.Run(() => { ReplayLibrary.Cap(); UploadPending(); })
+            Task.Run(() => ReplayLibrary.Cap())
                 .ContinueWith(t => { if (PageReplays.Visibility == Visibility.Visible && ReplayViewer.Visibility != Visibility.Visible) LoadReplays(); },
                               TaskScheduler.FromCurrentSynchronizationContext());
-        }
-
-        /// <summary>(0.2.11) the online matches of the last 30 days not on the server yet (played offline, signed out, a failed try): sent
-        /// after each game and when the Replays page opens, when uploads are on; one try per file per launcher run</summary>
-        static readonly HashSet<string> uploadTried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        static int UploadPending()
-        {
-            // (0.2.36) no automatic upload any more: a replay goes to the Arena server only when a player makes it public (space and
-            // traffic of the accounts server, rollback/piano_social_battle_arena.md section 5). Kept for SSBU_ARENA_UPLOAD_ALL=1 (tests).
-            if (Environment.GetEnvironmentVariable("SSBU_ARENA_UPLOAD_ALL") != "1") return 0;
-            if (!Core.RecUpload || !Account.SignedIn || Environment.GetEnvironmentVariable("SSBU_ARENA_NO_UPLOAD") == "1") return 0;      // (tests)
-            var up = ReplayCloud.Uploaded(); int n = 0;
-            foreach (var l in ReplayLibrary.List())
-            {
-                string name = Path.GetFileName(l.Path);
-                if (l.Kind == 0 || l.MatchId == 0 || l.LoopTest || up.ContainsKey(name) || (DateTime.Now - l.When).TotalDays > 30) continue;
-                lock (uploadTried) if (!uploadTried.Add(name)) continue;
-                try { string id = ReplayCloud.Upload(l); if (Core.RecPublic) ReplayCloud.SetPublic(id, true); n++; } catch { }
-            }
-            return n;
         }
 
         void ReplaysRefresh_Click(object sender, RoutedEventArgs e) { LoadReplays(); }

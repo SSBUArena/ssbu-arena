@@ -71,7 +71,7 @@ namespace Arena
         public static string Nickname = "", Server = DefaultServer, Saves;
         public static bool Online = true, Ping = true, Competitive = true;
         // (replays) which matches the game records (runtime: SSBU_REPLAY_MODES), and whether online ones go to the Arena server
-        public static bool RecMatchmaking = true, RecLdn = true, RecArena = true, RecLocal = true, RecUpload = true, RecPublic;
+        public static bool RecMatchmaking = true, RecLdn = true, RecArena = true, RecLocal = true;      // (0.2.37) no upload switches: a replay goes to the server only when made public
         public static string ShaderStamp = "";
         public static string Ticket;                // the lobby ticket of this start (Account.LobbyTicket), signed in only      // launcher.ini shaders: what the last preparation was made for (ShaderKey)
         public static int Aspect, WindowMode, Keyboard;
@@ -180,7 +180,7 @@ namespace Arena
             CrashReports = Get(L, "crash_reports") != "off";
             InputDelay = int.TryParse(Get(L, "input_delay"), out var idl) && idl >= 1 && idl <= 5 ? idl : 0;
             RecMatchmaking = Get(L, "replay_matchmaking") != "off"; RecLdn = Get(L, "replay_ldn") != "off"; RecArena = Get(L, "replay_arena") != "off";
-            RecLocal = Get(L, "replay_local") != "off"; RecUpload = Get(L, "replay_upload") != "off"; RecPublic = Get(L, "replay_public") == "on";
+            RecLocal = Get(L, "replay_local") != "off";
             ShaderStamp = Get(L, "shaders") ?? "";
             Competitive = LightArc || HasCompetitive;      // (0.2.8) always: Arena is the competitive game
             if (!HasOnline) Online = false;
@@ -286,7 +286,7 @@ namespace Arena
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
                 "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + (InputDelay >= 1 ? InputDelay.ToString() : "auto"), "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
-                "replay_local = " + (RecLocal ? "on" : "off"), "replay_upload = " + (RecUpload ? "on" : "off"), "replay_public = " + (RecPublic ? "on" : "off") }, Encoding.ASCII);
+                "replay_local = " + (RecLocal ? "on" : "off") }, Encoding.ASCII);
             var gfx = GfxValues();
             SetIniValues(GfxIni, null, gfx.Where(kv => kv.Key == "latency" || !gfxSeen.TryGetValue(kv.Key, out var v) || v != kv.Value).ToDictionary(kv => kv.Key, kv => kv.Value));
             gfxSeen = gfx;

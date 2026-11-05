@@ -285,7 +285,7 @@ namespace Arena
             CrashBox.IsChecked = Core.CrashReports;
             DelayBox.SelectedIndex = Math.Max(0, Math.Min(5, Core.InputDelay));
             RecMmBox.IsChecked = Core.RecMatchmaking; RecLdnBox.IsChecked = Core.RecLdn; RecArenaBox.IsChecked = Core.RecArena;
-            RecLocalBox.IsChecked = Core.RecLocal; RecUploadBox.IsChecked = Core.RecUpload; RecPublicBox.IsChecked = Core.RecPublic;
+            RecLocalBox.IsChecked = Core.RecLocal;
             ServerBox.Items.Clear();
             foreach (var s in Core.Servers) ServerBox.Items.Add(s.Name);
             ServerBox.SelectedIndex = Core.ServerIndex(Core.Server);
@@ -320,7 +320,7 @@ namespace Arena
             Core.CrashReports = CrashBox.IsChecked == true;
             Core.InputDelay = Math.Max(0, DelayBox.SelectedIndex);
             Core.RecMatchmaking = RecMmBox.IsChecked == true; Core.RecLdn = RecLdnBox.IsChecked == true; Core.RecArena = RecArenaBox.IsChecked == true;
-            Core.RecLocal = RecLocalBox.IsChecked == true; Core.RecUpload = RecUploadBox.IsChecked == true; Core.RecPublic = RecPublicBox.IsChecked == true;
+            Core.RecLocal = RecLocalBox.IsChecked == true;
             Core.Server = Core.Servers[Math.Max(0, ServerBox.SelectedIndex)].Address;
             Core.WindowMode = Math.Max(0, WinBox.SelectedIndex);
             if (SizeBox.SelectedIndex != filledSize) Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;      // (0.2.12) a size set in the game, not in this list, stays
