@@ -793,10 +793,11 @@
                   <StackPanel><TextBlock Text="Local matches" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Smash on this PC (against friends or CPUs). They stay on this PC."/></StackPanel>
                 </CheckBox>
                 <TextBlock Text="ARENA SERVER" Style="{StaticResource FieldLabel}" Margin="0,26,0,6"/>
-                <CheckBox x:Name="RecUploadBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed">
+                <TextBlock Style="{StaticResource Small}" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left" Text="Your replays stay on this PC. To share one, make it public on the Replays page: it goes to the Arena server and every signed-in player can watch it. The server keeps only the result and the inputs of each online match."/>
+                <CheckBox x:Name="RecUploadBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Visibility="Collapsed">
                   <StackPanel><TextBlock Text="Upload my online replays" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="560" Text="After each online match, with your account (signed in). Only you and your opponent can watch it, unless one of you makes it public (every signed-in player)."/></StackPanel>
                 </CheckBox>
-                <CheckBox x:Name="RecPublicBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
+                <CheckBox x:Name="RecPublicBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0" Visibility="Collapsed">
                   <StackPanel><TextBlock Text="Make my uploaded replays public" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="560" Text="Every signed-in player can find them by your name in Replays. Each replay can still be made private there."/></StackPanel>
                 </CheckBox>
               </StackPanel>

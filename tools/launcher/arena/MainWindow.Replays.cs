@@ -124,12 +124,12 @@ namespace Arena
         public string VisTip => C == null && !CanSetVis ? (R != null && R.Kind == 0 ? "Local match: it stays on this PC." : !Account.SignedIn ? "On this PC. Sign in to upload it." : "On this PC.")
             : !CanSetVis ? "Public: every signed-in player can watch it."
             : IsPublic ? "Public: every signed-in player can find it by name. Click to make it private."
-            : C == null ? "Only on this PC. Click to upload it and make it public."
-            : "Private: only you and your opponent. Click to make it public.";
-        public Visibility UploadVisible => C == null && OnlineMatch && !Uploaded && Account.SignedIn && Busy == null ? Visibility.Visible : Visibility.Collapsed;
+            : C == null ? "Only on this PC. Click to make it public: it goes to the Arena server and every signed-in player can watch it."
+            : "Private: it stays on your PC and your opponent's. Click to make it public.";
+        public Visibility UploadVisible => Visibility.Collapsed;      // (0.2.36) no private uploads: the visibility pill makes it public (and uploads it)
         public string UploadTip => "Upload it to the Arena server" + (Core.RecPublic ? " as public" : ": private, only you and your opponent see it");
         public Visibility DeleteVisible => R != null && Busy == null ? Visibility.Visible : Visibility.Collapsed;
-        public string DeleteTip => "Delete it from this PC" + (C != null || Uploaded ? " (the copy on the Arena server stays)" : "");
+        public string DeleteTip => "Delete it from this PC" + (IsPublic && C.HasState ? " (the public copy on the Arena server stays)" : "");
         /// <summary>what the search box looks in (lower case)</summary>
         public string Haystack => string.Join(" ", P1Name, P2Name, P1Fighter, P2Fighter, Stage, Kind).ToLowerInvariant();
     }
@@ -352,8 +352,12 @@ namespace Arena
             row.Busy = row.C == null ? "Uploading..." : "Saving..."; row.Changed();
             Task.Run(() =>
             {
-                string id = row.C?.Id ?? ReplayCloud.Upload(row.R);      // (a local match: on the server first)
-                ReplayCloud.SetPublic(id, pub);
+                // (0.2.36) the game recording goes to the server only to be public, and only when the server has none for the match
+                // (the opponent may have shared it already): private replays stay on the players' PCs (the server's daily prune removes
+                // the recordings of private replays)
+                string id = row.C?.Id;
+                if (pub && row.R != null && (row.C == null || !row.C.HasState)) id = ReplayCloud.Upload(row.R);
+                if (id != null) ReplayCloud.SetPublic(id, pub);
             }).ContinueWith(t =>
             {
                 if (t.IsFaulted) { RowFailed(row, "Could not change it", t.Exception); return; }
@@ -383,7 +387,7 @@ namespace Arena
             e.Handled = true;
             var row = (sender as Button)?.Tag as ReplayRow;
             if (row?.R == null) return;
-            string note = row.C != null || row.Uploaded ? "\n\nThe copy on the Arena server stays: you and your opponent can still watch it." : "\n\nIt is on this PC only: it cannot be brought back.";
+            string note = row.IsPublic && row.C.HasState ? "\n\nThe public copy on the Arena server stays." : "\n\nIt is on this PC only: it cannot be brought back.";
             Show("Delete replay", row.P1Fighter + " vs " + row.P2Fighter + ", " + row.WhenText + ": this PC's file is deleted." + note, null,
                  ("Delete", () =>
                  {
@@ -407,6 +411,9 @@ namespace Arena
         static readonly HashSet<string> uploadTried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         static int UploadPending()
         {
+            // (0.2.36) no automatic upload any more: a replay goes to the Arena server only when a player makes it public (space and
+            // traffic of the accounts server, rollback/piano_social_battle_arena.md section 5). Kept for SSBU_ARENA_UPLOAD_ALL=1 (tests).
+            if (Environment.GetEnvironmentVariable("SSBU_ARENA_UPLOAD_ALL") != "1") return 0;
             if (!Core.RecUpload || !Account.SignedIn || Environment.GetEnvironmentVariable("SSBU_ARENA_NO_UPLOAD") == "1") return 0;      // (tests)
             var up = ReplayCloud.Uploaded(); int n = 0;
             foreach (var l in ReplayLibrary.List())
