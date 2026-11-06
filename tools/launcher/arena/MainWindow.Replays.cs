@@ -258,7 +258,7 @@ namespace Arena
         /// <summary>(GameExited) the cap on this PC's files</summary>
         void ReplaysAfterGame()
         {
-            Task.Run(() => ReplayLibrary.Cap())
+            Task.Run(() => { ReplayLibrary.Cap(); ReplayCompact.CompactFolder(ReplayLibrary.Folder); })      // (0.2.41) the new files re-coded small (version 5)
                 .ContinueWith(t => { if (PageReplays.Visibility == Visibility.Visible && ReplayViewer.Visibility != Visibility.Visible) LoadReplays(); },
                               TaskScheduler.FromCurrentSynchronizationContext());
         }

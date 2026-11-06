@@ -105,6 +105,8 @@ namespace Arena
         public List<RvLine> Lines = new List<RvLine>();
         public List<RvFrame> FrameList = new List<RvFrame>();
         public long FileSize;
+        /// <summary>(file version 5) the compact body (ReplayCompact.cs)</summary>
+        public bool Compact;
 
         public DateTime When => DateTimeOffset.FromUnixTimeSeconds(UnixTime).LocalDateTime;
         public bool Rollback => (Flags & 1) != 0;
@@ -128,7 +130,7 @@ namespace Arena
             if (f.Length < HeaderSize || Encoding.ASCII.GetString(f, 0, 4) != "SSBV") throw new Exception("not an SSBU Arena match state file");
             var r = new ReplayState { Path = path, FileSize = size };
             r.Version = BitConverter.ToUInt16(f, 4);
-            if (r.Version < 1 || r.Version > 4) throw new Exception("match state format " + r.Version + ": update SSBU Arena");
+            if (r.Version < 1 || r.Version > 5) throw new Exception("match state format " + r.Version + ": update SSBU Arena");
             int hs = BitConverter.ToUInt16(f, 6);
             r.Flags = (int)BitConverter.ToUInt32(f, 8); r.Frames = (int)BitConverter.ToUInt32(f, 0xc); r.UnixTime = BitConverter.ToInt64(f, 0x10);
             uint stored = BitConverter.ToUInt32(f, 0x18), raw = BitConverter.ToUInt32(f, 0x1c);
@@ -157,6 +159,7 @@ namespace Arena
             if (r.Codec == 0) { b = new byte[stored]; Buffer.BlockCopy(f, hs, b, 0, (int)stored); }
             else if (r.Codec == 1) b = Inflate(f, hs, (int)stored, (int)raw);
             else throw new Exception("unknown compression " + r.Codec);
+            if (r.Version == 5) { b = ReplayCompact.Decode(b, out int nl5); if (nl5 != nlines) throw new Exception("the match state file is damaged"); r.Version = 4; r.Compact = true; }      // (the compact body: the version 4 body back)
             r.ParseBody(b, nlines);
             return r;
         }
