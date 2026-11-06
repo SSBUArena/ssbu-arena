@@ -2078,7 +2078,12 @@ static void ra_frame_end(double te) {
     double fe = now_ms();
     if (g_ra_ready && g_t_poll > g_ra_t_mark && te > g_t_poll) { int k = g_ra_phase; if (k == 2 && g_rgs_left > 1) k = 1;      /* (online rollback: 1 = a re-run pass but the last) */ g_rap[k][0] += g_t_poll - g_ra_t_mark; g_rap[k][1] += te - g_t_poll; g_rap[k][2] += fe - te; g_ra_fe_end = fe; g_ra_fe_kind = k + 1; }
     g_ra_fe++;
-    { static long long n; if (++n % 1200 == 0 && (g_ra_ready || rbg_noring_now())) {
+    /* (0.2.39) in an ONLINE rollback match the periodic report is left out: it cost ~17 ms inside a tick every 1200 frames, a visible
+     * stutter every 20 s on every stage (the players' 2026-11-05 evening: a 33 ms tick at exactly every 1200 frames); the match's
+     * report is written at its end (rbg_report). The loop tests keep it (their scripts read it). SSBU_RB_REPORT_PERIODIC=1: always. */
+    static int rep_per = -1; if (rep_per < 0) { const char *e = getenv("SSBU_RB_REPORT_PERIODIC"); rep_per = e && e[0] == '1'; }
+    int r1_rb_paced(void); int rbn_loop(void);
+    { static long long n; if (++n % 1200 == 0 && (g_ra_ready || rbg_noring_now()) && (rep_per || !r1_rb_paced() || rbn_loop())) {
         static int w = -1; if (w < 0) { const char *e = getenv("SSBU_RB_REPWIN"); w = e ? atoi(e) : 2400; }
         g_rep_win = w; ra_report(); g_rep_win = 0; } }      /* (stability phase) the periodic report: constant cost (see pct) */      /* (hs14: a match without the ring too) */
     if (InterlockedExchange(&g_ra_lines, 0) > 0) {      /* this iteration ran a fight frame: real or speculative (for tests\r1_ra_cmp.py) */
