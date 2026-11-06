@@ -369,15 +369,14 @@
 
       <!-- ============================================================ REPLAYS (MainWindow.Replays.cs, ReplayView.cs) -->
       <Grid x:Name="PageReplays" Visibility="Collapsed">
-        <!-- the list: this PC's matches and the server's (ReplayRow), grouped by day -->
+        <!-- the list: this PC's matches (ReplayRow), grouped by day -->
         <Border x:Name="ReplaysListPanel" Style="{StaticResource Panel}" Padding="26,18,26,14">
           <DockPanel>
             <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
               <TextBlock Text="REPLAYS" Style="{StaticResource SectionTitle}" FontSize="36" VerticalAlignment="Center" ToolTip="Your matches, redrawn from what the game recorded frame by frame: positions, damage, hitboxes. No game start needed."/>
               <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <RadioButton x:Name="RvFilterMine" Style="{StaticResource RvSpeed}" Content="My matches" GroupName="rvfilter" IsChecked="True" Checked="ReplaysFilter_Checked" ToolTip="The matches you played"/>
-                <RadioButton x:Name="RvFilterPublic" Style="{StaticResource RvSpeed}" Content="Public" GroupName="rvfilter" Checked="ReplaysFilter_Checked" ToolTip="Replays every signed-in player can watch"/>
-                <RadioButton x:Name="RvFilterPc" Style="{StaticResource RvSpeed}" Content="On this PC" GroupName="rvfilter" Checked="ReplaysFilter_Checked" ToolTip="Recordings kept on this PC"/>
+                <RadioButton x:Name="RvFilterPc" Style="{StaticResource RvSpeed}" Content="On this PC" GroupName="rvfilter" Checked="ReplaysFilter_Checked" ToolTip="Every recording on this PC, rollback tests too"/>
               </StackPanel>
               <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                 <Button Style="{StaticResource Outline}" Height="36" Padding="14,0" Click="ReplaysFolder_Click" Margin="0,0,8,0" ToolTip="The folder of this PC's recordings">
@@ -389,10 +388,9 @@
             <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="176"/><ColumnDefinition Width="184"/><ColumnDefinition Width="136"/></Grid.ColumnDefinitions>
               <Grid>
-                <TextBox x:Name="RvSearch" Padding="22,0,30,0" TextChanged="ReplaysSearch_Changed" ToolTip="A player's name, a fighter or a stage. Signed in: also every public replay that fits, on the Arena server."/>
+                <TextBox x:Name="RvSearch" Padding="22,0,30,0" TextChanged="ReplaysSearch_Changed" ToolTip="A player's name, a fighter or a stage"/>
                 <Path Data="{StaticResource IcoSearch}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="15" Height="15" Stretch="Uniform" HorizontalAlignment="Left" Margin="13,0,0,0" IsHitTestVisible="False" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                 <TextBlock x:Name="RvSearchHint" Text="Search a player, a fighter, a stage" Foreground="{StaticResource Dim}" FontSize="16" VerticalAlignment="Center" Margin="37,0,0,0" IsHitTestVisible="False"/>
-                <TextBlock x:Name="RvSearchBusy" Text="Searching the server..." Style="{StaticResource Small}" Foreground="{StaticResource Accent}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,36,0" IsHitTestVisible="False" Visibility="Collapsed"/>
                 <Button x:Name="RvSearchClear" Style="{StaticResource Bare}" HorizontalAlignment="Right" Margin="0,0,8,0" Padding="4" Click="ReplaysSearchClear_Click" Visibility="Collapsed" ToolTip="Clear">
                   <Path Data="{StaticResource IcoCross}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="10" Height="10" Stretch="Uniform"/>
                 </Button>
@@ -401,13 +399,6 @@
               <ComboBox x:Name="RvStageBox" Grid.Column="2" Margin="10,0,0,0" FontSize="15" SelectionChanged="ReplaysCombo_Changed" ToolTip="Only the matches on this stage"/>
               <ComboBox x:Name="RvResultBox" Grid.Column="3" Margin="10,0,0,0" FontSize="15" SelectionChanged="ReplaysCombo_Changed" ToolTip="Only the matches you won, or lost"/>
             </Grid>
-            <!-- what cannot be reached: the server's error, or not signed in -->
-            <Border x:Name="ReplaysBanner" DockPanel.Dock="Top" Visibility="Collapsed" CornerRadius="4" Background="#14FFC857" BorderBrush="#55FFC857" BorderThickness="1" Padding="12,5" Margin="0,0,0,10">
-              <Grid>
-                <TextBlock x:Name="ReplaysBannerText" Style="{StaticResource Small}" Foreground="{StaticResource Text}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,110,0"/>
-                <Button x:Name="ReplaysBannerButton" Style="{StaticResource Link}" HorizontalAlignment="Right" VerticalAlignment="Center" Click="ReplaysBanner_Click"><TextBlock x:Name="ReplaysBannerAction" FontSize="14"/></Button>
-              </Grid>
-            </Border>
             <Grid DockPanel.Dock="Bottom" Margin="0,8,0,0">
               <TextBlock x:Name="ReplaysStatus" Style="{StaticResource Small}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,110,0"/>
               <Button x:Name="ReplaysClear" Style="{StaticResource Link}" HorizontalAlignment="Right" VerticalAlignment="Center" Click="ReplaysClear_Click" Visibility="Collapsed"><TextBlock Text="Clear filters" FontSize="14"/></Button>
@@ -431,7 +422,7 @@
                     <Button Style="{StaticResource CardButton}" Margin="0,0,0,6" Padding="12,7" Tag="{Binding}" Click="ReplayOpen_Click" ToolTip="{Binding RowTip}">
                       <Grid>
                         <Grid.ColumnDefinitions>
-                          <ColumnDefinition Width="52"/><ColumnDefinition Width="*"/><ColumnDefinition Width="164"/><ColumnDefinition Width="106"/><ColumnDefinition Width="100"/><ColumnDefinition Width="156"/>
+                          <ColumnDefinition Width="52"/><ColumnDefinition Width="*"/><ColumnDefinition Width="164"/><ColumnDefinition Width="106"/><ColumnDefinition Width="0"/><ColumnDefinition Width="156"/>
                         </Grid.ColumnDefinitions>
                         <StackPanel VerticalAlignment="Center">
                           <TextBlock Text="{Binding TimeText}" FontSize="15" FontWeight="SemiBold"/>
@@ -475,27 +466,17 @@
                           </Border>
                           <TextBlock Text="{Binding ResultText}" Style="{StaticResource Small}" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
-                        <!-- who can watch it: a click on the pill changes it -->
-                        <Button Grid.Column="4" Style="{StaticResource Bare}" Tag="{Binding}" Click="ReplayPublic_Click" IsHitTestVisible="{Binding CanSetVis}" ToolTip="{Binding VisTip}" ToolTipService.ShowOnDisabled="True" HorizontalAlignment="Left" VerticalAlignment="Center" Cursor="{Binding VisCursor}">
-                          <Border CornerRadius="13" BorderThickness="1" BorderBrush="{Binding VisBorder}" Padding="9,3,11,3" MinWidth="86">
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                              <Path Data="{Binding VisIcon}" Stroke="{Binding VisBrush}" StrokeThickness="1.6" Width="13" Height="13" Stretch="Uniform" StrokeLineJoin="Round"/>
-                              <TextBlock Text="{Binding VisText}" Foreground="{Binding VisBrush}" FontSize="14" FontWeight="SemiBold" Margin="6,0,0,0"/>
-                            </StackPanel>
-                          </Border>
-                        </Button>
                         <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
-                          <Button Style="{StaticResource IconButton}" Tag="{Binding}" Click="ReplayDelete_Click" Width="32" Height="32" Visibility="{Binding DeleteVisible}" ToolTip="{Binding DeleteTip}" Padding="0">
+                          <Button Style="{StaticResource IconButton}" Tag="{Binding}" Click="ReplayDelete_Click" Width="32" Height="32" ToolTip="{Binding DeleteTip}" Padding="0">
                             <Path Data="{StaticResource IcoTrash}" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.7" Width="15" Height="15" Stretch="Uniform" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
                           </Button>
                           <Grid Width="84" Margin="6,0,0,0">
-                            <Border CornerRadius="4" BorderThickness="1" BorderBrush="{StaticResource Accent}" Height="30" Visibility="{Binding WatchVisible}">
+                            <Border CornerRadius="4" BorderThickness="1" BorderBrush="{StaticResource Accent}" Height="30">
                               <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
                                 <Path Data="{StaticResource IcoPlay}" Fill="{StaticResource Accent}" Width="11" Height="11" Stretch="Uniform"/>
                                 <TextBlock Text="Watch" Foreground="{StaticResource Accent}" FontSize="14.5" FontWeight="SemiBold" Margin="6,0,0,0"/>
                               </StackPanel>
                             </Border>
-                            <TextBlock Text="Inputs only" Style="{StaticResource Small}" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="{Binding NoWatchVisible}"/>
                           </Grid>
                         </StackPanel>
                       </Grid>
@@ -789,7 +770,7 @@
                   <StackPanel><TextBlock Text="Local matches" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Smash on this PC (against friends or CPUs). They stay on this PC."/></StackPanel>
                 </CheckBox>
                 <TextBlock Text="ARENA SERVER" Style="{StaticResource FieldLabel}" Margin="0,26,0,6"/>
-                <TextBlock Style="{StaticResource Small}" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left" Text="Your replays stay on this PC. To share one, make it public on the Replays page: it goes to the Arena server and every signed-in player can watch it. The server keeps only the result and the inputs of each online match."/>
+                <TextBlock Style="{StaticResource Small}" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left" Text="Your replays stay on this PC only: nothing is uploaded to the Arena server. The server keeps only the result of each online match."/>
               </StackPanel>
 
               <!-- video -->

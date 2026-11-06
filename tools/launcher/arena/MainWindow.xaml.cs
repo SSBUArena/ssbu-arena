@@ -652,7 +652,7 @@ namespace Arena
             }
             RefreshPlayer();
             RefreshOnline();
-            if (PageReplays.Visibility == Visibility.Visible && ReplayViewer.Visibility != Visibility.Visible) LoadReplays();      // (0.2.11) the server's replays, the visibility buttons
+            if (PageReplays.Visibility == Visibility.Visible && ReplayViewer.Visibility != Visibility.Visible) LoadReplays();
         }
 
         void ShowLogin(string error = null)

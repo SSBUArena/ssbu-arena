@@ -22,16 +22,13 @@ namespace Arena
     /// <summary>a day's heading in the list</summary>
     public sealed class ReplayDay { public string Title { get; set; } public string Count { get; set; } }
 
-    /// <summary>one row of the list: a match on this PC (R), on the Arena server (C), or both</summary>
+    /// <summary>one row of the list: a match recorded on this PC (0.2.39: replays live only on the players' PCs, nothing on the server)</summary>
     public sealed class ReplayRow : INotifyPropertyChanged
     {
-        public ReplayState R; public CloudReplay C; public bool Uploaded;
+        public ReplayState R;
         public event PropertyChangedEventHandler PropertyChanged;
-        /// <summary>what the row is doing now (its pill says it); null: nothing</summary>
-        public string Busy;
         public void Changed() { PropertyChanged?.Invoke(this, new PropertyChangedEventArgs("")); }
-        static ulong Hex(string h) => ulong.TryParse(h, NumberStyles.HexNumber, null, out ulong v) ? v : 0;
-        DateTime WhenUtc => R != null ? R.When.ToUniversalTime() : C.PlayedAt;
+        DateTime WhenUtc => R.When.ToUniversalTime();
         public DateTime Sort => WhenUtc;
         public DateTime Day => WhenUtc.ToLocalTime().Date;
         public string WhenText => WhenUtc.ToLocalTime().ToString("dd MMM yyyy  HH:mm", CultureInfo.InvariantCulture);
@@ -40,39 +37,31 @@ namespace Arena
         {
             get
             {
-                if (R == null) return "Online";
                 if (R.LoopTest) return "Rollback test (one PC)";
                 return R.Kind == 1 ? "Matchmaking" : R.Kind == 2 ? "Online room" : R.Kind == 3 ? "Online" : R.Rollback ? "Online (rollback)" : "Local match";
             }
         }
-        RvFighter F(int i) => R != null && i < R.Fighters.Count ? R.Fighters[i] : null;
-        public string P1Fighter => R != null ? F(0)?.FighterName ?? "-" : ReplayNames.FighterName(Hex(C.P1Chara), -1);
-        public string P2Fighter => R != null ? F(1)?.FighterName ?? "-" : ReplayNames.FighterName(Hex(C.P2Chara), -1);
-        public string P1Name => C != null ? C.P1Name : F(0)?.Name ?? "";
-        public string P2Name => C != null ? C.P2Name : F(1)?.Name ?? "";
-        public string Stage => R != null ? R.StageName : ReplayNames.StageName(Hex(C.Stage));
-        public string Length { get { int fr = R != null ? R.Frames : C.Frames, s = fr / 60; return (s / 60) + ":" + (s % 60).ToString("00"); } }
+        RvFighter F(int i) => i < R.Fighters.Count ? R.Fighters[i] : null;
+        public string P1Fighter => F(0)?.FighterName ?? "-";
+        public string P2Fighter => F(1)?.FighterName ?? "-";
+        public string P1Name => F(0)?.Name ?? "";
+        public string P2Name => F(1)?.Name ?? "";
+        public string Stage => R.StageName;
+        public string Length { get { int s = R.Frames / 60; return (s / 60) + ":" + (s % 60).ToString("00"); } }
         // the fighters' portraits: from the player's own game files (Core.MakeAvatars); the initials under them when there is none
-        string P1Key => R != null ? F(0)?.FighterKey : ReplayNames.FighterKey(Hex(C.P1Chara));
-        string P2Key => R != null ? F(1)?.FighterKey : ReplayNames.FighterKey(Hex(C.P2Chara));
-        public ImageSource P1Icon => MainWindow.FighterIcon(P1Key);
-        public ImageSource P2Icon => MainWindow.FighterIcon(P2Key);
+        public ImageSource P1Icon => MainWindow.FighterIcon(F(0)?.FighterKey);
+        public ImageSource P2Icon => MainWindow.FighterIcon(F(1)?.FighterKey);
         static string Initials(string n) => string.Concat(n.Split(new[] { ' ', '.', '&' }, StringSplitOptions.RemoveEmptyEntries).Take(2).Select(w => char.ToUpperInvariant(w[0])));
         public string P1Initials => Initials(P1Fighter);
         public string P2Initials => Initials(P2Fighter);
         /// <summary>the winner: 0, 1, -1 not known</summary>
-        int Winner => R != null && R.Winner >= 0 ? R.Winner : C?.Winner ?? -1;
+        int Winner => R.Winner >= 0 ? R.Winner : -1;
         /// <summary>which of the two is this player: 0, 1, -1 none of them</summary>
         int MeIndex
         {
             get
             {
-                if (C != null && Account.SignedIn)
-                {
-                    if (string.Equals(C.P1Uid, Account.Me.Id, StringComparison.OrdinalIgnoreCase)) return 0;
-                    if (string.Equals(C.P2Uid, Account.Me.Id, StringComparison.OrdinalIgnoreCase)) return 1;
-                }
-                if (R == null || R.LoopTest) return -1;
+                if (R.LoopTest) return -1;
                 if (R.Kind != 0) return R.LocalPlayer < 2 ? R.LocalPlayer : -1;
                 return R.Fighters.Count(f => f.Type == 0) == 1 ? R.Fighters.FindIndex(f => f.Type == 0) : -1;      // (local: one human, the rest CPUs)
             }
@@ -92,42 +81,13 @@ namespace Arena
             get
             {
                 int w = Winner;
-                if (MeWon != null) { int st = R != null && w < R.Fighters.Count ? R.Fighters[w].EndStocks : 0; return st > 0 ? "by " + st + (st == 1 ? " stock" : " stocks") : ""; }
+                if (MeWon != null) { int st = w < R.Fighters.Count ? R.Fighters[w].EndStocks : 0; return st > 0 ? "by " + st + (st == 1 ? " stock" : " stocks") : ""; }
                 if (w == 0 || w == 1) { string n = w == 0 ? P1Name : P2Name; return (string.IsNullOrEmpty(n) ? (w == 0 ? P1Fighter : P2Fighter) : n) + " won"; }
-                return R != null ? (R.Ended ? "No winner" : "Ended early") : "";
+                return R.Ended ? "No winner" : "Ended early";
             }
         }
-        public string RowTip => WhenText + "  ·  " + Where + (R != null && C != null ? "; this PC's file is played" : "");
-        /// <summary>where the replay is: this PC, the server (private / public)</summary>
-        public string Where
-        {
-            get
-            {
-                if (C != null) return (C.IsPublic ? "Public" : "Private: you and your opponent") + (C.HasState ? "" : " · inputs only");
-                if (R != null && R.Kind != 0) return Uploaded ? "Uploaded" : "This PC (not uploaded yet)";
-                return "This PC";
-            }
-        }
-        public bool CanWatch => R != null || (C != null && C.HasState);
-        public Visibility WatchVisible => CanWatch ? Visibility.Visible : Visibility.Collapsed;
-        public Visibility NoWatchVisible => CanWatch ? Visibility.Collapsed : Visibility.Visible;
-        // (0.2.11) visibility, upload and delete
-        bool OnlineMatch => R != null && R.Kind != 0 && R.MatchId != 0 && !R.LoopTest;
-        public bool IsPublic => C != null && C.IsPublic;
-        /// <summary>a player of the match (a server row), or a local online match not uploaded yet (made public = uploaded first)</summary>
-        public bool CanSetVis => Busy == null && ((C != null && C.Mine) || (C == null && OnlineMatch && Account.SignedIn));
-        public string VisText => Busy ?? (IsPublic ? "Public" : C != null ? "Private" : "This PC");
-        public Geometry VisIcon => (Geometry)Application.Current.Resources[IsPublic ? "IcoGlobe" : C != null ? "IcoLock" : "IcoFolderTab"];
-        public Brush VisBrush => Res(IsPublic ? "Accent" : C != null ? "Text" : "Muted");
-        public Brush VisBorder => CanSetVis ? Res(IsPublic ? "Accent" : "Muted") : Brushes.Transparent;
-        public System.Windows.Input.Cursor VisCursor => CanSetVis ? System.Windows.Input.Cursors.Hand : System.Windows.Input.Cursors.Arrow;
-        public string VisTip => C == null && !CanSetVis ? (R != null && R.Kind == 0 ? "Local match: it stays on this PC." : !Account.SignedIn ? "On this PC. Sign in to upload it." : "On this PC.")
-            : !CanSetVis ? "Public: every signed-in player can watch it."
-            : IsPublic ? "Public: every signed-in player can find it by name. Click to make it private."
-            : C == null ? "Only on this PC. Click to make it public: it goes to the Arena server and every signed-in player can watch it."
-            : "Private: it stays on your PC and your opponent's. Click to make it public.";
-        public Visibility DeleteVisible => R != null && Busy == null ? Visibility.Visible : Visibility.Collapsed;
-        public string DeleteTip => "Delete it from this PC" + (IsPublic && C.HasState ? " (the public copy on the Arena server stays)" : "");
+        public string RowTip => WhenText + "  ·  on this PC";
+        public string DeleteTip => "Delete it from this PC";
         /// <summary>what the search box looks in (lower case)</summary>
         public string Haystack => string.Join(" ", P1Name, P2Name, P1Fighter, P2Fighter, Stage, Kind).ToLowerInvariant();
     }
@@ -147,7 +107,6 @@ namespace Arena
         }
 
         List<ReplayRow> replayRows = new List<ReplayRow>();
-        string cloudError;
         bool rvLoading; int rvLoadSeq;
 
         static readonly Dictionary<string, ImageSource> fighterIcons = new Dictionary<string, ImageSource>();
@@ -159,36 +118,21 @@ namespace Arena
             return fighterIcons[key] = AvatarImage(key, 76);
         }
 
-        /// <summary>this PC's recordings and, signed in, the server's replays this player may watch (one row per match)</summary>
+        /// <summary>this PC's recordings (0.2.39: the only replays: nothing goes to or comes from the Arena server)</summary>
         void LoadReplays()
         {
-            bool signed = Account.SignedIn;
             int seq = ++rvLoadSeq;
             rvLoading = true;
             ShowReplayRows();
             Task.Run(() =>
             {
                 ReplayLibrary.Cap();
-                var local = ReplayLibrary.List();
-                var up = ReplayCloud.Uploaded();
-                List<CloudReplay> cloud = null; string err = null;
-                if (signed) { try { cloud = ReplayCloud.ListCached(); } catch (Exception e) { err = e.Message; } }
-                var rows = new List<ReplayRow>();
-                foreach (var c in cloud ?? new List<CloudReplay>())
-                {
-                    // the server's row of a match recorded here: one row, played from this PC's file
-                    var mine = local.FirstOrDefault(l => l.MatchId != 0 && l.MatchId == c.MatchId && Math.Abs((l.When.ToUniversalTime() - c.PlayedAt).TotalHours) < 6);
-                    if (mine != null) local.Remove(mine);
-                    rows.Add(new ReplayRow { C = c, R = mine, Uploaded = true });
-                }
-                foreach (var l in local) rows.Add(new ReplayRow { R = l, Uploaded = up.ContainsKey(Path.GetFileName(l.Path)) });
-                return Tuple.Create(rows.OrderByDescending(r => r.Sort).ToList(), err);
+                return ReplayLibrary.List().Select(l => new ReplayRow { R = l }).OrderByDescending(r => r.Sort).ToList();
             }).ContinueWith(t =>
             {
                 if (seq != rvLoadSeq) return;               // (a newer reading is on its way)
                 rvLoading = false;
-                if (t.IsFaulted) { cloudError = t.Exception.GetBaseException().Message; replayRows = new List<ReplayRow>(); }
-                else { replayRows = t.Result.Item1; cloudError = t.Result.Item2; }
+                replayRows = t.IsFaulted ? new List<ReplayRow>() : t.Result;
                 ShowReplayRows();
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
@@ -209,17 +153,17 @@ namespace Arena
 
         void ShowReplayRows()
         {
-            var all = replayRows.Concat(searchRows.Where(s => !replayRows.Any(r => r.C != null && r.C.Id == s.C.Id))).ToList();
+            var all = replayRows;
             rvFilling = true;
             FillCombo(RvFighterBox, AllFighters, all.SelectMany(r => new[] { r.P1Fighter, r.P2Fighter }));
             FillCombo(RvStageBox, AllStages, all.Select(r => r.Stage));
             if (RvResultBox.ItemsSource == null) { RvResultBox.ItemsSource = new List<string> { AnyResult, Wins, Losses }; RvResultBox.SelectedIndex = 0; }
             rvFilling = false;
-            string scope = RvFilterMine.IsChecked == true ? "mine" : RvFilterPublic.IsChecked == true ? "public" : RvFilterPc.IsChecked == true ? "pc" : "all";
+            bool mineOnly = RvFilterMine.IsChecked == true;
             string f = RvFighterBox.SelectedItem as string, st = RvStageBox.SelectedItem as string, res = RvResultBox.SelectedItem as string;
             string q = (RvSearch.Text ?? "").Trim().ToLowerInvariant();
             var words = q.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            var rows = all.Where(r => scope == "all" || (scope == "mine" && (r.C == null || r.C.Mine || r.MeWon != null)) || (scope == "public" && r.C != null && r.C.IsPublic) || (scope == "pc" && r.R != null))
+            var rows = all.Where(r => !mineOnly || r.MeWon != null || !r.R.LoopTest)
                           .Where(r => words.All(w => r.Haystack.Contains(w)))
                           .Where(r => f == AllFighters || f == null || r.P1Fighter == f || r.P2Fighter == f)
                           .Where(r => st == AllStages || st == null || r.Stage == st)
@@ -239,43 +183,37 @@ namespace Arena
             double at = sv?.VerticalOffset ?? 0;
             ReplaysList.ItemsSource = items;
             if (sv != null && at > 0) { var k = at; Dispatcher.BeginInvoke(new Action(() => sv.ScrollToVerticalOffset(k)), System.Windows.Threading.DispatcherPriority.Loaded); }
-            bool narrowed = words.Length > 0 || scope != "mine" || (f != null && f != AllFighters) || (st != null && st != AllStages) || (res != null && res != AnyResult);
+            bool narrowed = words.Length > 0 || !mineOnly || (f != null && f != AllFighters) || (st != null && st != AllStages) || (res != null && res != AnyResult);
             ReplaysClear.Visibility = narrowed ? Visibility.Visible : Visibility.Collapsed;
-            RvSearchBusy.Visibility = searching ? Visibility.Visible : Visibility.Collapsed;
-            // the states: reading (the rows' shapes, only when nothing is there yet), empty, the banner for what cannot be reached
+            // the states: reading (the rows' shapes, only when nothing is there yet), empty
             bool first = rvLoading && replayRows.Count == 0;
             ReplaysLoading.Visibility = first ? Visibility.Visible : Visibility.Collapsed;
             ReplaysEmpty.Visibility = rows.Count == 0 && !first ? Visibility.Visible : Visibility.Collapsed;
             rvEmptyAction = null;
-            if (rows.Count == 0 && searching) { ReplaysEmptyTitle.Text = "Searching..."; ReplaysEmptyText.Text = "Looking for “" + RvSearch.Text.Trim() + "” on the Arena server."; }
-            else if (rows.Count == 0 && q.Length > 0)
+            if (rows.Count == 0 && q.Length > 0)
             {
                 ReplaysEmptyTitle.Text = "No match for “" + RvSearch.Text.Trim() + "”";
-                ReplaysEmptyText.Text = Account.SignedIn ? "No replay of yours and no public replay has a player, fighter or stage with that name." : "Nothing on this PC. Sign in to search the Arena server's public replays too.";
+                ReplaysEmptyText.Text = "No replay on this PC has a player, fighter or stage with that name.";
                 rvEmptyAction = "Clear filters";
             }
             else if (rows.Count == 0 && replayRows.Count > 0)
             {
                 ReplaysEmptyTitle.Text = "Nothing here";
-                ReplaysEmptyText.Text = scope == "public" ? "No public replay among these. A match becomes public when one of its players opens its pill and makes it so." : "No replay fits these filters.";
+                ReplaysEmptyText.Text = "No replay fits these filters.";
                 rvEmptyAction = "Clear filters";
             }
             else if (rows.Count == 0)
             {
                 ReplaysEmptyTitle.Text = "No matches recorded yet";
-                ReplaysEmptyText.Text = Core.RecMatchmaking || Core.RecLdn || Core.RecArena || Core.RecLocal ? "Play a match: the game records it and it shows up here." : "The game records nothing now: turn the recording on in Settings, under Replays.";
+                ReplaysEmptyText.Text = Core.RecMatchmaking || Core.RecLdn || Core.RecArena || Core.RecLocal ? "Play a match: the game records it on this PC and it shows up here." : "The game records nothing now: turn the recording on in Settings, under Replays.";
                 rvEmptyAction = "Refresh";
             }
             ReplaysEmptyButton.Visibility = rvEmptyAction != null ? Visibility.Visible : Visibility.Collapsed;
             ReplaysEmptyButton.Content = rvEmptyAction;
-            string err = cloudError ?? (searchError != null && q.Length >= 2 ? searchError : null);
-            ReplaysBanner.Visibility = err != null || !Account.SignedIn ? Visibility.Visible : Visibility.Collapsed;
-            if (err != null) { ReplaysBannerText.Text = "The Arena server's replays could not be read: " + err; ReplaysBannerAction.Text = "Try again"; }
-            else if (!Account.SignedIn) { ReplaysBannerText.Text = "Only this PC's recordings are shown: sign in for your uploaded replays and the public ones."; ReplaysBannerAction.Text = "Sign in"; }
-            int pc = replayRows.Count(r => r.R != null), server = replayRows.Count(r => r.C != null);
+            int pc = replayRows.Count;
             ReplaysStatus.Text = rvLoading && first ? "Reading the replays..."
-                : (rows.Count == all.Count ? rows.Count + (rows.Count == 1 ? " match" : " matches") : rows.Count + " of " + all.Count + " matches") + "  ·  " + pc + " on this PC" + (pc >= ReplayLibrary.Keep ? " (the newest " + ReplayLibrary.Keep + " are kept)" : "")
-                  + (Account.SignedIn ? "  ·  " + server + " on the Arena server" : "") + (rvLoading ? "  ·  updating..." : "");
+                : (rows.Count == pc ? rows.Count + (rows.Count == 1 ? " match" : " matches") : rows.Count + " of " + pc + " matches") + " on this PC" + (pc >= ReplayLibrary.Keep ? " (the newest " + ReplayLibrary.Keep + " are kept)" : "")
+                  + (rvLoading ? "  ·  updating..." : "");
         }
 
         void ReplaysFilter_Checked(object sender, RoutedEventArgs e) { if (ReplaysList != null && replayRows != null) ShowReplayRows(); }
@@ -295,92 +233,33 @@ namespace Arena
 
         string rvEmptyAction;
         void ReplaysEmpty_Click(object sender, RoutedEventArgs e) { if (rvEmptyAction == "Refresh") LoadReplays(); else ReplaysClear_Click(null, null); }
-        void ReplaysBanner_Click(object sender, RoutedEventArgs e) { if (Account.SignedIn) { searchError = null; LoadReplays(); } else ShowLogin(); }
 
-        // ------------------------------------------------------------ (0.2.11) search: this list at once, the server's replays of that player after a pause in typing
-        List<ReplayRow> searchRows = new List<ReplayRow>();
-        System.Windows.Threading.DispatcherTimer rvSearchTimer;
-        bool searching; int searchSeq; string searchError;
+        // ------------------------------------------------------------ search: this PC's list
         void ReplaysSearch_Changed(object sender, TextChangedEventArgs e)
         {
             bool empty = string.IsNullOrEmpty(RvSearch.Text);
             RvSearchHint.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
             RvSearchClear.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
             if (ReplaysList == null || replayRows == null) return;
-            if (rvSearchTimer == null)
-            {
-                rvSearchTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
-                rvSearchTimer.Tick += (s2, e2) => { rvSearchTimer.Stop(); SearchServer(); };
-            }
-            rvSearchTimer.Stop();
-            string q = RvSearch.Text.Trim();
-            if (q.Length < 2 || !Account.SignedIn) { searchSeq++; searchRows = new List<ReplayRow>(); searching = false; searchError = null; }
-            else rvSearchTimer.Start();
             ShowReplayRows();
         }
         void ReplaysSearchClear_Click(object sender, RoutedEventArgs e) { RvSearch.Text = ""; RvSearch.Focus(); }
-        void SearchServer()
-        {
-            string q = RvSearch.Text.Trim();
-            if (q.Length < 2 || !Account.SignedIn) return;
-            int seq = ++searchSeq; searching = true; ShowReplayRows();
-            Task.Run(() => ReplayCloud.List(100, q)).ContinueWith(t =>
-            {
-                if (seq != searchSeq) return;               // (a newer search is on its way)
-                searching = false;
-                searchError = t.IsFaulted ? t.Exception.GetBaseException().Message : null;
-                searchRows = t.IsFaulted ? new List<ReplayRow>() : t.Result.Select(c => new ReplayRow { C = c, Uploaded = true }).ToList();
-                ShowReplayRows();
-            }, TaskScheduler.FromCurrentSynchronizationContext());
-        }
-
-        void RowFailed(ReplayRow row, string what, Exception e)
-        {
-            row.Busy = null; row.Changed();
-            Show("Replay", what + ": " + e.GetBaseException().Message, null, ("OK", null, true));
-        }
-
-        void ReplayPublic_Click(object sender, RoutedEventArgs e)
-        {
-            e.Handled = true;                               // (inside the row's own button: not a Watch click)
-            var row = (sender as Button)?.Tag as ReplayRow;
-            if (row == null || !row.CanSetVis) return;
-            bool pub = !row.IsPublic;
-            row.Busy = row.C == null ? "Uploading..." : "Saving..."; row.Changed();
-            Task.Run(() =>
-            {
-                // (0.2.36) the game recording goes to the server only to be public, and only when the server has none for the match
-                // (the opponent may have shared it already): private replays stay on the players' PCs (the server's daily prune removes
-                // the recordings of private replays)
-                string id = row.C?.Id;
-                if (pub && row.R != null && (row.C == null || !row.C.HasState)) id = ReplayCloud.Upload(row.R);
-                if (id != null) ReplayCloud.SetPublic(id, pub);
-            }).ContinueWith(t =>
-            {
-                if (t.IsFaulted) { RowFailed(row, "Could not change it", t.Exception); return; }
-                row.Busy = null;
-                if (row.C != null) { row.C.IsPublic = pub; row.Changed(); if (RvFilterPublic.IsChecked == true) ShowReplayRows(); }
-                else { row.Uploaded = true; row.Changed(); searchRows.Clear(); LoadReplays(); }
-            }, TaskScheduler.FromCurrentSynchronizationContext());
-        }
 
         void ReplayDelete_Click(object sender, RoutedEventArgs e)
         {
             e.Handled = true;
             var row = (sender as Button)?.Tag as ReplayRow;
-            if (row?.R == null) return;
-            string note = row.IsPublic && row.C.HasState ? "\n\nThe public copy on the Arena server stays." : "\n\nIt is on this PC only: it cannot be brought back.";
-            Show("Delete replay", row.P1Fighter + " vs " + row.P2Fighter + ", " + row.WhenText + ": this PC's file is deleted." + note, null,
+            if (row == null) return;
+            Show("Delete replay", row.P1Fighter + " vs " + row.P2Fighter + ", " + row.WhenText + ": this PC's file is deleted.\n\nIt is on this PC only: it cannot be brought back.", null,
                  ("Delete", () =>
                  {
                      try { File.Delete(row.R.Path); } catch (Exception ex) { Show("Replay", "Could not delete it: " + ex.Message, null, ("OK", null, true)); return; }
-                     if (row.C != null) { row.R = null; row.Changed(); }      // (the server's copy stays in the list)
-                     else replayRows.Remove(row);
+                     replayRows.Remove(row);
                      ShowReplayRows();
                  }, true), ("Cancel", null, false));
         }
 
-        /// <summary>(GameExited) the cap on this PC's files (0.2.37: nothing goes to the server by itself, only a replay made public)</summary>
+        /// <summary>(GameExited) the cap on this PC's files</summary>
         void ReplaysAfterGame()
         {
             Task.Run(() => ReplayLibrary.Cap())
@@ -395,15 +274,7 @@ namespace Arena
         {
             var row = (sender as Button)?.Tag as ReplayRow;
             if (row == null) return;
-            if (row.R != null) { OpenReplay(row.R.Path); return; }
-            if (!row.CanWatch) { Show("Replay", "The server has only the input recording of this match: it will be watchable in the game itself later.", null, ("OK", null, true)); return; }
-            row.Busy = "Getting it..."; row.Changed();
-            Task.Run(() => ReplayCloud.Download(row.C)).ContinueWith(t =>
-            {
-                if (t.IsFaulted) { RowFailed(row, "Could not download it", t.Exception); return; }
-                row.Busy = null; row.Changed();
-                OpenReplay(t.Result);
-            }, TaskScheduler.FromCurrentSynchronizationContext());
+            OpenReplay(row.R.Path);
         }
 
         /// <summary>a match file in the viewer (also: --replay &lt;file&gt; [--frame n] on the command line, for screenshots)</summary>
