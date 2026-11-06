@@ -549,8 +549,12 @@ static void rbg_step_body(Ctx *c) {
         if (eg && g_ra_wh_on) { ra_workers_release(); SetEvent(g_ra_wd_ev); } }
     if (gorb) { g_rbg_gorb = 0; return; }              /* (Arena perf) this tick's real pass now: its safe point counts the whole tick */
     if (g_rbg_pace) {
-        double period = 1000.0 / 60.0 + rbn_pace_extra(g_rgs_next), now = now_ms();
+        double extra = rbn_pace_extra(g_rgs_next), period = 1000.0 / 60.0 + extra, now = now_ms();
         if (g_rbg_next <= 0 || now - g_rbg_next > 3 * period) g_rbg_next = now;      /* (far behind: no catching up in a burst) */
+        /* (0.2.40 test, after Rsoto95 841ae28) SSBU_RB_NET_TSWAIT=1: the time sync's extra wait is waited also when this game is
+         * a little behind its own schedule (there the extra only shortened the catching up and the lead stayed) */
+        { static int tw = -1; if (tw < 0) { const char *e = getenv("SSBU_RB_NET_TSWAIT"); tw = e && atoi(e) != 0; }
+          if (tw && extra > 0 && g_rbg_next < now + extra) g_rbg_next = now + extra; }
         if (g_rbg_waitrb < 0) { const char *e = getenv("SSBU_RB_NET_WAITRB"); g_rbg_waitrb = !e || atoi(e) != 0; }
         if (g_rbg_gocheck < 0) { const char *e = getenv("SSBU_RB_NET_GOCHECK"); g_rbg_gocheck = !e || atoi(e) != 0; e = getenv("SSBU_RB_NET_TEST_GOLATE"); g_rbg_golate = e ? atoi(e) : 0; }
         if (g_rbg_golate > 0 && rbn_loop() && g_rbg_wpad_frame != i + 1) {      /* loop test: this tick's early pads arrive at a random point of the wait */

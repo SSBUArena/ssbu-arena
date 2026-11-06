@@ -978,6 +978,24 @@ static long long g_rg_refused;                        /* (R3 pub1) loads refused
 static long long g_rg_rezero;                         /* (Arena) pages decommitted at the loaded frame, committed since: zeroed by the load */
 static long long g_rg_ldpg, g_rg_recommit, g_rg_rewake;           /* (R3 net3) pages to load, all loads (the written ones: g_cp_wrote); pages committed again by a load */
 void dm_alloc_check(const char *when, long long frame);    /* debug_mode.c */
+/* (0.2.40, crash "match start memcpy", r1_ring_load + 0x7c2, 2026-11-06 rc1_0_2) a page of window 1 the load writes that is
+ * only reserved now (state MEM_RESERVE, no game decommit of it in the history, g_dc not set): the load's memset / page copy
+ * faulted. While a load copies, a write fault on a reserved page of the guest windows commits that page and the copy goes on:
+ * the copy writes the page whole, so a fresh commit gives the same value. SSBU_RB_LOADFAULT=0: off (the crash as before). */
+static volatile LONG g_rg_loading; static volatile LONG64 g_rg_loadfault;
+static LONG CALLBACK rg_load_fault(EXCEPTION_POINTERS *ep) {
+    if (!g_rg_loading || ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || ep->ExceptionRecord->NumberParameters < 2 || ep->ExceptionRecord->ExceptionInformation[0] != 1)
+        return EXCEPTION_CONTINUE_SEARCH;
+    uint8_t *a = (uint8_t *)(uintptr_t)(ep->ExceptionRecord->ExceptionInformation[1] & ~(uintptr_t)(PG - 1));
+    int in1 = g_win1 && a >= g_win1 && a < g_win1 + g_wn1, in2 = (uintptr_t)a >= WIN2 && (uintptr_t)a < WIN2 + WN2;
+    if (!in1 && !in2) return EXCEPTION_CONTINUE_SEARCH;
+    MEMORY_BASIC_INFORMATION mi;
+    if (!VirtualQuery(a, &mi, sizeof mi) || mi.State != MEM_RESERVE) return EXCEPTION_CONTINUE_SEARCH;
+    if (!VirtualAlloc(a, PG, MEM_COMMIT, PAGE_READWRITE)) return EXCEPTION_CONTINUE_SEARCH;
+    if (in1) g_dc[(size_t)(a - g_win1) / PG] = 0;
+    InterlockedIncrement64(&g_rg_loadfault);
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
 int r1_ring_load(long long frame, Ctx *c) {
     int si = -1;
     for (int i = 0; i < g_rg_count; i++) if (rg_slot(i)->frame == frame) si = i;
@@ -1041,6 +1059,8 @@ int r1_ring_load(long long frame, Ctx *c) {
     }
     g_rg_count = si + 1;
     dc_copy_lock(1);                                      /* (crash phase) no decommit from here to the end of the copy */
+    { static int lf = -1; if (lf < 0) { const char *e = getenv("SSBU_RB_LOADFAULT"); lf = !(e && e[0] == '0'); if (lf) AddVectoredExceptionHandler(1, rg_load_fault); }
+      if (lf) InterlockedExchange(&g_rg_loading, 1); }
     rg_stack_ww(NULL);                                    /* (Arena perf) the stack pages written since the newest capture */
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */
     rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
@@ -1073,6 +1093,8 @@ int r1_ring_load(long long frame, Ctx *c) {
     {   /* (R3 net3) SSBU_RB_LOADCMP=1 (option, default off: measured no faster, na0 / na1): a page is written only if it differs from the value loaded */
         static int lc = -1; if (lc < 0) { const char *e = getenv("SSBU_RB_LOADCMP"); lc = e && e[0] == '1'; }
         g_cp_cond = lc; cp_run(); g_cp_cond = 0; }
+    InterlockedExchange(&g_rg_loading, 0);
+    { static LONG64 said; if (g_rg_loadfault != said) { said = g_rg_loadfault; LOG("r1: RING load of frame %lld: a page only reserved was written: committed and copied (%lld so far, SSBU_RB_LOADFAULT)\n", frame, (long long)said); } }
     dc_copy_lock(0);
     double t2 = now_ms();
     g_nfib = g->nfib; memcpy(g_fib, g->fib, (size_t)g->nfib * sizeof *g_fib);

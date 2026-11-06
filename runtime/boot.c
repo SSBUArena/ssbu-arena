@@ -523,6 +523,13 @@ int main(int argc, char **argv) {
     register_sdk2_imports();                 /* SDK families (lifted sdk.elf code + offline service answers): fills only; after the C runtime because its self-test needs every handler */
     { void audit_startup(void); audit_startup(); }   /* hostrt.c: fake audit / SSBU_STRICT (plan\FAKE_AUDIT.md) */
     display_init();
+    /* (0.2.40, from Rsoto95 84bb87b) ABOVE NORMAL priority for the game's process (not HIGH: that can starve the mouse, the sound
+     * driver or voice chat), so other programs take the processor from it less often. SSBU_PRIORITY=normal: Windows' default. */
+#ifdef _WIN32
+    {   const char *e = getenv("SSBU_PRIORITY");
+        if (!(e && !_stricmp(e, "normal")) && SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS))
+            printf("boot: the game runs at above-normal priority (SSBU_PRIORITY=normal: off)\n"); }
+#endif
     int seconds = argc > 2 ? atoi(argv[2]) : 0;      /* no number = no time limit (a player's launch); tests pass theirs */
     /* the lifted code uses the host stack for every guest call: give it plenty */
     HANDLE t = CreateThread(NULL, (SIZE_T)1 << 30, guest_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
