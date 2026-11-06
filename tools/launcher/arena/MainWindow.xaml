@@ -374,13 +374,9 @@
           <DockPanel>
             <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
               <TextBlock Text="REPLAYS" Style="{StaticResource SectionTitle}" FontSize="36" VerticalAlignment="Center" ToolTip="Your matches, redrawn from what the game recorded frame by frame: positions, damage, hitboxes. No game start needed."/>
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <RadioButton x:Name="RvFilterMine" Style="{StaticResource RvSpeed}" Content="My matches" GroupName="rvfilter" IsChecked="True" Checked="ReplaysFilter_Checked" ToolTip="The matches you played"/>
-                <RadioButton x:Name="RvFilterPc" Style="{StaticResource RvSpeed}" Content="On this PC" GroupName="rvfilter" Checked="ReplaysFilter_Checked" ToolTip="Every recording on this PC, rollback tests too"/>
-              </StackPanel>
               <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                <Button Style="{StaticResource Outline}" Height="36" Padding="14,0" Click="ReplaysFolder_Click" Margin="0,0,8,0" ToolTip="The folder of this PC's recordings">
-                  <StackPanel Orientation="Horizontal"><Path Data="{StaticResource IcoFolder}" Fill="{StaticResource Muted}" Width="15" Height="13" Stretch="Uniform"/><TextBlock Text="Folder" Margin="8,0,0,0" FontSize="15"/></StackPanel>
+                <Button Style="{StaticResource Outline}" Height="36" Padding="14,0" Click="ReplaysFolder_Click" Margin="0,0,8,0" ToolTip="Open the folder where the game saves your replays">
+                  <StackPanel Orientation="Horizontal"><Path Data="{StaticResource IcoFolder}" Fill="{StaticResource Muted}" Width="15" Height="13" Stretch="Uniform"/><TextBlock Text="Open folder" Margin="8,0,0,0" FontSize="15"/></StackPanel>
                 </Button>
                 <Button Style="{StaticResource Outline}" Height="36" Padding="14,0" Click="ReplaysRefresh_Click" Content="Refresh" FontSize="15"/>
               </StackPanel>

@@ -159,12 +159,10 @@ namespace Arena
             FillCombo(RvStageBox, AllStages, all.Select(r => r.Stage));
             if (RvResultBox.ItemsSource == null) { RvResultBox.ItemsSource = new List<string> { AnyResult, Wins, Losses }; RvResultBox.SelectedIndex = 0; }
             rvFilling = false;
-            bool mineOnly = RvFilterMine.IsChecked == true;
             string f = RvFighterBox.SelectedItem as string, st = RvStageBox.SelectedItem as string, res = RvResultBox.SelectedItem as string;
             string q = (RvSearch.Text ?? "").Trim().ToLowerInvariant();
             var words = q.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            var rows = all.Where(r => !mineOnly || r.MeWon != null || !r.R.LoopTest)
-                          .Where(r => words.All(w => r.Haystack.Contains(w)))
+            var rows = all.Where(r => words.All(w => r.Haystack.Contains(w)))
                           .Where(r => f == AllFighters || f == null || r.P1Fighter == f || r.P2Fighter == f)
                           .Where(r => st == AllStages || st == null || r.Stage == st)
                           .Where(r => res == AnyResult || res == null || (res == Wins && r.MeWon == true) || (res == Losses && r.MeWon == false))
@@ -183,7 +181,7 @@ namespace Arena
             double at = sv?.VerticalOffset ?? 0;
             ReplaysList.ItemsSource = items;
             if (sv != null && at > 0) { var k = at; Dispatcher.BeginInvoke(new Action(() => sv.ScrollToVerticalOffset(k)), System.Windows.Threading.DispatcherPriority.Loaded); }
-            bool narrowed = words.Length > 0 || !mineOnly || (f != null && f != AllFighters) || (st != null && st != AllStages) || (res != null && res != AnyResult);
+            bool narrowed = words.Length > 0 || (f != null && f != AllFighters) || (st != null && st != AllStages) || (res != null && res != AnyResult);
             ReplaysClear.Visibility = narrowed ? Visibility.Visible : Visibility.Collapsed;
             // the states: reading (the rows' shapes, only when nothing is there yet), empty
             bool first = rvLoading && replayRows.Count == 0;
@@ -216,12 +214,10 @@ namespace Arena
                   + (rvLoading ? "  ·  updating..." : "");
         }
 
-        void ReplaysFilter_Checked(object sender, RoutedEventArgs e) { if (ReplaysList != null && replayRows != null) ShowReplayRows(); }
         void ReplaysCombo_Changed(object sender, SelectionChangedEventArgs e) { if (!rvFilling && ReplaysStatus != null && replayRows != null && IsLoaded) ShowReplayRows(); }
 
         void ReplaysClear_Click(object sender, RoutedEventArgs e)
         {
-            RvFilterMine.IsChecked = true;
             rvFilling = true;
             if (RvFighterBox.Items.Count > 0) RvFighterBox.SelectedIndex = 0;
             if (RvStageBox.Items.Count > 0) RvStageBox.SelectedIndex = 0;
