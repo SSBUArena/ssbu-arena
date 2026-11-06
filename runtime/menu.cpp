@@ -1929,6 +1929,93 @@ static void draw_exit_question(void) {
     r = arena_hint(dl, r, hy, "A", "Choose");
     arena_hint(dl, r, hy, "< >", "Yes / No");
 }
+/* (Battle Arena) the squad screen: this player's fighters 2 and 3 of a Battle Arena room match (Squad Strike, Tag Team: 3 fighters
+ * each, 1 stock each; fighter 1 is the one chosen on the room's character select). Opened by the Battle Arena tile (competitive.c),
+ * and in place of the menu whenever the menu opens while this game is in Battle Arena (rb_net.c rbn_ba_mode). The picks go to
+ * rb_net.c (rbn_ba_set_pick), which sends them to the other game with the room match's agreement. Random = drawn there. */
+extern "C" int rbn_ba_mode(void); extern "C" void rbn_ba_set_pick(int slot, uint64_t chara, uint8_t colour);
+static const char *const k_ba_fighter[][2] = {
+    {"random", "Random"}, {"mario", "Mario"}, {"donkey", "Donkey Kong"}, {"link", "Link"}, {"samus", "Samus"}, {"samusd", "Dark Samus"}, {"yoshi", "Yoshi"}, {"kirby", "Kirby"},
+    {"fox", "Fox"}, {"pikachu", "Pikachu"}, {"luigi", "Luigi"}, {"ness", "Ness"}, {"captain", "Captain Falcon"}, {"purin", "Jigglypuff"}, {"peach", "Peach"}, {"daisy", "Daisy"},
+    {"koopa", "Bowser"}, {"sheik", "Sheik"}, {"zelda", "Zelda"}, {"mariod", "Dr. Mario"}, {"pichu", "Pichu"}, {"falco", "Falco"}, {"marth", "Marth"}, {"lucina", "Lucina"},
+    {"younglink", "Young Link"}, {"ganon", "Ganondorf"}, {"mewtwo", "Mewtwo"}, {"roy", "Roy"}, {"chrom", "Chrom"}, {"gamewatch", "Mr. Game & Watch"}, {"metaknight", "Meta Knight"},
+    {"pit", "Pit"}, {"pitb", "Dark Pit"}, {"szerosuit", "Zero Suit Samus"}, {"wario", "Wario"}, {"snake", "Snake"}, {"ike", "Ike"}, {"diddy", "Diddy Kong"}, {"lucas", "Lucas"},
+    {"sonic", "Sonic"}, {"dedede", "King Dedede"}, {"pikmin", "Olimar"}, {"lucario", "Lucario"}, {"robot", "R.O.B."}, {"toonlink", "Toon Link"}, {"wolf", "Wolf"},
+    {"murabito", "Villager"}, {"rockman", "Mega Man"}, {"wiifit", "Wii Fit Trainer"}, {"rosetta", "Rosalina & Luma"}, {"littlemac", "Little Mac"}, {"gekkouga", "Greninja"},
+    {"palutena", "Palutena"}, {"pacman", "Pac-Man"}, {"reflet", "Robin"}, {"shulk", "Shulk"}, {"koopajr", "Bowser Jr."}, {"duckhunt", "Duck Hunt"}, {"ryu", "Ryu"}, {"ken", "Ken"},
+    {"cloud", "Cloud"}, {"kamui", "Corrin"}, {"bayonetta", "Bayonetta"}, {"inkling", "Inkling"}, {"ridley", "Ridley"}, {"simon", "Simon"}, {"richter", "Richter"},
+    {"krool", "King K. Rool"}, {"shizue", "Isabelle"}, {"gaogaen", "Incineroar"}};
+enum { BA_F2, BA_F3, BA_DONE, BA_MORE, BA_N };
+static int g_ba_screen, g_ba_sel, g_ba_idx[2];
+static uint64_t ba_h40(const char *s) { uint32_t crc = 0xffffffffu; size_t n = strlen(s); for (size_t i = 0; i < n; i++) { crc ^= (uint8_t)s[i]; for (int k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1))); } return ((uint64_t)n << 32) | (uint32_t)~crc; }
+static void ba_send_picks(void) {
+    for (int k = 0; k < 2; k++) {
+        char nm[64]; snprintf(nm, sizeof nm, "ui_chara_%s", k_ba_fighter[g_ba_idx[k]][0]);
+        rbn_ba_set_pick(k, g_ba_idx[k] ? 0xc100000000000000ull | ba_h40(nm) : 0, 0);
+    }
+    printf("menu: Battle Arena squad: fighter 2 %s, fighter 3 %s\n", k_ba_fighter[g_ba_idx[0]][1], k_ba_fighter[g_ba_idx[1]][1]); fflush(stdout);
+}
+extern "C" void menu_battle_arena(void) { g_ba_screen = 1; g_ba_sel = BA_F2; if (!g_open) menu_request_toggle(); }
+static void draw_squad(void) {
+    ImGuiIO &io = ImGui::GetIO();
+    const float W = io.DisplaySize.x, H = io.DisplaySize.y, fs = ImGui::GetFontSize();
+    const int NF = (int)(sizeof k_ba_fighter / sizeof k_ba_fighter[0]);
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, hexc(AR_BG, 0.0f));
+    ImGui::Begin("##arena_squad", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+                 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImGui::PopStyleColor();
+    int up = q_rep(B_UP) || ImGui::IsKeyPressed(ImGuiKey_UpArrow), dn = q_rep(B_DOWN) || ImGui::IsKeyPressed(ImGuiKey_DownArrow);
+    int lf = q_rep(B_LEFT) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow), rt = q_rep(B_RIGHT) || ImGui::IsKeyPressed(ImGuiKey_RightArrow);
+    int a = (g_q_down & BIT(B_A)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false);
+    if (up || dn) g_ba_sel = (g_ba_sel + (up ? BA_N - 1 : 1)) % BA_N;
+    if ((lf || rt) && g_ba_sel <= BA_F3) { int *v = &g_ba_idx[g_ba_sel]; *v = (*v + (lf ? NF - 1 : 1)) % NF; ba_send_picks(); }
+    if (a) { if (g_ba_sel == BA_DONE) { ba_send_picks(); menu_request_toggle(); } else if (g_ba_sel == BA_MORE) g_ba_screen = 0; else g_ba_sel++; }
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    q_dim(dl, W, H);
+    const float x0 = W * 0.075f, colw = W * 0.46f, rh = fs * 2.5f, gap = fs * 0.55f, skew = rh * 0.28f;
+    float title_h = g_font_title ? g_font_title->FontSize * io.FontGlobalScale : fs * 2.0f;
+    float y = H * 0.12f;
+    arena_mark(dl, x0, y + title_h * 0.14f, title_h * 0.78f, ImGui::GetColorU32(hexc(AR_ACCENT)));
+    q_text(dl, g_font_title, title_h, ImVec2(x0 + title_h * 1.15f, y), ImGui::GetColorU32(hexc(AR_TEXT)), "BATTLE ARENA");
+    y += title_h + fs * 0.6f;
+    dl->AddText(ImVec2(x0, y), ImGui::GetColorU32(hexc(AR_MUTED)), "Squad Strike in a Local Wireless room: 3 fighters each, 1 stock each, in one match.");
+    y += fs * 1.3f;
+    dl->AddText(ImVec2(x0, y), ImGui::GetColorU32(hexc(AR_MUTED)), "Fighter 1 is the one you choose on the room's character select; when a fighter is KO'd the next one comes in.");
+    y += fs * 1.9f;
+    for (int i = 0; i < BA_N; i++) {
+        float ry = y + i * (rh + gap);
+        bool sel = i == g_ba_sel;
+        ImVec2 p0(x0, ry), p1(x0 + colw, ry + rh);
+        q_bar(dl, p0, p1, skew, ImGui::GetColorU32(sel ? hexc(AR_ACCENT) : hexc(0x111B28, 0.88f)));
+        ImGui::SetCursorScreenPos(p0);
+        ImGui::PushID(i);
+        if (ImGui::InvisibleButton("##barow", ImVec2(colw + skew, rh))) {
+            g_ba_sel = i;
+            if (i <= BA_F3) { int *v = &g_ba_idx[i]; *v = (*v + (io.MousePos.x < x0 + colw * 0.5f ? NF - 1 : 1)) % NF; ba_send_picks(); }
+            else if (i == BA_DONE) { ba_send_picks(); menu_request_toggle(); } else g_ba_screen = 0;
+        }
+        ImGui::PopID();
+        ImU32 tc = ImGui::GetColorU32(sel ? hexc(0x06121D) : hexc(AR_TEXT)), vc = ImGui::GetColorU32(sel ? hexc(0x06121D) : hexc(AR_MUTED));
+        const char *label = i == BA_F2 ? "Fighter 2" : i == BA_F3 ? "Fighter 3" : i == BA_DONE ? "Done" : "Other settings";
+        q_text(dl, g_font_title, fs * 1.25f, ImVec2(x0 + skew + fs * 0.9f, ry + (rh - fs * 1.25f) * 0.5f), tc, label);
+        if (i <= BA_F3) {
+            const char *val = k_ba_fighter[g_ba_idx[i]][1];
+            ImVec2 vs = ImGui::CalcTextSize(val);
+            float vx = x0 + colw - fs * 1.4f - vs.x, vy = ry + (rh - fs) * 0.5f, ax = fs * 0.32f, cy = ry + rh * 0.5f;
+            dl->AddText(ImVec2(vx, vy), vc, val);
+            dl->AddTriangleFilled(ImVec2(vx - fs * 0.55f, cy), ImVec2(vx - fs * 0.55f + ax, cy - ax), ImVec2(vx - fs * 0.55f + ax, cy + ax), vc);
+            dl->AddTriangleFilled(ImVec2(x0 + colw - fs * 0.65f, cy), ImVec2(x0 + colw - fs * 0.65f - ax, cy - ax), ImVec2(x0 + colw - fs * 0.65f - ax, cy + ax), vc);
+        }
+    }
+    {   float r = W - x0, by = H - fs * 2.4f;
+        r = arena_hint(dl, r, by, "B", "Back to the game");
+        r = arena_hint(dl, r, by, "A", "Choose");
+        arena_hint(dl, r, by, "< >", "Fighter");
+    }
+    ImGui::End();
+}
 static void draw_quick(void) {
     ImGuiIO &io = ImGui::GetIO();
     const float W = io.DisplaySize.x, H = io.DisplaySize.y, fs = ImGui::GetFontSize();
@@ -2035,11 +2122,13 @@ static void set_open(int on) {
         g_section_req = g_section;
         capture_cancel("menu opened");
         g_dlc_loaded = 0;
+        if (rbn_ba_mode() > 0) g_ba_screen = 1;      /* (Battle Arena) the squad screen first */
         printf("menu: opened at presented frame %lld\n", g_frame);
     } else {
         InterlockedExchange(&g_open, 0);
         g_closed_at = g_frame;
         g_q_confirm = 0;
+        g_ba_screen = 0;
         capture_cancel("menu closed");
         printf("menu: closed at presented frame %lld\n", g_frame);
     }
@@ -2300,7 +2389,7 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
         ImGui::PopStyleColor();
         if (!InterlockedExchange(&g_popup_drawn, 1)) { printf("menu: online popup drawn (presented frame %lld): %s: %s\n", g_frame, title, text); fflush(stdout); }
     }
-    if (g_open && !osk_active()) { if (arena_ui()) draw_quick(); else draw_arena(width, height); }
+    if (g_open && !osk_active()) { if (g_ba_screen) draw_squad(); else if (arena_ui()) draw_quick(); else draw_arena(width, height); }
     g_back_blocked = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen(NULL, ImGuiPopupFlags_AnyPopupId) || g_q_confirm == 1;      /* B answers "no" to the exit question asked from the menu (from the tile, B closes it) */
     ImGui::Render();
 #ifndef _WIN32

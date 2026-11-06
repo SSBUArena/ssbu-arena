@@ -2,7 +2,10 @@
 
 Each main-menu button is a table {parts = <pane>, state = STATE_<X>_IN} or {parts, func_decide = callback}. Here:
     Smash   (melee)       unchanged
-    Arena   (spirits)     func_decide = callback, func_arg = 0: nothing yet (Battle Arena, later)
+    Arena   (spirits)     func_decide = callback, func_arg = 7: Battle Arena: runtime/competitive.c turns Battle Arena on (a
+                          Local Wireless room that plays Squad Strike, 3 fighters each: rb_net.c, debug_mode.c), shows the
+                          squad screen (menu.cpp) and opens the side bar's Local Wireless command, as LDN does (an older
+                          runtime takes 7 as 3: plain Local Wireless)
     Ranked  (online)      sequence = SEQUENCE_ONLINE_MELEE_ANYONE: runtime/competitive.c turns it into online matchmaking
                           (a Smash versus whose fight searches an opponent through the lobby; no rating yet)
     LDN     (other)       func_decide = callback, func_arg = 3: the side bar's Local Wireless command (the big tile, at
@@ -17,9 +20,10 @@ that command; competitive.c confirms it in the side bar's native controller.
 from lua_chunk import Chunk, abc, abx, constant, OPS
 import menu_actions
 
-# func_arg of the shared callback: 0 nothing (yet), else the side bar (pallet) command to run: 3 Local Wireless,
-# 5 Options (the native one-based button ids; runtime/competitive.c reads it and confirms that command)
-PLACEHOLDER = {'set_parts_btn_spirits': 0, 'set_parts_btn_other': 3, 'set_parts_btn_colle': 5}
+# func_arg of the shared callback: 0 nothing, else the side bar (pallet) command to run: 3 Local Wireless,
+# 5 Options (the native one-based button ids; runtime/competitive.c reads it and confirms that command), 7 Battle Arena
+# (competitive.c: Local Wireless with Battle Arena on)
+PLACEHOLDER = {'set_parts_btn_spirits': 7, 'set_parts_btn_other': 3, 'set_parts_btn_colle': 5}
 SEQUENCE = {'set_parts_btn_eshop': 'SEQUENCE_OTHER_AMIIBO', 'set_parts_btn_online': 'SEQUENCE_ONLINE_MELEE_ANYONE'}
 # the selector's cone for the d-pad (60 in the game): wide enough that up from Exit reaches the small Settings tile
 DIRECTIONAL_DEGREE = 90

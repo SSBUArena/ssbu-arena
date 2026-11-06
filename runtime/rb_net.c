@@ -241,6 +241,54 @@ int rbn_fight_pending(void) { return g_hs_pending && GetTickCount64() - g_hs_pen
 static int rbn_peer_heard_ms(void);                     /* (R3 lwr) ms since the other game's rollback session was last heard, -1 = never */
 static volatile LONG g_lay_have_mine, g_lay_have_peer; static uint8_t g_lay_peer_has; static uint16_t g_lay_peer[11]; static uint8_t g_lay_peer_ctl[0x2d];
 static RbhMsg g_lay_mine;
+/* (Battle Arena) Squad Strike in a Local Wireless room (debug_mode.c squad_build): this game's Battle Arena mode (0 off; 1 the Arena menu's
+ * Battle Arena tile; 2 this game joined a room whose maker is in Battle Arena, nnldn.c) and its own fighters 2 and 3 (fighter 1 is the
+ * one chosen on the room's character select). The room maker decides: its proposal (lwr) carries RbhMatch.pad0 bit 0 = a squad match;
+ * the joiner's CHOICE carries its own mode the same way (logged). Both picks go with the LAYOUT message of the room match, in
+ * RbhMatch.ctx_stage (not used by a LAYOUT otherwise): 'S' 'Q' 2, then 2 ui_chara ids and 2 colours. Without the mode nothing of
+ * this runs: pad0 stays 0 and a room match is the 1-on-1 of before. SSBU_BATTLE_ARENA=1 (test): the mode on from the start;
+ * SSBU_BATTLE_ARENA_SQUAD=<fighter>,<fighter> (test): the picks. */
+static volatile LONG g_ba_mode = -1; static uint64_t g_ba_pick[2]; static uint8_t g_ba_pick_col[2]; static volatile LONG g_ba_picked;
+static int g_sq_agreed; static uint8_t g_ba_sent[0xb0]; static uint8_t g_lay_peer_sq[0xb0]; static volatile LONG g_lay_peer_sq_ok;
+static uint64_t hs_rand(void);
+static uint64_t ba_h40(const char *s) { uint32_t crc = 0xffffffffu; size_t n = strlen(s); for (size_t i = 0; i < n; i++) { crc ^= (uint8_t)s[i]; for (int k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1))); } return ((uint64_t)n << 32) | (uint32_t)~crc; }
+static void ba_init(void) {
+    if (g_ba_mode >= 0) return;
+    const char *e = getenv("SSBU_BATTLE_ARENA"), *q = getenv("SSBU_BATTLE_ARENA_SQUAD");
+    g_ba_mode = e && e[0] == '1' ? 1 : 0;
+    if (q && *q) { char b[96]; snprintf(b, sizeof b, "%s", q); int k = 0;
+        for (char *t = strtok(b, ","); t && k < 2; t = strtok(NULL, ","), k++) { char nm[64]; snprintf(nm, sizeof nm, "ui_chara_%s", t); g_ba_pick[k] = 0xc100000000000000ull | ba_h40(nm); g_ba_pick_col[k] = 0; }
+        if (k == 2) g_ba_picked = 1; }
+    if (g_ba_mode) { printf("[squad] TEST: Battle Arena mode on from the start (SSBU_BATTLE_ARENA=1)%s%s\n", g_ba_picked ? "; squad picks " : "", g_ba_picked ? q : ""); fflush(stdout); }
+}
+int rbn_ba_mode(void) { ba_init(); return (int)g_ba_mode; }
+void rbn_ba_set_mode(int m) {
+    ba_init();
+    if (InterlockedExchange(&g_ba_mode, m) != m) { printf("[squad] Battle Arena mode %s\n", m == 1 ? "on (Battle Arena tile)" : m == 2 ? "on (joined a Battle Arena room)" : "off"); fflush(stdout); }
+}
+void rbn_ba_set_pick(int slot, uint64_t chara, uint8_t colour) { ba_init(); if (slot < 0 || slot > 1) return; g_ba_pick[slot] = chara; g_ba_pick_col[slot] = colour; g_ba_picked = 1; }
+int rbn_ba_pick(int slot, uint64_t *chara, uint8_t *colour) { ba_init(); if (slot < 0 || slot > 1 || !g_ba_picked) return 0; *chara = g_ba_pick[slot]; *colour = g_ba_pick_col[slot]; return 1; }
+void rbn_ba_fill_sent(uint8_t out[0xb0]) { memcpy(out, g_ba_sent, 0xb0); }      /* what this game sent as its picks (rbn_room_layout) */
+int rbn_squad_agreed(void) { return g_sq_agreed; }      /* the last agreed match is a Battle Arena squad match (room maker's proposal) */
+/* the other player's fighters 2 and 3, from its LAYOUT of this match: 1 = got them */
+int rbn_room_squad(uint64_t chara[2], uint8_t colour[2]) {
+    if (!g_lay_peer_sq_ok || g_lay_peer_sq[0] != 'S' || g_lay_peer_sq[1] != 'Q' || g_lay_peer_sq[2] != 2) return 0;
+    memcpy(chara, g_lay_peer_sq + 3, 16); colour[0] = g_lay_peer_sq[19]; colour[1] = g_lay_peer_sq[20];
+    return 1;
+}
+static void ba_fill(uint8_t out[0xb0]) {      /* this game's picks (random ones when none was chosen: they are sent, so both games know them) */
+    static const char *const k_any[] = {"mario", "donkey", "link", "samus", "yoshi", "kirby", "fox", "pikachu", "luigi", "ness", "captain", "peach", "koopa", "sheik", "zelda", "marth", "ganon", "pit", "diddy", "sonic", "lucario", "wolf", "palutena", "cloud"};
+    memset(out, 0, 0xb0);
+    out[0] = 'S'; out[1] = 'Q'; out[2] = 2;
+    uint64_t c[2]; uint8_t col[2] = {0, 0};
+    int have = rbn_ba_pick(0, &c[0], &col[0]) && rbn_ba_pick(1, &c[1], &col[1]);
+    uint64_t r = hs_rand();
+    for (int k = 0; k < 2; k++) if (!have || !c[k]) {          /* none chosen, or Random */
+        char nm[64]; snprintf(nm, sizeof nm, "ui_chara_%s", k_any[(r >> (16 * k)) % (sizeof k_any / sizeof k_any[0])]); c[k] = 0xc100000000000000ull | ba_h40(nm); col[k] = 0;
+        printf("[squad] fighter %d of this game drawn at random: %s\n", k + 2, nm + 9);
+    }
+    memcpy(out + 3, c, 16); out[19] = col[0]; out[20] = col[1];
+}
 const char *rbn_hs_why(void) { return g_hs_why; }      /* (R3 pub1) why the last handshake failed (rb_rollback.c's notice) */
 static void rtt_reset(void);                            /* (R3 net3) a new opponent: its round trip is measured afresh */
 static void hs_head(RbhMsg *m, int type) { memset(m, 0, sizeof *m); m->type = (uint8_t)type; m->proto = RBH_PROTO; m->game_build = (int16_t)g_game_build; m->exe_stamp = exe_stamp(); m->nonce = g_hs_nonce; }
@@ -264,6 +312,7 @@ int rbn_room_layout(const uint16_t mine[11], int has, const uint8_t mine_ctl[0x2
     AcquireSRWLockExclusive(&g_hs_lock);
     hs_head(&g_lay_mine, RBH_LAYOUT); g_lay_mine.nonce = g_match_id; memcpy(g_lay_mine.m.layout[0], mine, sizeof g_lay_mine.m.layout[0]); g_lay_mine.m.has_layout[0] = (uint8_t)(has != 0);
     memcpy(g_lay_mine.m.ctx_hist, mine_ctl, 0x2d);      /* (+ 0x2c: 1 = a GameCube controller) */
+    if (g_sq_agreed) { ba_fill(g_lay_mine.m.ctx_stage); memcpy(g_ba_sent, g_lay_mine.m.ctx_stage, sizeof g_ba_sent); }      /* (Battle Arena) this game's fighters 2 and 3 */
     g_lay_have_mine = 1;
     RbhMsg ans = g_lay_mine; ans.echo = 1;
     ReleaseSRWLockExclusive(&g_hs_lock);
@@ -315,7 +364,7 @@ static int hs_rx(const uint8_t *p, int n) {
         break;
     case RBH_LAYOUT:                                    /* (R3 lwr) the other game's own player's control layout for this match; answered once with ours */
         if (m.nonce != g_match_id || !g_match_id || m.proto != RBH_PROTO) break;
-        memcpy(g_lay_peer, m.m.layout[0], sizeof g_lay_peer); g_lay_peer_has = m.m.has_layout[0]; memcpy(g_lay_peer_ctl, m.m.ctx_hist, sizeof g_lay_peer_ctl); g_lay_have_peer = 1;
+        memcpy(g_lay_peer, m.m.layout[0], sizeof g_lay_peer); g_lay_peer_has = m.m.has_layout[0]; memcpy(g_lay_peer_ctl, m.m.ctx_hist, sizeof g_lay_peer_ctl); memcpy(g_lay_peer_sq, m.m.ctx_stage, sizeof g_lay_peer_sq); g_lay_peer_sq_ok = 1; g_lay_have_peer = 1;
         if (g_lay_have_mine && !m.echo) hs_send(&g_lay_mine, sizeof g_lay_mine);
         break;
     case RBH_REFUSE:                                    /* about our wait, or from the other game's wait we deal with */
@@ -399,7 +448,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
      * player with rollback off is never held. SSBU_RB_NET_ROOM_ROLLBACK=0: the pub2 way for every room fight. */
     int lwr = 0;
     g_hs_lwr = 0;
-    InterlockedExchange(&g_lay_have_peer, 0); InterlockedExchange(&g_lay_have_mine, 0);      /* (a LAYOUT of an older match is not this one's) */
+    InterlockedExchange(&g_lay_have_peer, 0); InterlockedExchange(&g_lay_have_mine, 0); InterlockedExchange(&g_lay_peer_sq_ok, 0); g_sq_agreed = 0;      /* (a LAYOUT of an older match is not this one's) */
     {   int nnldn_role(void), nnldn_players(void); const char *e = getenv("SSBU_RB_NET_ROOM_MATCH"), *rr = getenv("SSBU_RB_NET_ROOM_ROLLBACK");
         if (nnldn_role() && !(e && e[0] == '1')) {
             int heard = rbn_peer_heard_ms(), players = nnldn_players(), want = !(rr && rr[0] == '0');
@@ -495,7 +544,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
                     snprintf(g_hs_why, sizeof g_hs_why, "the room's match differs on the two games (player 1 %016llx here, %016llx there; rule kind %d / %d, stocks %d / %d)", (unsigned long long)mine->chara[0], (unsigned long long)g_hs_peer.m.chara[0], mine->rule_kind, g_hs_peer.m.rule_kind, mine->stock, g_hs_peer.m.stock);
                     g_hs_refused = 1; hs_refuse(g_hs_peer.nonce, g_hs_why);
                 } else {
-                    RbhMatch m = *mine; m.seed = hs_new_seed();
+                    RbhMatch m = *mine; m.seed = hs_new_seed(); if (rbn_ba_mode()) m.pad0 |= 1;      /* (Battle Arena) the room maker's mode: a squad match */
                     hs_head(&g_hs_prop, RBH_PROPOSE); g_hs_prop.echo = g_hs_peer.nonce; g_hs_prop.m = m; g_hs_have_prop = 1;
                 }
             }
@@ -515,7 +564,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
             if (g_hs_have_prop) {
                 if (g_hs_prop.exe_stamp != exe_stamp()) printf("[rbnet] handshake: NOTE the other game's exe was linked at another time (stamp %08x here, %08x there): a different build may desync\n", exe_stamp(), g_hs_prop.exe_stamp);
                 *out = g_hs_prop.m; ok = 1;
-            } else if (now - last_tx >= 100 && net_rb_ready()) { last_tx = now; RbhMsg c; hs_head(&c, RBH_CHOICE); c.m = *mine; hs_send(&c, sizeof c); }
+            } else if (now - last_tx >= 100 && net_rb_ready()) { last_tx = now; RbhMsg c; hs_head(&c, RBH_CHOICE); c.m = *mine; if (lwr && rbn_ba_mode()) c.m.pad0 |= 1; hs_send(&c, sizeof c); }
         }
         if (ok) g_hs_waiting = 0;
         ReleaseSRWLockExclusive(&g_hs_lock);
@@ -558,6 +607,8 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
     }
     menu_notice(NULL);
     g_hs_lwr = lwr;
+    g_sq_agreed = lwr && (out->pad0 & 1);
+    if (lwr && (g_sq_agreed || rbn_ba_mode())) { printf("[squad] room match: %s (room maker's Battle Arena mode %s, this game's %d)\n", g_sq_agreed ? "a Battle Arena squad match (Squad Strike, Tag Team, 3 fighters each, 1 stock each)" : "a 1-on-1 match: the room maker is not in Battle Arena", g_sq_agreed ? "on" : "off", rbn_ba_mode()); fflush(stdout); }
     g_hs_pending = 1; g_hs_pending_t = GetTickCount64();      /* (Arena) agreed: the fight's pads are the session's from now on (rbn_fight_pending) */
     g_hs_seed = out->seed; g_match_id = (uint32_t)(out->seed ^ (out->seed >> 32)) | 1u;
     host_fixed_random_reseed(g_hs_seed);

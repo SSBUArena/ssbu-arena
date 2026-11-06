@@ -221,7 +221,10 @@ static void rv_head_start(void) {
     }
     const char *nick = getenv("SSBU_NICKNAME");
     h->local_player = rbn_on() > 0 ? (uint32_t)rbn_local_player() : 0;
-    h->flags = (g_rv_mrb ? 1u : 0u) | (rbn_on() > 0 && rbn_loop() ? 2u : 0u);
+    {   int dm_squad_made(void);      /* (Battle Arena) flag 4: a Squad Strike (Tag Team) match: fighter[] holds each player's fighter 1; the later
+                                       * fighters come in the same slots (slot_entry stays the player's entry), so a viewer sees the
+                                       * samples, not the fighter's name or model of fighters 2 and 3 */
+        h->flags = (g_rv_mrb ? 1u : 0u) | (rbn_on() > 0 && rbn_loop() ? 2u : 0u) | (dm_squad_made() ? 4u : 0u); }
     h->match_number = rbn_on() > 0 ? (uint32_t)rbn_match_number() : 0;
     h->seed = rbn_match_seed();
     for (int i = 0; i < h->nfighters; i++) {
