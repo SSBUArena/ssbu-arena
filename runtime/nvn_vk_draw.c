@@ -1913,6 +1913,10 @@ static void cg_unguard(int i) {
 }
 typedef struct { uint64_t wm_off; uint32_t written; int16_t cb[16]; } CDisp;
 static CB g_cb[256];
+static int g_bgc_n, g_bgc_on = -1;                 /* SSBU_VK_BGCOMPUTE (above nvn_vk_memory_retire) */
+static int16_t g_cb_bgc[256];                      /* entry + 1 of the dispatch that wrote the CB (kept with it until the CB is filled again), -1 = more than one */
+static uint8_t g_cb_real[256], g_cb_lo[256];       /* this batch: named by something drawn / by a left-out draw */
+static void bgc_ban(int e);
 static CDisp g_cdisp[2048];
 static int g_ncdisp, g_cb_live, g_cb_pending, g_cb_cached = -1;
 static uint64_t g_cb_serial;                       /* the submission the pending CBs wait for */
@@ -2267,6 +2271,7 @@ static void cb_sync(void) {                        /* guest memory must hold wha
     g_cbw = CBW_OTHER;
     if (!g_cb_live && !g_cb_pending) { g_cbw_size = 0; return; }
     if (g_cb_live) {
+        if (g_bgc_on > 0) for (int i = 0; i < 256; i++) if (g_cb[i].state == 1 && g_cb_bgc[i] > 0) bgc_ban(g_cb_bgc[i] - 1);      /* landed inside the batch: guest memory may be read from now on */
         cb_mid_note(why);
         if (g_cb_midcopy < 0) g_cb_midcopy = !(getenv("SSBU_VK_CBMIDCOPY") && !atoi(getenv("SSBU_VK_CBMIDCOPY")));
         if (g_cb_keep > 0 && g_cb_dl == 1 && g_cb_midcopy) {
@@ -2306,8 +2311,108 @@ static int cb_in_range(const CB *c, const Range *r) {
     if (!c->size || !r->size) return 0;
     return c->addr >= r->addr ? c->addr - r->addr < r->size : r->addr - c->addr < c->size;
 }
+/* (Black background) SSBU_VK_BGCOMPUTE: the compute work of the background left out with its draws. With the black
+ * background the background meshes are still animated by the game and, where they are skinned (Town and City: the
+ * people, the cars; ~14 of ~25 dispatches per frame), the game still dispatches their skinning: compute writes the vertices of
+ * draws that SSBU_VK_ZEROIDX leaves out, so the GPU work, the copies of the source vertices and bone matrices into the
+ * stream ring, the filling of the output buffer from guest memory and its descriptor sets are spent for nothing.
+ * Learned per (compute program, the storage ranges the dispatch writes, up to BGC_W): a batch in which the buffers written
+ * were named by a left-out draw (vertex stream) and by nothing else (no drawn draw, no other dispatch, no copy, no landing in the
+ * batch, no read of the kept buffer in a later batch) counts one; after BGC_LEARN such batches the dispatch is left out.
+ * Any use of a left-out dispatch's range by anything that is drawn (buf_ref, within BGC_KEEP batches) bans the entry for
+ * good (that one draw sees guest memory as it was: a picture of one frame, never the match). Guest memory: with the
+ * kept buffers (SSBU_VK_CBKEEP, default) what compute writes stays on the GPU anyway (the run with every kept range made
+ * inaccessible trapped no access by the game), and the game's simulation does not read skinned vertices; the pair test
+ * (rbtick3 pair.sh, Black against original) proves the match the same. The table is emptied after 10 frames without
+ * any dispatch (between matches) and when guest memory under an entry is retired.
+ * Default: on with SSBU_STAGE_BG=off (only with SSBU_VK_ZEROIDX on: the left-out draws are what it learns from);
+ * =0 off (every dispatch as before), =1 on whenever SSBU_VK_ZEROIDX is on. */
+#define BGC_LEARN 30
+#define BGC_KEEP 8
+#define BGC_N 512
+#define BGC_W 4                                    /* storage ranges one dispatch may write */
+typedef struct { uint64_t addr[BGC_W], size[BGC_W]; int n, prog, streak, banned; uint8_t real, lo; } BgcEnt;
+typedef struct { uint64_t addr, size; uint32_t batch; int ent; } BgcSkip;
+static BgcEnt g_bgc[BGC_N];
+static BgcSkip g_bgcs[256];
+static int g_bgcs_n;
+static uint64_t g_bgcs_lo = ~0ull, g_bgcs_hi;
+static LONG64 g_bgc_skipped, g_bgc_learned, g_bgc_banned, g_bgc_late, g_bgc_resets, g_bgc_nw[6];
+static int zidx_on(void);
+static int bgc_on(void) {
+    if (g_bgc_on < 0) {
+        const char *e = getenv("SSBU_VK_BGCOMPUTE"), *bg = getenv("SSBU_STAGE_BG");
+        g_bgc_on = zidx_on() && (e && *e ? atoi(e) != 0 : bg && !strcmp(bg, "off"));
+        printf("nvn_vk: SSBU_VK_BGCOMPUTE=%d: compute dispatches whose output only left-out draws use (the black stage background) %s\n", g_bgc_on, g_bgc_on ? "are left out once learned" : "are made");
+    }
+    return g_bgc_on;
+}
+static void bgc_ban(int e) { if (e >= 0 && e < g_bgc_n && !g_bgc[e].banned) { g_bgc[e].banned = 1; g_bgc_banned++; } }
+static void bgc_reset(void) {
+    if (!g_bgc_n && !g_bgcs_n) return;
+    g_bgc_n = 0; g_bgcs_n = 0; g_bgcs_lo = ~0ull; g_bgcs_hi = 0; g_bgc_resets++;
+    memset(g_cb_bgc, 0, sizeof g_cb_bgc); memset(g_cb_real, 0, sizeof g_cb_real); memset(g_cb_lo, 0, sizeof g_cb_lo);
+}
+static int bgc_find(int prog, int n, const uint64_t *addr, const uint64_t *size) {
+    for (int i = 0; i < g_bgc_n; i++) {
+        BgcEnt *e = &g_bgc[i];
+        if (e->prog != prog || e->n != n || e->addr[0] != addr[0]) continue;
+        int k = 0;
+        while (k < n && e->addr[k] == addr[k] && e->size[k] == size[k]) k++;
+        if (k == n) return i;
+    }
+    if (g_bgc_n == BGC_N) return -1;
+    BgcEnt *e = &g_bgc[g_bgc_n];
+    memset(e, 0, sizeof *e); e->prog = prog; e->n = n;
+    for (int k = 0; k < n; k++) { e->addr[k] = addr[k]; e->size[k] = size[k]; }
+    return g_bgc_n++;
+}
+static void bgc_cb_used(int i) {                   /* CB i is read by something that is drawn */
+    g_cb_real[i] = 1;
+    if (g_cb[i].state != 1 && g_cb_bgc[i] > 0) bgc_ban(g_cb_bgc[i] - 1);      /* kept: written in an earlier batch, read now */
+}
+static void bgc_used_range(uint64_t addr, uint64_t size) {      /* every CB that overlaps the range is read by something drawn */
+    for (int i = 0; i < 256; i++) if (g_cb[i].state && addr < g_cb[i].addr + g_cb[i].size && g_cb[i].addr < addr + size) bgc_cb_used(i);
+}
+static void bgc_skip_used(uint64_t addr, uint64_t size) {       /* something drawn reads (or a dispatch writes) a range whose dispatch was left out */
+    for (int i = 0; i < g_bgcs_n; i++) if (addr < g_bgcs[i].addr + g_bgcs[i].size && g_bgcs[i].addr < addr + size && !g_bgc[g_bgcs[i].ent].banned) {
+        bgc_ban(g_bgcs[i].ent); g_bgc_late++;
+        { static int nl; if (nl++ < 10) printf("nvn_vk_bgc: frame %lld: range %llx+%llu of a left-out dispatch is read by something drawn: made again from now on\n", (long long)g_cur_frame, (unsigned long long)g_bgcs[i].addr, (unsigned long long)g_bgcs[i].size); }
+    }
+}
+static void bgc_batch_begin(void) {                /* skip records older than BGC_KEEP batches are dropped */
+    int n = 0; g_bgcs_lo = ~0ull; g_bgcs_hi = 0;
+    for (int i = 0; i < g_bgcs_n; i++) {
+        if (g_cb_batch - g_bgcs[i].batch > BGC_KEEP) continue;
+        g_bgcs[n++] = g_bgcs[i];
+        if (g_bgcs[i].addr < g_bgcs_lo) g_bgcs_lo = g_bgcs[i].addr;
+        if (g_bgcs[i].addr + g_bgcs[i].size > g_bgcs_hi) g_bgcs_hi = g_bgcs[i].addr + g_bgcs[i].size;
+    }
+    g_bgcs_n = n;
+}
+static void bgc_skip_note(int e, uint64_t addr, uint64_t size) {
+    for (int i = 0; i < g_bgcs_n; i++) if (g_bgcs[i].ent == e && g_bgcs[i].addr == addr && g_bgcs[i].size == size) { g_bgcs[i].batch = g_cb_batch; return; }
+    if (g_bgcs_n == 256) { bgc_ban(e); return; }
+    BgcSkip *s = &g_bgcs[g_bgcs_n++]; s->addr = addr; s->size = size; s->batch = g_cb_batch; s->ent = e;
+    if (addr < g_bgcs_lo) g_bgcs_lo = addr;
+    if (addr + size > g_bgcs_hi) g_bgcs_hi = addr + size;
+}
+static void bgc_batch_end(void) {                  /* before the live CBs become pending: what each learning dispatch's buffers were used by */
+    for (int i = 0; i < 256; i++) {
+        if (g_cb[i].state == 1 && g_cb_bgc[i] > 0) { BgcEnt *e = &g_bgc[g_cb_bgc[i] - 1]; e->real |= g_cb_real[i]; e->lo |= g_cb_lo[i]; }
+        if (g_cb_bgc[i] < 0) g_cb_bgc[i] = 0;
+        g_cb_real[i] = g_cb_lo[i] = 0;
+    }
+    for (int i = 0; i < g_bgc_n; i++) {
+        BgcEnt *e = &g_bgc[i];
+        if (e->real) bgc_ban(i);
+        else if (e->lo && !e->banned && ++e->streak == BGC_LEARN) g_bgc_learned++;
+        e->real = e->lo = 0;
+    }
+}
 void nvn_vk_memory_retire(void *arg) {
     const Range *range = arg;
+    if (g_bgc_on > 0) for (int i = 0; i < g_bgc_n; i++) for (int k = 0; k < g_bgc[i].n; k++) if (range->addr < g_bgc[i].addr[k] + g_bgc[i].size[k] && g_bgc[i].addr[k] < range->addr + range->size) { bgc_reset(); i = g_bgc_n; break; }
     for (int i = 0; i < 256; i++) {
         if (g_cb[i].state && g_cb[i].state <= 2 && cb_in_range(&g_cb[i], range)) { CB_WHY(CBW_RETIRE, range->addr, range->size); cb_sync(); break; }
     }
@@ -2320,6 +2425,7 @@ void nvn_vk_memory_retire(void *arg) {
 static void cb_batch_end(void) {
     if (!g_cb_live) return;
     g_cb_serial = cmd_submit(NULL, NULL);
+    if (g_bgc_on > 0) bgc_batch_end();
     for (int i = 0; i < 256; i++) if (g_cb[i].state == 1) { g_cb[i].state = 2; g_cb[i].kserial = g_cb_serial; g_cb[i].touch = 0; }
     g_cb_pending = g_cb_live; g_cb_live = 0; g_live_lo = ~0ull; g_live_hi = 0;
 }
@@ -2346,6 +2452,7 @@ static CB *cb_new(uint64_t addr, uint64_t size) {
             if (k->state != 3 || k->addr != addr || k->size != size) continue;
             if (cb_r1_old(k) || (g_cb_ww && cb_guest_wrote(k))) { cb_kept_land(k, 4); break; }      /* (Arena) or written by an abandoned submission: dropped, filled again below;      /* the game wrote into the range: merged back, then filled again below */
             k->state = 1; k->dirty = 0; g_cb_live++; g_ck_hits++; k->bseq = g_cb_r1seq;      /* (Arena) this batch dispatches into it now */
+            g_cb_bgc[i] = 0; g_cb_real[i] = g_cb_lo[i] = 0;      /* SSBU_VK_BGCOMPUTE: compute_dispatch says whose it is */
             if (--g_cb_nkept == 0) { g_kept_lo = ~0ull; g_kept_hi = 0; }
             if (addr < g_live_lo) g_live_lo = addr;
             if (addr + size > g_live_hi) g_live_hi = addr + size;
@@ -2389,6 +2496,7 @@ static CB *cb_new(uint64_t addr, uint64_t size) {
         R.cb_made++;
     }
     c->addr = addr; c->size = size; c->state = 1; c->dirty = 0;
+    g_cb_bgc[c - g_cb] = 0; g_cb_real[c - g_cb] = g_cb_lo[c - g_cb] = 0;
     if (addr < g_live_lo) g_live_lo = addr;
     if (addr + size > g_live_hi) g_live_hi = addr + size;
     if (g_cb_scan < 0) g_cb_scan = !(getenv("SSBU_VK_CBSCAN") && !atoi(getenv("SSBU_VK_CBSCAN")));
@@ -2465,11 +2573,13 @@ static int cb_assemble(uint64_t addr, uint64_t size, BufRef *b) {
  * alignment the use needs (storage descriptors), 1 = none. Returns 1 when a CB is bound. */
 static int buf_ref(uint64_t addr, uint64_t size, uint64_t align, BufRef *b) {
     b->zero = 0; b->size = size;
+    if (g_bgcs_n && addr < g_bgcs_hi && addr + size > g_bgcs_lo) bgc_skip_used(addr, size);      /* SSBU_VK_BGCOMPUTE: a left-out dispatch's range read by something drawn */
     if (g_cb_bound < 0) g_cb_bound = !(getenv("SSBU_VK_CBBOUND") && !atoi(getenv("SSBU_VK_CBBOUND")));      /* round 16, default 1 (=0: cb_inside / cb_overlap are asked for every range as before): a range outside the bounds of the live buffers cannot be inside or overlap one. Proof of the picture: run p16_h_bf5 (old path + this) = p16_d_bfd (this off), all pixels, three frames. NOTE for picture tests on battle_field: the picture has two forms that alternate with the PRESENTED frame number (17-19 % of the pixels, small differences): compare shots whose "saved at presented frame" numbers have the same parity. */
     if (g_cb_live && (!g_cb_bound || (addr < g_live_hi && addr + size > g_live_lo))) {
         CB *c = cb_inside(addr, size);
-        if (c && (addr - c->addr) % align == 0) { b->buf = c->buf; b->off = addr - c->addr; return 1; }
+        if (c && (addr - c->addr) % align == 0) { if (g_bgc_on > 0) bgc_cb_used((int)(c - g_cb)); b->buf = c->buf; b->off = addr - c->addr; return 1; }
         if (cb_overlap(addr, size)) {
+            if (g_bgc_on > 0) bgc_used_range(addr, size);
             if (cb_assemble(addr, size, b)) return 1;
             CB_WHY(c ? CBW_ALIGN : CBW_READ, addr, size); cb_sync();
         }
@@ -2487,8 +2597,10 @@ static int buf_ref(uint64_t addr, uint64_t size, uint64_t align, BufRef *b) {
             if (k->wchk != g_cb_batch) { k->wchk = g_cb_batch; k->wrote = (uint8_t)(g_cb_ww > 0 && cb_guest_wrote(k)); }
             if (k->wrote) break;
             b->buf = k->buf; b->off = addr - k->addr; k->touch = 1; g_ck_drawn++;
+            if (g_bgc_on > 0) bgc_cb_used((int)(k - g_cb));
             return 1;
         }
+        if (g_bgc_on > 0) bgc_used_range(addr, size);
         if (on && cb_assemble(addr, size, b)) return 1;
         cb_kept_range(addr, size, 1);
     }
@@ -2497,6 +2609,7 @@ static int buf_ref(uint64_t addr, uint64_t size, uint64_t align, BufRef *b) {
 }
 static void compute_pipe_make(VStage *v);
 static void compute_dispatch_run(Prog *p, Stage *st, VStage *v, uint32_t gx, uint32_t gy, uint32_t gz);
+static int16_t g_last_wcb[16];                     /* the CBs the last dispatch wrote, by storage binding (-1 none) */
 static void compute_dispatch(uint32_t gx, uint32_t gy, uint32_t gz) {
     Prog *p = R.prog[5];
     static int nlog;
@@ -2510,6 +2623,22 @@ static void compute_dispatch(uint32_t gx, uint32_t gy, uint32_t gz) {
     if (v->images) { nvn_vk_missing("a compute program that uses images (nvnCommandBufferBindImage)"); return; }
     if (v->nsmp > 32) { nvn_vk_missing("a compute program with more than 32 samplers"); return; }
     if (!gx || !gy || !gz) return;
+    int bge = -1;
+    if (g_bgc_on < 0) bgc_on();
+    if (g_bgc_on > 0 && v->ssbo_w) {               /* SSBU_VK_BGCOMPUTE: a learned dispatch is left out; else its buffers are followed */
+        int nw = 0;
+        uint64_t wa[BGC_W], ws[BGC_W];
+        for (unsigned k = 0; k < 16; k++) if ((v->ssbo_w >> k & 1) && R.ssbo[5][k].addr && R.ssbo[5][k].size) { if (nw < BGC_W) { wa[nw] = R.ssbo[5][k].addr; ws[nw] = R.ssbo[5][k].size; } nw++; }
+        g_bgc_nw[nw < 5 ? nw : 5]++;
+        if (nw >= 1 && nw <= BGC_W) {
+            bge = bgc_find(p->serial, nw, wa, ws);
+            if (bge >= 0 && !g_bgc[bge].banned && g_bgc[bge].streak >= BGC_LEARN) { for (int k = 0; k < nw; k++) bgc_skip_note(bge, wa[k], ws[k]); g_bgc_skipped++; return; }
+        }
+        if (g_bgcs_n) for (unsigned k = 0; k < 16; k++) {
+            Range r = R.ssbo[5][k];
+            if ((v->ssbo_w >> k & 1) && r.addr && r.size && r.addr < g_bgcs_hi && r.addr + r.size > g_bgcs_lo) bgc_skip_used(r.addr, r.size);      /* writes into a left-out range */
+        }
+    }
     int cp_how = 0;
     if (v->cp_state != 2) { LONG64 t0 = tk(); cp_how = compute_pipe_ensure(v); if (cp_how) { hold_note(cp_how == 1 ? H_PIPE_DRAW : H_PIPE_WAIT, tk() - t0); g_tm[5] += tk() - t0; } }
     if (!v->cp_recorded) { v->cp_recorded = 1; piperec_append(NULL, v, NULL, 1); }
@@ -2519,6 +2648,14 @@ static void compute_dispatch(uint32_t gx, uint32_t gy, uint32_t gz) {
                st->local[0], st->local[1], st->local[2], v->cbufs, v->ssbos, v->ssbo_w, v->nsmp);
     }
     compute_dispatch_run(p, st, v, gx, gy, gz);
+    if (g_bgc_on > 0 && v->ssbo_w) for (unsigned k = 0; k < 16; k++) {      /* whose buffer each written CB is */
+        int ci = g_last_wcb[k];
+        if (ci < 0) continue;
+        if (bge >= 0) {
+            if (!g_cb_bgc[ci]) g_cb_bgc[ci] = (int16_t)(bge + 1);
+            else if (g_cb_bgc[ci] != bge + 1) { if (g_cb_bgc[ci] > 0) bgc_ban(g_cb_bgc[ci] - 1); bgc_ban(bge); g_cb_bgc[ci] = -1; }
+        } else { if (g_cb_bgc[ci] > 0) bgc_ban(g_cb_bgc[ci] - 1); g_cb_bgc[ci] = -1; }
+    }
 }
 static void compute_pipe_make(VStage *v) {         /* any thread */
     {
@@ -2625,6 +2762,7 @@ static void compute_dispatch_run(Prog *p, Stage *st, VStage *v, uint32_t gx, uin
         CDisp *d = &g_cdisp[g_ncdisp++];
         d->wm_off = wm_off; d->written = v->ssbo_w; memcpy(d->cb, wcb, sizeof wcb);
     }
+    memcpy(g_last_wcb, wcb, sizeof wcb);
 }
 /* Everything of a draw up to the draw call. topo: NVN primitive. Returns 0 when the draw cannot be done (counted as skipped). */
 static uint64_t g_dt_voff[16]; static VkBuffer g_dt_vb[16]; int nvn_front_draw_tag(void);      /* round 17, test (SSBU_DRAWTAG): see dt_vk */
@@ -3200,15 +3338,18 @@ static int zidx_zero(const uint8_t *p, uint64_t n) {
     for (; i < n; i++) acc |= p[i];
     return acc == 0;
 }
-static int zidx_skip(unsigned prim, uint64_t addr, uint64_t n) {
+static int zidx_on(void) {
     static int on = -1;
-    static struct { uint64_t addr, n; LONG64 frame; int zero; } z[4096];
     if (on < 0) {
         const char *e = getenv("SSBU_VK_ZEROIDX"), *bg = getenv("SSBU_STAGE_BG");
         on = e && *e ? atoi(e) != 0 : (bg && (!strcmp(bg, "off") || !strcmp(bg, "custom")));
         printf("nvn_vk: SSBU_VK_ZEROIDX=%d: indexed triangle draws whose indices are all 0 (the black stage background) %s\n", on, on ? "are left out" : "are drawn");
     }
-    if (!on || prim < 4 || prim > 6 || n < 8) return 0;
+    return on;
+}
+static int zidx_skip(unsigned prim, uint64_t addr, uint64_t n) {
+    static struct { uint64_t addr, n; LONG64 frame; int zero; } z[4096];
+    if (!zidx_on() || prim < 4 || prim > 6 || n < 8) return 0;
     const uint8_t *p = P(addr);
     uint64_t w0; memcpy(&w0, p, 8);
     if (w0) return 0;                              /* every real mesh: one load */
@@ -3408,7 +3549,13 @@ static void exec(const Cmd *m, int depth) {
         int count = (int)a[2];
         if (count <= 0 || !a[3]) { int dtag = nvn_front_draw_tag(); if (dtag) dt_vk(dtag, nvn_front_draw_tag_next(), 0, m, 0, NULL); R.frame_skipped++; nvn_front_count(1, 1); break; }
         if (t == 0 && !D.has_iu8) { nvn_vk_missing("8-bit indices on a GPU without VK_EXT_index_type_uint8"); break; }
-        if (zidx_skip((unsigned)a[0], a[3], (uint64_t)count << t)) { int dtag = nvn_front_draw_tag(); if (dtag) dt_vk(dtag, nvn_front_draw_tag_next(), 0, m, 0, NULL); R.frame_skipped++; g_zidx_n++; nvn_front_count(1, 1); break; }
+        if (zidx_skip((unsigned)a[0], a[3], (uint64_t)count << t)) { int dtag = nvn_front_draw_tag(); if (dtag) dt_vk(dtag, nvn_front_draw_tag_next(), 0, m, 0, NULL); R.frame_skipped++; g_zidx_n++; nvn_front_count(1, 1);
+            if (g_bgc_on > 0 && g_cb_live) for (int i = 0; i < 16; i++) {      /* SSBU_VK_BGCOMPUTE: compute buffers this left-out draw would read */
+                uint64_t va = R.vbuf[i].addr, vn = R.vbuf[i].size;
+                if (!va || !vn || va >= g_live_hi || va + vn <= g_live_lo) continue;
+                for (int c = 0; c < g_cb_hi; c++) if (g_cb[c].state == 1 && va < g_cb[c].addr + g_cb[c].size && g_cb[c].addr < va + vn) g_cb_lo[c] = 1;
+            }
+            break; }
         BufRef ib;
         buf_ref(a[3], (uint64_t)count << t, (uint64_t)1 << t, &ib);    /* before the draw is prepared: a ring wrap submits */
         { LONG64 t0 = tk(); int ok = draw_prepare((unsigned)a[0]); g_tm[8] += tk() - t0; { int dtag = nvn_front_draw_tag(); if (dtag) dt_vk(dtag, nvn_front_draw_tag_next(), ok, m, 1, &ib); } if (!ok) { R.frame_skipped++; nvn_front_count(1, 1); break; } }
@@ -3499,6 +3646,7 @@ static void vk_submit(void *arg) {
     LONG64 t0 = tk();
     cb_sync();                                     /* what the last batch's dispatches wrote is in guest memory before this batch reads it */
     g_cb_batch++;
+    if (g_bgcs_n) bgc_batch_begin();
     if (g_cb_nkept) cb_kept_age();
     cb_kept_index();
     LONG64 t1 = tk();
@@ -4166,7 +4314,8 @@ swap: ;
     g_tm[4] += tp[5] - t_present;
     nvn_front_frame_end(R.frame_draws, R.frame_skipped, R.frame_clears);
     tp[6] = tk();
-    { static LONG64 disp_prev; g_in_fight = R.dispatches != disp_prev; disp_prev = R.dispatches; if (g_in_fight) { g_fight_last = frame; if (g_prep_state == 1) g_prep_fight_frames++; } }      /* a frame with compute dispatches (skinning): fighters are on screen */
+    { static LONG64 disp_prev; g_in_fight = R.dispatches != disp_prev; disp_prev = R.dispatches;
+      { static int idle; if (g_in_fight) idle = 0; else if (++idle >= 10 && g_bgc_on > 0) bgc_reset(); }      /* SSBU_VK_BGCOMPUTE: between matches */ if (g_in_fight) { g_fight_last = frame; if (g_prep_state == 1) g_prep_fight_frames++; } }      /* a frame with compute dispatches (skinning): fighters are on screen */
     {   /* session 9: per-frame record for the "nvn_vk_gpu_fight:" line */
         static LONG64 t_prev;
         LONG64 t_now = tk();
@@ -4220,6 +4369,13 @@ swap: ;
                                      (long long)frame - 300, (long long)frame, (double)(g_zidx_n - zn_last) / 300.0, (double)(g_zidx_full - zf_last) / 300.0,
                                      (long long)g_zidx_why[4], (long long)g_zidx_why[0], (long long)g_zidx_why[1], (long long)g_zidx_why[2], (long long)g_zidx_why[3]);
             zn_last = g_zidx_n; zf_last = g_zidx_full;
+        }
+        if (g_bgc_on > 0) {
+            static LONG64 sk_last;
+            printf("nvn_vk_bgc: frames %lld..%lld: %.1f dispatches per frame left out (output only for left-out draws, SSBU_VK_BGCOMPUTE) | so far: %lld ranges learned, %lld banned, %lld read by something drawn after they were left out; %d entries, table emptied %lld times; dispatches by storage ranges written 0/1/2/3/4/more: %lld %lld %lld %lld %lld %lld\n",
+                   (long long)frame - 300, (long long)frame, (double)(g_bgc_skipped - sk_last) / 300.0, (long long)g_bgc_learned, (long long)g_bgc_banned, (long long)g_bgc_late, g_bgc_n, (long long)g_bgc_resets,
+                   (long long)g_bgc_nw[0], (long long)g_bgc_nw[1], (long long)g_bgc_nw[2], (long long)g_bgc_nw[3], (long long)g_bgc_nw[4], (long long)g_bgc_nw[5]);
+            sk_last = g_bgc_skipped;
         }
         if (g_tl_n) {
             double q = 1000.0 / (double)fq.QuadPart / (double)g_tl_n;
