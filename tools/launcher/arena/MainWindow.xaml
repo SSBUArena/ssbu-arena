@@ -418,7 +418,7 @@
                     <Button Style="{StaticResource CardButton}" Margin="0,0,0,6" Padding="12,7" Tag="{Binding}" Click="ReplayOpen_Click" ToolTip="{Binding RowTip}">
                       <Grid>
                         <Grid.ColumnDefinitions>
-                          <ColumnDefinition Width="52"/><ColumnDefinition Width="*"/><ColumnDefinition Width="164"/><ColumnDefinition Width="106"/><ColumnDefinition Width="0"/><ColumnDefinition Width="156"/>
+                          <ColumnDefinition Width="52"/><ColumnDefinition Width="*"/><ColumnDefinition Width="164"/><ColumnDefinition Width="106"/><ColumnDefinition Width="118"/><ColumnDefinition Width="156"/>
                         </Grid.ColumnDefinitions>
                         <StackPanel VerticalAlignment="Center">
                           <TextBlock Text="{Binding TimeText}" FontSize="15" FontWeight="SemiBold"/>
@@ -462,6 +462,12 @@
                           </Border>
                           <TextBlock Text="{Binding ResultText}" Style="{StaticResource Small}" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
+                        <!-- (0.2.41) make public / public: a click on the pill -->
+                        <Button Grid.Column="4" Style="{StaticResource Bare}" Tag="{Binding}" Click="ReplayPublic_Click" IsHitTestVisible="{Binding CanShare}" ToolTip="{Binding VisTip}" ToolTipService.ShowOnDisabled="True" HorizontalAlignment="Left" VerticalAlignment="Center" Cursor="Hand" Visibility="{Binding VisVisible}">
+                          <Border CornerRadius="13" BorderThickness="1" BorderBrush="{Binding VisBorder}" Padding="10,3,10,3" MinWidth="96">
+                            <TextBlock Text="{Binding VisText}" Foreground="{Binding VisBrush}" FontSize="13.5" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                          </Border>
+                        </Button>
                         <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
                           <Button Style="{StaticResource IconButton}" Tag="{Binding}" Click="ReplayDelete_Click" Width="32" Height="32" ToolTip="{Binding DeleteTip}" Padding="0">
                             <Path Data="{StaticResource IcoTrash}" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.7" Width="15" Height="15" Stretch="Uniform" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>

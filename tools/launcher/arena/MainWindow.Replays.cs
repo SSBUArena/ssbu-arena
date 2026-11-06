@@ -26,6 +26,8 @@ namespace Arena
     public sealed class ReplayRow : INotifyPropertyChanged
     {
         public ReplayState R;
+        /// <summary>(0.2.41) its public copy (null: only on this PC); Busy: what the pill is doing now</summary>
+        public PublicReplay Pub; public string Busy;
         public event PropertyChangedEventHandler PropertyChanged;
         public void Changed() { PropertyChanged?.Invoke(this, new PropertyChangedEventArgs("")); }
         DateTime WhenUtc => R.When.ToUniversalTime();
@@ -86,7 +88,15 @@ namespace Arena
                 return R.Ended ? "No winner" : "Ended early";
             }
         }
-        public string RowTip => WhenText + "  ·  on this PC";
+        public string RowTip => WhenText + "  ·  " + (Pub != null ? "public until " + Pub.Expires.ToLocalTime().ToString("d MMM", CultureInfo.InvariantCulture) : "on this PC");
+        // (0.2.41) the pill: make public / public (click: copy the link or make it private)
+        public bool CanShare => Busy == null && !R.LoopTest && Account.SignedIn;
+        public string VisText => Busy ?? (Pub != null ? "Public · " + Math.Max(1, (int)Math.Ceiling((Pub.Expires - DateTime.UtcNow).TotalDays)) + "d" : "Make public");
+        public Brush VisBrush => Res(Pub != null ? "Accent" : "Muted");
+        public Brush VisBorder => CanShare ? Res(Pub != null ? "Accent" : "Muted") : Brushes.Transparent;
+        public Visibility VisVisible => Account.SignedIn && !R.LoopTest ? Visibility.Visible : Visibility.Collapsed;
+        public string VisTip => Pub != null ? "Public for " + ReplayPublish.Days + " days: anyone with the link can watch it on ssbuarena.com (your opponent is shown as \"Opponent\"). Click to copy the link or make it private."
+            : "Only on this PC. Click to make it public for " + ReplayPublish.Days + " days: it is uploaded and anyone with the link can watch it. Your opponent is shown as \"Opponent\". At most " + ReplayPublish.Keep + " public: a new one makes your oldest private.";
         public string DeleteTip => "Delete it from this PC";
         /// <summary>what the search box looks in (lower case)</summary>
         public string Haystack => string.Join(" ", P1Name, P2Name, P1Fighter, P2Fighter, Stage, Kind).ToLowerInvariant();
@@ -127,7 +137,9 @@ namespace Arena
             Task.Run(() =>
             {
                 ReplayLibrary.Cap();
-                return ReplayLibrary.List().Select(l => new ReplayRow { R = l }).OrderByDescending(r => r.Sort).ToList();
+                Dictionary<string, PublicReplay> pub;
+                try { pub = ReplayPublish.Refresh(); } catch { pub = ReplayPublish.Load(); }
+                return ReplayLibrary.List().Select(l => new ReplayRow { R = l, Pub = pub.TryGetValue(Path.GetFileName(l.Path), out var p) ? p : null }).OrderByDescending(r => r.Sort).ToList();
             }).ContinueWith(t =>
             {
                 if (seq != rvLoadSeq) return;               // (a newer reading is on its way)
@@ -240,6 +252,47 @@ namespace Arena
             ShowReplayRows();
         }
         void ReplaysSearchClear_Click(object sender, RoutedEventArgs e) { RvSearch.Text = ""; RvSearch.Focus(); }
+
+        /// <summary>(0.2.41) the pill: private -> ask, then upload; public -> copy the link or make it private</summary>
+        void ReplayPublic_Click(object sender, RoutedEventArgs e)
+        {
+            e.Handled = true;                               // (inside the row's own button: not a Watch click)
+            var row = (sender as Button)?.Tag as ReplayRow;
+            if (row == null || !row.CanShare) return;
+            string file = Path.GetFileName(row.R.Path);
+            if (row.Pub == null)
+            {
+                Show("Make this replay public?", row.P1Fighter + " vs " + row.P2Fighter + ", " + row.WhenText + ".\n\nIt is uploaded to the Arena server and anyone with its link can watch it on ssbuarena.com for " + ReplayPublish.Days +
+                     " days. Your opponent is shown as \"Opponent\", you with your account name. You can make it private again at any time. At most " + ReplayPublish.Keep + " of your replays are public: a new one makes your oldest private.", null,
+                     ("Make public", () =>
+                     {
+                         row.Busy = "Uploading..."; row.Changed();
+                         Task.Run(() => ReplayPublish.Publish(row.R.Path)).ContinueWith(t =>
+                         {
+                             row.Busy = null;
+                             if (t.IsFaulted) { row.Changed(); Show("Replay", "Could not make it public: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
+                             row.Pub = t.Result; row.Changed();
+                             try { Clipboard.SetText(ReplayPublish.Link(t.Result.Id)); } catch { }
+                             Show("Replay is public", "The link is copied: paste it to share the replay.\n\n" + ReplayPublish.Link(t.Result.Id), null, ("OK", null, true));
+                             LoadReplays();                  // (an older one may have gone back to private)
+                         }, TaskScheduler.FromCurrentSynchronizationContext());
+                     }, true), ("Cancel", null, false));
+                return;
+            }
+            string link = ReplayPublish.Link(row.Pub.Id);
+            Show("Public replay", link + "\n\nPublic until " + row.Pub.Expires.ToLocalTime().ToString("d MMMM yyyy", CultureInfo.InvariantCulture) + ".", null,
+                 ("Copy link", () => { try { Clipboard.SetText(link); } catch { } }, true),
+                 ("Make private", () =>
+                 {
+                     row.Busy = "Removing..."; row.Changed();
+                     Task.Run(() => ReplayPublish.Withdraw(file, row.Pub.Id)).ContinueWith(t =>
+                     {
+                         row.Busy = null;
+                         if (t.IsFaulted) { row.Changed(); Show("Replay", "Could not make it private: " + t.Exception.GetBaseException().Message, null, ("OK", null, true)); return; }
+                         row.Pub = null; row.Changed();
+                     }, TaskScheduler.FromCurrentSynchronizationContext());
+                 }, false), ("Close", null, false));
+        }
 
         void ReplayDelete_Click(object sender, RoutedEventArgs e)
         {
