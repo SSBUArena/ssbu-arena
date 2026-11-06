@@ -146,7 +146,13 @@ static int comp_mapped(uint64_t a);
 int comp_in_options(void) {           /* menu.cpp: the game's own options screen is the current sequence (Arena UI only) */
     static int ui = -1;
     if (ui < 0) { const char *e = getenv("SSBU_COMPETITIVE_UI"); ui = e && e[0] == '1'; }
-    return ui && comp_mapped(CURRENT_SEQUENCE) && ((*(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE) >> 24) == 0x06;
+    /* (0.2.39) the game's .bss stays mapped once it is: asked of the OS until then only (the VirtualQuery cost ~0.7 ms of the
+     * render thread every frame in the game's huge reservation). SSBU_COMP_MAPCACHE=0: asked every frame, as before. */
+    static int cache = -1, seen;
+    if (cache < 0) { const char *e = getenv("SSBU_COMP_MAPCACHE"); cache = !(e && e[0] == '0'); }
+    if (!ui) return 0;
+    if (!(cache && seen)) { if (!comp_mapped(CURRENT_SEQUENCE)) return 0; seen = 1; }
+    return ((*(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE) >> 24) == 0x06;
 }
 static int comp_seq_allowed(uint32_t s) { return (s >> 24) == 0x01 || s == 0x02010000u || (s >> 24) == 0x06 || s == 0; }
 

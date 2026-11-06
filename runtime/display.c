@@ -1031,7 +1031,8 @@ static void lat_release(void) {
     static HANDLE timer;
     LARGE_INTEGER now;
     latency_mode();
-    if (g_lat_mode > 0 && !g_lockstep) {
+    int r1_rb_paced(void);
+    if (g_lat_mode > 0 && !g_lockstep && !r1_rb_paced()) {      /* (0.2.39) not in an online rollback match: its own pacing and the 1-frame queue time it */
         LONG64 n = g_vsync_n, t = g_tick_at[n & 15];
         double per = g_lock_k ? (double)g_lock_k * g_vb_period : (double)g_freq.QuadPart / 60.0;
         g_lat_last_d = 0;

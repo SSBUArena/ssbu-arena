@@ -803,7 +803,7 @@ namespace Arena
             env["SSBU_LOOSE_FILES"] = Competitive ? "1" : "0";      // build\characters\competitive (runtime/loose_files.c)
             env["SSBU_RB_NET_DELAY"] = Math.Max(1, Math.Min(5, InputDelay)).ToString();      // (0.2.14) the player's choice; (0.2.38) always set, at least 1
             if (StageBg > 0 && MakeStages()) env["SSBU_STAGE_BG"] = StageBg == 1 ? "off" : "custom";      // (0.2.20) runtime/loose_files.c: local graphics only
-            env["SSBU_LATENCY"] = "normal";                          // wins over a latency = low / lowest written by hand in graphics.ini
+            env["SSBU_LATENCY"] = "low";                             // (0.2.39) the pad read as late as the frame can still be on time (display.c lat_release; never in online rollback matches); wins over graphics.ini
             env["SSBU_COMPETITIVE"] = env["SSBU_LOOSE_FILES"];       // no FS meter, no random items (runtime/competitive.c)
             // the matches the game records for the Replays page (fighter_sdk/replay_state.c: local, mm, ldn, arena)
             var modes = new List<string>();
