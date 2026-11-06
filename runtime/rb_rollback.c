@@ -437,7 +437,9 @@ static void rbg_step_body(Ctx *c) {
         if (g_rbg_recap_first < 0 && i >= cf) g_rbg_recap_first = i;          /* the first re-run frame a later rollback may load */
         g_rbg_t_rerun += now_ms() - g_rbg_t_pass0; g_rbg_n_rerun++;
         int r4 = g_rbg_recap == 4 || (g_rbg_recap == 5 && g_rbg_cur_k == 3);
-        if (g_rgs_left <= 1) want = !r4 || g_rbg_recap_first < 0 || g_rbg_recap_first == i;     /* (4: not the last, see above) */
+        static int r1k = -1; if (r1k < 0) { const char *e = getenv("SSBU_RB_NET_RECAP1"); r1k = e ? atoi(e) != 0 : 0; }
+        if (g_rgs_left <= 1 && r1k && g_rbg_cur_k == 1) want = 0;     /* (0.2.40 test, SSBU_RB_NET_RECAP1=1) a 1-frame rollback: its one re-run pass not captured (a wrong guess at the next frame loads the state before it and runs 2) */
+        else if (g_rgs_left <= 1) want = !r4 || g_rbg_recap_first < 0 || g_rbg_recap_first == i;     /* (4: not the last, see above) */
         else if (i < cf) want = 0;
         else if (g_rbg_recap == 0) want = 1;
         else if (g_rbg_recap == 2) want = ((i - g_rbg_recap_first) & 1) == 0;

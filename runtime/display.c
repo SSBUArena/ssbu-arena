@@ -177,6 +177,34 @@ static DWORD WINAPI vblank_thread(LPVOID arg) {
     return 0;
 }
 #else
+/* (0.2.40, from Rsoto95/ssbu-recomp 8d4878d) a screen that is not k x 60 Hz (144, 165, 175 Hz: a 60 fps game there shows a mix
+ * of frames held 2 and 3 refreshes, 25 % / 75 % on 165 Hz: uneven motion) is set to the highest k x 60 Hz mode of the same size
+ * (240 / 180 / 120 / 60) while the game runs. CDS_FULLSCREEN makes it temporary: Windows puts the old mode back when the process
+ * ends, a crash too. graphics.ini refresh_switch = off or SSBU_REFRESH_SWITCH=0: never. */
+int gfx_refresh_switch(void);
+static int g_rs_from, g_rs_to;
+static int rs_k60(DWORD f) { int k = (int)((f + 30) / 60); return k >= 1 && k <= 8 && fabs((double)f - 60.0 * k) <= 60.0 * k * 0.011; }
+static int refresh_switch(const char *dev) {
+    const char *e = getenv("SSBU_REFRESH_SWITCH");
+    if (e ? atoi(e) == 0 : !gfx_refresh_switch()) return 0;
+    DEVMODEA cur, m, best; memset(&cur, 0, sizeof cur); cur.dmSize = sizeof cur; memset(&best, 0, sizeof best);
+    if (!EnumDisplaySettingsA(dev, ENUM_CURRENT_SETTINGS, &cur) || cur.dmDisplayFrequency <= 1 || rs_k60(cur.dmDisplayFrequency)) return 0;
+    int have = 0;
+    for (DWORD i = 0;; i++) {
+        memset(&m, 0, sizeof m); m.dmSize = sizeof m;
+        if (!EnumDisplaySettingsA(dev, i, &m)) break;
+        if (m.dmPelsWidth != cur.dmPelsWidth || m.dmPelsHeight != cur.dmPelsHeight || m.dmBitsPerPel != cur.dmBitsPerPel || (m.dmDisplayFlags & DM_INTERLACED)) continue;
+        if (!rs_k60(m.dmDisplayFrequency) || m.dmDisplayFrequency > 250) continue;
+        if (!have || m.dmDisplayFrequency > best.dmDisplayFrequency) { best = m; have = 1; }
+    }
+    if (!have) { printf("display: the screen runs at %lu Hz (not k x 60) and lists no k x 60 Hz mode at %lux%lu: left as it is%c", cur.dmDisplayFrequency, cur.dmPelsWidth, cur.dmPelsHeight, 10); return 0; }
+    best.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
+    LONG r = ChangeDisplaySettingsExA(dev, &best, NULL, CDS_FULLSCREEN, NULL);
+    if (r != DISP_CHANGE_SUCCESSFUL) { printf("display: setting the screen from %lu Hz to %lu Hz failed (%ld): left as it is%c", cur.dmDisplayFrequency, best.dmDisplayFrequency, r, 10); return 0; }
+    g_rs_from = (int)cur.dmDisplayFrequency; g_rs_to = (int)best.dmDisplayFrequency;
+    printf("display: REFRESH SWITCH: the screen %s set from %d Hz to %d Hz while the game runs (every frame equally long; the old rate comes back when the game closes; graphics.ini refresh_switch = off: never)%c", dev, g_rs_from, g_rs_to, 10);
+    return 1;
+}
 static DWORD WINAPI vblank_thread(LPVOID arg) {
     (void)arg;
     HMODULE gdi = LoadLibraryA("gdi32.dll");
@@ -188,7 +216,9 @@ static DWORD WINAPI vblank_thread(LPVOID arg) {
     HDC dc = NULL;
     memset(&mi, 0, sizeof mi); mi.cbSize = sizeof mi;
     memset(&oa, 0, sizeof oa);
-    if (open_adapter && wait_vblank && GetMonitorInfoA(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTOPRIMARY), (MONITORINFO *)&mi)) dc = CreateDCA(NULL, mi.szDevice, NULL, NULL);
+    if (GetMonitorInfoA(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTOPRIMARY), (MONITORINFO *)&mi) && refresh_switch(mi.szDevice))
+        Sleep(1500);                                                   /* the screen settles on its new mode before the refresh is measured */
+    if (open_adapter && wait_vblank && mi.szDevice[0]) dc = CreateDCA(NULL, mi.szDevice, NULL, NULL);
     oa.hDc = dc;
     if (!dc || open_adapter(&oa) != 0) { printf("display: no vblank source (D3DKMT): the refresh clock stays our own 60 Hz clock, on-screen times are not measured%c", 10); InterlockedExchange(&g_vb_state, -1); return 0; }
     wv.hAdapter = oa.hAdapter; wv.hDevice = 0; wv.VidPnSourceId = oa.VidPnSourceId;

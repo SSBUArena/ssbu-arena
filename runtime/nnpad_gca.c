@@ -69,6 +69,8 @@ typedef struct {
     int seen, acc[6];                         /* consecutive reports with a controller, sum of the first CALIB_REPORTS */
     int origin[4], rest[2];
     int calibrated;
+    int cmin[4], cmax[4];                     /* (0.2.40) spread of each stick axis while the origin is taken */
+    float lo[4], hi[4]; int over_lo[4], over_hi[4];      /* (0.2.40) each direction's reach and reports in a row past it */
     Uint32 btn;
     Sint16 ax[6];
     volatile LONG64 t_apply;                  /* QueryPerformanceCounter of the last report applied to SDL */
@@ -137,6 +139,23 @@ static void port_detach(Adapter *a, int p) {
     memset(pt, 0, sizeof *pt);
     InterlockedExchange(&a->rumble[p], 0);
 }
+/* (0.2.40, after OpenSmash PR #158) stick calibration: the origin is the mean of the first GCA_CALIB_N reports only when the
+ * stick rested all along (spread under STICK_RANGE / 8: one moving as the controller is plugged in keeps 128) and lies within
+ * STICK_RANGE / 4 of 128; each direction's reach starts at STICK_RANGE and grows after 4 reports in a row past it, never past
+ * STICK_RANGE * 5 / 4 (a corrupt report must not shrink a direction for the session), so a stick whose gate goes further reaches
+ * full deflection in every direction. SSBU_GCA_CALIB=0: the old way (5 reports, origin up to 50 off, fixed reach). */
+#define GCA_CALIB_N 32
+static int g_gca_calib = -1;
+static int gca_calib(void) { if (g_gca_calib < 0) { const char *e = getenv("SSBU_GCA_CALIB"); g_gca_calib = !(e && e[0] == '0'); } return g_gca_calib; }
+static Sint16 stick16c(Port *pt, int k, int v, int invert) {
+    float dv = (float)(v - pt->origin[k]), top = STICK_RANGE * 1.25f;
+    if (dv > pt->hi[k]) { if (++pt->over_hi[k] >= 4) pt->hi[k] = dv > top ? top : dv; } else pt->over_hi[k] = 0;
+    if (-dv > pt->lo[k]) { if (++pt->over_lo[k] >= 4) pt->lo[k] = -dv > top ? top : -dv; } else pt->over_lo[k] = 0;
+    float f = dv / (dv >= 0 ? pt->hi[k] : pt->lo[k]);
+    if (f > 1) f = 1; if (f < -1) f = -1;
+    if (invert) f = -f;
+    return (Sint16)(f * 32767.0f);
+}
 static Sint16 stick16(int v, int origin, int invert) {
     float f = ((float)(v - origin)) / STICK_RANGE;
     if (f > 1) f = 1; if (f < -1) f = -1;
@@ -154,11 +173,17 @@ static void port_apply(Adapter *a, int p, const unsigned char *s, LONG64 t_done)
     int present = (s[0] & 0x30) != 0;
     if (!present) { if (pt->id) port_detach(a, p); pt->seen = 0; pt->calibrated = 0; memset(pt->acc, 0, sizeof pt->acc); return; }
     if (!pt->calibrated) {
-        int v[6] = {s[3], s[4], s[5], s[6], s[7], s[8]};
+        int v[6] = {s[3], s[4], s[5], s[6], s[7], s[8]}, cal = gca_calib(), need = cal ? GCA_CALIB_N : CALIB_REPORTS;
         for (int i = 0; i < 6; i++) pt->acc[i] += v[i];
-        if (++pt->seen < CALIB_REPORTS) return;
-        for (int i = 0; i < 4; i++) { int o = pt->acc[i] / CALIB_REPORTS; pt->origin[i] = o > 128 - 50 && o < 128 + 50 ? o : 128; }
-        for (int i = 0; i < 2; i++) { int r = pt->acc[4 + i] / CALIB_REPORTS; pt->rest[i] = r < TRIG_FULL - 40 ? r : 30; }
+        for (int i = 0; i < 4; i++) { if (!pt->seen || v[i] < pt->cmin[i]) pt->cmin[i] = v[i]; if (!pt->seen || v[i] > pt->cmax[i]) pt->cmax[i] = v[i]; }
+        if (++pt->seen < need) return;
+        for (int i = 0; i < 4; i++) {
+            int o = pt->acc[i] / need;
+            if (!cal) pt->origin[i] = o > 128 - 50 && o < 128 + 50 ? o : 128;
+            else pt->origin[i] = pt->cmax[i] - pt->cmin[i] < (int)(STICK_RANGE / 8) && o >= 128 - (int)(STICK_RANGE / 4) && o <= 128 + (int)(STICK_RANGE / 4) ? o : 128;
+            pt->lo[i] = pt->hi[i] = STICK_RANGE; pt->over_lo[i] = pt->over_hi[i] = 0;
+        }
+        for (int i = 0; i < 2; i++) { int r = pt->acc[4 + i] / need; pt->rest[i] = r < TRIG_FULL - 40 ? r : 30; }
         pt->calibrated = 1;
         port_attach(a, p);
         if (!pt->js) return;
@@ -177,6 +202,7 @@ static void port_apply(Adapter *a, int p, const unsigned char *s, LONG64 t_done)
     pt->btn = btn;
     Sint16 ax[6] = {stick16(s[3], pt->origin[0], 0), stick16(s[4], pt->origin[1], 1), stick16(s[5], pt->origin[2], 0), stick16(s[6], pt->origin[3], 1),
                     trig16(s[7], pt->rest[0]), trig16(s[8], pt->rest[1])};
+    if (gca_calib()) for (int k = 0; k < 4; k++) ax[k] = stick16c(pt, k, s[3 + k], k & 1);
     for (int i = 0; i < 6; i++) if (ax[i] != pt->ax[i]) { pt->ax[i] = ax[i]; SDL_SetJoystickVirtualAxis(pt->js, i, ax[i]); }
     pt->t_apply = t_done;
     InterlockedIncrement(&g_seq);

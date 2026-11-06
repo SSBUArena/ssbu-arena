@@ -76,11 +76,21 @@ static void vkd_fail(const char *fmt, ...) {
 #ifndef VK_GPL_DEFAULT
 #define VK_GPL_DEFAULT 2                           /* session 11: on by default where the driver has the extension (validation run s11v3 and the first-run table of V1_vulkan.md "Session 11"); -DVK_GPL_DEFAULT=0 or SSBU_VK_GPL=0 for the old path */
 #endif
+/* (0.2.40, from OpenSmash 9108b8e) AMD GPUs (vendor 0x1002): what drew correctly on an RX 6600 XT that showed fighters and
+ * stages invisible or black with the defaults: whole pipelines, vertex buffers in system memory, compute buffers neither kept
+ * on the GPU nor in device memory (copy-back 62 -> 0.3 ms a frame there). Each switch set by hand wins; SSBU_VK_AMD_SAFE=0:
+ * the same defaults as on other GPUs. */
+static int vk_amd_safe(void) {
+    static int a = -1;
+    if (a < 0) { const char *e = getenv("SSBU_VK_AMD_SAFE"); a = V.props.vendorID == 0x1002 && !(e && e[0] == '0');
+                 if (a) printf("nvn_vk: AMD GPU: whole pipelines, vertex buffers in system memory, compute buffers not kept (SSBU_VK_AMD_SAFE=0: the usual defaults)\n"); }
+    return a;
+}
 static int vk_gpl_mode(void) {
     static int m = -1;
     if (m < 0) {
         const char *e = getenv("SSBU_VK_GPL");
-        m = e && e[0] ? atoi(e) : VK_GPL_DEFAULT;
+        m = e && e[0] ? atoi(e) : vk_amd_safe() ? 0 : VK_GPL_DEFAULT;
         if (!(e && e[0]) && GetFileAttributesA("../cache/vk/no_stage_libraries.txt") != INVALID_FILE_ATTRIBUTES) {     /* nvn_vk_m4.c stagelib_ensure: the driver refused one */
             m = 0;
             printf("nvn_vk: ../cache/vk/no_stage_libraries.txt: this driver refused a stage library in an earlier run: whole pipelines\n");
@@ -239,7 +249,7 @@ static VkBuffer vbuf_new(uint64_t size, VkFlags usage, VMem *mem) {
          * it the first host-visible type is taken, which on a discrete GPU is system memory the GPU reads over the bus at
          * every draw. Nothing but 4-byte words per compute dispatch is read back from the ring by the CPU. */
         static int mode = -1;
-        if (mode < 0) { const char *e = getenv("SSBU_VK_BUFMEM"); mode = e ? atoi(e) : 1; }      /* default 1 since run p15t_ica_bufmem / ica_final (state hash identical, 0 flashes, GPU 12.5 -> 9.7 ms); =0: as before */
+        if (mode < 0) { const char *e = getenv("SSBU_VK_BUFMEM"); mode = e ? atoi(e) : vk_amd_safe() ? 0 : 1; }      /* (AMD: 0) default 1 since run p15t_ica_bufmem / ica_final (state hash identical, 0 flashes, GPU 12.5 -> 9.7 ms); =0: as before */
         if (mode == 1 && (usage & VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) {
             VkFlags dl = want | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
             for (uint32_t i = 0; i < D.mp.memoryTypeCount; i++)
@@ -1882,7 +1892,7 @@ static LONG CALLBACK cg_veh(EXCEPTION_POINTERS *x) {
 static int cb_keep_mode(void) {
     if (g_cb_keep < 0) {
         const char *e = getenv("SSBU_VK_CBKEEP");
-        g_cb_keep = e ? atoi(e) : VK_CBKEEP_DEFAULT;
+        g_cb_keep = e ? atoi(e) : vk_amd_safe() ? 0 : VK_CBKEEP_DEFAULT;      /* (AMD: 0) */
         if (getenv("SSBU_COMPUTE_CMP") && atoi(getenv("SSBU_COMPUTE_CMP"))) g_cb_keep = 0;      /* that comparison reads compute's output from guest memory after every batch */
 #ifdef _WIN32
         if (g_cb_keep == 2) { AddVectoredExceptionHandler(1, cg_veh); printf("nvn_vk: SSBU_VK_CBKEEP=2: accesses to kept compute ranges are trapped and logged (test)\n"); }
@@ -2485,7 +2495,7 @@ static CB *cb_new(uint64_t addr, uint64_t size) {
         int found = 0;
         for (uint32_t i = 0; i < D.mp.memoryTypeCount; i++) if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & want) == want) found = 1;
         if (!found) want &= ~(VkFlags)VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
-        if (g_cb_dl < 0) g_cb_dl = getenv("SSBU_VK_CBMEM") ? atoi(getenv("SSBU_VK_CBMEM")) : cb_keep_mode() ? 1 : 0;      /* default 1 with SSBU_VK_CBKEEP (the CPU then reads them only at a landing), 0 without */
+        if (g_cb_dl < 0) g_cb_dl = getenv("SSBU_VK_CBMEM") ? atoi(getenv("SSBU_VK_CBMEM")) : vk_amd_safe() ? 0 : cb_keep_mode() ? 1 : 0;      /* default 1 with SSBU_VK_CBKEEP (the CPU then reads them only at a landing), 0 without */
         if (g_cb_dl == 1) {                        /* round 16: where the GPU writes and reads them without the bus (the CPU reads them only at a landing) */
             VkFlags dl = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
             for (uint32_t i = 0; i < D.mp.memoryTypeCount; i++)
