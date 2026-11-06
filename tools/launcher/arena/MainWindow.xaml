@@ -772,7 +772,7 @@
                   <StackPanel><TextBlock Text="Local matches" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Smash on this PC (against friends or CPUs). They stay on this PC."/></StackPanel>
                 </CheckBox>
                 <TextBlock Text="ARENA SERVER" Style="{StaticResource FieldLabel}" Margin="0,26,0,6"/>
-                <TextBlock Style="{StaticResource Small}" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left" Text="Your replays stay on this PC only: nothing is uploaded to the Arena server. The server keeps only the result of each online match."/>
+                <TextBlock Style="{StaticResource Small}" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left" Text="Your replays stay on this PC. Only a replay you make public (its pill on the Replays page) is uploaded: public for 30 days to anyone with its link, your opponent shown as Opponent, at most 10 at a time."/>
               </StackPanel>
 
               <!-- video -->
