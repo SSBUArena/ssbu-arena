@@ -16,7 +16,7 @@
 #endif
 static int g_gfx_latency = L1_LATENCY_DEFAULT;      /* track L1: latency = normal 0 | low 1 | lowest 2 (display.c); read with gfx_latency() */
 int gfx_latency(void) { gfx_options(); return g_gfx_latency; }
-static int g_gfx_refresh_switch = 1;      /* (0.2.40) refresh_switch = auto (1) | off (0): display.c refresh_switch */
+static int g_gfx_refresh_switch = 0;      /* (0.2.40) refresh_switch = off (0, the default: owner 2026-11-06) | on / auto (1): display.c refresh_switch */
 int gfx_refresh_switch(void) { gfx_options(); return g_gfx_refresh_switch; }
 static int g_gfx_runahead;                           /* track R1 round 5: runahead = off 0 | on 1 (r1_state.c); read with gfx_runahead() */
 int gfx_runahead(void) { gfx_options(); return g_gfx_runahead; }
@@ -221,7 +221,7 @@ static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
         else if (!_stricmp(key, "profile")) o->profile = !_stricmp(val, "low");
         else if (!_stricmp(key, "shader_wait")) o->shader_skip = !_stricmp(val, "skip");
         else if (!_stricmp(key, "runahead")) g_gfx_runahead = !_stricmp(val, "on") || !_stricmp(val, "1");      /* track R1 round 5 (r1_state.c) */
-        else if (!_stricmp(key, "refresh_switch")) g_gfx_refresh_switch = _stricmp(val, "off") != 0;
+        else if (!_stricmp(key, "refresh_switch")) g_gfx_refresh_switch = !_stricmp(val, "on") || !_stricmp(val, "auto");
         else if (!_stricmp(key, "latency")) g_gfx_latency = !_stricmp(val, "lowest") ? 2 : !_stricmp(val, "low") ? 1 : 0;      /* track L1 (display.c latency_mode) */
         else if (!_stricmp(key, "aspect")) o->aspect = !_stricmp(val, "keep");
         else if (!_stricmp(key, "shader_prepare")) o->shader_prepare = !_stricmp(val, "background") ? 1 : !_stricmp(val, "off") ? 2 : 0;

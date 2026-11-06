@@ -180,7 +180,7 @@ static DWORD WINAPI vblank_thread(LPVOID arg) {
 /* (0.2.40, from Rsoto95/ssbu-recomp 8d4878d) a screen that is not k x 60 Hz (144, 165, 175 Hz: a 60 fps game there shows a mix
  * of frames held 2 and 3 refreshes, 25 % / 75 % on 165 Hz: uneven motion) is set to the highest k x 60 Hz mode of the same size
  * (240 / 180 / 120 / 60) while the game runs. CDS_FULLSCREEN makes it temporary: Windows puts the old mode back when the process
- * ends, a crash too. graphics.ini refresh_switch = off or SSBU_REFRESH_SWITCH=0: never. */
+ * ends, a crash too. OFF by default (owner, 2026-11-06): graphics.ini refresh_switch = on or SSBU_REFRESH_SWITCH=1 turns it on. */
 int gfx_refresh_switch(void);
 static int g_rs_from, g_rs_to;
 static int rs_k60(DWORD f) { int k = (int)((f + 30) / 60); return k >= 1 && k <= 8 && fabs((double)f - 60.0 * k) <= 60.0 * k * 0.011; }
