@@ -103,6 +103,21 @@ void cxxrt_mem_changed(uint64_t base, uint64_t size) {      // PR #2 (jfb112697)
     g_mem_epoch = (LONG)k;
     ReleaseSRWLockExclusive(&g_rd_change_lock);
 }
+/* (0.2.39, nvn_vk_draw.c cb_live_cached) the number of the newest guest-memory change, and whether a range was touched by none of the
+ * changes after `since` (0 = one touched it, or the changes since then are no longer kept: ask the OS) */
+long cxxrt_mem_epoch(void) { return g_mem_epoch; }
+int cxxrt_range_unchanged(uint64_t lo, uint64_t hi, long since) {
+    int ok = 1;
+    AcquireSRWLockShared(&g_rd_change_lock);
+    ULONG now = (ULONG)g_mem_epoch, from = (ULONG)since;
+    if (now - from > RD_CHANGES) ok = 0;
+    for (ULONG k = from + 1; ok && k - from <= now - from; k++) {
+        uint64_t a = g_rd_change[k % RD_CHANGES].lo, b = g_rd_change[k % RD_CHANGES].hi;
+        if (!(b <= lo || a >= hi)) ok = 0;
+    }
+    ReleaseSRWLockShared(&g_rd_change_lock);
+    return ok;
+}
 void cxxrt_readable_report(FILE *out) {      // PR #2 (jfb112697): also counts answers from a record that outlived a change elsewhere
     fprintf(out, "nncxxrt: readable checks: %lld answered by VirtualQuery, %lld from the per-thread record of game-managed memory (%lld of them from a record that was older than a change of guest memory elsewhere)\n",
             (long long)g_rd_asked, (long long)g_rd_cached, (long long)g_rd_kept);

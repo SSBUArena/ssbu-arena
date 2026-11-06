@@ -1821,7 +1821,7 @@ static void set_dynamic_state3(int samples) {
  * when the render thread is idle or a sync is waited for. The OpenGL path copies back before the next draw; what guest
  * memory holds once the batch is done is the same. Anything that reads guest memory through a range that only partly lies
  * in a CB forces the copy-back at once (cb_sync: submit, wait; counted). */
-typedef struct { uint64_t addr, size, cap, busy; VkBuffer buf; VMem mem; int state, dirty; uint8_t *snap; uint64_t snap_cap; int stale, age; uint64_t kserial, ww; VkBuffer stg; VMem stg_mem; uint64_t stg_cap, lserial; uint32_t wchk; uint8_t wrote, touch, mid_stg; long long bseq; } CB;  /* state: 0 free, 1 live in this batch, 2 pending (batch submitted), 3 kept (SSBU_VK_CBKEEP); snap: guest memory as it was when the CB was filled; stale: the buffer holds what compute wrote and guest memory does not; kserial: the submission that ended the last batch that used it */
+typedef struct { uint64_t addr, size, cap, busy; VkBuffer buf; VMem mem; int state, dirty; uint8_t *snap; uint64_t snap_cap; int stale, age; uint64_t kserial, ww; VkBuffer stg; VMem stg_mem; uint64_t stg_cap, lserial; uint32_t wchk; uint8_t wrote, touch, mid_stg; long long bseq; long live_ep; uint64_t live_addr, live_size; } CB;  /* state: 0 free, 1 live in this batch, 2 pending (batch submitted), 3 kept (SSBU_VK_CBKEEP); snap: guest memory as it was when the CB was filled; stale: the buffer holds what compute wrote and guest memory does not; kserial: the submission that ended the last batch that used it */
 static int g_cb_merge = -1;                        /* SSBU_VK_CBMERGE=0: the whole range is copied back as before session 5 */
 /* Round 16 (P3 section 15), SSBU_VK_CBKEEP=1 (0 = before: every buffer is filled from guest memory at its first dispatch of
  * a batch, twice, and merged back after the batch): a compute-written buffer STAYS on the GPU side between batches.
@@ -1922,6 +1922,24 @@ static uint64_t g_cb_serial;                       /* the submission the pending
  * unmapped; the attract demo ending and the local-wireless waiting room going over to the match both crashed here,
  * reading a decommitted page). Such a range is not written back: nothing can read it any more. */
 static LONG64 g_ck_unmapped;
+static int cb_guest_range_live(uint64_t addr, uint64_t size);
+/* (0.2.39, Final Destination) the OS's answer for a buffer's range is kept: the range is live as long as no change of guest memory
+ * (nncxxrt.c cxxrt_mem_changed: every decommit / release the game asks for) touched it since the last real check. The check itself is
+ * VirtualQuery over the range, ~2 ms in the game's huge reservation: in one scene of Final Destination's background 5-6 landings per frame
+ * paid it, up to 4-5 ms of the render thread per frame (pictures reaching the screen in bunches). SSBU_VK_LIVECACHE=0: asked every time. */
+long cxxrt_mem_epoch(void); int cxxrt_range_unchanged(uint64_t lo, uint64_t hi, long since);
+static int g_live_cache = -1; static LONG64 g_ck_live_hit, g_ck_live_ask;
+static int cb_live_cached(CB *c) {
+    if (g_live_cache < 0) { const char *e = getenv("SSBU_VK_LIVECACHE"); g_live_cache = !(e && e[0] == '0'); }
+    long now = cxxrt_mem_epoch();
+    if (g_live_cache && c->live_ep && c->live_addr == c->addr && c->live_size == c->size && cxxrt_range_unchanged(c->addr, c->addr + c->size, c->live_ep)) {
+        c->live_ep = now; g_ck_live_hit++; return 1;
+    }
+    g_ck_live_ask++;
+    int ok = cb_guest_range_live(c->addr, c->size);
+    c->live_ep = ok ? now : 0; c->live_addr = c->addr; c->live_size = c->size;
+    return ok;
+}
 static int cb_guest_range_live(uint64_t addr, uint64_t size) {
     uintptr_t p = (uintptr_t)P(addr), end = p + (uintptr_t)size;
     while (p < end) {
@@ -1957,7 +1975,7 @@ static void cb_keep_back(CB *c, const uint8_t *src) {
 }
 static void cb_keep_back_(CB *c, const uint8_t *src) {      /* src: the bytes in ordinary memory already (the copy of an asynchronous landing), or NULL = the buffer itself */
     if (!c->dirty && !c->stale) return;
-    if (!cb_guest_range_live(c->addr, c->size)) {
+    if (!cb_live_cached(c)) {
         if (g_ck_unmapped++ < 10) printf("nvn_vk: kept compute buffer %llx+%llu not written back: the game has freed that memory\n", (unsigned long long)c->addr, (unsigned long long)c->size);
         return;
     }
@@ -4212,6 +4230,7 @@ swap: ;
         }
         if (g_cb_keep > 0) {
             static LONG64 lh, lf, lfb, ll[5], llb;
+            printf("nvn_vk_cbkeep: live checks of kept ranges so far: %lld kept answers, %lld asked of the OS (SSBU_VK_LIVECACHE)\n", (long long)g_ck_live_hit, (long long)g_ck_live_ask);
             printf("nvn_vk_cbkeep: frames %lld..%lld per frame: %.1f dispatch targets taken from a kept buffer (no copy), %.1f filled from guest memory (%.0f KB), landings: %.2f unused for two batches, %.2f read of an overlapping range, %.2f other extent, %.2f guest-memory command, %.2f the game wrote into the range (%.0f KB copied back; all landings so far %.1f ms of the render thread, the longest %.2f ms; so far %lld through a GPU copy, %lld of them made to finish early, %lld dropped unwritten; %lld ranges read by a draw or dispatch straight from a kept buffer) | kept now %d | write check %s: so far %lld takes of a range that is not write-watched, %lld words the game had changed at a landing (%lld also changed by compute) | SSBU_VK_CBKEEP=%d: trapped accesses so far: %lld reads, %lld writes (%lld of them by the render thread), %lld ranges that could not be protected\n",
                    (long long)frame - 300, (long long)frame, (double)(g_ck_hits - lh) / 300.0, (double)(g_ck_fills - lf) / 300.0, (double)(g_ck_fill_bytes - lfb) / 300.0 / 1024.0, (double)(g_ck_land[0] - ll[0]) / 300.0, (double)(g_ck_land[1] - ll[1]) / 300.0,
                    (double)(g_ck_land[2] - ll[2]) / 300.0, (double)(g_ck_land[3] - ll[3]) / 300.0, (double)(g_ck_land[4] - ll[4]) / 300.0, (double)(g_ck_land_bytes - llb) / 300.0 / 1024.0, (double)g_ck_land_tk * 1000.0 / (double)fq.QuadPart, (double)g_ck_land_max * 1000.0 / (double)fq.QuadPart, (long long)g_ck_async, (long long)g_ck_async_forced, (long long)g_ck_dropped, (long long)g_ck_drawn, g_cb_nkept, g_cb_ww > 0 ? "on" : "off", (long long)g_ck_unwatched, (long long)g_ck_gwords, (long long)g_ck_conflicts,
