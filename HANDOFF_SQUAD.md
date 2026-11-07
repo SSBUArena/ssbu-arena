@@ -1,12 +1,12 @@
-# Battle Arena = Squad Strike online (handoff, aggiornato 2026-11-07)
+# Battle Arena = Squad Strike online (handoff, aggiornato 2026-11-07 pomeriggio)
 
 Ramo `feature/battle-arena-squad` (worktree `ssbu-recomp-squad`, da `fix/0.2.12` c0679f5). Niente push / release / VPS / Supabase.
 arena-server NON toccato (non serve). Build: `bash "C:/Users/Nicolo/Desktop/SSBU RECOMP/squad/build.sh" sq_N` (cartella squad/work; se cambia
 rb_rollback.c / r1_ring.c toccare `squad/work/r1_state.c`). Test: rbtick3/pair.sh, solo.sh / seqs.sh in `squad/`.
 
 ## Stato in una riga
-Tutto il percorso funziona (tessera, schermata squadra, stanza, accordo, Tag Team 3 vs 3, cambio lottatore al KO), ma la partita squad
-online NON e' in sincronia: diverge al primo cambio di lottatore. BLOCCATO su questo punto (sotto: perche' e cosa provare).
+FUNZIONA in sincronia: coppie squad IDENTICAL con i cambi di lottatore dentro (sq18a NETSIM=0, sq20b / sq21b NETSIM=27, sq21a NETSIM=0),
+coppia normale IDENTICAL. Soluzione finale nella sezione "Soluzione (2026-11-07 pomeriggio)" in fondo; le sezioni intermedie sono storia.
 
 ## Come fa il gioco (13.0.4)
 - Squad Strike = `SEQUENCE_MELEE_TEAM_COMPE 0x02020000`. Ruleset "Tag Team" = una partita, si entra al KO del precedente.
@@ -84,3 +84,36 @@ fine partita e ritorno nella stanza; regola stanza a vite; archivio leggero.
 ## Stato finale del ramo
 - Gate e settle sono esperimenti SPENTI di default; il codice di ricerca e' tolto.
 - Coppia normale con l'exe finale sq_10 (norm10, NETSIM=27): IDENTICAL su 3225 frame, 0 crash.
+
+## Soluzione (2026-11-07 pomeriggio): cambio di lottatore a frame fissi
+Dove decide il gioco (run t12 .. t22, watchpoint):
+- l'entry del lottatore (FighterManager impl + 0x20 + 8 * i) ha una macchina di caricamento in `0x71006556b0`: +0x5920 = 3 mentre carica,
+  sottostato +0x591c 0 .. 0xe, +0x5a80 id dell'ultima richiesta, +0x13c = -1 finche' il nuovo lottatore non e' messo nell'entry
+  (lo fa `0x7100654dc0` da dentro quella macchina). Ogni frame fa un passo se la richiesta precedente e' finita (tempo reale).
+- l'oggetto squadra ha una parte per lato (+0x5b0, +0x950, +0xd10; stato a +0x60): `0x7101589830` fa 2 -> 3 (e conta 3),
+  `0x710158a360` fa 4 -> 0 (il lottatore entra); anche lo stato 4 aspetta un caricamento (sq18b).
+Cosa fa il codice (solo partite squad, `debug_mode.c` / `rb_rollback.c`):
+1. `sq_eload_hook`: la macchina dell'entry gira solo ogni 20 frame (SSBU_SQ_STEP) da quando comincia a caricare, e non al primo frame
+   (i frame saltati sono solo "non ancora pronto": e' un polling, niente si perde). `sq_gate` fa lo stesso per gli stati 2..4 delle parti
+   dell'oggetto squadra. Risultato: file a +80, 2->3 a +100, 3->4 a +160, 4->0 a +180 frame, uguale su tutti i cambi e su tutti e due i giochi.
+2. `rbg_squad_settle`: a ogni confine di frame il gioco aspetta che i thread di caricamento (Res*, L2CDynamicModuleManager, TaskWorker)
+   siano a una attesa e le fiber dei job ferme (max 1,5 s per le fiber): ogni passo trova la richiesta finita. In queste partite i loader
+   non vengono tenuti sospesi dall'ottimizzazione IDLEKEEP (`r1_state.c ra_keepable`).
+3. `rbg_squad_lock`: dal momento in cui un lato e' in stato 2..4 o un'entry carica, e per 90 frame dopo, nessun frame gira su una previsione
+   (si aspetta il pad dell'altro, come con il ring corto): un rollback attraverso un caricamento perdeva la richiesta (sq14a). Fuori da
+   queste finestre il rollback e' normale (sq21b: 15 rollback, finestre 283-453 e 820-990).
+Interruttori: SSBU_SQ_STEP=0, SSBU_SQ_GATE=0, SSBU_SQ_SETTLE=0, SSBU_SQ_LOCK=0 (test). Esperimenti rimasti spenti: SSBU_SQ_LOADWAIT.
+Costo per il giocatore: ogni cambio di lottatore dura ~3 s (180 frame) invece di ~1 s; durante quella finestra l'input ha il ritardo
+pieno della rete (niente previsione); a volte un fermo di qualche centinaio di ms quando il caricamento e' lento (uguale sui due PC).
+
+| tag | NETSIM | esito |
+|---|---|---|
+| sq18a | 0 | IDENTICAL 2062 frame, 2 cambi, partita finita |
+| sq18b | 27 | DIFFER 1775 (prima del gate sullo stato 4) |
+| sq20b | 27 | IDENTICAL 2900 frame, ma tutta la partita senza previsioni (condizione sbagliata, corretta) |
+| sq21b | 27 | IDENTICAL 1147 frame, 2 cambi, 15 rollback fuori dalle finestre |
+| sq21a | 0 | IDENTICAL 3901 frame, cambi dentro, 0 crash |
+| norm21 | 27 | IDENTICAL 2675 frame (coppia normale, exe finale sq_21), 0 crash |
+
+Limiti noti: provato con le squadre link / kirby e il lottatore della stanza; le partite di prova finiscono dopo 2 cambi (3 KO dello
+stesso giocatore). Da provare: altri lottatori (Kirby con le copie, Pokemon Trainer escluso dalla lista), 3 cambi per parte, PC lenti.

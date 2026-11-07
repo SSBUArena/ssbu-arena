@@ -414,6 +414,7 @@ static int ra_keepable(const char *n) {
     if (g_keep_more < 0) { const char *e = getenv("SSBU_RB_IDLEKEEP_MORE"); g_keep_more = !(e && e[0] == '0'); }
     static int ik = -1; if (ik < 0) { const char *e = getenv("SSBU_RB_IDLEKEEP"); ik = !(e && e[0] == '0'); }
     if (ra_audio(n)) return 1;
+    {   int rbg_squad_active(void); if (rbg_squad_active() && (strstr(n, "ResLoadingThread") || strstr(n, "ResInflateThread") || strstr(n, "ResUpdateThread") || strstr(n, "L2CDynamicModuleManager"))) return 0; }      /* (Battle Arena) a squad match: the loaders run (rb_rollback.c rbg_squad_settle) */
     if (ik >= 2 || ik < 0) {}
     return ik && (strstr(n, "BCATCacheStorage") || strstr(n, "LibcurlResolver") || strstr(n, "AsyncTonePreparer") || strstr(n, "nuscFileAsyncRequest") || strstr(n, "SaveStorage")
         || (g_keep_more && (strstr(n, "ResUpdateThread") || strstr(n, "ResLoadingThread") || strstr(n, "ResInflateThread") || strstr(n, "L2CDynamicModuleManager") || strstr(n, "VSync Count") || strstr(n, "UNKNOWN"))));
