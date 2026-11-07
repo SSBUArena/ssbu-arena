@@ -51,3 +51,19 @@ online NON e' in sincronia: diverge al primo cambio di lottatore. BLOCCATO su qu
 ## Da provare a mano (quando la sincronia c'e')
 Tessera Battle Arena e schermata squadra col controller (menu Arena rifatto all'installazione); stanza con un amico: popup "Battle Arena room";
 fine partita e ritorno nella stanza; regola stanza a vite; archivio leggero.
+
+## Opzione 2 (tutti i lottatori caricati dall'inizio): esame 2026-11-07, NON fattibile senza molto reverse engineering
+- Anche lo Squad Strike VERO del gioco fa cosi' (run r13 / r16): prima della partita carica i moduli dei lottatori 1 e dei successivi, poi
+  SCARICA i successivi prima del via; al KO scarica il morto e carica quello che entra e il seguente. E' la politica del gioco, non un
+  effetto del nostro codice.
+- Il caricamento al KO e' fatto di: file (NRO del modulo, modelli, animazioni) letti da ResLoadingThread / ResInflateThread (~200-400 ms),
+  poi `nn::ro::LoadModule` (nostro, nnro.c: solo 15-24 ms), poi job sui TaskWorker. La parte lenta e asincrona sono i FILE, gestiti dal
+  gestore risorse del gioco (memoria guest). Tenere caricati i moduli lato host (nnro.c: UnloadModule rimandato) non basta: il gioco
+  rilegge comunque i file prima di chiedere il modulo. Per tenere tutto residente bisognerebbe cambiare la politica del gestore risorse /
+  moduli del gioco (dove decide carica/scarica): da trovare nel binario.
+- Opzione 1 (entrata a frame fisso dopo il KO) sembra PIU' fattibile: serve un solo punto, la decisione "il prossimo lottatore puo'
+  entrare". Candidato: l'oggetto squadra della battaglia (vtable 0x710506fc40, init 0x710157c100, stato a +0x900 .. +0x1060; il metodo
+  grande 0x710157d6f0 e' il primo da guardare). Con un watchpoint hardware (debug_mode.c debug_watch) sul suo stato al KO si trova chi lo
+  cambia quando il caricamento finisce; poi un hook che rende "pronto" solo a frame_KO + N (uguale sui due giochi, N ~ 90) e, se a quel
+  frame il caricamento non e' finito, ferma il main a fine frame finche' lo e' (stallo, ma uguale sui due).
+  Stima: 1-2 sessioni.
