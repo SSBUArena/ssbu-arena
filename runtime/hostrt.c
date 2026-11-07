@@ -136,6 +136,52 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x39a4040, 0x39a45f0},     /* zstd: decompress stream (nvn_vk_store.c) */
     {0x39bfb30, 0x39c00e0}, /* raw copy of uncompressed files (loose_files.c) */
 };
+/* A code address missing from g_code_13_0_5: the same code near it in the 13.0.5 image (tools/port/ga_sigs.py). Each
+ * fingerprint is FNV-1a 64 over n masked instruction words from the address (back words before it); the place within
+ * +-0x1000 whose hash is the 13.0.4 one, if there is exactly one, is the address on 13.0.5 (code moved by at most
+ * +-0x5b0). The masking must stay the same as ga_sigs.py's. SSBU_GA_CHECK=1 checks every table entry against the search. */
+static const struct { uint32_t a; uint8_t back, n; uint64_t h; } g_ga_sig[] = {
+#include "ga_sig_13_0_4.inc"
+};
+static volatile LONG g_image_ready;                 /* main.elf's bytes are in the image (ga_find reads its code) */
+static uint32_t ga_mask(uint32_t w, uint32_t *adrp) {
+    if ((w & 0x9f000000u) == 0x90000000u) { *adrp |= 1u << (w & 31); return w & 0x9f00001fu; }     /* ADRP */
+    if ((w & 0x9f000000u) == 0x10000000u) return w & 0x9f00001fu;                                 /* ADR */
+    if ((w & 0x7c000000u) == 0x14000000u) return w & 0xfc000000u;                                 /* B, BL */
+    if ((w & 0xff000010u) == 0x54000000u) return w & 0xff00001fu;                                 /* B.cond */
+    if ((w & 0x7e000000u) == 0x34000000u) return w & 0xff00001fu;                                 /* CBZ, CBNZ */
+    if ((w & 0x7e000000u) == 0x36000000u) return w & 0xfff8001fu;                                 /* TBZ, TBNZ */
+    if ((w & 0x3b000000u) == 0x18000000u) return w & 0xff00001fu;                                 /* LDR (literal) */
+    if ((*adrp >> ((w >> 5) & 31)) & 1u) {
+        if ((w & 0x7f800000u) == 0x11000000u) return w & ~0x003ffc00u;                            /* ADD (immediate) on an ADRP register */
+        if ((w & 0x3b000000u) == 0x39000000u) return w & ~0x003ffc00u;                            /* LDR / STR (unsigned offset) on one */
+    }
+    return w;
+}
+static uint64_t ga_hash(uint64_t at, int n) {
+    uint64_t h = 0xcbf29ce484222325ull; uint32_t adrp = 0;
+    for (int i = 0; i < n; i++) {
+        uint32_t m = ga_mask(*(volatile uint32_t *)(uintptr_t)(GUEST_BASE + at + 4ull * (unsigned)i), &adrp);
+        for (int k = 0; k < 4; k++) h = (h ^ ((m >> (8 * k)) & 0xffu)) * 0x100000001b3ull;
+    }
+    return h;
+}
+/* the 13.0.5 offset of 13.0.4 code offset o found by its code, or -1 (no fingerprint, or no place or more than one) */
+static int64_t ga_find(uint64_t o) {
+    int lo = 0, hi = (int)(sizeof g_ga_sig / sizeof g_ga_sig[0]) - 1, k = -1;
+    while (lo <= hi) { int mid = (lo + hi) / 2; if (g_ga_sig[mid].a == o) { k = mid; break; } if (g_ga_sig[mid].a < o) lo = mid + 1; else hi = mid - 1; }
+    if (k < 0) return -1;
+    while (!g_image_ready) Sleep(1);                /* (a constructor's thread between load_layout and the image read) */
+    int64_t s0 = (int64_t)o - 4 * (int64_t)g_ga_sig[k].back, found = -1; int hits = 0;
+    for (int64_t d = -0x1000; d <= 0x1000; d += 4) {
+        int64_t at = s0 + d;
+        if (at < 0 || (uint64_t)at + 4ull * g_ga_sig[k].n > g_main.text_size) continue;
+        if (ga_hash((uint64_t)at, g_ga_sig[k].n) == g_ga_sig[k].h) { hits++; found = (int64_t)o + d; }
+    }
+    return hits == 1 ? found : -1;
+}
+static struct { uint64_t o, r; } g_ga_found[256]; static volatile LONG g_ga_nfound, g_ga_lock;
+
 uint64_t ga(uint64_t a) {
     if (g_game_build < 0) { printf("\nGA: game address %llx asked for before main.elf was read: stopping\n", (unsigned long long)a); report_and_exit(8); }
     if (g_game_build == GAME_13_0_4 || a < GUEST_BASE || a >= GUEST_BASE + IMAGE_SIZE) return a;
@@ -147,9 +193,32 @@ uint64_t ga(uint64_t a) {
         if (g_code_13_0_5[mid][0] == o) return GUEST_BASE + g_code_13_0_5[mid][1];
         if (g_code_13_0_5[mid][0] < o) lo = mid + 1; else hi = mid - 1;
     }
-    printf("\nGA: the 13.0.4 code address %llx has no 13.0.5 counterpart in hostrt.c (g_code_13_0_5): stopping\n", (unsigned long long)a);
+    for (LONG i = 0; i < g_ga_nfound; i++) if (g_ga_found[i].o == o) return GUEST_BASE + g_ga_found[i].r;
+    int64_t r = ga_find(o);
+    if (r >= 0) {
+        while (InterlockedExchange(&g_ga_lock, 1)) Sleep(0);
+        LONG n = g_ga_nfound;
+        if (n < (LONG)(sizeof g_ga_found / sizeof g_ga_found[0])) { g_ga_found[n].o = o; g_ga_found[n].r = (uint64_t)r; InterlockedExchange(&g_ga_nfound, n + 1); }
+        InterlockedExchange(&g_ga_lock, 0);
+        printf("GA: 13.0.4 code address %llx is not in g_code_13_0_5: found on 13.0.5 by its code at %llx (%+lld)\n", (unsigned long long)a,
+               (unsigned long long)(GUEST_BASE + (uint64_t)r), (long long)r - (long long)o);
+        return GUEST_BASE + (uint64_t)r;
+    }
+    printf("\nGA: the 13.0.4 code address %llx has no 13.0.5 counterpart in hostrt.c (g_code_13_0_5) and its code was not found: stopping\n", (unsigned long long)a);
     report_and_exit(8);
     return a;
+}
+/* SSBU_GA_CHECK=1 on 13.0.5: every g_code_13_0_5 entry against the search by code (does the search find the places the
+ * table was checked for? a tester's game.log answers it before trusting it for the addresses not in the table) */
+static void ga_check_table(void) {
+    int same = 0, other = 0, none = 0;
+    for (size_t i = 0; i < sizeof g_code_13_0_5 / sizeof g_code_13_0_5[0]; i++) {
+        int64_t r = ga_find(g_code_13_0_5[i][0]);
+        if (r < 0) none++;
+        else if ((uint64_t)r == g_code_13_0_5[i][1]) same++;
+        else { other++; printf("GA check: %llx: table %llx, by its code %llx\n", (unsigned long long)g_code_13_0_5[i][0], (unsigned long long)g_code_13_0_5[i][1], (unsigned long long)r); }
+    }
+    printf("GA check: %d table entries found at the same place by their code, %d at another, %d not found\n", same, other, none);
 }
 /* main.elf's program headers (before the image is read) and the build */
 static void load_layout(FILE *f, const char *elf) {
@@ -1224,6 +1293,8 @@ void runtime_init(const char *elf, const char *trace_path) {
     fseek(f, (long)FILE_OFF, SEEK_SET);
     if (fread(mem, 1, g_main.file_image, f) != g_main.file_image) { fprintf(stderr, "short read on image\n"); exit(1); }
     fclose(f);
+    InterlockedExchange(&g_image_ready, 1);
+    if (g_game_build == GAME_13_0_5) { const char *e = getenv("SSBU_GA_CHECK"); if (e && *e == '1') ga_check_table(); }
     load_dynamic();
 
     unsigned long long rel = 0, sym_int = 0, sym_ext = 0, sym_weak = 0, other = 0;

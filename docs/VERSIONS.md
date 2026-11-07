@@ -49,8 +49,14 @@ bss moved by exactly one page (+0x1000).
 - **Game addresses** are written as their 13.0.4 value and passed through `GA()` (`runtime/hostrt.h`), which gives the
   address in the build that runs. On 13.0.4 it returns its argument. On 13.0.5 an address in read-only data, data or bss
   moves by one page, and an address in code is looked up in `g_code_13_0_5` (`runtime/hostrt.c`), one line per
-  address the runtime uses. A code address that is not in that table stops the program with a message: calling the wrong
-  function silently would be worse. So does `GA()` before `main.elf` has been read.
+  address the runtime uses. A code address that is not in that table is looked for by its code: `runtime/ga_sig_13_0_4.inc`
+  (made by `tools/port/ga_sigs.py` from a 13.0.4 `main.elf`; addresses and hashes only) holds a fingerprint of the code at
+  each address the sources name, a hash of a few instructions with the parts that change when code moves masked out, chosen
+  so that it is unique within +-0x1000 on 13.0.4. On 13.0.5 `GA()` takes the one place within +-0x1000 with that hash
+  and logs `found on 13.0.5 by its code`. An address with no fingerprint, or whose code is found at no place or at more
+  than one, stops the program with a message: calling the wrong function silently would be worse. So does `GA()` before
+  `main.elf` has been read. `SSBU_GA_CHECK=1` on 13.0.5 checks every table entry against the search at start and logs
+  the count (`GA check: ...`): it shows whether the search finds the right places on a real 13.0.5 dump.
 - `main`'s layout fields (`g_main`) replace the constants that described it: the init array in `boot.c` and in the C++
   runtime self-test, the start of the data segment in the image-protection check of `nnmisc.c`.
 
@@ -70,8 +76,9 @@ often at its new address than at its old one. It also checks the one-page rule a
 
 ## Adding a game address
 
-Write the 13.0.4 address and wrap it: `GA(0x71xxxxxxxxull)`. If it is in code, add its 13.0.5 counterpart to
-`g_code_13_0_5` (sorted) and run the check above. An address only known on 13.0.5 cannot be written this way; find its
+Write the 13.0.4 address and wrap it: `GA(0x71xxxxxxxxull)`. If it is in code, run
+`python tools/port/ga_sigs.py build/binaries/13.0.4/main.elf` so it gets a fingerprint; with a 13.0.5 dump at hand, also
+add its 13.0.5 counterpart to `g_code_13_0_5` (sorted) and run the check above. An address only known on 13.0.5 cannot be written this way; find its
 13.0.4 counterpart with the same method, or say so in the pull request.
 
 ## Not covered
