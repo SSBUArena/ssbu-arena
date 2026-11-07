@@ -763,7 +763,7 @@
                   <StackPanel><TextBlock Text="Matchmaking" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Online Matchmaking (the server finds you an opponent), and matches by code."/></StackPanel>
                 </CheckBox>
                 <CheckBox x:Name="RecLdnBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
-                  <StackPanel><TextBlock Text="Online LDN" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Local Wireless rooms played over the Arena server."/></StackPanel>
+                  <StackPanel><TextBlock Text="Online rooms" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Rooms with other players, played over the Arena server."/></StackPanel>
                 </CheckBox>
                 <CheckBox x:Name="RecArenaBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
                   <StackPanel><TextBlock Text="Battle Arena" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Not available yet: the choice is kept for when it comes."/></StackPanel>

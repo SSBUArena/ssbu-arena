@@ -1229,7 +1229,7 @@ static void sec_experimental(void) {
     if (onoff("net", on, true)) { O.mode = on ? 0 : (O.last_mode ? O.last_mode : 4); online_save(); }
     ImGui::SameLine(); ImGui::Text("Online play");
     tag(1, (O.mode != 0) != (O0.mode != 0));
-    ImGui::SameLine(); ImGui::TextDisabled("play with others through the game's Local Wireless menu");
+    ImGui::SameLine(); ImGui::TextDisabled("play with others in Online rooms (the game's Local Wireless menu)");
 #ifndef _WIN32
     if (O.mode) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "Online play is not in the Linux / macOS build yet: these settings are kept for when it is.");
 #endif
@@ -1321,7 +1321,7 @@ static void sec_online(void) {
         tag(1, O.relay_only != O0.relay_only);
     }
     if (changed) online_save();
-    help("Then, in the game: Smash > Local Wireless (the game's own menu): one player Create Room, the others Rooms List.");
+    help("Then, in the game: Online Rooms (the game's Local Wireless menu): one player Create Room, the others Rooms List.");
     if (getenv("SSBU_ONLINE")) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "SSBU_ONLINE=%s is set for this run: it wins over these settings.", getenv("SSBU_ONLINE"));
     ImGui::Unindent();
 }
@@ -1980,7 +1980,7 @@ static void draw_squad(void) {
     arena_mark(dl, x0, y + title_h * 0.14f, title_h * 0.78f, ImGui::GetColorU32(hexc(AR_ACCENT)));
     q_text(dl, g_font_title, title_h, ImVec2(x0 + title_h * 1.15f, y), ImGui::GetColorU32(hexc(AR_TEXT)), "BATTLE ARENA");
     y += title_h + fs * 0.6f;
-    dl->AddText(ImVec2(x0, y), ImGui::GetColorU32(hexc(AR_MUTED)), "Squad Strike in a Local Wireless room: 3 fighters each, 1 stock each, in one match.");
+    dl->AddText(ImVec2(x0, y), ImGui::GetColorU32(hexc(AR_MUTED)), "Squad Strike in an online room: 3 fighters each, 1 stock each, in one match.");
     y += fs * 1.3f;
     dl->AddText(ImVec2(x0, y), ImGui::GetColorU32(hexc(AR_MUTED)), "Fighter 1 is the one you choose on the room's character select; when a fighter is KO'd the next one comes in.");
     y += fs * 1.9f;

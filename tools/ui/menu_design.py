@@ -18,7 +18,7 @@ FRAME = True
 CARDS = {
     'melee': {'cell': (0, 0), 'title': 'SMASH', 'subtitle': 'Local battles', 'icon': 'smash'},
     'other': {'cell': (1, 0), 'title': 'SETTINGS', 'subtitle': 'Display  /  Audio  /  Controls', 'icon': 'settings'},
-    'spirits': {'cell': (0, 1), 'title': 'ONLINE & FRIENDS', 'subtitle': 'Local Wireless', 'icon': 'friends'},
+    'spirits': {'cell': (0, 1), 'title': 'ONLINE & FRIENDS', 'subtitle': 'Online rooms', 'icon': 'friends'},
     'colle': {'cell': (1, 1), 'title': 'ONLINE RANKED', 'subtitle': 'Climb the ladder', 'icon': 'ranked'},
 }
 BG_LAYOUTS = {
