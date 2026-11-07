@@ -1055,8 +1055,23 @@ static void crash_file_report(EXCEPTION_POINTERS *ep) {
     fclose(f);
 }
 
+/* set when the player asked to exit or restart (menu.cpp): exit(0) runs the exit handlers and frees the C runtime's heap
+ * while the render and audio threads still run, and one of them may fault on freed memory (crash report of 2026-11-06,
+ * render thread in ntdll reading 0xfffffffffffffff8 after "menu: exit game"). Such a fault is not reported: the thread
+ * waits and the exit goes on (the menu's hard end comes within 4-5 s). SSBU_EXIT_QUIET=0 reports it as before. */
+volatile LONG g_host_exiting;
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    if (g_host_exiting) {
+        static int quiet = -1;
+        if (quiet < 0) { const char *e = getenv("SSBU_EXIT_QUIET"); quiet = !(e && *e == '0'); }
+        if (quiet) {
+            static volatile LONG said;
+            if (!InterlockedExchange(&said, 1)) { printf("exit: a thread faulted while the game was exiting (0x%08lx at %p): not reported\n", er->ExceptionCode, er->ExceptionAddress); fflush(stdout); }
+            Sleep(8000);
+            TerminateProcess(GetCurrentProcess(), 0);
+        }
+    }
     static volatile LONG owner;                     /* one report and one dump: a second thread that faults meanwhile waits for the exit */
     LONG me = (LONG)GetCurrentThreadId(), was = InterlockedCompareExchange(&owner, me, 0);
     if (was == me) TerminateProcess(GetCurrentProcess(), 4);      /* a fault inside the report itself ends the process */

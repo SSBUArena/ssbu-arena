@@ -1049,7 +1049,8 @@ static DWORD WINAPI osk_name_thread(LPVOID arg) {          /* the on-screen keyb
     InterlockedExchange(&g_osk_busy, 0);
     return 0;
 }
-static DWORD WINAPI restart_thread(LPVOID) { Sleep(100); exit(0); return 0; }      /* the exit handlers (UPnP, lobby) run */
+extern "C" volatile LONG g_host_exiting;          /* hostrt.c: a fault from here on is the exit's, not reported */
+static DWORD WINAPI restart_thread(LPVOID) { Sleep(100); InterlockedExchange(&g_host_exiting, 1); exit(0); return 0; }      /* the exit handlers (UPnP, lobby) run */
 static void restart_game(void) {
     wchar_t dir[MAX_PATH], pid[16];
     GetCurrentDirectoryW(MAX_PATH, dir);

@@ -50,6 +50,7 @@ void cxxrt_mem_changed(uint64_t base, uint64_t size);
  * of main (segments, relocation and symbol tables, init array) is read from main.elf at load, not written down. */
 enum { GAME_13_0_4, GAME_13_0_5 };
 extern int g_game_build;
+extern volatile long g_host_exiting;          /* the player asked to exit or restart: faults are not reported (hostrt.c crash_filter) */
 typedef struct {
     uint64_t text_size, ro_start, data_start, file_image;         /* offsets from GUEST_BASE; file_image = bytes stored in the ELF */
     uint64_t rela, relasz, jmprel, pltrelsz, symtab, strtab, init_array, init_arraysz;   /* from the dynamic section */
