@@ -162,6 +162,50 @@ static void parse_match(const char *s) {
 }
 static void match_player_hook(Ctx *c, void *user);
 static ImportFn g_orig_player_record;
+uint64_t g_sq_obj; static ImportFn g_orig_sq_init;
+void debug_watch(const uint64_t *addrs, int n);
+static void sq_init_hook(Ctx *c, void *user) { (void)user; g_sq_obj = c->x[0]; g_orig_sq_init(c);}
+static int g_sq_made;
+/* ---- (Battle Arena) the next squad fighter's entry at a fixed frame (Squad Strike, Tag Team, online with rollback).
+ * The game's squad object of the fight (made by 0x710157c100, which g_sq_obj is taken from) runs the change of fighter as a state
+ * machine at + 0xd70 (13.0.4, runs t8 / t9: hardware write watch): at the KO + 0xd08 = 60 and + 0xd04 counts the frames to it; then
+ * state 2 = the next fighter is being loaded (its module and files, on the loader threads: wall time); 2 -> 3 is written by
+ * 0x7101589830 (a per-frame callback of the fight, 0x7101755fd0 <- 0x710135f570) when the load is done; 3 counts + 0xd74 to 4,
+ * 0x710158a360 then 4 -> 0 (the fighter is in). + 0x112c counts the fight frames. Offline state 2 lasted 30 frames; the two games of a
+ * room needed different numbers of frames (the desyncs of pairs sq1 .. sq6a).
+ * Here, in a squad match, while state 2 is younger than N frames (SSBU_SQ_GATE_N, default 120 = 2 s) a step of 0x7101589830 that leaves
+ * state 2 (the load is done) is undone (the object's + 0x900 .. + 0x1200 as before the call: the step changes only + 0xd70 / + 0xd74 there,
+ * runs t8 / t9); from frame N on it is let through: the fighter comes in at state-2 frame + N on both games, in every pass (real or re-run),
+ * as long as the load takes less than N frames (else LATE in the log). Waiting inside the frame does not work: the load needs the
+ * game's frames to go on (run t10). The frame state 2 began is taken from the
+ * object's own frame counter when the state is first seen (kept while it stays 2: a re-run of those frames finds the same frame).
+ * EXPERIMENT, OFF by default (SSBU_SQ_GATE=1 turns it on). Pair sq9a with it: still a desync (frame 318) before the gate's frame: the new
+ * fighter's object (status 0xb7, at the rebirth place) is made on one game only, by the end of the load itself, whatever this state; and the
+ * undone step sometimes lost the load (state 2 for good). */
+static ImportFn g_orig_sq_step; static int64_t g_sq_s2_from = -1; static long long g_sq_gate_held, g_sq_gate_waits; static double g_sq_gate_ms;
+static void sq_step_hook(Ctx *c, void *user) {
+    (void)user;
+    static int on = -1, n = 120;
+    if (on < 0) { const char *e = getenv("SSBU_SQ_GATE"), *k = getenv("SSBU_SQ_GATE_N"); on = e && e[0] == '1'; if (k && *k) n = atoi(k); }      /* (EXPERIMENT, off by default: pair sq9a) */
+    uint64_t o = g_sq_obj;
+    if (!on || !g_sq_made || !o) { g_orig_sq_step(c); return; }
+    uint32_t st = rd32(o + 0xd70); int64_t fc = (int64_t)rd32(o + 0x112c);
+    if (st != 2) { g_sq_s2_from = -1; g_orig_sq_step(c); return; }
+    if (g_sq_s2_from < 0 || g_sq_s2_from > fc) { g_sq_s2_from = fc; printf("[squad] change of fighter: loading (state 2) from fight frame %lld: the next fighter comes in at frame %lld\n", (long long)fc, (long long)(fc + n)); fflush(stdout); }
+    static uint8_t keep[0x900]; static int ready_at = -1;
+    if (g_sq_s2_from == fc) ready_at = -1;
+    safe_read(o + 0x900, keep, sizeof keep);
+    g_orig_sq_step(c);
+    if (rd32(o + 0xd70) == 2) { if (fc >= g_sq_s2_from + n && fc % 30 == 0) { printf("[squad] change of fighter: still loading at fight frame %lld (%lld frames late: the two games may differ)\n", (long long)fc, (long long)(fc - g_sq_s2_from - n)); fflush(stdout); } return; }
+    if (fc < g_sq_s2_from + n) {                     /* ready before the frame: undone, it comes in at the frame */
+        for (int k = 0; k < (int)sizeof keep; k++) wr8(o + 0x900 + (uint64_t)k, keep[k]);
+        if (ready_at < 0) ready_at = (int)fc;
+        g_sq_gate_held++; return;
+    }
+    printf("[squad] change of fighter at fight frame %lld (state 2 from %lld, the load ready since frame %d)%s\n", (long long)fc, (long long)g_sq_s2_from, ready_at,
+           fc == g_sq_s2_from + n ? "" : " LATE: the two games may differ"); fflush(stdout);
+    g_sq_s2_from = -1;
+}
 static volatile LONG g_dm_setups;                      /* match set-ups seen (player 1's record built) */
 #ifdef _WIN32
 static LONG CALLBACK watch_veh(EXCEPTION_POINTERS *ep) {
@@ -958,6 +1002,8 @@ void debug_mode_init(void) {
         if (g_hs_wanted) printf("debug match: hook on the fight scene's clean-up: id %d\n", hook_install(GA(0x710134c690ULL), scene_clean_hook, NULL, &g_orig_scene_clean));
         if (g_hs_wanted) printf("debug match: hook on the match controls set-up %llx: id %d (R3 lwr: Local Wireless room matches, each player's own controls)\n", (unsigned long long)GA(0x7101780440ULL), hook_install(GA(0x7101780440ULL), controls_fill_hook, NULL, &g_orig_controls_fill));
     }
+    if (g_hs_wanted || getenv("SSBU_SQ_TEST")) { int a = hook_install(GA(0x710157c100ULL), sq_init_hook, NULL, &g_orig_sq_init), b = hook_install(GA(0x7101589830ULL), sq_step_hook, NULL, &g_orig_sq_step);      /* (Battle Arena) */
+        printf("debug match: hooks on the squad object (init %d, change of fighter %d)\n", a, b); }
     if (getenv("SSBU_DEBUG_RESEARCH")) printf("debug research: hook on the entry set-up: id %d\n", hook_install(FN_ENTRY_SETUP, research_entry_setup, NULL, &g_orig_entry_setup));
     if (getenv("SSBU_DEBUG_DUMP") || g_dm.text[0] || g_end_limit ||getenv("SSBU_DEBUG_RESEARCH") || getenv("SSBU_DEBUG_WATCHENTRY")) CreateThread(NULL, 0, dump_thread, NULL, 0, NULL);
 }

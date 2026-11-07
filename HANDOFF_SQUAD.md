@@ -67,3 +67,20 @@ fine partita e ritorno nella stanza; regola stanza a vite; archivio leggero.
   cambia quando il caricamento finisce; poi un hook che rende "pronto" solo a frame_KO + N (uguale sui due giochi, N ~ 90) e, se a quel
   frame il caricamento non e' finito, ferma il main a fine frame finche' lo e' (stallo, ma uguale sui due).
   Stima: 1-2 sessioni.
+
+## Opzione 1 (entrata a frame fisso dopo il KO): provata 2026-11-07, NON basta
+- Trovato (run t8 / t9, watchpoint hardware): oggetto squadra della battaglia (fatto da `0x710157c100`), macchina a stati del cambio a
+  +0xd70: KO -> +0xd08 = 60 e +0xd04 conta 60 frame -> stato 2 (caricamento) -> 3 (scritto da `0x7101589830`, callback per frame
+  della battaglia, quando il caricamento e' finito) -> +0xd74 conta -> 4 -> `0x710158a360` -> 0 (lottatore dentro). +0x112c = contatore frame.
+- `debug_mode.c` `sq_step_hook` (SSBU_SQ_GATE=1, SPENTO di default): finche' lo stato 2 ha meno di N frame (SSBU_SQ_GATE_N, 120) un passo
+  che lo lascia viene annullato; da N in poi passa. Offline (t11): due cambi esattamente a stato2 + 120, caricamento pronto a +19 / +25.
+- Aspettare il caricamento DENTRO il frame non funziona (t10): il caricamento ha bisogno che i frame del gioco vadano avanti.
+- Coppia sq9a (NETSIM=0) con il gate: DIFFER al frame 318, PRIMA del frame del gate. L'oggetto del nuovo lottatore (status 0xb7 al punto
+  di rinascita) compare su un gioco e non sull'altro: lo crea la fine del caricamento stessa, indipendentemente da +0xd70. In piu'
+  l'annullamento a volte perde la richiesta (stato 2 per sempre su A, e su B al secondo cambio).
+- Prossimo passo se si vuole insistere: trovare chi crea quell'oggetto (watchpoint sulle voci FighterManager impl + 0x20 + 8 * entry, o
+  hook della creazione del fighter) e ritardare quella creazione a frame fisso; oppure l'opzione 2 a livello del gestore risorse.
+
+## Stato finale del ramo
+- Gate e settle sono esperimenti SPENTI di default; il codice di ricerca e' tolto.
+- Coppia normale con l'exe finale sq_10 (norm10, NETSIM=27): IDENTICAL su 3225 frame, 0 crash.
