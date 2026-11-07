@@ -1110,14 +1110,45 @@ static void local_launch_hook(Ctx *c, void *user) {
     }
     g_orig_local_launch(c);
 }
-static void tc_css_hook(Ctx *c, void *user) {      /* (research) MeleeTeamCompeSequenceScene's character select state 0x710233cfd0: its result */
+/* The Squad Strike select screen's chips: side s (0 = the room maker, 1 = the joiner), fighter k: entry A at BACSS_AREA + 0x54 +
+ * 0x1428 * s + 0x1c8 * k (0x7101787ce0 copies A + 0x28.. to the panel state + 0x70..: ui_chara A + 0x40 -> state + 0x88, colour
+ * A + 0x48 -> + 0x90, type A + 0x30 -> + 0x78). */
+#define BACSS_CHIP(s, k) (BACSS_AREA + 0x54 + 0x1428ull * (uint64_t)(s) + 0x1c8ull * (uint64_t)(k))
+static int bacss_chips(int s) { int n = 0; for (int k = 0; k < 3; k++) { uint64_t v = rd64(BACSS_CHIP(s, k) + 0x40); if ((v >> 56) == 0xc1 && (v & 0xffffffffffull)) n++; } return n; }
+static void bacss_show(const char *why) {
+    printf("[squadcss] %s: side 1 %016llx %016llx %016llx, side 2 %016llx %016llx %016llx\n", why,
+           (unsigned long long)rd64(BACSS_CHIP(0, 0) + 0x40), (unsigned long long)rd64(BACSS_CHIP(0, 1) + 0x40), (unsigned long long)rd64(BACSS_CHIP(0, 2) + 0x40),
+           (unsigned long long)rd64(BACSS_CHIP(1, 0) + 0x40), (unsigned long long)rd64(BACSS_CHIP(1, 1) + 0x40), (unsigned long long)rd64(BACSS_CHIP(1, 2) + 0x40));
+    fflush(stdout);
+}
+static void tc_css_hook(Ctx *c, void *user) {      /* MeleeTeamCompeSequenceScene's character select state 0x710233cfd0 */
     (void)user;
     uint64_t self = c->x[0];
+    int nnldn_role(void); int mine = nnldn_role() == 2 ? 1 : 0;
+    {   static int last_n[2] = {-1, -1};          /* (test aid) @sq_mine3: this game's side has its 3 fighters */
+        for (int s = 0; s < 2; s++) { int n = bacss_chips(s); if (n != last_n[s]) { last_n[s] = n; char w[48]; snprintf(w, sizeof w, "side %d has %d fighter(s)", s + 1, n); bacss_show(w); } }
+        if (bacss_chips(mine) == 3) { static int said; if (!said++) { void input_mark(const char *what); input_mark("sq_mine3"); } } }
     if (rd32(self + 0x114)) {
         uint64_t mgr = rd64(self), m28 = rd64(mgr + 0x28);
         if (rd64(m28 + 0x60) == 0 && rd64(m28 + 0x30) == rd64(m28 + 0x38) && rd64(rd64(mgr + 0x20) + 0x10) == 0) {
             static uint32_t last = 0xffffffffu; uint32_t res = rd32(mgr + 0x40);
-            if (res != last) { last = res; char w[64]; snprintf(w, sizeof w, "Squad Strike select done (result %u)", res); bacss_dump(w); }
+            if (res != last) {
+                last = res; char w[64]; snprintf(w, sizeof w, "Squad Strike select done (result %u)", res); bacss_show(w);
+                /* TEST ONLY: SSBU_SQ_CSS_TEST_PICKS=<a>,<b>,<c>/<d>,<e>,<f> (the same on both games): the chips' fighters written here */
+                const char *e = getenv("SSBU_SQ_CSS_TEST_PICKS");
+                if (e && *e) {
+                    char buf[200]; snprintf(buf, sizeof buf, "%s", e); int sd = 0, k = 0;
+                    for (char *t = buf; *t && sd < 2; ) {
+                        char *end = t + strcspn(t, ",/"); char sep = *end; *end = 0;
+                        char nm[64]; snprintf(nm, sizeof nm, "ui_chara_%s", t);
+                        if (k < 3) { wr64(BACSS_CHIP(sd, k) + 0x40, 0xc100000000000000ull | hash40(nm)); k++; }
+                        if (!sep) break;
+                        if (sep == '/') { sd++; k = 0; }
+                        t = end + 1;
+                    }
+                    bacss_show("TEST: chips written (SSBU_SQ_CSS_TEST_PICKS)");
+                }
+            }
         }
     }
     g_orig_tc_css(c);
