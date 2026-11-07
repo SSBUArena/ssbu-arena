@@ -121,22 +121,6 @@ void debug_mode_frame(long long frame) {
             uint64_t x0 = sr64(GA(0x7105313510ULL)), x = x0 ? sr64(x0) : 0, a = x ? sr64(x + 0x58) : 0, b = a ? sr64(a) : 0, q = b ? sr64(b) : 0;
             if (q) for (int k = 0x24; k < 0x50; k++) wr8(q + 0xf7d8ull * (uint64_t)to + k, rd8(q + 0xf7d8ull * (uint64_t)from + k));
             printf("debug ctrl: research: at the fight start profile %d's control bytes copied over profile %d\n", from, to); }
-        if (getenv("SSBU_DEBUG_SQSCAN")) {                /* (Battle Arena, research) every copy of player 1's / 2's ui_chara in writable memory at the fight start */
-            for (int pl = 0; pl < 2; pl++) {
-                uint64_t want = rd64(GA(0x71052c41b0ULL) + 0x580 + 0x260ull * (uint64_t)pl); SYSTEM_INFO si; GetSystemInfo(&si); uint8_t *p = (uint8_t *)si.lpMinimumApplicationAddress; MEMORY_BASIC_INFORMATION mi; int hits = 0;
-                printf("debug sqscan: player %d ui_chara %016llx\n", pl + 1, (unsigned long long)want);
-                while (p < (uint8_t *)si.lpMaximumApplicationAddress && VirtualQuery(p, &mi, sizeof mi)) {
-                    if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) && (mi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) && mi.RegionSize < (1ull << 31)) {
-                        const uint8_t *bb = mi.BaseAddress;
-                        for (size_t i = 0; i + 8 <= mi.RegionSize; i += 4) if (*(const uint64_t *)(bb + i) == want && hits < 40) { hits++; printf("debug sqscan: hit %p (region %p)\n", bb + i, mi.BaseAddress); hex_lines("debug sqscan:   ", (uint64_t)(bb + i) - 0x60, 0xe0); }
-                    }
-                    p = (uint8_t *)mi.BaseAddress + mi.RegionSize;
-                }
-            }
-            hex_lines("debug sqscan: squad head", GA(0x71052c9c80ULL), 0x148); hex_lines("debug sqscan: squad p1 #1", GA(0x71052c9dc8ULL), 0x268); hex_lines("debug sqscan: squad p1 #2", GA(0x71052c9dc8ULL) + 0x268, 0x268); hex_lines("debug sqscan: match rec p1", GA(0x71052c41b0ULL) + 0x580, 0x260);
-            {   int n = 0; for (uint64_t a = GA(0x7104f16000ULL); a < GA(0x7105448000ULL) && n < 400; a += 4) { uint64_t v = rd64(a); if ((v >> 56) == 0xc1 && (v & 0xffffffffffull) != 0xffff000000ull && (v & 0xffffffffffull) && ((v >> 40) & 0xffff) < 0x200) { n++; printf("debug sqscan: bss %llx = %016llx\n", (unsigned long long)a, (unsigned long long)v); } } }
-            fflush(stdout);
-        }
         if (getenv("SSBU_DEBUG_MIDUMP")) { hex_lines("debug midump: fight on: FighterManager impl", impl, 0x200); hex_lines("debug midump: fight on: rule", GA(0x71052c41b0ULL), 0x580);      /* (R3 lwr, research) */
             for (int e = 0; e < 2; e++) { char t[64]; uint64_t en = sr64(impl + 0x20 + 8ull * e); snprintf(t, sizeof t, "debug midump: fight on: entry%d", e); hex_lines(t, en, 0x400);
                 snprintf(t, sizeof t, "debug midump: fight on: info%d", e); hex_lines(t, fighter_info_record(e), 0x400); } }

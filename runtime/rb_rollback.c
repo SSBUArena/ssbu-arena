@@ -341,6 +341,71 @@ static void rbg_pin(int on) {
         rbg_pin_apply(pa, pa, pa, pa, pa);
     }
 }
+/* (Battle Arena) a Squad Strike (Tag Team) match: when a fighter is KO'd the game loads the next fighter of the squad (ResLoadingThread,
+ * the module thread, then jobs on the task workers) and lets it in when that work is done: wall time, so the two games let it in at
+ * different frames (pairs sq1 / sq2b: desync at the first change, the new fighter there on one game only, with and without rollbacks).
+ * In such a match the loader threads (ResLoadingThread, ResInflateThread, ResUpdateThread, L2CDynamicModuleManager) run only BETWEEN
+ * frames: at the safe point of every pass (real or re-run) they are let go and the game waits until every guest thread is back at its
+ * wait (the loading and its jobs done), then they are held at their wait again for the next pass. Work asked for in a frame is then
+ * always done before the next frame, on both games and in re-run passes alike. Costs nothing while they are idle; a change of fighter
+ * holds the game once (the loading, a few hundred ms, on both games). A watchdog lets them go if a frame waits for one of them
+ * (logged: that frame is no longer exact). EXPERIMENT, OFF by default: SSBU_SQ_SETTLE=<ms> turns it on (the longest wait). Pair sq6a with it:
+ * no desync before a crash of one game (holding ResLoadingThread / ResInflateThread, which also stream, is not safe); without it sq1 / sq2b /
+ * sq4a desync at the first change of fighter. */
+static HANDLE g_sq_ld[8]; static int g_sq_nld; static volatile LONG g_sq_ld_held; static volatile LONG64 g_sq_ld_since; static long long g_sq_n_waits, g_sq_wd; static double g_sq_w_sum;
+static int sq_loader(const char *n) { return n && (strstr(n, "ResLoadingThread") || strstr(n, "ResInflateThread") || strstr(n, "ResUpdateThread") || strstr(n, "L2CDynamicModuleManager")); }
+static void sq_let_go(void) {
+    if (!InterlockedExchange(&g_sq_ld_held, 0)) return;
+    for (int k = 0; k < g_sq_nld; k++) ResumeThread(g_sq_ld[k]);
+    g_sq_nld = 0;
+}
+static void sq_hold(void) {                         /* each loader thread held at its wait (one suspension of ours) */
+    if (g_sq_ld_held) return;
+    Ctx *tc; const char *nm; HANDLE h; g_sq_nld = 0;
+    for (int k = 0; guest_thread_info(k, &tc, &nm, &h) && g_sq_nld < 8; k++) {
+        if (!h || !tc || !sq_loader(nm)) continue;
+        double t0 = now_ms();
+        for (;;) {
+            if (SuspendThread(h) == (DWORD)-1) break;
+            if (waiting_import(tc->in_import) && th_blocked(h)) { g_sq_ld[g_sq_nld++] = h; break; }
+            ResumeThread(h);
+            if (now_ms() - t0 > 50) { LOG("r1: SQUAD: loader thread %s not at its wait in 50 ms: left running\n", nm); break; }
+            SwitchToThread();
+        }
+    }
+    InterlockedExchange64(&g_sq_ld_since, (LONG64)GetTickCount64());
+    InterlockedExchange(&g_sq_ld_held, 1);
+}
+static Ctx *volatile g_sq_mainc; static long long g_sq_sync;
+static DWORD WINAPI sq_watchdog(LPVOID a) {
+    (void)a; int seen = 0;
+    for (;;) {
+        Sleep(1);
+        Ctx *mc = g_sq_mainc;      /* the frame itself waits (a waiting import of the main thread, 40 ms: longer than its jobs) while the loaders are held: a load the frame waits for; let them go at once (as without holding: done inside that frame on both games) */
+        if (g_sq_ld_held && mc && mc->in_import && waiting_import(mc->in_import) && !strstr(mc->in_import, "Fiber")) { if (++seen >= 40) { g_sq_sync++; if (g_sq_sync <= 20) LOG("r1: SQUAD: the frame waits in %s with the loaders held: let go (%lld so far)\n", mc->in_import, g_sq_sync); sq_let_go(); seen = 0; } }
+        else seen = 0;
+        if (g_sq_ld_held && GetTickCount64() - (ULONGLONG)g_sq_ld_since > 1500) {
+            g_sq_wd++; LOG("r1: SQUAD: WATCHDOG: the loader threads were held 1.5 s (a frame waits for one of them?): let go (this frame may differ on the two games)\n");
+            sq_let_go();
+        }
+    }
+}
+static void rbg_squad_settle(long long i, Ctx *c) {
+    g_sq_mainc = c;
+    int dm_squad_made(void), rbn_squad_agreed(void); static int lim = -1, wd;
+    if (lim < 0) { const char *e = getenv("SSBU_SQ_SETTLE"); lim = e && *e ? atoi(e) : 0; }      /* (default OFF: see above) */
+    if (lim <= 0 || !dm_squad_made() || !rbn_squad_agreed()) { sq_let_go(); return; }
+    if (!wd) { wd = 1; HANDLE t = CreateThread(NULL, 0, sq_watchdog, NULL, 0, NULL); if (t) CloseHandle(t); }
+    sq_let_go();
+    double t0 = now_ms(), pk = g_ra_park_ms; int ok = 0, tries = 0;
+    g_ra_park_ms = 2.0;
+    while (!(ok = ra_hold_quiet(2.0)) && now_ms() - t0 < lim) { tries++; Sleep(1); }
+    if (ok) for (int k = 0; k < g_nth; k++) if (g_th[k].held) { if (!(g_snd_keep && snd_kept_at(g_th[k].h) >= 0)) ResumeThread(g_th[k].h); g_th[k].held = 0; }      /* (all of them, as a failed hold does) */
+    g_ra_park_ms = pk;
+    sq_hold();
+    double w = now_ms() - t0;
+    if (tries) { g_sq_n_waits++; g_sq_w_sum += w; if (g_sq_n_waits <= 40 || !ok) LOG("r1: SQUAD: frame %lld (phase %d): waited %.1f ms for the game's threads (%s) before the next frame (%s; %lld waits, %.0f ms in all; watchdog %lld)\n", i, g_ra_phase, w, g_ra_busy ? g_ra_busy : "?", ok ? "quiet" : "LIMIT: not quiet", g_sq_n_waits, g_sq_w_sum, g_sq_wd); }
+}
 /* at the safe point (H2) of every pass while the fight runs (r1_ring.c rgs_step) */
 static void rbg_step_body(Ctx *c) {
     long long i = g_rgs_next;
@@ -429,6 +494,7 @@ static void rbg_step_body(Ctx *c) {
         return;
     }
     rbn_pass_hash(i);
+    rbg_squad_settle(i, c);                             /* (Battle Arena) */
     { extern volatile long long g_unwind_trace_frame; g_unwind_trace_frame = i + 1; }      /* (hs15) the frame the next pass simulates, for SSBU_UNWIND_TRACE */
     { static int tr = -1; if (tr < 0) tr = getenv("SSBU_RB_NET_TRACE") ? atoi(getenv("SSBU_RB_NET_TRACE")) : 0;
       if (tr > 0 && i <= tr) LOG("r1: RB NET trace: safe point after pass %lld, phase %d, left %d, remote pads up to %lld, %.3f ms\n", i, g_ra_phase, g_rgs_left, rbn_confirmed(), now_ms()); }
@@ -713,6 +779,7 @@ static void rbg_report(void);
 /* (hs12) r1_ring.c rgs_step, every safe point while no fight is on: the end of a match (once): its report, the ring
  * emptied, the session reset for the next match (whose first safe point makes the ring's base again: r1_ring_rebase) */
 static void rbg_fight_off(void) {
+    sq_let_go();                                        /* (Battle Arena) the loader threads never stay held after a match */
     if (!g_rbg_in_match) return;
     if (g_rbg_in_match == 1) { rbg_report(); r1_ring_let_go(); if (g_rg_ready) r1_ring_release(); g_rbg_rebase = 1; }
     else if (g_rbg_in_match == 3) LOG("r1: RB NET: the Local Wireless room fight is over\n");
