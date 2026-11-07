@@ -2123,7 +2123,7 @@ static void set_open(int on) {
         g_section_req = g_section;
         capture_cancel("menu opened");
         g_dlc_loaded = 0;
-        if (rbn_ba_mode() > 0) g_ba_screen = 1;      /* (Battle Arena) the squad screen first */
+        if (rbn_ba_mode() > 0 && !(getenv("SSBU_BA_SQUAD_CSS") && getenv("SSBU_BA_SQUAD_CSS")[0] == '1')) g_ba_screen = 1;      /* (Battle Arena) the squad screen first (not with SSBU_BA_SQUAD_CSS=1: the game's own Squad Strike select screen) */
         printf("menu: opened at presented frame %lld\n", g_frame);
     } else {
         InterlockedExchange(&g_open, 0);

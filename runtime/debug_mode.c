@@ -365,6 +365,11 @@ static uint8_t g_sq_copy[2][0x480] __attribute__((aligned(16))); static int g_sq
  * Both games force + 0x454 = 1 with the agreed layout of each player, so a player's own controls are the same on both PCs. */
 #include "rb_hs.h"
 static int g_hs_wanted, g_hs_ok, g_hs_local, g_hs_lwr;
+/* (Battle Arena, SSBU_BA_SQUAD_CSS=1) the room plays the game's own Squad Strike: the squad is built by the game (0x7102311f00..:
+ * the record builder 5 times per side, x1 = side, w2 = side + 2 * fighter, the record = the squad table entry). g_tc_native: this
+ * record is one of those; g_tc_k its fighter. Only fighter 1 of a side runs hs_apply (handshake at side 0, LAYOUT at side 1);
+ * the others get the same room normalization (tc_norm) with the layout kept here. */
+static int g_bacss = -1, g_tc_native, g_tc_k; static uint16_t g_tc_lay[2][11];
 /* (0.2.15) a Local Wireless room's match is played as a local versus match (melee mode 1 -> 0, each player a local human on
  * port i): after the fight the game went on as after a LOCAL match (the local character select, out of the room: "the game
  * does not go back to the room"), and the joiner's own player still read port 2 (its pad is port 1) on the result screen.
@@ -602,7 +607,8 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
             if (!has) { uint64_t p = GA(0x7105313518ULL); for (int k = 0; k < 11; k++) lay[k] = rd16(p + 0xc + 2ull * k); }      /* (the game's default profile) */
             printf("[rbnet] room match: player %d (%s): ui_chara %016llx colour %u; panel state: name tag %d, network player %d, controller slot %d, profile %d -> controller slot %d, a local human\n", idx + 1,
                    idx == local ? "this game's player" : "the other game's player", (unsigned long long)rd64(st + 0x88), rd8(st + 0x90), rd8(st + 0x450), rd8(st + 0x451), (int)rd32(st + 0x210), (int)rd32(st + 0x214), idx);
-            if (idx >= 0 && idx < 2) {                  /* (0.2.15) the room's own panel state, given back when the fight ends */
+            if (idx >= 0 && idx < 2) memcpy(g_tc_lay[idx], lay, sizeof lay);
+            if (idx >= 0 && idx < 2 && !g_tc_native) {      /* (0.2.15) the room's own panel state, given back when the fight ends */
                 g_room_saved[idx].st = st; safe_read(st + 0x450, g_room_saved[idx].b450, sizeof g_room_saved[idx].b450);
                 g_room_saved[idx].slot = rd32(st + 0x210); g_room_saved[idx].prof = rd32(st + 0x214); safe_read(st + 0x54, g_room_saved[idx].lay, sizeof g_room_saved[idx].lay);
                 if (g_room_saved_n < idx + 1) g_room_saved_n = idx + 1; }
@@ -762,7 +768,14 @@ static void match_player_hook(Ctx *c, void *user) {
     }
     if (idx == 0) { void nnhid_lwr_styles(int on, int gc0, int gc1); nnhid_lwr_styles(0, 0, 0); }      /* (R3 lwr) a new set-up: the ports in their own kinds again */
     if (idx == 0) { void rbn_set_setup_waiting(int waiting); rbn_set_setup_waiting(c->x[30] == GA(0x71017911dcULL)); }      /* (R3 lwr) a Local Wireless room's waiting-stage fight: built from its own set-up (runs lwres2 / lwres3: return address 0x71017911dc; the room's match and the select screens: 0x710178f498) */
-    if (g_hs_wanted) hs_apply(st, idx, type_was);       /* R3: the match both online games agreed (rb_net.c handshake) */
+    {   uint64_t ra = c->x[30];
+        g_tc_native = g_bacss == 1 && ra >= GA(0x7102311f00ULL) && ra <= GA(0x7102312620ULL) && idx >= 0 && idx < 2;
+        g_tc_k = g_tc_native ? ((int)c->x[2] - idx) / 2 : 0; }
+    if (g_hs_wanted && g_tc_native && g_tc_k > 0) {     /* (Battle Arena, game's squad) fighters 2.. of a side: the room normalization only */
+        if (g_hs_ok && g_hs_lwr) { wr8(st + 0x450, 1); wr8(st + 0x451, 0); wr32(st + 0x210, (uint32_t)idx); wr32(st + 0x214, 0xffffffffu);
+            wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, g_tc_lay[idx][k]); }
+    } else if (g_hs_wanted) hs_apply(st, idx, type_was);       /* R3: the match both online games agreed (rb_net.c handshake) */
+    if (g_tc_native) g_sq_want = 0;                     /* (the game's own squad table: squad_build does not overwrite it) */
     if (idx == 1) g_dm_state1_ok = safe_read(st, g_dm_state1, sizeof g_dm_state1);
     if (idx >= 0 && idx < 2) {                            /* (Battle Arena) this player's own panel state, kept for squad_build */
         if (g_sq_stcopy < 0) { const char *e = getenv("SSBU_SQ_STCOPY"); g_sq_stcopy = !(e && *e == '0'); }
@@ -770,6 +783,13 @@ static void match_player_hook(Ctx *c, void *user) {
         if (idx == 1 && g_sq_st[0] == g_sq_st[1]) { static int said; if (!said++) { printf("[squad] both players' records are built from one panel state object (%llx): each player's own copy is used\n", (unsigned long long)st); fflush(stdout); } }
     }
     g_orig_player_record(c);
+    if (g_tc_native) {                                  /* (Battle Arena, game's squad) */
+        if (g_hs_lwr && g_lwr_ctl_ok) { wr8(rec + 0x48, g_lwr_ctl[idx][LWR_CTL]);
+            if (idx == 1 && g_tc_k == 0) for (int j = 0; j < SQ_N; j++) wr8(SQ_TABLE + 8 + 0x268ull * (uint64_t)j + 0x48, g_lwr_ctl[0][LWR_CTL]); }
+        if (idx == 1) g_sq_made = 1;
+        printf("[squad] player %d fighter %d: ui_chara %016llx colour %u -> entry %llx: fighter kind %d (the game's own squad; match block + 0 %u, + 0x39 %u)\n", idx + 1, g_tc_k + 1, (unsigned long long)rd64(rec), rd8(rec + 0x19), (unsigned long long)rec, (int)(int8_t)rd8(rec + 8), rd8(MELEE_INFO), rd8(MELEE_INFO + 0x39));
+        fflush(stdout);
+    }
     if (idx == 1 && ((g_sq_test > 0 && !g_hs_wanted) || (g_sq_want && g_hs_wanted && g_hs_ok && !g_hs_local && g_hs_lwr))) squad_build(c);      /* (Battle Arena) */
     {   void hs_show_agreed(int idx); if (g_hs_wanted && g_hs_ok && !g_hs_local && !g_hs_lwr) hs_show_agreed(idx); }      /* (Arena) the screens before the fight show the agreed players */
     if (idx == 1 && g_hs_lwr && g_lwr_ctl_ok) for (int i = 0; i < 2; i++) wr8(MI_PLAYER(i) - 8 + 0x48, g_lwr_ctl[i][LWR_CTL]);      /* (R3 lwr) each player's own option byte (record + 0x48, see lwr_own_controls) */
@@ -1028,7 +1048,7 @@ void dm_alloc_check(const char *when, long long frame) {
  * scene change at 0x710233db80); the layout comes from the current sequence (0x71053040f0 = SEQUENCE_MELEE_TEAM_COMPE).
  * SSBU_DEBUG_SCENES=1: every scene change (0x7103726120) logged with its name, caller and the current sequence. */
 static ImportFn g_orig_scene_change, g_orig_vs_css;
-static int g_bacss = -1; static uint32_t g_bacss_saved; static int g_bacss_on;
+static uint32_t g_bacss_saved; static int g_bacss_on;
 #define BACSS_AREA GA(0x7105309974ULL)
 static void bacss_dump(const char *why) {
     printf("[squadcss] %s: sequence %08x\n", why, rd32(GA(0x71053040f0ULL)));
