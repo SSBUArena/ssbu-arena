@@ -19,7 +19,7 @@ using System.Windows.Media.Media3D;
 namespace Arena
 {
     sealed class RvBone { public int Parent; public float[] Local, Inv; }
-    sealed class RvMesh { public int Tex, Vis; public bool Default, Layer; public float[] Pos, Nor; public byte[] SkinB; public float[] SkinW; public Int32Collection Idx; public PointCollection Uv; public GeometryModel3D Model; public MeshGeometry3D Geo; }
+    sealed class RvMesh { public string Material; public MatrixTransform Eye; public int Tex, Vis; public bool Default, Layer; public float[] Pos, Nor; public byte[] SkinB; public float[] SkinW; public Int32Collection Idx; public PointCollection Uv; public GeometryModel3D Model; public MeshGeometry3D Geo; }
     sealed class RvModel
     {
         public RvBone[] Bones; public string[] Vis; public List<RvMesh> Meshes = new List<RvMesh>(); public List<string> Tex = new List<string>();
@@ -51,6 +51,12 @@ namespace Arena
                     pc.Freeze(); g.Uv = pc;
                     m.Meshes.Add(g);
                 }
+                string mats = Path.Combine(dir, "materials.txt");
+                if (File.Exists(mats))
+                {
+                    var names = File.ReadAllLines(mats);
+                    for (int i = 0; i < m.Meshes.Count && i < names.Length; i++) m.Meshes[i].Material = names[i];
+                }
                 return m;
             }
         }
@@ -61,6 +67,8 @@ namespace Arena
     {
         public Dictionary<int, float[]> Tracks = new Dictionary<int, float[]>();      // bone -> frames x 10 (scale, quaternion, translation)
         public Dictionary<string, byte[]> Vis = new Dictionary<string, byte[]>();
+        /// <summary>(_m5) material -> frames x 4 (CustomVector31: the iris' scale u, v and offset u, v)</summary>
+        public Dictionary<string, float[]> Mats = new Dictionary<string, float[]>();
 
         public static RvMotion Read(string file)
         {
@@ -74,6 +82,11 @@ namespace Arena
                 for (int i = 0; i < nt; i++) { int bone = b.ReadUInt16(), fr = b.ReadUInt16(); m.Tracks[bone] = RvModel.Floats(b, fr * 10); }
                 int nv = b.ReadInt32();
                 for (int i = 0; i < nv; i++) { string name = Encoding.UTF8.GetString(b.ReadBytes(b.ReadUInt16())); m.Vis[name] = b.ReadBytes(b.ReadUInt16()); }
+                if (b.BaseStream.Position + 4 <= b.BaseStream.Length)
+                {
+                    int nm = b.ReadInt32();
+                    for (int i = 0; i < nm; i++) { string name = Encoding.UTF8.GetString(b.ReadBytes(b.ReadUInt16())); int fr = b.ReadUInt16(); m.Mats[name] = RvModel.Floats(b, fr * 4); }
+                }
                 return m;
             }
         }
@@ -110,8 +123,8 @@ namespace Arena
         }
 
         public bool On = true;
-        /// <summary>the files' folder names of this launcher (replay_assets.py: replays4, _v4)</summary>
-        public const string ListFolder = "replays4";
+        /// <summary>the files' folder names of this launcher (replay_assets.py: replays5, _v5, _m5)</summary>
+        public const string ListFolder = "replays5";
         public bool StageShown => On && stageOn;
         public bool FighterShown(int k) => On && k < fighters.Length && fighters[k] != null;
         public bool OtherShown(int slot) => On && others.ContainsKey(slot);
@@ -213,10 +226,11 @@ namespace Arena
         }
 
         /// <summary>layer: a texture drawn over the mesh under it with its alpha, not repeated (the eyes' iris: transparent around it)</summary>
-        static Material Mat(BitmapSource tex, bool layer = false)
+        static Material Mat(BitmapSource tex, bool layer = false, MatrixTransform eye = null)
         {
             Brush b = tex != null ? new ImageBrush(tex) { ViewportUnits = BrushMappingMode.Absolute, TileMode = layer ? TileMode.None : TileMode.Tile, Viewport = new Rect(0, 0, 1, 1), Stretch = Stretch.Fill }
                                   : (Brush)new SolidColorBrush(Color.FromRgb(0xB0, 0xB0, 0xB0));
+            if (eye != null && tex != null) { b.Transform = eye; var e = new DiffuseMaterial(b); return e; }      // (the iris moves: not frozen)
             b.Freeze();
             var m = new DiffuseMaterial(b); m.Freeze();
             return m;
@@ -291,7 +305,8 @@ namespace Arena
                 foreach (var m in f.Model.Meshes)
                 {
                     m.Geo = new MeshGeometry3D { TriangleIndices = m.Idx, TextureCoordinates = m.Uv };
-                    var mat = Mat(TexOf(l, f.Folder, m.Tex), m.Layer);
+                    if (m.Layer && (m.Material == "EyeL" || m.Material == "EyeR")) m.Eye = new MatrixTransform();      // (the iris: moved by the motion's CustomVector31)
+                    var mat = Mat(TexOf(l, f.Folder, m.Tex), m.Layer, m.Eye);
                     m.Model = new GeometryModel3D { Material = mat, BackMaterial = m.Layer ? null : mat };
                     f.Group.Children.Add(m.Model);
                 }
@@ -493,6 +508,18 @@ namespace Arena
                 bool vis = m.Default;
                 if (m.Vis >= 0 && motion.Vis.TryGetValue(f.Model.Vis[m.Vis], out var vt) && vt.Length > 0) vis = vt[mf >= vt.Length ? vt.Length - 1 : mf < 0 ? 0 : mf] != 0;
                 if (!vis) { m.Model.Geometry = null; continue; }
+                if (m.Eye != null)
+                {
+                    // the iris where the motion puts it: the game samples the iris at uv * scale + offset, so the picture is the inverse of that
+                    float su = 1, sv = 1, tu = 0, tv = 0;
+                    if (motion.Mats.TryGetValue(m.Material, out var et) && et.Length >= 4)
+                    {
+                        int n4 = et.Length / 4, fi = mf >= n4 ? n4 - 1 : mf < 0 ? 0 : mf;
+                        su = et[fi * 4]; sv = et[fi * 4 + 1]; tu = et[fi * 4 + 2]; tv = et[fi * 4 + 3];
+                        if (Math.Abs(su) < 1e-3) su = 1; if (Math.Abs(sv) < 1e-3) sv = 1;
+                    }
+                    m.Eye.Matrix = new Matrix(1 / su, 0, 0, 1 / sv, -tu / su, -tv / sv);
+                }
                 int nv = m.Pos.Length / 3;
                 var pos = new Point3DCollection(nv); var nor = new Vector3DCollection(nv);
                 float[] P = m.Pos, N = m.Nor, W = m.SkinW; byte[] B = m.SkinB;

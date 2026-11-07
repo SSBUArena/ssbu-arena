@@ -6,15 +6,16 @@ missing: the models of its fighters and stage and the animations its fighters re
 
     python tools/replay/replay_assets.py --arc <data.arc> --out <build>/replay_assets --replay <file.ssbv>
 
-<fighter>_c<NN>_v4/model.rvm  bones, meshes, skinning (layout: write_model), tex<N>.png
-<fighter>/<motion hash>.rva   one motion's bone tracks and the meshes it switches (layout: write_motion)
+<fighter>_c<NN>_v5/model.rvm  bones, meshes, skinning (layout: write_model), tex<N>.png; materials.txt: each mesh's material, in order
+<fighter>_m5/<motion hash>.rva   one motion's bone tracks, the meshes it switches and the eyes' iris movement (layout: write_motion)
 stage3_<id>[_f<form>]/model.rvm   the stage's playable parts, already placed (no bones); platforms.txt: the parts placed each frame on the recorded lines;
                               forms.txt: the parts of each transformation
-replays4/<replay name>.txt    what the launcher loads: one line "fighter <index> <model folder> <motions folder> <scale>" per fighter,
+replays5/<replay name>.txt    what the launcher loads: one line "fighter <index> <model folder> <motions folder> <scale>" per fighter,
                               "extra <index> <recorded slot> <model folder> <motions folder> <scale>" per other body of a fighter (Nana), "stage <folder>"
                               "object <cat> <kind> <name> [<model folder> <motions folder> <scale>]" per kind of weapon or item of the file (version 3)
-obj_<name>[_c<NN>]_v4/, obj_<name>/   a weapon's or an item's model and motions (the same layouts); no model of its own: only the name in the list
-(the _v4 / stage3 / replays4 names: files made by an older version are not read, an older launcher keeps its own. _v4: the eyes'
+obj_<name>[_c<NN>]_v5/, obj_<name>_m5/   a weapon's or an item's model and motions (the same layouts); no model of its own: only the name in the list
+(the _v5 / _m5 / stage3 / replays5 names: files made by an older version are not read, an older launcher keeps its own. _v5: the eyes'
+iris moves (the materials' CustomVector31 tracks, EyeL / EyeR). _v4: the eyes'
 second layer (the iris), the meshes whose only colour map is Texture5 (Game & Watch), the shown-by-default meshes from the fighter's
 wait motion)
 """
@@ -27,6 +28,8 @@ import sys
 import zlib
 
 import numpy as np
+
+VM, MM, LIST = '_v5', '_m5', 'replays5'      # the made files' versions (model folders, motion folders, the lists)
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'nro'))
@@ -262,7 +265,7 @@ def skinning(m, bone_of, n):
 
 def make_fighter(arc, tree, fighter, colour, out):
     from brawl import ssbh
-    d = os.path.join(out, '%s_c%02d_v4' % (fighter, colour))
+    d = os.path.join(out, '%s_c%02d%s' % (fighter, colour, VM))
     if os.path.exists(os.path.join(d, 'model.rvm')):
         return 0
     files = Files(arc, tree, 'fighter/%s/c%02d' % (fighter, colour), 'fighter/%s/model/body/c%02d' % (fighter, colour))
@@ -342,6 +345,8 @@ def write_files_model(files, d, shown=None):
         m['skin_b'], m['skin_w'] = skinning(m, bone_of, len(m['pos']))
     meshes = [m for m in meshes if m['tex_i'] >= 0]       # (without a colour map: glows and effects)
     write_model(os.path.join(d, 'model.rvm'), bones, meshes, tex_names)
+    with open(os.path.join(d, 'materials.txt'), 'w') as f:      # (_v5: the eyes' iris movement is a material's track)
+        f.write('\n'.join(m.get('material') or '' for m in meshes) + '\n')
     with open(os.path.join(d, 'names.txt'), 'w') as f:
         f.write('\n'.join(b['name'] for b in bones))
     return 1
@@ -380,6 +385,32 @@ def decode_track(data, flags, frame_count):
     return np.column_stack((vals[:, 0:3], vals[:, 3:6], w, vals[:, 6:9])).astype('<f4')
 
 
+def vec4_track(data, flags, frame_count):
+    """a material's vector track (flags 0x?09): -> float array frames x 4, or None. 0x509 constant (4 floats); 0x409 compressed:
+    u16, u16 flags, u16 default offset, u16 bits per frame, u32 bits offset, u32 frames, then 4 x (f32 min, f32 max, u64 bits)"""
+    if flags & 0xff00 == 0x500:
+        return np.frombuffer(data, '<f4', 4, 0)[None, :].copy()
+    if flags & 0xff00 == 0x100:
+        return np.frombuffer(data, '<f4', 4 * frame_count, 0).reshape(frame_count, 4).copy()
+    if flags & 0xff00 != 0x400:
+        return None
+    _u, _f, def_off, bpe, bit_off, frames = struct.unpack_from('<HHHHII', data, 0)
+    rng = [struct.unpack_from('<ffQ', data, 16 + i * 16) for i in range(4)]
+    d = struct.unpack_from('<4f', data, def_off)
+    if sum(r[2] for r in rng) != bpe or frames == 0:
+        return None
+    bits = np.unpackbits(np.frombuffer(data, 'u1', (frames * bpe + 7) // 8, bit_off), bitorder='little')[:frames * bpe].reshape(frames, bpe)
+    vals = np.tile(np.array(d, '<f8'), (frames, 1))
+    p = 0
+    for i, (mn, mx, n) in enumerate(rng):
+        n = int(n)
+        if n:
+            raw = bits[:, p:p + n].astype('<f8').dot(2.0 ** np.arange(n))
+            vals[:, i] = mn + (mx - mn) * raw / (2.0 ** n - 1)
+            p += n
+    return vals.astype('<f4')
+
+
 def bool_track(data, flags, count):
     if flags & 0xff00 == 0x500:
         return [bool(data[0])]
@@ -395,9 +426,19 @@ def bool_track(data, flags, count):
 
 def write_motion(path, anim, bone_of):
     """u32 'RVA1', f32 last frame, u32 tracks, then per track: u16 bone, u16 frames, f[frames][10] (scale, quaternion xyzw, translation);
-    u32 vis tracks, then per track: u16 length, name, u16 frames, u8[frames]. A bone without a track keeps its local matrix."""
-    tracks, vis = [], []
+    u32 vis tracks, then per track: u16 length, name, u16 frames, u8[frames]; (_m5) u32 material tracks, then per track: u16 length,
+    material name, u16 frames, f[frames][4] (CustomVector31: the eyes' iris movement). A bone without a track keeps its local matrix."""
+    tracks, vis, mats = [], [], []
     for g in anim['groups']:
+        if g['type'] == 4:                       # (_v5) materials: the eyes' iris movement (CustomVector31)
+            for node in g['nodes']:
+                for t in node['tracks']:
+                    if t.get('name') != 'CustomVector31':
+                        continue
+                    a = vec4_track(anim['buffer'][t['data_offset']:t['data_offset'] + t['data_size']], t['flags'], t['frame_count'])
+                    if a is not None and len(a):
+                        mats.append((node['name'], a))
+            continue
         for node in g['nodes']:
             t = node['tracks'][0]
             data = anim['buffer'][t['data_offset']:t['data_offset'] + t['data_size']]
@@ -418,11 +459,15 @@ def write_motion(path, anim, bone_of):
         for name, b in vis:
             e = name.encode()
             f.write(struct.pack('<H', len(e)) + e + struct.pack('<H', len(b)) + bytes(1 if x else 0 for x in b))
+        f.write(struct.pack('<I', len(mats)))      # (_m5) per material: u16 length, name, u16 frames, f[frames][4] (CustomVector31)
+        for name, a in mats:
+            e = name.encode()
+            f.write(struct.pack('<H', len(e)) + e + struct.pack('<H', len(a)) + a.tobytes())
     os.replace(path + '.tmp', path)
 
 
 def make_motions(arc, tree, fighter, motions, out):
-    d = os.path.join(out, fighter)
+    d = os.path.join(out, fighter + MM)
     os.makedirs(d, exist_ok=True)
     missing = [m for m in motions if not os.path.exists(os.path.join(d, '%010x.rva' % (m & M40)))]
     if not missing:
@@ -626,7 +671,7 @@ def make_object(arc, tree, cat, kind, colour, motions, out):
             break
     if files is None:
         return 'object %d %d %s' % (cat, kind, label)
-    d, md = 'obj_%s_c%02d_v4' % (name, used), 'obj_%s' % name
+    d, md = 'obj_%s_c%02d%s' % (name, used, VM), 'obj_%s%s' % (name, MM)
     try:
         if not os.path.exists(os.path.join(out, d, 'model.rvm')):
             write_files_model(files, os.path.join(out, d))
@@ -657,7 +702,7 @@ def replay_needs(path):
 def scale_of(arc, tree, name, colour, slot, v, out):
     """the fighter's size in the game: the scale that puts its bones nearest the hurt boxes the game recorded (a fighter's model is
     drawn scaled by a parameter). Kept in the model's folder."""
-    f = os.path.join(out, '%s_c%02d_v4' % (name, colour), 'scale.txt')
+    f = os.path.join(out, '%s_c%02d%s' % (name, colour, VM), 'scale.txt')
     if os.path.exists(f):
         return open(f).read().strip()
     from brawl import ssbh
@@ -669,7 +714,7 @@ def scale_of(arc, tree, name, colour, slot, v, out):
     frames = [fr for fr in v.frames if slot in fr['f'] and fr['f'][slot]['hurts']]
     for fr in frames[::max(1, len(frames) // 40)]:
         st = fr['f'][slot]
-        tr = read_rva(os.path.join(out, name, '%010x.rva' % (st['motion'] & M40)))
+        tr = read_rva(os.path.join(out, name + MM, '%010x.rva' % (st['motion'] & M40)))
         if tr is None:
             continue
         B = bone_points(bones, tr, st['mf'])
@@ -752,14 +797,14 @@ def main():
         print('fighter', index, name, 'colour', colour, flush=True)
         made += make_fighter(arc, tree, name, colour, a.out)
         made += make_motions(arc, tree, name, motions.get(slot, ()), a.out)
-        manifest.append('fighter %d %s_c%02d_v4 %s %s' % (index, name, colour, name, scale_of(arc, tree, name, colour, slot, v, a.out)))
+        manifest.append('fighter %d %s_c%02d%s %s%s %s' % (index, name, colour, VM, name, MM, scale_of(arc, tree, name, colour, slot, v, a.out)))
         # the player's other bodies (Nana): the other recorded slots of the same entry (the slot table of the file's header)
         others = [k for k in sorted(motions) if k != slot and v.slot_entry[k] == entry]
         for k, other in zip(others, OTHER_BODIES.get(name, [])):
             print('other body', k, other, flush=True)
             made += make_fighter(arc, tree, other, colour, a.out)
             made += make_motions(arc, tree, other, motions[k], a.out)
-            manifest.append('extra %d %d %s_c%02d_v4 %s %s' % (index, k, other, colour, other, scale_of(arc, tree, other, colour, k, v, a.out)))
+            manifest.append('extra %d %d %s_c%02d%s %s%s %s' % (index, k, other, colour, VM, other, MM, scale_of(arc, tree, other, colour, k, v, a.out)))
     # the weapons and items of the file (version 3), the colour of the fighter that made them
     kinds = {}
     for fr in v.frames:
@@ -773,8 +818,8 @@ def main():
     if stage:
         made += make_stage(arc, tree, stage, a.out, v.stage_form)
         manifest.append('stage %s' % stage_folder(stage, v.stage_form))
-    os.makedirs(os.path.join(a.out, 'replays4'), exist_ok=True)
-    with open(os.path.join(a.out, 'replays4', os.path.basename(a.replay) + '.txt'), 'w') as f:
+    os.makedirs(os.path.join(a.out, LIST), exist_ok=True)
+    with open(os.path.join(a.out, LIST, os.path.basename(a.replay) + '.txt'), 'w') as f:
         f.write('\n'.join(manifest) + '\n')
     print('done', made, flush=True)
 
