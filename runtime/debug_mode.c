@@ -708,6 +708,7 @@ static void match_player_hook(Ctx *c, void *user) {
     if (c->x[1] == 0) g_sq_made = 0;
     if (c->x[1] < 2) { g_sq_st[c->x[1]] = c->x[0]; g_sq_x2[c->x[1]] = c->x[2]; }
     uint64_t st = c->x[0], rec = c->x[3]; int idx = (int)c->x[1];
+    if (getenv("SSBU_DEBUG_SCENES")) { printf("[squadcss] record builder: idx %d, w2 %d, record %llx, caller %llx, ui_chara %016llx colour %u type %u\n", idx, (int)c->x[2], (unsigned long long)rec, (unsigned long long)(c->x[30] - 4), (unsigned long long)rd64(st + 0x88), rd8(st + 0x90), rd32(st + 0x78)); fflush(stdout); }
     uint64_t was = rd64(st + 0x88); uint32_t type_was = rd32(st + 0x78);
     if (idx == 0) { g_hs_p1_ok = safe_read(st, g_hs_p1, sizeof g_hs_p1); InterlockedIncrement(&g_dm_setups); }
     if (idx == 0 && g_dm_list) {                          /* SSBU_DEBUG_MATCH_LIST: every new match set-up takes the next line (the last one stays) */
@@ -1022,7 +1023,94 @@ void dm_alloc_check(const char *when, long long frame) {
         }
     }
 }
+/* ---- (Battle Arena, SSBU_BA_SQUAD_CSS, RESEARCH probe) the room's character select in the Squad Strike layout.
+ * The game's Squad Strike opens the same CharaSelectScene with no parameter (MeleeTeamCompeSequenceScene state 0x710233cfd0,
+ * scene change at 0x710233db80); the layout comes from the current sequence (0x71053040f0 = SEQUENCE_MELEE_TEAM_COMPE).
+ * SSBU_DEBUG_SCENES=1: every scene change (0x7103726120) logged with its name, caller and the current sequence. */
+static ImportFn g_orig_scene_change, g_orig_vs_css;
+static int g_bacss = -1; static uint32_t g_bacss_saved; static int g_bacss_on;
+#define BACSS_AREA GA(0x7105309974ULL)
+static void bacss_dump(const char *why) {
+    printf("[squadcss] %s: sequence %08x\n", why, rd32(GA(0x71053040f0ULL)));
+    for (int s = 0; s < 2; s++) for (int k = 0; k < 5; k++) {
+        char t[64]; snprintf(t, sizeof t, "[squadcss]  side %d chip %d A", s, k); hex_lines(t, BACSS_AREA + 0x54 + 0x1428ull * s + 0x1c8ull * k, 0x60);
+        snprintf(t, sizeof t, "[squadcss]  side %d chip %d B", s, k); hex_lines(t, BACSS_AREA + 0x54 + 0x8e8 + 0x1428ull * s + 0x240ull * k, 0x40);
+    }
+    fflush(stdout);
+}
+static void scene_change_hook(Ctx *c, void *user) {
+    (void)user;
+    char nm[72] = {0}, own[72] = {0}; uint32_t n = rd32(c->x[1] + 4), n2 = c->x[2] ? rd32(c->x[2] + 4) : 0;
+    if (n < 64) safe_read(c->x[1] + 8, nm, n);
+    if (n2 < 64 && c->x[2]) safe_read(c->x[2] + 8, own, n2);
+    printf("[squadcss] scene change: %s (from %s), param %llx, caller %llx, sequence %08x\n", nm, own, (unsigned long long)c->x[3], (unsigned long long)(c->x[30] - 4), rd32(GA(0x71053040f0ULL)));
+    fflush(stdout);
+    if (rd32(GA(0x71053040f0ULL)) == 0x02020000u && n < 32) { char m[40]; snprintf(m, sizeof m, "sc_%s", nm); void input_mark(const char *what); input_mark(m); }      /* (test aid) SSBU_SEQ @sc_<scene> */
+    g_orig_scene_change(c);
+}
+static void vs_css_hook(Ctx *c, void *user) {
+    (void)user;
+    uint64_t self = c->x[0];
+    int rbn_ba_mode(void), nnldn_role(void);
+    if (g_bacss == 2 && rbn_ba_mode() > 0 && nnldn_role() > 0) {
+        volatile uint32_t *seq = (volatile uint32_t *)(uintptr_t)GA(0x71053040f0ULL);
+        if (rd32(self + 0x124) == 0 && !g_bacss_on) {
+            if (!rd64(GA(0x7105327e18ULL))) {         /* the Squad Strike select data (made by MeleeTeamCompeSequenceScene's set-up, 0x710233c070..): made here the same way */
+                uint64_t save[32]; memcpy(save, c->x, sizeof save);
+                c->x[0] = 0x10; c->x[1] = 8; call_guest(c, GA(0x710392dce0ULL)); uint64_t o = c->x[0];
+                if (o) { c->x[0] = o; call_guest(c, GA(0x7102349480ULL)); wr64(GA(0x7105327e18ULL), o); }
+                memcpy(c->x, save, sizeof save);
+                printf("[squadcss] Squad Strike select data made: %llx -> %llx\n", (unsigned long long)o, (unsigned long long)(o ? rd64(o) : 0));
+            }
+            g_bacss_saved = *seq; *seq = 0x02020000u; g_bacss_on = 1;
+            printf("[squadcss] the room's character select opens with the Squad Strike sequence (was %08x; parameter byte %u)\n", g_bacss_saved, rd8(self + 0x139)); fflush(stdout);
+        } else if (g_bacss_on) {
+            uint64_t mgr = rd64(self), m28 = rd64(mgr + 0x28);
+            if (rd64(m28 + 0x60) == 0 && rd64(m28 + 0x30) == rd64(m28 + 0x38) && rd64(rd64(mgr + 0x20) + 0x10) == 0) {
+                uint32_t res = rd32(mgr + 0x40);
+                char w[64]; snprintf(w, sizeof w, "character select done (result %u)", res); bacss_dump(w);
+                *seq = g_bacss_saved; g_bacss_on = 0;
+            }
+        }
+    }
+    g_orig_vs_css(c);
+}
+/* the Local sequence's state that starts the mode's sequence (0x710232f690, LocalSequenceScene; also a Local Wireless room's):
+ * 0x02010000 -> MeleeNormalSequenceScene, 0x02020000 -> MeleeTeamCompeSequenceScene (0x710232f808..). A room's other games
+ * follow the room maker's sequence (run cssp2: the joiner started MeleeTeamCompeSequenceScene by itself). */
+static ImportFn g_orig_local_launch, g_orig_tc_css;
+static void local_launch_hook(Ctx *c, void *user) {
+    (void)user;
+    int rbn_ba_mode(void), nnldn_role(void);
+    volatile uint32_t *seq = (volatile uint32_t *)(uintptr_t)GA(0x71053040f0ULL);
+    if (g_bacss == 1 && rd32(c->x[0] + 0x194) == 0) {
+        printf("[squadcss] the room's sequence starts: %08x (Battle Arena %d, room role %d)\n", *seq, rbn_ba_mode(), nnldn_role());
+        if (rbn_ba_mode() == 1 && nnldn_role() == 1 && *seq == 0x02010000u) { *seq = 0x02020000u; printf("[squadcss] Battle Arena room maker: the room plays the game's own Squad Strike (sequence 02020000)\n"); }
+        fflush(stdout);
+    }
+    g_orig_local_launch(c);
+}
+static void tc_css_hook(Ctx *c, void *user) {      /* (research) MeleeTeamCompeSequenceScene's character select state 0x710233cfd0: its result */
+    (void)user;
+    uint64_t self = c->x[0];
+    if (rd32(self + 0x114)) {
+        uint64_t mgr = rd64(self), m28 = rd64(mgr + 0x28);
+        if (rd64(m28 + 0x60) == 0 && rd64(m28 + 0x30) == rd64(m28 + 0x38) && rd64(rd64(mgr + 0x20) + 0x10) == 0) {
+            static uint32_t last = 0xffffffffu; uint32_t res = rd32(mgr + 0x40);
+            if (res != last) { last = res; char w[64]; snprintf(w, sizeof w, "Squad Strike select done (result %u)", res); bacss_dump(w); }
+        }
+    }
+    g_orig_tc_css(c);
+}
+static void bacss_init(void) {
+    const char *e = getenv("SSBU_BA_SQUAD_CSS"); g_bacss = e && *e ? atoi(e) : 0;
+    if (getenv("SSBU_DEBUG_SCENES")) printf("[squadcss] hook on the scene change: id %d\n", hook_install(GA(0x7103726120ULL), scene_change_hook, NULL, &g_orig_scene_change));
+    if (g_bacss == 2) printf("[squadcss] EXPERIMENT: Battle Arena rooms' character select in the Squad Strike layout: hook %d\n", hook_install(GA(0x7102334f50ULL), vs_css_hook, NULL, &g_orig_vs_css));
+    if (g_bacss == 1) printf("[squadcss] Battle Arena rooms play the game's own Squad Strike: hooks %d %d\n", hook_install(GA(0x710232f690ULL), local_launch_hook, NULL, &g_orig_local_launch), hook_install(GA(0x710233cfd0ULL), tc_css_hook, NULL, &g_orig_tc_css));
+    fflush(stdout);
+}
 void debug_mode_init(void) {
+    bacss_init();
     {   const char *e = getenv("SSBU_ALLOC_CHECK");
         if (!(e && e[0] == '0')) {
             e = getenv("SSBU_ALLOC_REPAIR"); g_ac_repair = !(e && e[0] == '0');
