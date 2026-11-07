@@ -94,6 +94,7 @@ static struct {
     uint8_t join_session[16];
     Seen seen[SEEN_MAX];
     uint32_t list_asked, list_filling, list_done;
+    int ba;                               /* (Battle Arena) station: the room maker said its room is a Battle Arena room */
     int list_next;
 } L = {SRWLOCK_INIT, CONDITION_VARIABLE_INIT};
 
@@ -110,6 +111,7 @@ static void ldn_msg(uint32_t to, int type, const void *body, uint32_t len) {
     uint8_t b[4 + NI_SIZE + 8];
     if (len > sizeof b - 4) return;
     b[0] = 'L'; b[1] = (uint8_t)type; b[2] = b[3] = 0;
+    {   int rbn_ba_mode(void); if ((type == M_ADVERTISE || type == M_ACCEPT) && L.state == LS_AP_CREATED && rbn_ba_mode() == 1) b[2] = 1; }      /* (Battle Arena) the room maker is in Battle Arena: its room plays Squad Strike (an older game ignores the byte) */
     memcpy(b + 4, body, len);
     net_send(net_my_ip(), VNET_LDN_PORT, to, VNET_LDN_PORT, b, 4 + len);
 }
@@ -147,7 +149,11 @@ static DWORD WINAPI ldn_agent(LPVOID unused) {
             if (tick) ldn_msg(u32at(L.net + NODE(0)), M_KEEP, L.net + NI_SESSION, 16);
             if (t - L.host_heard > SILENT_MS) station_lost(DR_SIGNAL_LOST);
         }
+        int ba_room = L.state == LS_STA_CONNECTED && L.ba;
         ReleaseSRWLockExclusive(&L.lock);
+        {   int rbn_ba_mode(void); void rbn_ba_set_mode(int m); void menu_popup(const char *title, const char *text); int m = rbn_ba_mode();      /* (Battle Arena) */
+            if (ba_room && m == 0) { rbn_ba_set_mode(2); menu_popup("Battle Arena room", "This room plays Squad Strike: 3 fighters each, 1 stock each, in one match. Your fighter on this screen is fighter 1; open the menu to choose fighters 2 and 3 (else they are random)."); }
+            else if (!ba_room && m == 2) rbn_ba_set_mode(0); }
     }
 }
 
@@ -171,6 +177,7 @@ static void ldn_receive(uint32_t from, const uint8_t *p, uint32_t n) {
         L.seen[slot].at = t;
         if (L.state == LS_STA_CONNECTED && !memcmp(L.net + NI_SESSION, m + NI_SESSION, 16) && from == u32at(L.net + NODE(0))) {
             L.host_heard = t;
+            L.ba = p[2] & 1;
             if (memcmp(L.net, m, NI_SIZE)) {
                 memcpy(L.net, m, NI_SIZE);
                 if (node_index(net_my_ip()) < 0) station_lost(DR_REJECTED); else signal_game();
@@ -207,6 +214,7 @@ static void ldn_receive(uint32_t from, const uint8_t *p, uint32_t n) {
     case M_ACCEPT:
         if (len < NI_SIZE || L.state != LS_STA || L.answer || from != L.join_host || memcmp(m + NI_SESSION, L.join_session, 16)) break;
         memcpy(L.net, m, NI_SIZE);
+        L.ba = p[2] & 1;
         L.answer = 1;
         WakeAllConditionVariable(&L.cv);
         break;

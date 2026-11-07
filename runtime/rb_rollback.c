@@ -341,6 +341,56 @@ static void rbg_pin(int on) {
         rbg_pin_apply(pa, pa, pa, pa, pa);
     }
 }
+/* (Battle Arena) a Squad Strike (Tag Team) match: when a fighter is KO'd the game loads the next fighter of the squad (files on
+ * ResLoadingThread / ResInflateThread, its module on L2CDynamicModuleManager, jobs on the task workers). Its fighter entry's loading state
+ * machine (0x71006556b0, entry + 0x5920 / + 0x591c, debug_mode.c) takes ONE step per frame when the request of the step before is done,
+ * and a request done in time is seen only at the next frame (run t15): so the frames it takes depend on how fast the loader is, and
+ * the two games of a room let the fighter in at different frames (pairs sq1 .. sq9a). Here, at the safe point of every pass of a squad
+ * match (between frames, real and re-run passes alike), the game waits until every guest thread is back at its wait (the loads asked
+ * for in the frame and their jobs done): each step then sees its request done at the next frame on both games. The loader threads are
+ * not kept suspended in such a match (r1_state.c ra_keepable): kept, they made no progress during this wait (pair sq4a). Costs nothing
+ * while the threads are quiet; a change of fighter holds the game a few hundred ms in all (both games alike).
+ * SSBU_SQ_SETTLE=0: off (test); =<ms>: the longest wait per frame (default 4000). */
+static long long g_sq_n_waits; static double g_sq_w_sum;
+/* ... and from the KO to the new fighter's entry no frame runs on a guess (every frame waits for the other player's pad, as with the ring
+ * short): a rollback across a load in progress lost its request (pair sq14a: the loading stuck at sub-state 2 on the game that rolled
+ * back). The window comes from the simulated state (the squad object: + 0xd00 set at the KO, + 0xd70 the change of fighter; any fighter
+ * entry loading, + 0x5920 == 3: the other player's changes, sq15a) and lasts 90 frames more. SSBU_SQ_LOCK=0: off (test). */
+static int g_sq_lock; static long long g_sq_lock_frames;
+static void rbg_squad_lock(long long i) {
+    extern uint64_t g_sq_obj; static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SQ_LOCK"); on = !(e && e[0] == '0'); }
+    int was = g_sq_lock;
+    int dm_squad_entry_loading(void); static long long last = -1000000;
+    int act = on && rbg_squad_active();
+    int busy = dm_squad_entry_loading();
+    if (act && g_sq_obj) for (int k = 0; k < 3; k++) { uint64_t part = g_sq_obj + (k == 0 ? 0x5b0 : k == 1 ? 0x950 : 0xd10);      /* (each side's part: state at + 0x60; debug_mode.c sq_gate; the word at - 0x10 is not a KO flag on every part: pair sq20b ran all in lockstep) */
+        if (*(volatile uint32_t *)(uintptr_t)(part + 0x60) >= 2) busy = 1; }      /* (states 2..4; the first step comes 20 frames into state 2) */
+    if (act && busy) last = i;
+    g_sq_lock = act && i - last < 90;                  /* (and 90 frames after: a rollback just after the load zeroed pages the loader had freed and taken again, pair sq15a) */
+    if (g_sq_lock) g_sq_lock_frames++;
+    if (g_sq_lock != was) LOG("r1: SQUAD: frame %lld: %s (a change of fighter; %lld frames without guesses so far)\n", i, g_sq_lock ? "every frame waits for the other player's pad" : "guesses again", g_sq_lock_frames);
+}
+int rbg_squad_active(void) { int dm_squad_made(void), rbn_squad_agreed(void); return g_rbg_in_match == 1 && dm_squad_made() && rbn_squad_agreed(); }
+static void rbg_squad_settle(long long i) {
+    static int lim = -1;
+    if (lim < 0) { const char *e = getenv("SSBU_SQ_SETTLE"); lim = e && *e ? atoi(e) : 4000; }
+    if (lim <= 0 || !rbg_squad_active()) return;
+    double t0 = now_ms(), fq_t0 = -1; int ok = 0, tries = 0, stable = 0;
+    while (now_ms() - t0 < lim) {                     /* the loader threads at a waiting import (3 looks 1 ms apart, no thread held), then the job fibers quiet (at most 1.5 s) */
+        int busy = 0; Ctx *tc; const char *nm; HANDLE h;
+        for (int k = 0; guest_thread_info(k, &tc, &nm, &h); k++) {
+            if (!tc || !nm || !(strstr(nm, "ResLoadingThread") || strstr(nm, "ResInflateThread") || strstr(nm, "ResUpdateThread") || strstr(nm, "L2CDynamicModuleManager") || strstr(nm, "TaskWorker"))) continue;
+            if (!waiting_import(tc->in_import)) { busy = 1; g_ra_busy = nm; break; }
+        }
+        if (busy) { stable = 0; fq_t0 = -1; tries++; Sleep(1); continue; }
+        if (fq_t0 < 0) fq_t0 = now_ms();
+        if (!ra_fibers_quiet() && now_ms() - fq_t0 < 1500) { g_ra_busy = "a job fiber (task worker)"; tries++; Sleep(1); continue; }
+        if (++stable >= 3) { ok = 1; break; }
+        Sleep(1);
+    }
+    double w = now_ms() - t0;
+    if (tries > 1) { g_sq_n_waits++; g_sq_w_sum += w; if (g_sq_n_waits <= 40 || !ok) LOG("r1: SQUAD: frame %lld (phase %d): waited %.1f ms for the game's threads (%s) before the next frame (%s; %lld waits, %.0f ms in all)\n", i, g_ra_phase, w, g_ra_busy ? g_ra_busy : "?", ok ? "quiet" : "LIMIT: not quiet", g_sq_n_waits, g_sq_w_sum); }
+}
 /* at the safe point (H2) of every pass while the fight runs (r1_ring.c rgs_step) */
 static void rbg_step_body(Ctx *c) {
     long long i = g_rgs_next;
@@ -429,6 +479,8 @@ static void rbg_step_body(Ctx *c) {
         return;
     }
     rbn_pass_hash(i);
+    rbg_squad_settle(i);                                /* (Battle Arena) */
+    rbg_squad_lock(i);
     { extern volatile long long g_unwind_trace_frame; g_unwind_trace_frame = i + 1; }      /* (hs15) the frame the next pass simulates, for SSBU_UNWIND_TRACE */
     { static int tr = -1; if (tr < 0) tr = getenv("SSBU_RB_NET_TRACE") ? atoi(getenv("SSBU_RB_NET_TRACE")) : 0;
       if (tr > 0 && i <= tr) LOG("r1: RB NET trace: safe point after pass %lld, phase %d, left %d, remote pads up to %lld, %.3f ms\n", i, g_ra_phase, g_rgs_left, rbn_confirmed(), now_ms()); }
@@ -526,7 +578,7 @@ static void rbg_step_body(Ctx *c) {
         if (m > 0 && m <= i) { if (g_rbg_noring) { g_rbg_miss++; if (g_rbg_miss <= 10) LOG("r1: RB NET: wrong guess at frame %d WITHOUT the ring: cannot be rolled back (desync)\n", m); }
                                else { if (stalled) { g_rbg_stall_ms += now_ms() - ts; } if (rbg_rollback(c, i, m)) return; } }
         /* (hs14) the ring short of pool memory (its last capture given up): no frame on a guess until a capture succeeds */
-        if (g_rgs_next - rbn_confirmed() <= (g_rbg_noring || g_rg_short ? 0 : rbn_ahead())) break;
+        if (g_rgs_next - rbn_confirmed() <= (g_rbg_noring || g_rg_short || g_sq_lock ? 0 : rbn_ahead())) break;
         if (!g_rbg_noring && g_rg_short && g_rgs_next - rbn_confirmed() <= rbn_ahead() && !stalled) g_rbg_short_waits++;
         if (rbn_peer_gone()) { if (!g_rbg_gone++) LOG("r1: RB NET: no message from the other player for 5 s at frame %lld: going on alone (guesses)\n", i); break; }
         if (!stalled) { stalled = 1; ts = now_ms(); g_rbg_stalls++; r1_ring_let_go(); }

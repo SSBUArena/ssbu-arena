@@ -106,9 +106,12 @@ static void comp_open_local(Ctx *c, void *user) {
     g_pallet_orig(c);
     uint8_t *p = comp_pallet();
     if (!p || g_local_pending || *(int *)(p+476)) return;
+    {   int rbn_ba_mode(void); void rbn_ba_set_mode(int m); void menu_battle_arena(void);      /* (Battle Arena) the Battle Arena tile (func_arg 7): a Local Wireless room that plays Squad Strike */
+        if (cmd == 7) { rbn_ba_set_mode(1); menu_battle_arena(); }
+        else if (cmd == 3 && rbn_ba_mode() == 1) rbn_ba_set_mode(0); }
     g_pallet_cmd = cmd == 5 ? 5 : 3;
     g_local_pending = p;
-    printf("competitive UI: %s -> opening the native side bar command %d\n", g_pallet_cmd == 5 ? "Settings" : "Online LDN", g_pallet_cmd); fflush(stdout);
+    printf("competitive UI: %s -> opening the native side bar command %d\n", g_pallet_cmd == 5 ? "Settings" : cmd == 7 ? "Battle Arena (Squad Strike in a Local Wireless room)" : "Online LDN", g_pallet_cmd); fflush(stdout);
 }
 static void comp_pallet_ready(Ctx *c, void *user) {
     (void)user;
@@ -227,6 +230,7 @@ static int comp_quick_begin(void) {           /* 1 = the quick match starts (the
     g_quick_saved_4b = *(volatile uint8_t *)(uintptr_t)(k_rules[1] + 0x4b);
     g_quick_have = 1;
     comp_rule_dump("the player's own");
+    {   void rbn_ba_set_mode(int m); rbn_ba_set_mode(0); }      /* (Battle Arena) a quick match is never a squad match */
     InterlockedExchange(&g_quick, 1);
     InterlockedExchange(&g_quick_skip_rules, 1);       /* (comp_rule_state) */
     comp_quick_rules();

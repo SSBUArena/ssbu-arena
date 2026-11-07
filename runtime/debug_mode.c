@@ -162,6 +162,84 @@ static void parse_match(const char *s) {
 }
 static void match_player_hook(Ctx *c, void *user);
 static ImportFn g_orig_player_record;
+uint64_t g_sq_obj; static ImportFn g_orig_sq_init;
+void debug_watch(const uint64_t *addrs, int n);
+/* (Battle Arena) the next squad fighter's load at fixed frames. The fighter entry's own loading state machine 0x71006556b0 (entry
+ * + 0x5920 = 3 while loading, sub-state + 0x591c 0 .. 0xe, the fighter put in the entry on the way (+ 0x13c -1 until then), + 0x5a80
+ * the id of its newest resource request; runs t12 .. t20) runs once per frame, waits for each request of the resource loader and
+ * takes the next step at the first frame after it is done: wall time, so the new fighter came in at different frames on the two games
+ * of a room (pairs sq1 .. sq16a). In a squad match it is run only every SSBU_SQ_STEP frames (default 20) from the frame its loading
+ * begins, and not at that first frame (skipped frames: as if the request were not done yet; it is a poll, nothing is lost), until the
+ * fighter is in the entry; the squad object's change of fighter (sq_step_hook below, state 2) the same way. Together with rb_rollback.c
+ * (the game waits at every frame boundary until the loader threads are idle, and no frame runs on a guess from the KO until 90 frames
+ * after the load) each step finds its request done and the fighter comes in at the same frame on both games: +80 / +100 frames.
+ * Offline (t17 .. t20) the steps are the same at every change; pair sq18a IDENTICAL. SSBU_SQ_STEP=0: off. */
+static ImportFn g_orig_sq_eload; static long long g_sq_eload_n; static int g_sq_made;
+int dm_squad_entry_loading(void) {                  /* (rb_rollback.c) a fighter entry is loading its next fighter (entry + 0x5920 == 3) */
+    static uint64_t inst; if (!inst) inst = hook_address("_ZN3lib9SingletonIN3app14FighterManagerEE9instance_E");
+    uint64_t mgr = inst ? sr64(inst) : 0, impl = mgr ? sr64(mgr) : 0;
+    for (int e = 0; impl && e < 2; e++) { uint64_t en = sr64(impl + 0x20 + 8ull * (uint64_t)e); if (en && rd8(en + 0x5920) == 3) return 1; }
+    return 0;
+}
+static void sq_eload_hook(Ctx *c, void *user) {
+    (void)user;
+    static int step = -1; static int64_t base = -1; static uint64_t base_en;
+    if (step < 0) { const char *e = getenv("SSBU_SQ_STEP"); step = e && *e ? atoi(e) : 20; }
+    uint64_t en = c->x[0], o = g_sq_obj;
+    int64_t fc = o ? (int64_t)rd32(o + 0x112c) : 0;
+    int loading = en && rd8(en + 0x5920) == 3, waiting = en && en == base_en && base >= 0 && rd32(en + 0x13c) == 0xffffffffu && fc - base < 1200;      /* (after the files: its module, then the fighter put in the entry: + 0x13c -1 until then, runs t12 / t18; pair sq16a) */
+    if (step <= 0 || !g_sq_made || !en || !o || !(loading || waiting)) { if (en == base_en) base = -1; g_orig_sq_eload(c); return; }
+    if (base < 0 || en != base_en || base > fc) { base = fc; base_en = en; }
+    if ((fc - base) % step || fc == base) { g_sq_eload_n++; return; }      /* (the first step one period in: the frames before it run without guesses, rb_rollback.c rbg_squad_lock) */      /* (not a step frame: the entry's loading waits, as if its request were not done) */
+    uint8_t sub0 = rd8(en + 0x591c);
+    g_orig_sq_eload(c);
+    printf("[squad] next fighter's loading: step at fight frame %lld (+%lld): sub-state %02x -> %02x%s%s\n", (long long)fc, (long long)(fc - base), sub0, rd8(en + 0x591c), rd8(en + 0x5920) != 3 ? " (loaded)" : rd8(en + 0x591c) == sub0 ? " (NOT advanced: its request not done in time)" : "", rd32(en + 0x13c) != 0xffffffffu ? " (fighter in the entry)" : "");
+    fflush(stdout);
+}
+static void sq_init_hook(Ctx *c, void *user) { (void)user; g_sq_obj = c->x[0]; g_orig_sq_init(c);}
+static int g_sq_made;
+/* ---- (Battle Arena) the next squad fighter's entry at a fixed frame (Squad Strike, Tag Team, online with rollback).
+ * The game's squad object of the fight (made by 0x710157c100, which g_sq_obj is taken from) runs the change of fighter as a state
+ * machine at + 0xd70 (13.0.4, runs t8 / t9: hardware write watch): at the KO + 0xd08 = 60 and + 0xd04 counts the frames to it; then
+ * state 2 = the next fighter is being loaded (its module and files, on the loader threads: wall time); 2 -> 3 is written by
+ * 0x7101589830 (a per-frame callback of the fight, 0x7101755fd0 <- 0x710135f570) when the load is done; 3 counts + 0xd74 to 4,
+ * 0x710158a360 then 4 -> 0 (the fighter is in). + 0x112c counts the fight frames. Offline state 2 lasted 30 frames; the two games of a
+ * room needed different numbers of frames (the desyncs of pairs sq1 .. sq6a).
+ * Here, in a squad match, state 2 is polled (0x7101589830 run) only every SSBU_SQ_STEP frames from its first frame (see the entry's
+ * loading below): 2 -> 3 then comes at the same frame on both games (+100 in pair sq18a). Earlier tries, kept in the notes: waiting
+ * inside the frame (t10: the load needs the game's frames), undoing an early 2 -> 3 (sq9a: the request sometimes lost).
+ * SSBU_SQ_GATE=0: off (test). */
+static ImportFn g_orig_sq_step; static int64_t g_sq_s2_from = -1; static long long g_sq_gate_held, g_sq_gate_waits; static double g_sq_gate_ms;
+/* the change of fighter of each side: x0 = one of the squad object's per-side parts (+ 0x5b0, + 0x950, + 0xd10; run t21), its state at
+ * x0 + 0x60 (the + 0xd70 above for + 0xd10); 0x7101589830 runs states 2 and 3, 0x710158a360 state 4 (the fighter put in): in states 2..4
+ * both run only every SSBU_SQ_STEP frames from the first frame of state 2 (pair sq18b: state 4 also waits for a load) */
+static ImportFn g_orig_sq_put; static struct { uint64_t part; int64_t from; } g_sq_base[4];
+static int sq_gate(Ctx *c, const char *what) {      /* 1 = run the step now */
+    static int on = -1, step = 20;
+    if (on < 0) { const char *e = getenv("SSBU_SQ_GATE"), *k = getenv("SSBU_SQ_STEP"); on = !(e && e[0] == '0'); if (k && *k) step = atoi(k); }
+    uint64_t o = g_sq_obj, part = c->x[0];
+    if (!on || step <= 0 || !g_sq_made || !o || part < o || part > o + 0x1000) return 1;
+    uint32_t st = rd32(part + 0x60); int64_t fc = (int64_t)rd32(o + 0x112c);
+    int k = 0; while (k < 3 && g_sq_base[k].part && g_sq_base[k].part != part) k++;
+    g_sq_base[k].part = part;
+    if (st < 2 || st > 4) { g_sq_base[k].from = -1; return 1; }
+    if (g_sq_base[k].from < 0 || g_sq_base[k].from > fc) g_sq_base[k].from = fc;
+    int64_t from = g_sq_base[k].from;
+    if ((fc - from) % step || fc == from) { g_sq_gate_held++; return 0; }
+    (void)what; return 1;
+}
+static void sq_step_hook(Ctx *c, void *user) {
+    (void)user; uint64_t part = c->x[0]; uint32_t st0 = g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 ? rd32(part + 0x60) : 0;
+    if (!sq_gate(c, "step")) return;
+    g_orig_sq_step(c);
+    if (st0 >= 2 && st0 <= 4 && rd32(part + 0x60) != st0) { printf("[squad] change of fighter (part +%llx): state %u -> %u at fight frame %u\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
+}
+static void sq_put_hook(Ctx *c, void *user) {
+    (void)user; uint64_t part = c->x[0]; uint32_t st0 = g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 ? rd32(part + 0x60) : 0;
+    if (!sq_gate(c, "put")) return;
+    g_orig_sq_put(c);
+    if (st0 >= 2 && st0 <= 4 && rd32(part + 0x60) != st0) { printf("[squad] change of fighter (part +%llx): state %u -> %u at fight frame %u\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
+}
 static volatile LONG g_dm_setups;                      /* match set-ups seen (player 1's record built) */
 #ifdef _WIN32
 static LONG CALLBACK watch_veh(EXCEPTION_POINTERS *ep) {
@@ -269,6 +347,10 @@ static uint64_t hash40(const char *s) {
     for (size_t i = 0; i < n; i++) { crc ^= (uint8_t)s[i]; for (int k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1))); }
     return ((uint64_t)n << 32) | (uint32_t)~crc;
 }
+#define SQ_TABLE GA(0x71052c9dc0ULL)
+#define SQ_N 3
+static uint64_t g_sq_chara[2][SQ_N]; static uint8_t g_sq_colour[2][SQ_N]; static int g_sq_want, g_sq_test = -1;
+static uint64_t g_sq_st[2], g_sq_x2[2]; static int g_sq_made;
 /* ---- R3 online rollback (SSBU_RB_NET=net, rb_net.c): the match handshake. At player 1's record each game sends its own
  * player-1 choice (the panel state as the screens and SSBU_DEBUG_MATCH left it); the host adds its stage / items / stocks
  * and a seed; both then write the agreed match into the panel states of players 1 and 2 (type human: port 2 = the other
@@ -495,6 +577,19 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
                 if (local == 1) own_has = hs_layout(st, own); else { own_has = g_hs_m.has_layout[0]; memcpy(own, g_hs_m.layout[0], sizeof own); }
                 int got = rbn_room_layout(own, own_has, g_lwr_ctl[local], other, &other_has, g_lwr_ctl[1 - local]);
                 g_lwr_ctl_ok = got;
+                {   int rbn_squad_agreed(void), rbn_room_squad(uint64_t chara[2], uint8_t colour[2]), rbn_ba_pick(int slot, uint64_t *chara, uint8_t *colour);
+                    g_sq_want = 0;
+                    if (rbn_squad_agreed()) {                /* (Battle Arena) both squads: fighter 1 = the room's record, 2 and 3 = each player's picks */
+                        uint64_t oc[2]; uint8_t ocol[2]; int peer = rbn_room_squad(oc, ocol);
+                        uint8_t mine_sq[0xb0]; void rbn_ba_fill_sent(uint8_t out[0xb0]); rbn_ba_fill_sent(mine_sq);
+                        memset(g_sq_chara, 0, sizeof g_sq_chara); memset(g_sq_colour, 0, sizeof g_sq_colour);
+                        memcpy(&g_sq_chara[local][1], mine_sq + 3, 16); g_sq_colour[local][1] = mine_sq[19]; g_sq_colour[local][2] = mine_sq[20];
+                        if (peer) { g_sq_chara[1 - local][1] = oc[0]; g_sq_chara[1 - local][2] = oc[1]; g_sq_colour[1 - local][1] = ocol[0]; g_sq_colour[1 - local][2] = ocol[1]; }
+                        g_sq_want = peer;
+                        printf("[squad] room match: squads %s (this game's fighters 2 / 3 %016llx / %016llx, the other's %016llx / %016llx)\n", peer ? "agreed" : "NOT RECEIVED from the other game: played as the 1-on-1 room match (the match may differ)",
+                               (unsigned long long)g_sq_chara[local][1], (unsigned long long)g_sq_chara[local][2], (unsigned long long)g_sq_chara[1 - local][1], (unsigned long long)g_sq_chara[1 - local][2]);
+                        fflush(stdout);
+                    } }
                 {   void nnhid_lwr_styles(int on, int gc0, int gc1);       /* (R3 lwr) port i in player i's own controller kind on both PCs */
                     if (got) { nnhid_lwr_styles(1, g_lwr_ctl[0][LWR_CTL + 1], g_lwr_ctl[1][LWR_CTL + 1]);
                         printf("[rbnet] room match: controller kinds: player 1 %s, player 2 %s (ports 1 / 2 shown so on this PC)\n", g_lwr_ctl[0][LWR_CTL + 1] ? "GameCube" : "Pro", g_lwr_ctl[1][LWR_CTL + 1] ? "GameCube" : "Pro"); } }
@@ -525,8 +620,88 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
     if (rd8(st + 5) == g_hs_m.rule_kind) { if (g_hs_m.rule_kind == 1) wr8(st + 0xa, g_hs_m.stock); }
     else { printf("[rbnet] handshake: player %d: rule kind %d here, %d agreed (not changed: set the same rules on both)\n", idx + 1, rd8(st + 5), g_hs_m.rule_kind); fflush(stdout); }
 }
+/* ---- (Battle Arena) Squad Strike, Tag Team, 3 fighters each, 1 stock each, in ONE fight (the game's own mode: when a fighter loses its
+ * stock the next one of the squad comes in). How the game sets it up (13.0.4, read off the binary and runs r13 / r16 of
+ * MeleeTeamCompeSequenceScene, SEQUENCE_MELEE_TEAM_COMPE 0x02020000, ruleset "Tag Team"):
+ *   - the squad table 0x71052c9dc0 (0x1818 bytes, cleared by 0x710179d0a0): + 0 count (3 or 5), + 1 the same count, + 8 the entries
+ *     [2 players][5] of 0x268 bytes: a player record (0x260, built by the record builder 0x7101788260 from one fighter's panel
+ *     state) + a word. The squad sequence (0x71023108b0, 0x7102312610..) builds one record per fighter and copies them there in
+ *     the squad's order; slot 0 is also the match block's record of that player (fighter 1 starts the fight).
+ *   - the battle builder 0x71014e58f0 sees a squad when match block + 0x39 == 3 (its "kind" 2: it loads every fighter of the table
+ *     at the start, 0x71014e9f10..); the other rule bytes of a Tag Team match that differ from a Smash versus match at the fight
+ *     start: + 0 melee mode 2 (0 local Smash, 1 Local Wireless), + 0x15 1, + 0x20 1, + 0x4c stocks 1.
+ * A squad match is made from a Smash versus set-up (both records built) by writing those: the table from the two players' own panel
+ * states with the fighter changed (the game's own record builder makes each entry), then the rule bytes. Everything lives in the
+ * game's memory, so the rollback state holds it and the fighter changes happen inside the simulated fight.
+ * Used by the Battle Arena room match (rb_net.c agrees both squads) and, TEST ONLY, by SSBU_SQ_TEST=<p1a>,<p1b>,<p1c>/<p2a>,<p2b>,<p2c>
+ * (fighter names as SSBU_DEBUG_MATCH: any local versus match becomes a squad match with these fighters). */
+int dm_squad_made(void) { return g_sq_made; }            /* (replay_state.c / rb_net.c) the last set-up was made a squad match */
+void dm_squad_set(int on, const uint64_t chara[2][SQ_N], const uint8_t colour[2][SQ_N]) {      /* rb_net.c: the agreed squads of the next set-up */
+    g_sq_want = on;
+    if (on) { memcpy(g_sq_chara, chara, sizeof g_sq_chara); memcpy(g_sq_colour, colour, sizeof g_sq_colour); }
+}
+static void sq_test_parse(void) {
+    const char *e = getenv("SSBU_SQ_TEST"); g_sq_test = 0;
+    if (!e || !*e) return;
+    char buf[200]; snprintf(buf, sizeof buf, "%s", e);
+    int p = 0, k = 0;
+    for (char *t = buf; *t && p < 2; ) {
+        char *end = t + strcspn(t, ",/"); char sep = *end; *end = 0;
+        char nm[64]; snprintf(nm, sizeof nm, "ui_chara_%s", t);
+        if (k < SQ_N) { g_sq_chara[p][k] = 0xc100000000000000ull | hash40(nm); g_sq_colour[p][k] = (uint8_t)p; k++; }
+        if (!sep) break;
+        if (sep == '/') { p++; k = 0; }
+        t = end + 1;
+    }
+    g_sq_test = 1;
+    printf("[squad] TEST: every local versus match is made a squad match (SSBU_SQ_TEST=%s)\n", e); fflush(stdout);
+}
+/* after player 2's record (idx 1): both records exist; c is the record builder's context (its registers are given back) */
+static void squad_build(Ctx *c) {
+    if (!g_sq_st[0] || !g_sq_st[1]) { printf("[squad] NOT made: a player's panel state was not seen\n"); fflush(stdout); return; }
+    uint64_t save[32]; memcpy(save, c->x, sizeof save);
+    call_guest(c, GA(0x710179d0a0ULL));                  /* the game's own clear of the squad table */
+    static uint8_t tmp[0x480] __attribute__((aligned(16)));
+    for (int p = 0; p < 2; p++)
+        for (int k = 0; k < SQ_N; k++) {
+            uint64_t ent = SQ_TABLE + 8 + 0xc08ull * (uint64_t)p + 0x268ull * (uint64_t)k;
+            safe_read(g_sq_st[p], tmp, sizeof tmp);
+            uint64_t st = (uint64_t)(uintptr_t)tmp;
+            uint64_t ch = g_sq_chara[p][k] ? g_sq_chara[p][k] : rd64(st + 0x88); uint8_t col = g_sq_chara[p][k] ? g_sq_colour[p][k] : rd8(st + 0x90);      /* 0: the room's own fighter 1 */
+            if (p == 1) for (int j = 0; j < SQ_N; j++) { uint64_t e0 = SQ_TABLE + 8 + 0x268ull * (uint64_t)j; if ((rd64(e0) & 0xffffffffffull) == (ch & 0xffffffffffull) && rd8(e0 + 0x19) == col) { col = (uint8_t)((col + 1) & 7); j = -1; } }      /* the same fighter in the same colour on the other side: the next colour */
+            wr64(st + 0x80, ch); wr64(st + 0x88, ch); wr8(st + 0x90, col);
+            if (rd8(st + 5) == 1) wr8(st + 0xa, 1);       /* one stock per fighter */
+            {   const char *e = getenv("SSBU_SQ_TEST_CPU"); int lv[2] = {0, 0};      /* (TEST ONLY) =<level p1>,<level p2>: both players CPUs of these levels (0 = as set up) */
+                if (g_sq_test > 0 && e && sscanf(e, "%d,%d", &lv[0], &lv[1]) == 2 && lv[p] > 0) { wr32(st + 0x78, 1); wr8(st + 0x91, (uint8_t)lv[p]); wr32(st + 0x224, 0xffffffffu); } }
+            memcpy(c->x, save, sizeof save);
+            c->x[0] = st; c->x[1] = (uint64_t)p; c->x[2] = g_sq_x2[p]; c->x[3] = ent;
+            g_orig_player_record(c);
+            if ((int8_t)rd8(ent + 8) < 0 && k) {          /* not a fighter of this game: fighter 1 again (the same on both games) */
+                printf("[squad] player %d fighter %d: ui_chara %016llx is no fighter here: fighter 1 instead\n", p + 1, k + 1, (unsigned long long)ch);
+                safe_read(g_sq_st[p], tmp, sizeof tmp); if (rd8(st + 5) == 1) wr8(st + 0xa, 1);
+                memcpy(c->x, save, sizeof save); c->x[0] = st; c->x[1] = (uint64_t)p; c->x[2] = g_sq_x2[p]; c->x[3] = ent; g_orig_player_record(c);
+            }
+            wr8(ent + 0x18, 1);
+            if (g_hs_lwr && g_lwr_ctl_ok) wr8(ent + 0x48, g_lwr_ctl[p][LWR_CTL]);      /* (R3 lwr) the player's own option byte, as its record */
+            printf("[squad] player %d fighter %d: ui_chara %016llx colour %u -> entry %llx: fighter kind %d\n", p + 1, k + 1, (unsigned long long)rd64(ent), rd8(ent + 0x19), (unsigned long long)ent, (int)(int8_t)rd8(ent + 8));
+        }
+    memcpy(c->x, save, sizeof save);
+    wr8(SQ_TABLE, SQ_N); wr8(SQ_TABLE + 1, SQ_N);
+    for (int p = 0; p < 2; p++) {                         /* fighter 1 starts: the match block's record = slot 0 */
+        uint64_t rec = MELEE_INFO + 0x580 + 0x260ull * (uint64_t)p, ent = SQ_TABLE + 8 + 0xc08ull * (uint64_t)p;
+        for (int k = 0; k < 0x260; k++) wr8(rec + (uint64_t)k, rd8(ent + (uint64_t)k));
+    }
+    uint8_t was0 = rd8(MELEE_INFO);
+    wr8(MELEE_INFO, 2); wr8(MELEE_INFO + 0x15, 1); wr8(MELEE_INFO + 0x20, 1); wr8(MELEE_INFO + 0x39, 3); wr8(MELEE_INFO + 0x4c, 1);
+    g_sq_made = 1;
+    printf("[squad] Squad Strike (Tag Team, %d fighters each, 1 stock each): squad table filled, rule: melee mode %u -> 2, + 0x15 / + 0x20 1, + 0x39 3, stocks 1\n", SQ_N, was0);
+    fflush(stdout);
+}
 static void match_player_hook(Ctx *c, void *user) {
     (void)user;
+    if (g_sq_test < 0) sq_test_parse();
+    if (c->x[1] == 0) g_sq_made = 0;
+    if (c->x[1] < 2) { g_sq_st[c->x[1]] = c->x[0]; g_sq_x2[c->x[1]] = c->x[2]; }
     uint64_t st = c->x[0], rec = c->x[3]; int idx = (int)c->x[1];
     uint64_t was = rd64(st + 0x88); uint32_t type_was = rd32(st + 0x78);
     if (idx == 0) { g_hs_p1_ok = safe_read(st, g_hs_p1, sizeof g_hs_p1); InterlockedIncrement(&g_dm_setups); }
@@ -584,6 +759,7 @@ static void match_player_hook(Ctx *c, void *user) {
     if (g_hs_wanted) hs_apply(st, idx, type_was);       /* R3: the match both online games agreed (rb_net.c handshake) */
     if (idx == 1) g_dm_state1_ok = safe_read(st, g_dm_state1, sizeof g_dm_state1);
     g_orig_player_record(c);
+    if (idx == 1 && ((g_sq_test > 0 && !g_hs_wanted) || (g_sq_want && g_hs_wanted && g_hs_ok && !g_hs_local && g_hs_lwr))) squad_build(c);      /* (Battle Arena) */
     {   void hs_show_agreed(int idx); if (g_hs_wanted && g_hs_ok && !g_hs_local && !g_hs_lwr) hs_show_agreed(idx); }      /* (Arena) the screens before the fight show the agreed players */
     if (idx == 1 && g_hs_lwr && g_lwr_ctl_ok) for (int i = 0; i < 2; i++) wr8(MI_PLAYER(i) - 8 + 0x48, g_lwr_ctl[i][LWR_CTL]);      /* (R3 lwr) each player's own option byte (record + 0x48, see lwr_own_controls) */
     if (idx == 1 && rd32(st + 0x78) == 0) { void input_mark(const char *what); input_mark("setup-2p"); }      /* (R3 pub2, test aid) a match set up with a human player 2 (SSBU_SEQ @untilmark:setup-2p) */
@@ -860,6 +1036,8 @@ void debug_mode_init(void) {
         if (g_hs_wanted) printf("debug match: hook on the fight scene's clean-up: id %d\n", hook_install(GA(0x710134c690ULL), scene_clean_hook, NULL, &g_orig_scene_clean));
         if (g_hs_wanted) printf("debug match: hook on the match controls set-up %llx: id %d (R3 lwr: Local Wireless room matches, each player's own controls)\n", (unsigned long long)GA(0x7101780440ULL), hook_install(GA(0x7101780440ULL), controls_fill_hook, NULL, &g_orig_controls_fill));
     }
+    if (g_hs_wanted || getenv("SSBU_SQ_TEST")) { int a = hook_install(GA(0x710157c100ULL), sq_init_hook, NULL, &g_orig_sq_init), b = hook_install(GA(0x7101589830ULL), sq_step_hook, NULL, &g_orig_sq_step), l = hook_install(GA(0x71006556b0ULL), sq_eload_hook, NULL, &g_orig_sq_eload), p = hook_install(GA(0x710158a360ULL), sq_put_hook, NULL, &g_orig_sq_put);      /* (Battle Arena) */
+        printf("debug match: hooks on the squad object (init %d, change of fighter %d / %d, fighter load %d)\n", a, b, p, l); }
     if (getenv("SSBU_DEBUG_RESEARCH")) printf("debug research: hook on the entry set-up: id %d\n", hook_install(FN_ENTRY_SETUP, research_entry_setup, NULL, &g_orig_entry_setup));
     if (getenv("SSBU_DEBUG_DUMP") || g_dm.text[0] || g_end_limit ||getenv("SSBU_DEBUG_RESEARCH") || getenv("SSBU_DEBUG_WATCHENTRY")) CreateThread(NULL, 0, dump_thread, NULL, 0, NULL);
 }

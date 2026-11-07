@@ -29,6 +29,7 @@ int menu_enabled(void) {
 int menu_is_open(void) { return 0; }
 int menu_input_blocked(void) { return 0; }
 void menu_request_toggle(void) {}
+void menu_battle_arena(void) { printf("menu: Battle Arena: no menu in this build: fighters 2 and 3 are random\n"); fflush(stdout); }
 void menu_notice(const char *text) { (void)text; }      /* (the message is in the log only) */
 void menu_popup(const char *title, const char *text) { printf("menu: popup (no menu in this build): %s: %s\n", title ? title : "", text ? text : ""); fflush(stdout); }
 int menu_wndproc(void *hwnd, unsigned msg, uintptr_t w, intptr_t l) {
