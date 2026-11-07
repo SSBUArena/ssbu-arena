@@ -351,6 +351,10 @@ static uint64_t hash40(const char *s) {
 #define SQ_N 3
 static uint64_t g_sq_chara[2][SQ_N]; static uint8_t g_sq_colour[2][SQ_N]; static int g_sq_want, g_sq_test = -1;
 static uint64_t g_sq_st[2], g_sq_x2[2]; static int g_sq_made;
+/* each player's panel state as it was at its own record (after hs_apply): in a Local Wireless room both records are built from
+ * the SAME state object, so at player 2's record the pointer of player 1 already holds player 2 (2026-11-07 room match: player 1's
+ * fighter 1 was player 2's fighter, colour and controller slot, so it copied player 2's inputs). SSBU_SQ_STCOPY=0: the old way */
+static uint8_t g_sq_copy[2][0x480] __attribute__((aligned(16))); static int g_sq_copy_ok[2], g_sq_stcopy = -1;
 /* ---- R3 online rollback (SSBU_RB_NET=net, rb_net.c): the match handshake. At player 1's record each game sends its own
  * player-1 choice (the panel state as the screens and SSBU_DEBUG_MATCH left it); the host adds its stage / items / stocks
  * and a seed; both then write the agreed match into the panel states of players 1 and 2 (type human: port 2 = the other
@@ -665,7 +669,7 @@ static void squad_build(Ctx *c) {
     for (int p = 0; p < 2; p++)
         for (int k = 0; k < SQ_N; k++) {
             uint64_t ent = SQ_TABLE + 8 + 0xc08ull * (uint64_t)p + 0x268ull * (uint64_t)k;
-            safe_read(g_sq_st[p], tmp, sizeof tmp);
+            if (g_sq_stcopy && g_sq_copy_ok[p]) memcpy(tmp, g_sq_copy[p], sizeof tmp); else safe_read(g_sq_st[p], tmp, sizeof tmp);
             uint64_t st = (uint64_t)(uintptr_t)tmp;
             uint64_t ch = g_sq_chara[p][k] ? g_sq_chara[p][k] : rd64(st + 0x88); uint8_t col = g_sq_chara[p][k] ? g_sq_colour[p][k] : rd8(st + 0x90);      /* 0: the room's own fighter 1 */
             if (p == 1) for (int j = 0; j < SQ_N; j++) { uint64_t e0 = SQ_TABLE + 8 + 0x268ull * (uint64_t)j; if ((rd64(e0) & 0xffffffffffull) == (ch & 0xffffffffffull) && rd8(e0 + 0x19) == col) { col = (uint8_t)((col + 1) & 7); j = -1; } }      /* the same fighter in the same colour on the other side: the next colour */
@@ -678,7 +682,8 @@ static void squad_build(Ctx *c) {
             g_orig_player_record(c);
             if ((int8_t)rd8(ent + 8) < 0 && k) {          /* not a fighter of this game: fighter 1 again (the same on both games) */
                 printf("[squad] player %d fighter %d: ui_chara %016llx is no fighter here: fighter 1 instead\n", p + 1, k + 1, (unsigned long long)ch);
-                safe_read(g_sq_st[p], tmp, sizeof tmp); if (rd8(st + 5) == 1) wr8(st + 0xa, 1);
+                if (g_sq_stcopy && g_sq_copy_ok[p]) memcpy(tmp, g_sq_copy[p], sizeof tmp); else safe_read(g_sq_st[p], tmp, sizeof tmp);
+                if (rd8(st + 5) == 1) wr8(st + 0xa, 1);
                 memcpy(c->x, save, sizeof save); c->x[0] = st; c->x[1] = (uint64_t)p; c->x[2] = g_sq_x2[p]; c->x[3] = ent; g_orig_player_record(c);
             }
             wr8(ent + 0x18, 1);
@@ -758,6 +763,11 @@ static void match_player_hook(Ctx *c, void *user) {
     if (idx == 0) { void rbn_set_setup_waiting(int waiting); rbn_set_setup_waiting(c->x[30] == GA(0x71017911dcULL)); }      /* (R3 lwr) a Local Wireless room's waiting-stage fight: built from its own set-up (runs lwres2 / lwres3: return address 0x71017911dc; the room's match and the select screens: 0x710178f498) */
     if (g_hs_wanted) hs_apply(st, idx, type_was);       /* R3: the match both online games agreed (rb_net.c handshake) */
     if (idx == 1) g_dm_state1_ok = safe_read(st, g_dm_state1, sizeof g_dm_state1);
+    if (idx >= 0 && idx < 2) {                            /* (Battle Arena) this player's own panel state, kept for squad_build */
+        if (g_sq_stcopy < 0) { const char *e = getenv("SSBU_SQ_STCOPY"); g_sq_stcopy = !(e && *e == '0'); }
+        g_sq_copy_ok[idx] = safe_read(st, g_sq_copy[idx], sizeof g_sq_copy[idx]);
+        if (idx == 1 && g_sq_st[0] == g_sq_st[1]) { static int said; if (!said++) { printf("[squad] both players' records are built from one panel state object (%llx): each player's own copy is used\n", (unsigned long long)st); fflush(stdout); } }
+    }
     g_orig_player_record(c);
     if (idx == 1 && ((g_sq_test > 0 && !g_hs_wanted) || (g_sq_want && g_hs_wanted && g_hs_ok && !g_hs_local && g_hs_lwr))) squad_build(c);      /* (Battle Arena) */
     {   void hs_show_agreed(int idx); if (g_hs_wanted && g_hs_ok && !g_hs_local && !g_hs_lwr) hs_show_agreed(idx); }      /* (Arena) the screens before the fight show the agreed players */
