@@ -776,6 +776,18 @@ static void match_player_hook(Ctx *c, void *user) {
             wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, g_tc_lay[idx][k]); }
     } else if (g_hs_wanted) hs_apply(st, idx, type_was);       /* R3: the match both online games agreed (rb_net.c handshake) */
     if (g_tc_native) g_sq_want = 0;                     /* (the game's own squad table: squad_build does not overwrite it) */
+    {   /* (Battle Arena, game's squad) the room's Squad Strike (sequence 02020000): every player record of players 1 / 2 (the room's
+         * match records and the squad's) gets the player number idx + 1 in panel state + 0xa4 (-> record + 0x258): the game gives each
+         * station its own numbering (run cssm5: host 2 / 1, joiner 1 / 2: match block + 0x7d8 / + 0xa38 differ, DESYNC at frame 1).
+         * squad_build stays off: the squad is the game's own (SSBU_BA_SQUAD_PNUM=0: the number as the game set it). */
+        static int pnum = -1; if (pnum < 0) { const char *e = getenv("SSBU_BA_SQUAD_PNUM"); pnum = !(e && e[0] == '0'); }
+        if (g_bacss == 1 && g_hs_wanted && idx >= 0 && idx < 2 && rd32(GA(0x71053040f0ULL)) == 0x02020000u) {
+            g_sq_want = 0;
+            if (pnum && rd8(st + 0xa4) != (uint8_t)(idx + 1)) {
+                if (getenv("SSBU_DEBUG_SCENES")) { printf("[squadcss] player %d record: panel state + 0xa4 %u -> %d (caller %llx)\n", idx + 1, rd8(st + 0xa4), idx + 1, (unsigned long long)(c->x[30] - 4)); fflush(stdout); }
+                wr8(st + 0xa4, (uint8_t)(idx + 1));
+            }
+        } }
     if (idx == 1) g_dm_state1_ok = safe_read(st, g_dm_state1, sizeof g_dm_state1);
     if (idx >= 0 && idx < 2) {                            /* (Battle Arena) this player's own panel state, kept for squad_build */
         if (g_sq_stcopy < 0) { const char *e = getenv("SSBU_SQ_STCOPY"); g_sq_stcopy = !(e && *e == '0'); }
@@ -1204,12 +1216,35 @@ static void tc_vs_hook(Ctx *c, void *user) {
     }
     g_orig_tc_vs(c);
 }
+/* (Battle Arena, game's squad) the fight set-up 0x71014d8620 stores the next value of the global xorshift128 (0x71052381c0) in
+ * match block + 0x98 (the fight's script generators come from it). The handshake set that generator from the agreed seed, but in
+ * the room's Squad Strike each game draws from it a different number of times between the handshake (the squad builder) and this
+ * set-up (run cssm6: + 0x98 differed, DESYNC at frame 1). SSBU_BA_SQUAD_CSS=1 (SSBU_BA_SQUAD_RESEED=0 off): the generator is set
+ * again from the agreed seed when the set-up starts. */
+static ImportFn g_orig_fight_setup; static int g_bacss_reseed;
+static void fight_setup_hook(Ctx *c, void *user) {
+    (void)user;
+    if (g_bacss_reseed && g_hs_wanted && g_hs_ok && g_hs_lwr && !g_hs_local && rd32(GA(0x71053040f0ULL)) == 0x02020000u) {
+        uint64_t g = GA(0x71052381c0ULL), z = g_hs_m.seed ^ 0x5351554144ull;      /* ("SQUAD": not the handshake's own sequence again) */
+        printf("[squadcss] fight set-up: the global generator %08x %08x %08x %08x set again from the agreed seed\n", rd32(g), rd32(g + 4), rd32(g + 8), rd32(g + 12));
+        for (int k = 0; k < 4; k++) { z += 0x9E3779B97F4A7C15ull; uint64_t y = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull; y = (y ^ (y >> 27)) * 0x94D049BB133111EBull; y ^= y >> 31; wr32(g + 4ull * k, (uint32_t)y | (k == 0)); }
+        /* run cssm8: + 0x98 is NOT drawn here in the room's Squad Strike (+ 0x9c = 0: the team compe sequence drew it before, on each
+         * game from its own generator: different at the handshake already); + 0x9c = 1 as in a room's versus match: drawn now */
+        if (!rd8(MELEE_INFO + 0x9c)) { wr8(MELEE_INFO + 0x9c, 1); printf("[squadcss] fight set-up: match block + 0x9c 0 -> 1 (+ 0x98 %08x drawn again from the agreed generator)\n", rd32(MELEE_INFO + 0x98)); }
+        fflush(stdout);
+    }
+    g_orig_fight_setup(c);
+    if (getenv("SSBU_DEBUG_SCENES") && rd32(GA(0x71053040f0ULL)) == 0x02020000u) { uint64_t g = GA(0x71052381c0ULL);
+        printf("[squadcss] fight set-up done: match block + 0x98 %08x + 0x9c %u, generator %08x %08x %08x %08x\n", rd32(MELEE_INFO + 0x98), rd8(MELEE_INFO + 0x9c), rd32(g), rd32(g + 4), rd32(g + 8), rd32(g + 12)); fflush(stdout); }
+}
 static void bacss_init(void) {
     const char *e = getenv("SSBU_BA_SQUAD_CSS"); g_bacss = e && *e ? atoi(e) : 0;
     {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 2) printf("[squadcss] RESEARCH: hook on the matchup wait 0x710233de20: id %d\n", hook_install(GA(0x710233de20ULL), tc_match_hook, NULL, &g_orig_tc_match)); }
     if (getenv("SSBU_DEBUG_SCENES")) printf("[squadcss] hook on the scene change: id %d\n", hook_install(GA(0x7103726120ULL), scene_change_hook, NULL, &g_orig_scene_change));
     if (g_bacss == 2) printf("[squadcss] EXPERIMENT: Battle Arena rooms' character select in the Squad Strike layout: hook %d\n", hook_install(GA(0x7102334f50ULL), vs_css_hook, NULL, &g_orig_vs_css));
     if (g_bacss == 1) printf("[squadcss] Battle Arena rooms play the game's own Squad Strike: hooks %d %d\n", hook_install(GA(0x710232f690ULL), local_launch_hook, NULL, &g_orig_local_launch), hook_install(GA(0x710233cfd0ULL), tc_css_hook, NULL, &g_orig_tc_css));
+    if (g_bacss == 1) { const char *r = getenv("SSBU_BA_SQUAD_RESEED"); g_bacss_reseed = !(r && r[0] == '0');
+        if (g_bacss_reseed) printf("[squadcss] hook on the fight set-up 0x71014d8620: id %d (the global generator set again from the agreed seed)\n", hook_install(GA(0x71014d8620ULL), fight_setup_hook, NULL, &g_orig_fight_setup)); }
     if (g_bacss == 1) { const char *v = getenv("SSBU_BA_SQUAD_VS"); g_bacss_vs = !(v && v[0] == '0');
         printf("[squadcss] hook on the matchup's state 7 (0x710197d5f0): id %d (the VS screen ends as offline once this game is ready: %s)\n", hook_install(GA(0x710197d5f0ULL), tc_vs_hook, NULL, &g_orig_tc_vs), g_bacss_vs ? "on" : "off, SSBU_BA_SQUAD_VS=0"); }
     fflush(stdout);
