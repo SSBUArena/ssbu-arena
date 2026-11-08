@@ -175,10 +175,16 @@ void debug_watch(const uint64_t *addrs, int n);
  * after the load) each step finds its request done and the fighter comes in at the same frame on both games: +80 / +100 frames.
  * Offline (t17 .. t20) the steps are the same at every change; pair sq18a IDENTICAL. SSBU_SQ_STEP=0: off. */
 static ImportFn g_orig_sq_eload; static long long g_sq_eload_n; static int g_sq_made;
+static volatile uint64_t g_sq_load_en;      /* (the entry the loading hook last saw loading) */
 int dm_squad_entry_loading(void) {                  /* (rb_rollback.c) a fighter entry is loading its next fighter (entry + 0x5920 == 3) */
     static uint64_t inst; if (!inst) inst = hook_address("_ZN3lib9SingletonIN3app14FighterManagerEE9instance_E");
     uint64_t mgr = inst ? sr64(inst) : 0, impl = mgr ? sr64(mgr) : 0;
     for (int e = 0; impl && e < 2; e++) { uint64_t en = sr64(impl + 0x20 + 8ull * (uint64_t)e); if (en && rd8(en + 0x5920) == 3) return 1; }
+    /* (Battle Arena, game's squad, run cssm10) the game's Squad Strike also loads a side's next fighter ahead, in an entry that is not
+     * one of these two (no KO, no lock: rollbacks across that load, DESYNC 9 frames after it): the entry the loading hook last saw
+     * loading counts too (SSBU_SQ_LOADEN=0: off) */
+    {   static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SQ_LOADEN"); on = !(e && e[0] == '0'); }
+        uint8_t b = 0; if (on && g_sq_load_en && safe_read(g_sq_load_en + 0x5920, &b, 1) && b == 3) return 1; }
     return 0;
 }
 static void sq_eload_hook(Ctx *c, void *user) {
@@ -188,6 +194,7 @@ static void sq_eload_hook(Ctx *c, void *user) {
     uint64_t en = c->x[0], o = g_sq_obj;
     int64_t fc = o ? (int64_t)rd32(o + 0x112c) : 0;
     int loading = en && rd8(en + 0x5920) == 3, waiting = en && en == base_en && base >= 0 && rd32(en + 0x13c) == 0xffffffffu && fc - base < 1200;      /* (after the files: its module, then the fighter put in the entry: + 0x13c -1 until then, runs t12 / t18; pair sq16a) */
+    if (loading) g_sq_load_en = en;
     if (step <= 0 || !g_sq_made || !en || !o || !(loading || waiting)) { if (en == base_en) base = -1; g_orig_sq_eload(c); return; }
     if (base < 0 || en != base_en || base > fc) { base = fc; base_en = en; }
     if ((fc - base) % step || fc == base) { g_sq_eload_n++; return; }      /* (the first step one period in: the frames before it run without guesses, rb_rollback.c rbg_squad_lock) */      /* (not a step frame: the entry's loading waits, as if its request were not done) */
@@ -800,6 +807,8 @@ static void match_player_hook(Ctx *c, void *user) {
             if (idx == 1 && g_tc_k == 0) for (int j = 0; j < SQ_N; j++) wr8(SQ_TABLE + 8 + 0x268ull * (uint64_t)j + 0x48, g_lwr_ctl[0][LWR_CTL]); }
         if (idx == 1) g_sq_made = 1;
         printf("[squad] player %d fighter %d: ui_chara %016llx colour %u -> entry %llx: fighter kind %d (the game's own squad; match block + 0 %u, + 0x39 %u)\n", idx + 1, g_tc_k + 1, (unsigned long long)rd64(rec), rd8(rec + 0x19), (unsigned long long)rec, (int)(int8_t)rd8(rec + 8), rd8(MELEE_INFO), rd8(MELEE_INFO + 0x39));
+        {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 3) { char t[48]; snprintf(t, sizeof t, "[squadcss] rec p%d k%d", idx + 1, g_tc_k + 1); hex_lines(t, rec, 0x268);
+                snprintf(t, sizeof t, "[squadcss] st p%d k%d", idx + 1, g_tc_k + 1); hex_lines(t, st, 0x460); } }      /* (research) the records / panel states, to compare the two games */
         fflush(stdout);
     }
     if (idx == 1 && ((g_sq_test > 0 && !g_hs_wanted) || (g_sq_want && g_hs_wanted && g_hs_ok && !g_hs_local && g_hs_lwr))) squad_build(c);      /* (Battle Arena) */
