@@ -1155,11 +1155,63 @@ static void tc_css_hook(Ctx *c, void *user) {      /* MeleeTeamCompeSequenceScen
     }
     g_orig_tc_css(c);
 }
+/* (RESEARCH, SSBU_DEBUG_SCENES=2) MeleeTeamCompeSequenceScene's state 0x710233de20 waits for TeamCompeMatchupScene to end:
+ * the current scene object ([[mgr + 0x28] + 0x60]), its vtable and its first bytes, now and then */
+static ImportFn g_orig_tc_match;
+static void tc_match_hook(Ctx *c, void *user) {
+    (void)user;
+    static unsigned calls; static uint64_t last_sc; static uint8_t last[0x400];
+    uint64_t mgr = rd64(c->x[0]), m28 = mgr ? rd64(mgr + 0x28) : 0, sc = m28 ? rd64(m28 + 0x60) : 0;
+    static int last_st = -2; int st_now = sc && rd64(sc + 0x58) ? (int)rd32(rd64(sc + 0x58) + 0x128) : -1;
+    if (sc && (sc != last_sc || calls % 600 == 0 || st_now != last_st)) {
+        last_st = st_now;
+        uint8_t cur[0x400]; safe_read(sc, cur, sizeof cur);
+        printf("[squadcss] matchup wait %u: scene %llx vtable %llx (mgr %llx, m28 %llx)\n", calls, (unsigned long long)sc, (unsigned long long)rd64(sc), (unsigned long long)mgr, (unsigned long long)m28);
+        {   uint64_t sm = rd64(sc + 0x58), fo = rd64(rd64(GA(0x710532e7c8ULL)) + 8);      /* the scene's state machine (0x710197f170): index +0x124 into the ids at +0xd8, state +0x128, frames +0x12c */
+            if (sm) { printf("[squadcss]  states: index %d state %d frames %d prev %d | sm+8 %llx\n", (int)rd32(sm + 0x124), (int)rd32(sm + 0x128), (int)rd32(sm + 0x12c), (int)rd32(sm + 0x130), (unsigned long long)rd64(sm + 8)); hex_lines("[squadcss]  sm", sm + 0xd8, 0x80); }
+            if (fo) hex_lines("[squadcss]  worker 0x710532e7c8", fo + 0x50, 0x30); }
+        for (int o = 0; o < 0x400; o += 0x20) if (sc != last_sc || memcmp(cur + o, last + o, 0x20)) { char t[48]; snprintf(t, sizeof t, "[squadcss]  scene +%03x", o); hex_lines(t, sc + o, 0x20); }
+        memcpy(last, cur, sizeof last); last_sc = sc; fflush(stdout);
+    }
+    calls++;
+    g_orig_tc_match(c);
+}
+/* TeamCompeMatchupScene's state 7 (0x710197d5f0, this = the scene's state machine): after the VS screen it waits for the matchup
+ * UI's decision w = (ui + 0x248 ? 0 : ui + 0x2a0), ui = [[sm + 8] + 0x80]; 1 = to the fight. Offline (no Local Wireless flag at
+ * 0x71053040f4) w = 1 at once gives result 3 and the end state 9. In a room (online path, 0x710197d6dc..) w = 1 marks this station
+ * ready (0x71016a1f90, sm + 0x14c = 1) and then waits for the room's "all ready" byte (net + 0x26a62, net = [[[0x71052c3c58] + 8]
+ * + 0x88]) that our virtual LDN never brings (runs cssq9 / cssq11 / cssm3: both games in state 7 for minutes).
+ * SSBU_BA_SQUAD_CSS=1 (SSBU_BA_SQUAD_VS=0 off): once this game is ready for 30 frames, state 7 runs once as offline (flag cleared for
+ * the call): result 3 -> MeleeScene; the two games meet again at the rollback handshake on the record builder. */
+static ImportFn g_orig_tc_vs; static int g_bacss_vs;
+static void tc_vs_hook(Ctx *c, void *user) {
+    (void)user;
+    uint64_t sm = c->x[0], ui = rd64(rd64(sm + 8) + 0x80), nc = rd64(rd64(rd64(GA(0x71052c3c58ULL)) + 8) + 0x88), net = nc;
+    uint32_t frames = rd32(sm + 0x12c), w248 = ui ? rd32(ui + 0x248) : 0, w2a0 = ui ? rd32(ui + 0x2a0) : 0, ready = rd32(sm + 0x14c);
+    uint8_t all = net ? rd8(net + 0x26a62) : 0, lw = rd8(GA(0x71053040f4ULL));
+    static uint32_t ready_at; int bypass = 0;
+    if (frames <= 1) ready_at = 0;
+    if (ready == 1 && !ready_at) ready_at = frames;
+    if (getenv("SSBU_DEBUG_SCENES") && (frames % 300 == 1 || (ready == 1 && ready_at == frames)))
+        { printf("[squadcss] matchup state 7: frame %u ui %llx +248 %u +2a0 %u, ready %u, all-ready byte %u, local wireless %u\n", frames, (unsigned long long)ui, w248, w2a0, ready, all, lw); fflush(stdout); }
+    if (g_bacss_vs && lw && ready == 1 && ready_at && frames >= ready_at + 30 && !all) bypass = 1;
+    if (bypass) {
+        volatile uint8_t *f = (volatile uint8_t *)(uintptr_t)GA(0x71053040f4ULL);
+        printf("[squadcss] matchup: this game ready for %u frames, the room's all-ready never comes: the VS screen ends as offline (result 3 -> the fight)\n", frames - ready_at); fflush(stdout);
+        *f = 0; g_orig_tc_vs(c); *f = lw;
+        printf("[squadcss] matchup: state 7 done: result %u, next state id %d\n", rd32(sm + 0x138), (int)rd32(sm + 0xd8 + 4 * rd32(sm + 0x124))); fflush(stdout);
+        return;
+    }
+    g_orig_tc_vs(c);
+}
 static void bacss_init(void) {
     const char *e = getenv("SSBU_BA_SQUAD_CSS"); g_bacss = e && *e ? atoi(e) : 0;
+    {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 2) printf("[squadcss] RESEARCH: hook on the matchup wait 0x710233de20: id %d\n", hook_install(GA(0x710233de20ULL), tc_match_hook, NULL, &g_orig_tc_match)); }
     if (getenv("SSBU_DEBUG_SCENES")) printf("[squadcss] hook on the scene change: id %d\n", hook_install(GA(0x7103726120ULL), scene_change_hook, NULL, &g_orig_scene_change));
     if (g_bacss == 2) printf("[squadcss] EXPERIMENT: Battle Arena rooms' character select in the Squad Strike layout: hook %d\n", hook_install(GA(0x7102334f50ULL), vs_css_hook, NULL, &g_orig_vs_css));
     if (g_bacss == 1) printf("[squadcss] Battle Arena rooms play the game's own Squad Strike: hooks %d %d\n", hook_install(GA(0x710232f690ULL), local_launch_hook, NULL, &g_orig_local_launch), hook_install(GA(0x710233cfd0ULL), tc_css_hook, NULL, &g_orig_tc_css));
+    if (g_bacss == 1) { const char *v = getenv("SSBU_BA_SQUAD_VS"); g_bacss_vs = !(v && v[0] == '0');
+        printf("[squadcss] hook on the matchup's state 7 (0x710197d5f0): id %d (the VS screen ends as offline once this game is ready: %s)\n", hook_install(GA(0x710197d5f0ULL), tc_vs_hook, NULL, &g_orig_tc_vs), g_bacss_vs ? "on" : "off, SSBU_BA_SQUAD_VS=0"); }
     fflush(stdout);
 }
 void debug_mode_init(void) {
