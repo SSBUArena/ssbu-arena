@@ -1187,7 +1187,7 @@ static void rgs_step(Ctx *c) {
  * but the last (SSBU_RB_SIM_LITE=<mask>: 1 camera, 2 UI, 4 lighting, 8 render layers, 16 recorder, 32 dynamic resolution,
  * 64 effect emitter tick); only when called from the main loop FUN 0x7103747270. SSBU_RB_SIM_PROF=1: the same hooks time their
  * calls (real and re-run passes) without skipping anything. */
-typedef struct { uint64_t a; int grp; uint64_t ret; ImportFn orig; long long n[2], sk; double ms[2]; } RgsLite;
+typedef struct { uint64_t a; int grp; uint64_t ret; ImportFn orig; long long n[2], sk; double ms[2]; int keep; } RgsLite;
 static RgsLite g_rgl_h[] = {
     {0x710361d040ull, 1, 0}, {0x71036186d0ull, 1, 0}, {0x7103864700ull, 1, 0}, {0x7103619080ull, 1, 0}, {0x7103618b80ull, 1, 0},
     {0x7103632850ull, 2, 0}, {0x710361e7e0ull, 2, 0}, {0x71035c13d0ull, 2, 0},
@@ -1202,7 +1202,7 @@ static int g_rgs_lite; static uint64_t g_rgl_lo, g_rgl_hi;
 static void rgs_lite_hook(Ctx *c, void *user) {
     RgsLite *h = user; uint64_t lr = c->x[30];
     int inloop = lr >= g_rgl_lo && lr < g_rgl_hi, kd = g_ra_phase == 2;
-    if (inloop && (g_rgs_lite & h->grp) && g_rgs_on > 0 && g_ra_phase == 2 && (g_rgs_left > 1 || g_rgs_lastlite)) { h->sk++; c->x[0] = h->ret; return; }
+    if (inloop && (g_rgs_lite & h->grp) && !h->keep && g_rgs_on > 0 && g_ra_phase == 2 && (g_rgs_left > 1 || g_rgs_lastlite)) { h->sk++; c->x[0] = h->ret; return; }
     if (!g_rgs_prof || !inloop) { h->orig(c); return; }
     double t = now_ms(); h->orig(c); h->ms[kd] += now_ms() - t; h->n[kd]++;
 }
@@ -1360,16 +1360,174 @@ static void rgp_report(void) {
     for (int i = 0; i < RGP_N && i < 60; i++) if (g_rgp_s[i].key) LOG("r1: RB PROF job vt %llx: jobs/pass %.2f / %.2f, worker ms per pass %.4f / %.4f\n",
         (unsigned long long)g_rgp_s[i].key, g_rgp_s[i].n[0] / (double)np, g_rgp_s[i].n[1] / (double)nr, g_rgp_s[i].incl[0] / np, g_rgp_s[i].incl[1] / nr);
 }
+/* ---- (rb crash, 2026-11-08) SSBU_RB_SRVDIAG=1 (TEST ONLY): the render dispatch crash of long matches (indirect call to 0x0529d74030444f4d
+ * = the bytes "MOD0" at main + 8, f_71038156f0 <- nu::BindMaterialCommand dtor f_710381ee00 <- release f_7103813120 <- dispatch loop
+ * 0x7103816180) and its sibling (nu::Instance deleting dtor f_71037c37a0 on a freed object, jemalloc bin 9 = 160 bytes = the size of
+ * nu::ShaderResourceView_NX: "alloc check: BAD" with the free count growing) are a nu::InstanceRetainer<ShaderResourceView_NX> (table
+ * at + 0x288 of the command's binding block, 0x28 each, count at + 0x508: + 0x10 the object, + 0x18 the address of a generation word,
+ * + 0x20 its value when taken) whose object was already destroyed (its vtable is then nu::Instance 0x7105240a68, or garbage once the
+ * memory is used again). Here: every retainer table of the block is checked before f_71038156f0 runs; the SRV destructors are logged
+ * (object, thread, fight frame, pass kind, guest stack) in a ring, so a bad retainer names who destroyed its object and when.
+ * SSBU_RB_SRVDIAG=2: a bad retainer is also left alone (its release is skipped: a leak of one reference instead of a double delete). */
+static int g_sd_on, g_sd_fix; static ImportFn g_sd_orig_clear, g_sd_orig_dt[2];
+#define SD_N 16384
+#define SD_ST 10
+typedef struct { uint64_t obj; long long ff; int phase, left; DWORD tid; uint64_t st[SD_ST]; } SdEv;
+static SdEv g_sd_ev[SD_N]; static volatile LONG g_sd_n; static volatile LONG g_sd_bad, g_sd_checked;
+static long long g_sd_kind[2][3];                    /* destructions: [main / other][pass kind: normal or real, re-run not last, re-run last] */
+static void sd_stack(uint64_t *out, int n) {
+    CONTEXT ctx; RtlCaptureContext(&ctx); uint64_t last = 0; int k = 0;
+    for (int depth = 0; depth < 200 && k < n; depth++) {
+        uint64_t g = guest_function_of(ctx.Rip);
+        if (g && g != last) { out[k++] = g; last = g; }
+        DWORD64 base; RUNTIME_FUNCTION *rf = RtlLookupFunctionEntry(ctx.Rip, &base, NULL);
+        if (!rf) break;
+        void *hd; DWORD64 est; RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx.Rip, rf, &ctx, &hd, &est, NULL);
+        if (!ctx.Rip) break;
+    }
+    for (; k < n; k++) out[k] = 0;
+}
+static int sd_pk(void) { return g_ra_phase == 2 ? (g_rgs_left > 1 ? 1 : 2) : 0; }
+static void sd_dt(Ctx *c, void *user) {
+    int i = (int)(intptr_t)user;
+    if (g_rg_ready) {
+        LONG n = InterlockedIncrement(&g_sd_n) - 1; SdEv *e = &g_sd_ev[n % SD_N];
+        e->obj = c->x[0]; e->ff = g_ff; e->phase = sd_pk(); e->left = g_rgs_left; e->tid = GetCurrentThreadId(); sd_stack(e->st, SD_ST);
+        g_sd_kind[e->tid != g_rgp_main][e->phase]++;
+    }
+    g_sd_orig_dt[i](c);
+}
+static void sd_clear(Ctx *c, void *user) {
+    (void)user;
+    uint64_t b = c->x[0], vinst = GA(0x7105240a68ull), vlo = GA(0x7105000000ull), vhi = GA(0x7105400000ull);
+    static const struct { uint32_t base, cnt; const char *what; } tb[3] = {{0x288, 0x508, "SRV"}, {0x510, 0x5b0, "UAV"}, {0, 0x280, "CB"}};
+    InterlockedIncrement(&g_sd_checked);
+    for (int t = 0; b && t < 3; t++) {
+        uint64_t cnt = rd64(b + tb[t].cnt); if (cnt > 16) continue;
+        for (uint64_t k = 0; k < cnt; k++) {
+            uint64_t e = b + tb[t].base + 0x28 * k, gp = rd64(e + 0x18);
+            if (!gp || rd64(gp) != rd64(e + 0x20)) continue;
+            uint64_t o = rd64(e + 0x10); if (!o) continue;
+            uint64_t vt = rd64(o);
+            if (vt != vinst && vt >= vlo && vt < vhi && rd64(o + 8) == gp) continue;      /* alive, and still the object the retainer was taken on */
+            LONG nb = InterlockedIncrement(&g_sd_bad);
+            if (g_sd_on > 0 && nb <= 40) {
+                LOG("r1: SRVDIAG BAD %ld: thread %lu (main %lu), fight frame %lld, pass kind %d (left %d): block %llx %s retainer %llu: object %llx vtable %llx%s, record %llx (gen %llx count %lld), gen word %llx = %llx\n",
+                    nb, GetCurrentThreadId(), g_rgp_main, g_ff, sd_pk(), g_rgs_left, (unsigned long long)b, tb[t].what, (unsigned long long)k, (unsigned long long)o, (unsigned long long)vt,
+                    vt == vinst ? " (destroyed: nu::Instance)" : " (garbage)", (unsigned long long)rd64(o + 8), (unsigned long long)(rd64(o + 8) ? rd64(rd64(o + 8)) : 0),
+                    (long long)(rd64(o + 8) ? (int32_t)rd32(rd64(o + 8) + 8) : 0), (unsigned long long)gp, (unsigned long long)rd64(gp));
+                LONG n = g_sd_n; int shown = 0;
+                for (LONG j = n - 1; j >= 0 && j >= n - SD_N && shown < 2; j--) {
+                    SdEv *d = &g_sd_ev[j % SD_N]; if (d->obj != o) continue; shown++;
+                    LOG("r1: SRVDIAG   destroyed (%ld events ago) at fight frame %lld, pass kind %d (left %d), thread %lu: %llx %llx %llx %llx %llx %llx %llx %llx %llx %llx\n", n - 1 - j, d->ff, d->phase, d->left, d->tid,
+                        (unsigned long long)d->st[0], (unsigned long long)d->st[1], (unsigned long long)d->st[2], (unsigned long long)d->st[3], (unsigned long long)d->st[4],
+                        (unsigned long long)d->st[5], (unsigned long long)d->st[6], (unsigned long long)d->st[7], (unsigned long long)d->st[8], (unsigned long long)d->st[9]);
+                }
+                if (!shown) LOG("r1: SRVDIAG   (its destruction is not in the last %d logged)\n", SD_N);
+                { uint64_t st[SD_ST]; sd_stack(st, SD_ST); LOG("r1: SRVDIAG   here: %llx %llx %llx %llx %llx %llx %llx %llx\n", (unsigned long long)st[0], (unsigned long long)st[1], (unsigned long long)st[2],
+                    (unsigned long long)st[3], (unsigned long long)st[4], (unsigned long long)st[5], (unsigned long long)st[6], (unsigned long long)st[7]); }
+            }
+            if (g_sd_on >= 2 || g_sd_fix) wr64(e + 0x18, 0);   /* the release is skipped (a reference leaked instead of a double delete) */
+        }
+    }
+    g_sd_orig_clear(c);
+}
+/* the binding list a command block is filled from (FUN 0x7103817170: x0 block, [x1, x2) entries of 0x30, type at + 8 (1 = SRV), the object at + 0x18) */
+static ImportFn g_sd_orig_fill; static volatile LONG g_sd_srcbad;
+static void sd_fill(Ctx *c, void *user) {
+    (void)user;
+    uint64_t vinst = GA(0x7105240a68ull), vlo = GA(0x7105000000ull), vhi = GA(0x7105400000ull);
+    for (uint64_t p = c->x[1], n = 0; p < c->x[2] && n < 64; p += 0x30, n++) {
+        int32_t ty = (int32_t)rd32(p + 8); ty ^= ty >> 31;
+        if (ty != 1) continue;
+        uint64_t o = rd64(p + 0x18); if (!o) continue;
+        uint64_t vt = rd64(o);
+        if (vt != vinst && vt >= vlo && vt < vhi) continue;
+        LONG nb = InterlockedIncrement(&g_sd_srcbad);
+        if (nb <= 12) {
+            uint64_t st[SD_ST]; sd_stack(st, SD_ST);
+            LOG("r1: SRVDIAG SOURCE %ld: thread %lu, fight frame %lld, pass kind %d: binding list %llx..%llx entry %llu (%llx): SRV %llx vtable %llx, + 0x20 %llx + 0x28 %llx; caller %llx; stack %llx %llx %llx %llx %llx %llx %llx %llx %llx %llx\n",
+                nb, GetCurrentThreadId(), g_ff, sd_pk(), (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)n, (unsigned long long)p, (unsigned long long)o, (unsigned long long)vt,
+                (unsigned long long)rd64(p + 0x20), (unsigned long long)rd64(p + 0x28), (unsigned long long)c->x[30],
+                (unsigned long long)st[0], (unsigned long long)st[1], (unsigned long long)st[2], (unsigned long long)st[3], (unsigned long long)st[4], (unsigned long long)st[5], (unsigned long long)st[6], (unsigned long long)st[7], (unsigned long long)st[8], (unsigned long long)st[9]);
+        }
+    }
+    g_sd_orig_fill(c);
+}
+/* the other filler (FUN 0x7103817f90, from the material's own list [[x1 + 8] + 0x70]): the block's SRV table checked after it ran */
+static ImportFn g_sd_orig_fill2; static volatile LONG g_sd_srcbad2;
+static void sd_fill2(Ctx *c, void *user) {
+    (void)user;
+    uint64_t b = c->x[0], a1 = c->x[1], a2 = c->x[2], lr = c->x[30];
+    static struct { uint64_t l; long long ff[3]; } lt[4096];
+    unsigned hh = (unsigned)((a1 * 0x9e3779b97f4a7c15ull) >> 52); int pk = sd_pk(); long long seen[3] = {-1, -1, -1};
+    for (int j = 0; j < 8; j++) { unsigned s = (hh + (unsigned)j) & 4095; if (lt[s].l == a1 || !lt[s].l) { if (!lt[s].l) { lt[s].l = a1; lt[s].ff[0] = lt[s].ff[1] = lt[s].ff[2] = -1; } memcpy(seen, lt[s].ff, sizeof seen); lt[s].ff[pk] = g_ff; break; } }
+    g_sd_orig_fill2(c);
+    uint64_t vinst = GA(0x7105240a68ull), vlo = GA(0x7105000000ull), vhi = GA(0x7105400000ull), cnt = rd64(b + 0x508);
+    for (uint64_t k = 0; k < cnt && k < 16; k++) {
+        uint64_t o = rd64(b + 0x288 + 0x28 * k + 0x10); if (!o) continue;
+        uint64_t vt = rd64(o);
+        if (vt != vinst && vt >= vlo && vt < vhi) continue;
+        LONG nb = InterlockedIncrement(&g_sd_srcbad2);
+        if (nb <= 12) {
+            uint64_t st[SD_ST]; sd_stack(st, SD_ST);
+            LOG("r1: SRVDIAG SOURCE2 %ld: thread %lu, fight frame %lld, pass kind %d: block %llx SRV retainer %llu: object %llx vtable %llx; list %llx..%llx; caller %llx; stack %llx %llx %llx %llx %llx %llx %llx %llx %llx %llx\n",
+                nb, GetCurrentThreadId(), g_ff, sd_pk(), (unsigned long long)b, (unsigned long long)k, (unsigned long long)o, (unsigned long long)vt, (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)lr,
+                (unsigned long long)st[0], (unsigned long long)st[1], (unsigned long long)st[2], (unsigned long long)st[3], (unsigned long long)st[4], (unsigned long long)st[5], (unsigned long long)st[6], (unsigned long long)st[7], (unsigned long long)st[8], (unsigned long long)st[9]);
+            LOG("r1: SRVDIAG   this list was filled last at fight frame %lld in a real pass, %lld in a re-run pass, %lld in a last re-run pass\n", seen[0], seen[1], seen[2]);
+            {   /* SSBU_RB_SRVDIAG_WATCH=<the SSBU_HWWATCH command file>: from now on a data watchpoint on the dead entry (who writes it) */
+                const char *wf = getenv("SSBU_RB_SRVDIAG_WATCH"); static int armed;
+                for (uint64_t j = 0; wf && !armed && j < a2 && j < 16; j++) if (rd64(a1 + 0x30 * j + 0x18) == o) {
+                    FILE *f = fopen(wf, "w"); if (f) { fprintf(f, "%llx 8 w\n", (unsigned long long)(a1 + 0x30 * j + 0x18)); fclose(f); armed = 1; LOG("r1: SRVDIAG   watch armed on %llx (list entry %llu)\n", (unsigned long long)(a1 + 0x30 * j + 0x18), (unsigned long long)j); } }
+            }
+            for (uint64_t j = 0; j < a2 && j < 16; j++) { uint64_t p = a1 + 0x30 * j, o2 = rd64(p + 0x18), gp = rd64(p + 0x20);
+                LOG("r1: SRVDIAG   list entry %llu: %016llx type %d obj %llx vt %llx gen word %llx = %llx, taken %llx\n", (unsigned long long)j, (unsigned long long)rd64(p), (int)rd32(p + 8), (unsigned long long)o2,
+                    (unsigned long long)(o2 ? rd64(o2) : 0), (unsigned long long)gp, (unsigned long long)(gp ? rd64(gp) : 0), (unsigned long long)rd64(p + 0x28)); }
+        }
+    }
+}
+/* (rb crash, 2026-11-08) SSBU_RB_RETAINFIX (default 1 with the snapshot ring; =0 off): the same check without the log, and such a retainer is
+ * left alone: its object is dead (nu::Instance vtable, a vtable outside the image, or another record at + 8 = the memory was used again), so
+ * the release could only delete it a second time. In a game without rollback such a retainer never exists (the game would crash), so this
+ * changes nothing there. What it guards: a re-run pass builds commands from a material binding list (FUN 0x7103817f90 from 0x7103819dac,
+ * a task worker job 71035ac050 -> 71035c6d40 -> 71035fb830) whose SRV entry (slot 5 of a 10-entry list) is a texture view that the
+ * resource thread had destroyed (nu::ResourceAdapterContract<Texture_NX>, 2 .. 1700 frames before); real passes fill the same list
+ * with a live view (the entry is rewritten by something a re-run pass skips: not found, see HANDOFF_RBCRASH). Cost: ~10 reads per block. */
+static void sd_init(void) {
+    const char *e = getenv("SSBU_RB_SRVDIAG"); g_sd_on = e ? atoi(e) : 0;
+    e = getenv("SSBU_RB_RETAINFIX"); g_sd_fix = !(e && e[0] == '0');
+    if (g_sd_on <= 0) { if (g_sd_fix) LOG("r1: RB retainer fix (SSBU_RB_RETAINFIX): %s\n", hook_install(GA(0x71038156f0ull), sd_clear, NULL, &g_sd_orig_clear) ? "on" : "hook FAILED"); return; }
+    hook_install(GA(0x7103817170ull), sd_fill, NULL, &g_sd_orig_fill);
+    hook_install(GA(0x7103817f90ull), sd_fill2, NULL, &g_sd_orig_fill2);
+    int a = hook_install(GA(0x71038156f0ull), sd_clear, NULL, &g_sd_orig_clear);
+    int b = hook_install(GA(0x71037df7e0ull), sd_dt, (void *)0, &g_sd_orig_dt[0]), d = hook_install(GA(0x71037df8b0ull), sd_dt, (void *)1, &g_sd_orig_dt[1]);
+    LOG("r1: SRVDIAG %d: retainer check %s, SRV destructors %s / %s\n", g_sd_on, a ? "hooked" : "FAILED", b ? "hooked" : "FAILED", d ? "hooked" : "FAILED");
+}
+static void sd_report(void) {
+    if (g_sd_fix && g_sd_bad) LOG("r1: RB retainer fix: %ld releases of a dead object skipped so far (%ld command blocks checked)\n", g_sd_bad, g_sd_checked);
+    if (g_sd_on <= 0) return;
+    LOG("r1: SRVDIAG report: %ld binding blocks checked, %ld bad retainers; SRV destructions in the fight %ld: main normal/real %lld, re-run %lld, last re-run %lld; other threads %lld / %lld / %lld\n",
+        g_sd_checked, g_sd_bad, g_sd_n, g_sd_kind[0][0], g_sd_kind[0][1], g_sd_kind[0][2], g_sd_kind[1][0], g_sd_kind[1][1], g_sd_kind[1][2]);
+}
 static void rgs_lite_init(void) {
     const char *e = getenv("SSBU_RB_SIM_LITE"); g_rgs_lite = e ? atoi(e) : 0; g_rgs_prof = getenv("SSBU_RB_SIM_PROF") ? atoi(getenv("SSBU_RB_SIM_PROF")) : 0;
     if (g_rgs_prof == 2) rgp_init();
+    sd_init();
     if (!g_rgs_lite && !g_rgs_prof) return;
     g_rgl_lo = GA(0x7103747270ull); g_rgl_hi = GA(0x710374e000ull);
+    {   /* (rb crash, 2026-11-08, TEST) SSBU_RB_SIM_LITE_KEEP=<hex>,<hex>..: these callees run in every re-run pass although their group is in
+         * the mask. Used to bisect the camera group for the dead texture view crash (SSBU_RB_SRVDIAG, SSBU_RB_RETAINFIX above): keeping
+         * 7103864700, 7103619080, 71036186d0 or 7103618b80 left it; 710361d040 (0.05 ms per re-run pass) looked clean in 2 runs, then not
+         * (2 of 4 runs with bad references): no single one of the five is the cause. Default: none kept. */
+        const char *k = getenv("SSBU_RB_SIM_LITE_KEEP");
+        for (const char *p = k; p && *p; ) { uint64_t a = strtoull(p, (char **)&p, 16); for (int i = 0; i < RGL_N; i++) if (g_rgl_h[i].a == a) { g_rgl_h[i].keep = 1; LOG("r1: RB SIM lite %llx: kept (not skipped)\n", (unsigned long long)a); } while (*p == ',' || *p == ' ') p++; if (!a) break; }
+    }
     int ok = 0;
     for (int i = 0; i < RGL_N; i++) if ((g_rgs_prof || (g_rgs_lite & g_rgl_h[i].grp)) && hook_install(GA(g_rgl_h[i].a), rgs_lite_hook, &g_rgl_h[i], &g_rgl_h[i].orig)) ok++;
     LOG("r1: RB SIM logic-only re-run: skip mask %d, profile %d: %d hooks installed\n", g_rgs_lite, g_rgs_prof, ok);
 }
 static void rgs_lite_report(void) {
+    sd_report();
     if (!g_rgs_lite && !g_rgs_prof) return;
     for (int i = 0; i < RGL_N; i++) if (g_rgl_h[i].orig) LOG("r1: RB SIM lite %llx (group %d): skipped %lld; timed real %lld calls %.4f ms/call, re-run %lld calls %.4f ms/call\n", (unsigned long long)g_rgl_h[i].a, g_rgl_h[i].grp, g_rgl_h[i].sk,
         g_rgl_h[i].n[0], g_rgl_h[i].n[0] ? g_rgl_h[i].ms[0] / g_rgl_h[i].n[0] : 0, g_rgl_h[i].n[1], g_rgl_h[i].n[1] ? g_rgl_h[i].ms[1] / g_rgl_h[i].n[1] : 0);

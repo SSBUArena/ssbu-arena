@@ -581,14 +581,30 @@ static void fight_shot_poll(int ticks) {
  * on port 1 and player 2 on port 2, where nobody is (the panel of player 2 stayed on "OK" for ever, the game never left it). From
  * the match's end until the fighters' modules are unloaded (the screen is over) port 1's A also presses A on port 2: only A, only
  * then, so no other player joins from port 2 (0.2.15 gave it the whole pad for 45 s, which made a player 3 in the next menus). */
+/* (room fixes 2026-11-08) on the JOINER this game's player is player 2 (port 2 in the match's records), but its controller is port 1's
+ * device: on the result screen its presses were player 1's ("I am P2 and the results show P1"). SSBU_RB_ROOM_AFTER_SWAP (default 1):
+ * on the joiner, from the match's end to the screen's end, port 1's controller is port 2 (the whole pad: its own player) and only its
+ * A is also given to port 1 (the other game's player, nobody here, the screen waits for it too). On the host nothing changes (port 1
+ * its own player, its A also on port 2). =0: the old way on both (port 1 the pad, its A on port 2 too). */
 static volatile LONG64 g_room_after_t0;
 static uint64_t g_port1_buttons;
+static int g_port1_st[4], g_room_after_swap;
 void nnhid_room_after(int on) {
     if (!on && !g_room_after_t0) return;
+    if (on) { static int sw = -1; if (sw < 0) { const char *e = getenv("SSBU_RB_ROOM_AFTER_SWAP"); sw = !(e && e[0] == '0'); }
+              int rbn_local_player(void); g_room_after_swap = sw && rbn_local_player() == 1; }
     InterlockedExchange64(&g_room_after_t0, on ? (LONG64)GetTickCount64() : 0);
-    printf("hid: room match: port 1's A on port 2 too: %s\n", on ? "on (the result screen)" : "off"); fflush(stdout);
+    if (on && g_room_after_swap) printf("hid: room match: this game's player is player 2: port 1's controller on port 2 (player 2), its A on port 1 too: on (the result screen)\n");
+    else printf("hid: room match: port 1's A on port 2 too: %s\n", on ? "on (the result screen)" : "off");
+    fflush(stdout);
 }
-static int room_after_on(void) { LONG64 t = g_room_after_t0; return t && GetTickCount64() - (ULONGLONG)t < 300000; }
+/* (room fixes) how long it may last at most: 5 min was the limit, and a result screen left open longer (a player away from the controller)
+ * then waited for the second player for ever. It ends anyway when the fighters are unloaded (nnro.c) or at the next set-up (nnhid_lwr_styles).
+ * SSBU_RB_ROOM_AFTER_S=<seconds> (default 1800; 300 = the old limit) */
+static int room_after_on(void) {
+    static ULONGLONG lim; if (!lim) { const char *e = getenv("SSBU_RB_ROOM_AFTER_S"); int s = e && *e ? atoi(e) : 1800; lim = (ULONGLONG)(s > 0 ? s : 1800) * 1000; }
+    LONG64 t = g_room_after_t0; return t && GetTickCount64() - (ULONGLONG)t < lim;
+}
 /* kind: 0 = a style the controller is not reported in (zeroed), 1 = NpadFullKeyState (Pro Controller, 0x28 bytes), 2 = NpadGcState (0x30 bytes:
  * the same first 0x24 bytes, then analog trigger L at +0x24 and R at +0x28, 0..0x7fff; the layout follows libnx / suyu, NOT VERIFIED on a console). */
 static void fill_pad(uint64_t out, uint32_t id, int kind) {
@@ -670,8 +686,12 @@ static void fill_pad(uint64_t out, uint32_t id, int kind) {
         trig_l = (buttons >> BTN_L & 1) ? 0x7fff : 0;
         trig_r = (buttons >> BTN_R & 1) ? 0x7fff : 0;
     }
-    if (id == 0) g_port1_buttons = buttons;
-    if (id == 1 && room_after_on()) buttons |= g_port1_buttons & (1ull << BTN_A);      /* (0.2.17) the result screen's second player */
+    if (id == 0) { g_port1_buttons = buttons; g_port1_st[0] = lx; g_port1_st[1] = ly; g_port1_st[2] = rx; g_port1_st[3] = ry;
+                   if (g_room_after_swap && room_after_on()) { buttons &= 1ull << BTN_A; lx = ly = rx = ry = 0; } }      /* (room fixes) the joiner: port 1 = the other player, only A */
+    if (id == 1 && room_after_on()) {
+        if (g_room_after_swap) { buttons |= g_port1_buttons; lx = g_port1_st[0]; ly = g_port1_st[1]; rx = g_port1_st[2]; ry = g_port1_st[3]; }      /* (room fixes) the joiner's own player 2 */
+        else buttons |= g_port1_buttons & (1ull << BTN_A);      /* (0.2.17) the result screen's second player */
+    }
     if (lx < -STICK_MAX / 2) buttons |= 1ull << BTN_SL_LEFT;
     if (lx > STICK_MAX / 2) buttons |= 1ull << BTN_SL_RIGHT;
     if (ly > STICK_MAX / 2) buttons |= 1ull << BTN_SL_UP;
@@ -935,13 +955,59 @@ static int vib_slot(uint32_t handle, uint32_t *id, uint32_t *dev) {
     *id = (handle >> 8) & 0xff; *dev = (handle >> 16) & 0xff;
     return (handle & 0xff) == 3 && *id < 8 && *dev < 2;
 }
+/* (room fixes 2026-11-08) an online rollback match (a Local Wireless room's or a matchmaking one) gives player i's pads on port i on BOTH
+ * PCs (rb_rollback.c rbg_pad), and the game rumbles player i's controller: npad i. This game's own controller is port 1's device, so on
+ * the joiner (this game's player = player 2) player 1's rumble was felt on the joiner's own controller and its own player's on none
+ * ("the controller vibrates for what happens to the other player"). While such a match is on, npad <this game's player>'s rumble is
+ * played on port 1's device and the other player's npad is not played (on the host: npad 1 on port 1, as before; a second controller on
+ * port 2 no longer rumbles for the other player). SSBU_RB_VIB_PORT=0: the old way (npad i on port i's device). SSBU_VIB_LOG=1 (test):
+ * each change of a rumble the game sends, with the npad and the port that plays it. Returns the port, or -1 = not played. */
+static int g_vib_map_on = -1, g_vib_mapped, g_vib_log = -1;
+static int vib_map_active(void) {
+    if (g_vib_map_on < 0) { const char *e = getenv("SSBU_RB_VIB_PORT"); g_vib_map_on = !(e && e[0] == '0'); }
+    int rbg_pad_synced(int id);
+    return g_vib_map_on && rbg_pad_synced(0);
+}
+static int vib_port(uint32_t id) {
+    int rbn_local_player(void);
+    if (id > 1 || !vib_map_active()) return (int)id;
+    return (int)id == rbn_local_player() ? 0 : -1;
+}
+static void vib_apply_port(uint32_t id, int port);
+static void vib_map_track(int mapped) {                      /* the mapping's start (said once per match) and end: both ports' rumble stopped */
+    if (mapped == g_vib_mapped) return;
+    g_vib_mapped = mapped;
+    if (sdl_on()) { nnpad_rumble(0, 0, 0); nnpad_rumble(1, 0, 0); }
+    if (mapped) { int rbn_local_player(void); int lp = rbn_local_player();
+        printf("hid: rollback match: the rumble of npad %d (player %d, this game's player) on port 1's controller, npad %d's (the other game's player) not played (SSBU_RB_VIB_PORT)\n", lp + 1, lp + 1, 2 - lp); }
+    else printf("hid: rollback match over: each npad's rumble on its own port again\n");
+    fflush(stdout);
+}
+void nnhid_vib_match_end(void) { vib_map_track(0); }      /* rb_rollback.c rbg_fight_off: no rumble of the match goes on after it */
 static void vib_apply(uint32_t id) {
-    int slot = g_source[id];
+    vib_map_track(vib_map_active());
+    int port = vib_port(id);
+    if (g_vib_log < 0) g_vib_log = getenv("SSBU_VIB_LOG") != NULL;
+    if (g_vib_log) {
+        static float last[8][2];
+        float lo = 0, hi = 0;
+        for (int d = 0; d < 2; d++) if (g_vib[id][d].set) { if (g_vib[id][d].v[0] > lo) lo = g_vib[id][d].v[0]; if (g_vib[id][d].v[2] > hi) hi = g_vib[id][d].v[2]; }
+        if (id < 8 && (lo != last[id][0] || hi != last[id][1])) {
+            long long rbn_now(void); int rbg_pad_synced(int id);
+            last[id][0] = lo; last[id][1] = hi;
+            printf("hid: vib npad %u -> port %d: low %.3f high %.3f (rollback frame %lld, match on %d)\n", id + 1, port < 0 ? 0 : port + 1, lo, hi, rbn_now(), rbg_pad_synced(0)); fflush(stdout);
+        }
+    }
+    if (port < 0) return;
+    vib_apply_port(id, port);
+}
+static void vib_apply_port(uint32_t id, int port) {        /* npad id's rumble values on port <port>'s device */
+    int slot = g_source[port];
     if (sdl_on()) {                                         /* SDL: the low band to the low-frequency (large) motor, the high band to the high-frequency one */
         float lo = 0, hi = 0;
         for (int d = 0; d < 2; d++) if (g_vib[id][d].set) { if (g_vib[id][d].v[0] > lo) lo = g_vib[id][d].v[0]; if (g_vib[id][d].v[2] > hi) hi = g_vib[id][d].v[2]; }
         if (!devices_live()) lo = hi = 0;
-        nnpad_rumble((int)id, lo, hi);
+        nnpad_rumble(port, lo, hi);
         return;
     }
     if (!x_set_state || !x_present(slot)) return;
@@ -1017,12 +1083,16 @@ static void hid_SendVibrationGcErmCommand(Ctx *c) {         /* (const VibrationD
     { int r1_ra_phase(void); if (r1_ra_phase() == 1) return; }      /* R1 round 5, run-ahead: not in a speculative pass */
     hid_setup();
     int mounted = gc_handle_check(c, handle, "nn::hid::SendVibrationGcErmCommand with an invalid handle (the hid module refuses it and the SDK aborts, sdk 0x2537d4)");
+    int port = id < 8 ? vib_port(id) : (int)id;            /* (room fixes) an online rollback match: this game's player's npad on port 1's controller (vib_port) */
+    if (port != (int)id && (handle & 0xff) == 8 && port >= 0 && sdl_on() && nnpad_is_gc(port)) mounted = 1;
     if (!mounted || command > 2) return;
     g_gc_erm[id] = command;
-    int slot = g_source[id];
-    if (sdl_on() && nnpad_is_gc((int)id)) {                  /* the adapter's rumble motor: Start = on, Stop / StopHard = off */
+    if (id < 8) vib_map_track(vib_map_active());
+    if (port < 0) return;
+    int slot = g_source[port];
+    if (sdl_on() && nnpad_is_gc(port)) {                     /* the adapter's rumble motor: Start = on, Stop / StopHard = off */
         float v = command == 1 && devices_live() ? 1.0f : 0.0f;
-        nnpad_rumble((int)id, v, v);
+        nnpad_rumble(port, v, v);
         return;
     }
     if (x_set_state && x_present(slot)) {
