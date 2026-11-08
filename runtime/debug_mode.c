@@ -1127,7 +1127,9 @@ static void tc_css_hook(Ctx *c, void *user) {      /* MeleeTeamCompeSequenceScen
     int nnldn_role(void); int mine = nnldn_role() == 2 ? 1 : 0;
     {   static int last_n[2] = {-1, -1};          /* (test aid) @sq_mine3: this game's side has its 3 fighters */
         for (int s = 0; s < 2; s++) { int n = bacss_chips(s); if (n != last_n[s]) { last_n[s] = n; char w[48]; snprintf(w, sizeof w, "side %d has %d fighter(s)", s + 1, n); bacss_show(w); } }
-        if (bacss_chips(mine) == 3) { static int said; if (!said++) { void input_mark(const char *what); input_mark("sq_mine3"); } } }
+        {   int n = bacss_chips(mine); void input_mark(const char *what); static int said2, said3;      /* (the entries lag the screen by one pick: 2 here = 3 shown) */
+            if (n >= 2 && !said2++) input_mark("sq_mine2");
+            if (n >= 3 && !said3++) input_mark("sq_mine3"); } }
     if (rd32(self + 0x114)) {
         uint64_t mgr = rd64(self), m28 = rd64(mgr + 0x28);
         if (rd64(m28 + 0x60) == 0 && rd64(m28 + 0x30) == rd64(m28 + 0x38) && rd64(rd64(mgr + 0x20) + 0x10) == 0) {
