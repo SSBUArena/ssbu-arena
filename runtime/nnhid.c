@@ -596,6 +596,14 @@ static void fill_pad(uint64_t out, uint32_t id, int kind) {
     { void r1_wrote(uint64_t, uint64_t); r1_wrote(out, size); }   /* R1: marked (nothing without SSBU_R1_MARK) */
     memset((void *)(uintptr_t)out, 0, size);
     wr64(out, (uint64_t)InterlockedIncrement64(&g_sampling));
+    {   /* (research, SSBU_HID_POLLLOG=1) which npad ids / state kinds the game reads, counted and printed every ~5 s */
+        static int on = -1; static long cnt[3][34]; static ULONGLONG t0;
+        if (on < 0) on = getenv("SSBU_HID_POLLLOG") != NULL;
+        if (on) { uint32_t i = id < 33 ? id : 33; cnt[kind < 3 ? kind : 0][i]++;
+            ULONGLONG now = GetTickCount64(); if (!t0) t0 = now;
+            if (now - t0 >= 5000) { t0 = now; char line[400]; int n = 0;
+                for (int k = 0; k < 3; k++) for (int j = 0; j < 34; j++) if (cnt[k][j]) { n += snprintf(line + n, sizeof line - (size_t)n, " id %x kind %d: %ld;", j, k, cnt[k][j]); cnt[k][j] = 0; if (n > 360) break; }
+                printf("hid polls (5 s):%s\n", line); fflush(stdout); } } }
     if (id > 7 || !kind) return;                              /* the other styles are never filled */
     unsigned trig_l = 0, trig_r = 0, gc_l = 0, gc_r = 0;   /* (gc_l / gc_r: a GameCube controller's analog triggers, any style) */
     static long long l1_ticks;                               /* L1: fight-frame ticks seen at player 1's polls (SSBU_L1 report) */
