@@ -1545,6 +1545,7 @@ static void rgn_hook1(Ctx *c, void *user) { (void)user; rgn_call(c, 1, g_rgn_ori
  * resource thread had destroyed (nu::ResourceAdapterContract<Texture_NX>, 2 .. 1700 frames before); real passes fill the same list
  * with a live view (the entry is rewritten by something a re-run pass skips: not found, see HANDOFF_RBCRASH). Cost: ~10 reads per block. */
 static void sd_init(void) {
+    static int once; if (once++) return;                 /* (run-ahead and the ring may both ask) */
     const char *e = getenv("SSBU_RB_SRVDIAG"); g_sd_on = e ? atoi(e) : 0;
     e = getenv("SSBU_RB_RETAINFIX"); g_sd_fix = !(e && e[0] == '0');
     e = getenv("SSBU_RB_RETAINGEN"); g_rgn_on = !(e && e[0] == '0');
