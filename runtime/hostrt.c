@@ -26,6 +26,10 @@
 int g_game_build = -1;                               /* set by load_layout */
 MainLayout g_main;
 static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets from GUEST_BASE, sorted by the first */
+    /* (the entries marked "starts") each 13.0.5 address is a function start of 13.0.5's .eh_frame_hdr, and the 16 lifted
+     * 13.0.4 functions around it (tools/lifter/coverage/13.0.4.txt) start there at the same delta; the entries "found on the
+     * 13.0.5 dump" were checked on a real 13.0.5 main.elf: the fingerprint of ga_sig_13_0_4.inc is unique there and
+     * verify_13_0_5.py's neighbours agree */
     {0x0382a0, 0x0382a0},       /* FUN_71000382a0 (nvn_gl.c), 2,884 bytes in both */
     {0x047d20, 0x047d20},       /* clock read return address (nnsdk.c, fixed seed) */
     {0x07f870, 0x07f870},     /* the HUD font job (r1_state.c SSBU_RB_FONTWAIT); found on the 13.0.5 dump */
@@ -37,19 +41,19 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x45b940, 0x45b940},     /* replay clear-all (fighter_host.c); found on the 13.0.5 dump */
     {0x45b980, 0x45b980},     /* replay clear (fighter_host.c); found on the 13.0.5 dump */
     {0x653240, 0x653240},       /* entry set-up (debug_mode.c) */
-    /* (the entries marked "starts") each 13.0.5 address is a function start of 13.0.5's .eh_frame_hdr, and the 16 lifted
-     * 13.0.4 functions around it (tools/lifter/coverage/13.0.4.txt) start there at the same delta; the entries "found on the
-     * 13.0.5 dump" were checked on a real 13.0.5 main.elf: the fingerprint of ga_sig_13_0_4.inc is unique there and
-     * verify_13_0_5.py's neighbours agree */
     {0x6556b0, 0x6556b0},     /* squad element load (debug_mode.c); found on the 13.0.5 dump */
     {0x134c690, 0x134c690},     /* fight scene clean-up (debug_mode.c, room rollback), starts: 12,080 bytes in 13.0.5, 0x2f30 to the next 13.0.4 function */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
+    {0x14d8620, 0x14d8620}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x14e58f0, 0x14e58f0},     /* battle builder (competitive.c), starts */
     {0x1519430, 0x1519430},     /* hook self-test function (hook_host.c) */
     {0x157c100, 0x157c100},     /* squad init (debug_mode.c); found on the 13.0.5 dump */
     {0x1589830, 0x1589830},     /* squad step (debug_mode.c); found on the 13.0.5 dump */
     {0x158a360, 0x158a360},     /* squad hook 4 (debug_mode.c); found on the 13.0.5 dump */
+    {0x1685cb0, 0x1685cb0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x1698160, 0x1698160}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x16ccae0, 0x16cc940},     /* input delay of a local-wireless match (ldn_online.inc), starts; 400 bytes in both */
+    {0x16ea430, 0x16ea290}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x1780440, 0x17802a0},     /* match controls set-up (debug_mode.c, room rollback: each player's own controls; 63 / 63 words) */
     {0x1788260, 0x17880c0},     /* player record builder (debug_mode.c) */
     {0x17911dc, 0x17910fc},     /* return address of the room's waiting-stage record build (debug_mode.c; 43 / 43 words) */
@@ -57,17 +61,29 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x179e440, 0x179e400},     /* select screen table entry copy (debug_mode.c, R3 online: player 2's panel) */
     {0x17df5f0, 0x17df5b0},     /* path sub-builder (newmodule_host.c) */
     {0x17dfe50, 0x17dfe10},     /* path sub-builder 2 (newmodule_host.c) */
+    {0x17e4790, 0x17e4750}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x17e4940, 0x17e4900}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x197c2f0, 0x197c2f0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x197d5f0, 0x197d5f0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x1af97f0, 0x1af97f0},     /* PalletMenu layout controller (competitive.c comp_pallet_ready, and a function pointer comp_pallet checks), starts */
     {0x1af9ee0, 0x1af9ee0},     /* the other function pointer comp_pallet checks (competitive.c), starts */
     {0x1bef020, 0x1bef020},     /* the Lua C function behind prg_func.open_pallet (competitive.c comp_open_local), starts */
     {0x1ea04d0, 0x1ea04d0},     /* formatter (newmodule_host.c) */
     {0x22b67d4, 0x22b67d4},     /* worker return address (newmodule_host.c) */
+    {0x22b6f60, 0x22b6f60}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x22dc3d0, 0x22dc3d0},     /* skipped function 3, 10,328 bytes in both (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
     {0x22dec30, 0x22dec30},     /* skipped function 2, 4 bytes (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
     {0x22df110, 0x22df110},     /* skipped function 1, 84 bytes in both (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
+    {0x2311f00, 0x2311f6c}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x2312620, 0x231268c}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x232ce40, 0x232d290},     /* menu hook of the Arena UI (competitive.c comp_menu), starts */
+    {0x232f690, 0x232fae0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x23343e0, 0x2334830},     /* Smash versus: Rulesets state (competitive.c), starts */
+    {0x2334f50, 0x23353a0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x23353d0, 0x2335820},     /* Smash versus: stage state (competitive.c), starts */
+    {0x233cfd0, 0x233d420}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x233de20, 0x233e270}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x2349480, 0x23498d0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x235cbf0, 0x235d040},     /* scene dispatcher (competitive.c), starts; 25,696 bytes in 13.0.5 */
     {0x32384c0, 0x3238a70}, /* fighter picture path (newmodule_host.c) */
     {0x3261d60, 0x3262310}, /* name_id getter (newmodule_host.c) */
@@ -108,6 +124,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x36f6070, 0x36f6620},     /* movie audio output Flush (nnmovie_mf.c), 0x114 bytes, the same in both */
     {0x36f7410, 0x36f79c0}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x3724a80, 0x3725030}, /* task tree walker (r1_ring.c, profile 2) */
+    {0x3726120, 0x37266d0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x3747270, 0x3747820}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x3747b10, 0x37480c0},     /* main loop: return address of the Lua collector step (rb_rollback.c); found on the 13.0.5 dump */
     {0x3747b7c, 0x374812c}, /* render loop call site (r1_state.c) */
