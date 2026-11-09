@@ -422,7 +422,7 @@ static int g_bacss = -1, g_tc_native, g_tc_k; static uint16_t g_tc_lay[2][11];
  * does not go back to the room"), and the joiner's own player still read port 2 (its pad is port 1) on the result screen.
  * When the fight ends (rb_rollback.c rbg_fight_off) the room's mode and both players' panel states are given back. */
 static int g_room_mode_was = -1, g_room_saved_n;
-static struct { uint64_t st; uint8_t b450[6]; uint32_t slot, prof; uint8_t lay[22]; } g_room_saved[2];      /* (R3 lwr) g_hs_lwr: a Local Wireless room's match played with rollback */
+static struct { uint64_t st; uint8_t b450[6]; uint32_t slot, prof; uint8_t lay[22]; uint8_t a4; } g_room_saved[2];      /* (R3 lwr) g_hs_lwr: a Local Wireless room's match played with rollback */
 static int g_hs_quick;
 /* (Arena, online matchmaking) a quick match from the Arena menu's Online Ranked tile (competitive.c comp_quickplay): both games
  * play the same locked rules whatever the player's own ruleset: stock (rule kind 1), 3 stocks, no items, no hazards (the
@@ -451,11 +451,12 @@ void dm_room_restore(void) {
     printf("[rbnet] room match over: melee mode %u -> %d (the room's), %d player panel state(s) given back\n", rd8(MELEE_INFO), g_room_mode_was, g_room_saved_n);
     wr8(MELEE_INFO, (uint8_t)g_room_mode_was);
     g_room_clean = 1;
-    for (int i = 0; i < g_room_saved_n; i++) {
+    for (int j = 0; j < g_room_saved_n; j++) { int i = g_bacss == 1 ? g_room_saved_n - 1 - j : j;      /* (Battle Arena, game's squad: backwards, when both records come from one panel state the first one saved is the room's own) */
         uint64_t st = g_room_saved[i].st; if (!st) continue;
         for (int k = 0; k < 6; k++) wr8(st + 0x450 + (uint64_t)k, g_room_saved[i].b450[k]);
         wr32(st + 0x210, g_room_saved[i].slot); wr32(st + 0x214, g_room_saved[i].prof);
         for (int k = 0; k < 22; k++) wr8(st + 0x54 + (uint64_t)k, g_room_saved[i].lay[k]);
+        wr8(st + 0xa4, g_room_saved[i].a4);      /* (Battle Arena, game's squad: the player number SSBU_BA_SQUAD_PNUM changed) */
     }
     fflush(stdout);
     g_room_mode_was = -1; g_room_saved_n = 0;
@@ -601,7 +602,7 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
              * the mode written (test), -1 = not changed. */
             if (g_hs_lwr) {
                 const char *e = getenv("SSBU_RB_NET_ROOM_MODE"); int to = e && *e ? atoi(e) : 0; uint8_t was = rd8(MELEE_INFO);
-                g_room_mode_was = was; g_room_saved_n = 0;      /* (0.2.15) given back when the fight ends (dm_room_restore) */
+                if (!(g_tc_native && g_room_mode_was >= 0)) { g_room_mode_was = was; g_room_saved_n = 0; }      /* (0.2.15) given back when the fight ends (dm_room_restore); (Battle Arena, game's squad, run cssh5) the 2nd handshake (the squad's records) keeps what the room's records saved: else nothing was given back and the joiner's next select screen was broken */
                 if (to >= 0) wr8(MELEE_INFO, (uint8_t)to);
                 printf("[rbnet] room match: melee mode (match block + 0) %u -> %u: played as a local versus match with rollback (room maker = player 1)\n", was, rd8(MELEE_INFO));
                 fflush(stdout);
@@ -657,7 +658,7 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
             if (idx >= 0 && idx < 2) memcpy(g_tc_lay[idx], lay, sizeof lay);
             if (idx >= 0 && idx < 2 && !g_tc_native) {      /* (0.2.15) the room's own panel state, given back when the fight ends */
                 g_room_saved[idx].st = st; safe_read(st + 0x450, g_room_saved[idx].b450, sizeof g_room_saved[idx].b450);
-                g_room_saved[idx].slot = rd32(st + 0x210); g_room_saved[idx].prof = rd32(st + 0x214); safe_read(st + 0x54, g_room_saved[idx].lay, sizeof g_room_saved[idx].lay);
+                g_room_saved[idx].slot = rd32(st + 0x210); g_room_saved[idx].prof = rd32(st + 0x214); safe_read(st + 0x54, g_room_saved[idx].lay, sizeof g_room_saved[idx].lay); g_room_saved[idx].a4 = rd8(st + 0xa4);
                 if (g_room_saved_n < idx + 1) g_room_saved_n = idx + 1; }
             wr8(st + 0x450, 1); wr8(st + 0x451, 0); wr32(st + 0x210, (uint32_t)idx); wr32(st + 0x214, 0xffffffffu);
             wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, lay[k]);
@@ -1119,6 +1120,7 @@ static void bacss_dump(const char *why) {
     }
     fflush(stdout);
 }
+static int g_css_round;      /* (test aid) Squad Strike select screens opened */
 static void scene_change_hook(Ctx *c, void *user) {
     (void)user;
     char nm[72] = {0}, own[72] = {0}; uint32_t n = rd32(c->x[1] + 4), n2 = c->x[2] ? rd32(c->x[2] + 4) : 0;
@@ -1128,6 +1130,7 @@ static void scene_change_hook(Ctx *c, void *user) {
     fflush(stdout);
     if (rd32(GA(0x71053040f0ULL)) == 0x02020000u && n < 32) { char m[48]; snprintf(m, sizeof m, "sc_%s", nm); void input_mark(const char *what); input_mark(m);
         static struct { char nm[40]; int n; } cnt[24]; int k = 0; while (k < 24 && cnt[k].nm[0] && strcmp(cnt[k].nm, m)) k++;      /* (test aid) and sc_<scene>#<n> from the 2nd time on */
+        if (!strcmp(m, "sc_CharaSelectScene")) g_css_round++;
         if (k < 24) { if (!cnt[k].nm[0]) snprintf(cnt[k].nm, sizeof cnt[k].nm, "%s", m); if (++cnt[k].n > 1) { char m2[56]; snprintf(m2, sizeof m2, "%s#%d", m, cnt[k].n); input_mark(m2); } } }      /* (test aid) SSBU_SEQ @sc_<scene> */
     g_orig_scene_change(c);
 }
@@ -1191,7 +1194,7 @@ static void tc_css_hook(Ctx *c, void *user) {      /* MeleeTeamCompeSequenceScen
     {   static int last_n[2] = {-1, -1};          /* (test aid) @sq_mine3: this game's side has its 3 fighters */
         for (int s = 0; s < 2; s++) { int n = bacss_chips(s); if (n != last_n[s]) { last_n[s] = n; char w[48]; snprintf(w, sizeof w, "side %d has %d fighter(s)", s + 1, n); bacss_show(w); } }
         {   int n = bacss_chips(mine); void input_mark(const char *what); static int said2, said3, round = 1;      /* (the entries lag the screen by one pick: 2 here = 3 shown) */
-            if (n == 0 && said2) { said2 = said3 = 0; round++; }      /* (test aid) a new select screen: the marks again, as sq_mine2#<round> */
+            static int seen = 1; if (g_css_round > seen) { seen = g_css_round; said2 = said3 = 0; round = seen; }      /* (test aid) a new select screen: the marks again, as sq_mine2#<round> */
             char m2[24], m3[24]; if (round > 1) { snprintf(m2, sizeof m2, "sq_mine2#%d", round); snprintf(m3, sizeof m3, "sq_mine3#%d", round); } else { strcpy(m2, "sq_mine2"); strcpy(m3, "sq_mine3"); }
             if (n >= 2 && !said2++) input_mark(m2);
             if (n >= 3 && !said3++) input_mark(m3); } }
