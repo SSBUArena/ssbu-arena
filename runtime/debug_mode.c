@@ -1404,7 +1404,7 @@ static void tc_match_hook(Ctx *c, void *user) {
  * + 0x88]) that our virtual LDN never brings (runs cssq9 / cssq11 / cssm3: both games in state 7 for minutes).
  * SSBU_BA_SQUAD_CSS=1 (SSBU_BA_SQUAD_VS=0 off): once this game is ready for 30 frames, state 7 runs once as offline (flag cleared for
  * the call): result 3 -> MeleeScene; the two games meet again at the rollback handshake on the record builder. */
-static ImportFn g_orig_tc_vs; static int g_bacss_vs;
+static ImportFn g_orig_tc_vs; static int g_bacss_vs; static volatile int g_in_order_msg;
 static void tc_vs_hook(Ctx *c, void *user) {
     (void)user;
     uint64_t sm = c->x[0], ui = rd64(rd64(sm + 8) + 0x80), nc = rd64(rd64(rd64(GA(0x71052c3c58ULL)) + 8) + 0x88), net = nc;
@@ -1422,7 +1422,12 @@ static void tc_vs_hook(Ctx *c, void *user) {
     {   static int rs = -1; if (rs < 0) { const char *e = getenv("SSBU_SQ_ORDERRESEND"); rs = !(e && e[0] == '0'); }
         int nnldn_role(void); int mine = nnldn_role() == 2 ? 1 : 0; uint64_t L = sm + 0x13d + 5ull * (uint64_t)mine, Rm = sm + 0x13d + 5ull * (uint64_t)(1 - mine);
         int lfull = (int8_t)rd8(L) >= 0 && (int8_t)rd8(L + 1) >= 0 && (int8_t)rd8(L + 2) >= 0, rnone = rd8(Rm) == 0xff;
-        if (getenv("SSBU_DEBUG_SCENES") && frames % 300 == 150) { printf("[squadcss] matchup state 7: frame %u order kept here %02x %02x %02x, other side %02x %02x %02x\n", frames, rd8(L), rd8(L + 1), rd8(L + 2), rd8(Rm), rd8(Rm + 1), rd8(Rm + 2)); fflush(stdout); }
+        if (getenv("SSBU_DEBUG_SCENES") && frames % 300 == 150) { printf("[squadcss] matchup state 7: frame %u order kept here %02x %02x %02x, other side %02x %02x %02x\n", frames, rd8(L), rd8(L + 1), rd8(L + 2), rd8(Rm), rd8(Rm + 1), rd8(Rm + 2));
+            /* (research) the room's phase list [net + 0x26a78 .. + 0x26a80] (12-byte items): state 7 sends the order only if item 3's + 1 != 3 and + 4 != 2 */
+            if (net) { uint64_t b = rd64(net + 0x26a78), e2 = rd64(net + 0x26a80); printf("[squadcss]  phase list %llu item(s):", (unsigned long long)(b && e2 > b ? (e2 - b) / 12 : 0));
+                for (uint64_t q = b; b && q < e2 && q < b + 12 * 6; q += 12) printf(" [%02x %02x %02x %02x %02x %02x %02x %02x %08x]", rd8(q), rd8(q + 1), rd8(q + 2), rd8(q + 3), rd8(q + 4), rd8(q + 5), rd8(q + 6), rd8(q + 7), rd32(q + 8));
+                printf("\n"); }
+            fflush(stdout); }
         if (rs && g_bacss == 1 && lw && lfull && rnone && frames >= 120 && frames % 120 == 0) {
             for (int k = 0; k < 5; k++) wr8(L + (uint64_t)k, 0xff);
             static int said; if (said++ < 8) { printf("[squadcss] matchup: this game's order is set, the other side's never came: this game's order is sent again (frame %u, SSBU_SQ_ORDERRESEND)\n", frames); fflush(stdout); } } }
@@ -1434,11 +1439,11 @@ static void tc_vs_hook(Ctx *c, void *user) {
     if (bypass) {
         volatile uint8_t *f = (volatile uint8_t *)(uintptr_t)GA(0x71053040f4ULL);
         printf("[squadcss] matchup: this game ready for %u frames, the room's all-ready never comes: the VS screen ends as offline (result 3 -> the fight)\n", frames - ready_at); fflush(stdout);
-        *f = 0; g_orig_tc_vs(c); *f = lw;
+        *f = 0; g_in_order_msg = 1; g_orig_tc_vs(c); g_in_order_msg = 0; *f = lw;
         printf("[squadcss] matchup: state 7 done: result %u, next state id %d\n", rd32(sm + 0x138), (int)rd32(sm + 0xd8 + 4 * rd32(sm + 0x124))); fflush(stdout);
         return;
     }
-    g_orig_tc_vs(c);
+    g_in_order_msg = 1; g_orig_tc_vs(c); g_in_order_msg = 0;      /* (state 7 sends this game's order only if 0x71016ea430 finds this game's side: SSBU_SQ_ORDERSIDE) */
 }
 /* (Battle Arena, game's squad) the fight set-up 0x71014d8620 stores the next value of the global xorshift128 (0x71052381c0) in
  * match block + 0x98 (the fight's script generators come from it). The handshake set that generator from the agreed seed, but in
@@ -1487,18 +1492,25 @@ static int g_b7fix = -1;
  * order for ever (run csst6, second match of a room: both games "OK" on their own side, "Choose Order" on the other's). Logged here
  * (first 12 messages); SSBU_SQ_ORDERSIDE (on with SSBU_BA_SQUAD_CSS=1, =0 off): while that handler runs, a side not found for a room
  * of two stations is the room maker's side 1 for station 0 and side 2 for the other. */
-static ImportFn g_orig_order_msg, g_orig_side_of; static volatile int g_in_order_msg; static int g_orderside = -1;
+static ImportFn g_orig_order_msg, g_orig_side_of; static int g_orderside = -1;
 static void side_of_hook(Ctx *c, void *user) {
     (void)user; unsigned st = (unsigned)(c->x[1] & 0xff);
     g_orig_side_of(c);
     if (g_in_order_msg && g_orderside > 0 && (c->x[0] & 0xff) > 1 && st < 16) {
-        int nnldn_players(void); if (nnldn_players() == 2) { unsigned s = st == 0 ? 0 : 1; printf("[squadcss] order message from station %u: no side found, side %u taken (SSBU_SQ_ORDERSIDE)\n", st, s + 1); fflush(stdout); c->x[0] = s; }
+        int nnldn_players(void); if (nnldn_players() == 2) { unsigned s = st == 0 ? 0 : 1; static int said; if (said++ < 8) printf("[squadcss] matchup: station %u has no side (0x71016ea430): side %u taken (SSBU_SQ_ORDERSIDE)\n", st, s + 1); fflush(stdout); c->x[0] = s; }
     }
 }
 static void order_msg_hook(Ctx *c, void *user) {
     (void)user; unsigned id = (unsigned)(c->x[2] & 0xffff), st = (unsigned)(c->x[1] & 0xff); uint64_t m = c->x[3];
     static int said; if (said < 12 && (id == 0x12f || id == 0x130 || id == 0x131)) { said++; uint64_t d = m ? rd64(m + 8) : 0;
         printf("[squadcss] matchup message %x from station %u: %02x %02x %02x %02x %02x (scene round %d)\n", id, st, d ? rd8(d) : 0xffu, d ? rd8(d + 1) : 0xffu, d ? rd8(d + 2) : 0xffu, d ? rd8(d + 3) : 0xffu, d ? rd8(d + 4) : 0xffu, g_css_round); fflush(stdout); }
+    /* (Battle Arena, game's squad, SSBU_SQ_DROP131=0 off) the result screen's decision 0x131 ("03": go on): runs csst7 / csst8, both games
+     * got the other's and the screen ended on the game's online path (no "ends as offline" line): at the next order screen neither game
+     * sent its order (state 7 never reached its send) and both waited for ever. Runs csst9 / csst10, at most one game got it and the
+     * screen ended through the offline run (tc_vs_hook): the next order screen worked. The decision is not taken from the other game:
+     * both end the result screen the offline way (w = 3 -> result 5 on both, as before). */
+    {   static int d131 = -1; if (d131 < 0) { const char *e = getenv("SSBU_SQ_DROP131"); d131 = !(e && e[0] == '0'); }
+        if (d131 && g_bacss == 1 && id == 0x131) { static int said; if (said++ < 4) { printf("[squadcss] matchup: the other game's result decision 0x131 not taken (the screen ends the offline way, SSBU_SQ_DROP131)\n"); fflush(stdout); } return; } }
     g_in_order_msg = 1; g_orig_order_msg(c); g_in_order_msg = 0;
 }
 static void msg_recv_hook(Ctx *c, void *user) {
