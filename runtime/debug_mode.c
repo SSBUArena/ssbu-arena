@@ -163,6 +163,22 @@ static void parse_match(const char *s) {
 static void match_player_hook(Ctx *c, void *user);
 static ImportFn g_orig_player_record;
 uint64_t g_sq_obj; static ImportFn g_orig_sq_init;
+/* (Battle Arena) SSBU_BA_SQUAD_CSS=1: the room maker's Battle Arena rooms play the game's own Squad Strike (select screen of Smash,
+ * below); unset or 0 = the old way (the ImGui squad screen and squad_build). Default OFF for 0.2.45 (de3ffe3 had it on): in the final
+ * runs (csh1..6, all IDENTICAL) one game froze once in a squad match (csh2, main thread in a load wait under f_71004ce3b0) and the
+ * crash under f_71006b7ae0 (csg4, csss1, csst3) is not proven gone; SSBU_BA_SQUAD_CSS_DEFAULT_ON at build time turns it on. dm_bacss_native(): this match is such a
+ * match (the current sequence is SEQUENCE_MELEE_TEAM_COMPE 0x02020000): the step / hold / ready gates of that match act only then. */
+#ifdef SSBU_BA_SQUAD_CSS_DEFAULT_ON
+#define BACSS_DEFAULT 1
+#else
+#define BACSS_DEFAULT 0
+#endif
+int dm_bacss_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"); v = e && *e ? atoi(e) : BACSS_DEFAULT; } return v == 1; }
+int dm_bacss_native(void) { return dm_bacss_on() && rd32(GA(0x71053040f0ULL)) == 0x02020000u; }
+/* (run cshimgui, 2026-11-09: the ImGui squad of Battle Arena, SSBU_BA_SQUAD_CSS=0, DESYNC 850: the fighter loaded ahead stood by
+ * (status b7) a frame apart, the same race as the game's own squad) the hold / put / ready gates of a fighter loaded ahead act in
+ * EVERY squad match of a room; SSBU_SQ_GATES_ALL=0: only in the game's own Squad Strike (as in de3ffe3 .. b6ffb32) */
+static int sq_gates(void) { static int a = -1; if (a < 0) { const char *e = getenv("SSBU_SQ_GATES_ALL"); a = !(e && e[0] == '0'); } return a ? 1 : dm_bacss_native(); }
 void debug_watch(const uint64_t *addrs, int n);
 /* (Battle Arena) the next squad fighter's load at fixed frames. The fighter entry's own loading state machine 0x71006556b0 (entry
  * + 0x5920 = 3 while loading, sub-state + 0x591c 0 .. 0xe, the fighter put in the entry on the way (+ 0x13c -1 until then), + 0x5a80
@@ -175,28 +191,150 @@ void debug_watch(const uint64_t *addrs, int n);
  * after the load) each step finds its request done and the fighter comes in at the same frame on both games: +80 / +100 frames.
  * Offline (t17 .. t20) the steps are the same at every change; pair sq18a IDENTICAL. SSBU_SQ_STEP=0: off. */
 static ImportFn g_orig_sq_eload; static long long g_sq_eload_n; static int g_sq_made;
+/* (Battle Arena, game's squad, run csst3: 2nd match of a room, the loading / hold state of the 1st match was still there) every squad
+ * object made (sq_init_hook: a new fight) starts a new generation: the per-entry bases and holds below are cleared. SSBU_SQ_NEWFIGHT=0: not */
+static volatile int g_sq_gen; static int g_sq_hold_reset;
+static struct { uint64_t en; int64_t base; } g_h6arm[4];      /* (SSBU_SQ_PUTGATE) the entries HOLD6 has armed (loaded ahead, at 1) and their loading base */
+static volatile uint64_t g_sq_load_en;      /* (the entry the loading hook last saw loading) */
 int dm_squad_entry_loading(void) {                  /* (rb_rollback.c) a fighter entry is loading its next fighter (entry + 0x5920 == 3) */
     static uint64_t inst; if (!inst) inst = hook_address("_ZN3lib9SingletonIN3app14FighterManagerEE9instance_E");
     uint64_t mgr = inst ? sr64(inst) : 0, impl = mgr ? sr64(mgr) : 0;
     for (int e = 0; impl && e < 2; e++) { uint64_t en = sr64(impl + 0x20 + 8ull * (uint64_t)e); if (en && rd8(en + 0x5920) == 3) return 1; }
+    /* (Battle Arena, game's squad, run cssm10) the game's Squad Strike also loads a side's next fighter ahead, in an entry that is not
+     * one of these two (no KO, no lock: rollbacks across that load, DESYNC 9 frames after it): the entry the loading hook last saw
+     * loading counts too (SSBU_SQ_LOADEN=0: off) */
+    {   static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SQ_LOADEN"); on = !(e && e[0] == '0'); }
+        uint8_t b = 0; if (on && g_sq_load_en && safe_read(g_sq_load_en + 0x5920, &b, 1) && b == 3) return 1; }
     return 0;
 }
 static void sq_eload_hook(Ctx *c, void *user) {
     (void)user;
     static int step = -1; static int64_t base = -1; static uint64_t base_en;
+    /* (Battle Arena, game's squad, run cssn4) the room's Squad Strike loads BOTH sides' next fighters at the same time: with one base the
+     * two entries reset it in turn and neither ever stepped (loading stuck at sub-state 05 / 0a, no guesses for the rest of the match). Now
+     * one base per entry (SSBU_SQ_EBASE=0: the single base, the old way). */
+    static int per = -1; static struct { uint64_t en; int64_t base; } eb[4]; if (per < 0) { const char *e = getenv("SSBU_SQ_EBASE"); per = !(e && e[0] == '0'); }
+    {   static int seen_gen, nf = -1; if (nf < 0) { const char *e = getenv("SSBU_SQ_NEWFIGHT"); nf = !(e && e[0] == '0'); }
+        if (nf && seen_gen != g_sq_gen) { seen_gen = g_sq_gen; memset(eb, 0, sizeof eb); base = -1; base_en = 0; g_sq_load_en = 0; g_sq_hold_reset = 1; } }
+    uint64_t en0 = c->x[0]; int ek = -1;
+    if (per && en0) { for (int i = 0; i < 4; i++) if (eb[i].en == en0) ek = i; if (ek < 0) for (int i = 0; i < 4; i++) if (!eb[i].en) { ek = i; eb[i].en = en0; eb[i].base = -1; break; } if (ek < 0) { ek = 0; eb[0].en = en0; eb[0].base = -1; }
+        base = eb[ek].base; base_en = en0; }
     if (step < 0) { const char *e = getenv("SSBU_SQ_STEP"); step = e && *e ? atoi(e) : 20; }
     uint64_t en = c->x[0], o = g_sq_obj;
     int64_t fc = o ? (int64_t)rd32(o + 0x112c) : 0;
-    int loading = en && rd8(en + 0x5920) == 3, waiting = en && en == base_en && base >= 0 && rd32(en + 0x13c) == 0xffffffffu && fc - base < 1200;      /* (after the files: its module, then the fighter put in the entry: + 0x13c -1 until then, runs t12 / t18; pair sq16a) */
-    if (step <= 0 || !g_sq_made || !en || !o || !(loading || waiting)) { if (en == base_en) base = -1; g_orig_sq_eload(c); return; }
+    int loading = en && rd8(en + 0x5920) == 3, waiting = en && en == base_en && base >= 0 && rd32(en + 0x13c) == 0xffffffffu && fc - base < 1200;
+    /* (research, SSBU_SQ_GATE01=1 with SSBU_BA_SQUAD_CSS=1; off by default) after "loaded" the entry waits at + 0x5920 = 1, then 6. Stepping
+     * that wait did not help (run cssr2: the 1 -> 6 of a fighter loaded ahead is written outside this function, frame 953 on A and 954 on B),
+     * and putting a 6 back to 1 until a step frame broke the game (cssr3: crash at the entry's next load; cssr4: 1 / 6 flip every frame) */
+    {   static int g01 = -1; if (g01 < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_GATE01"); (void)e; g01 = dm_bacss_on() && k && k[0] == '1'; }
+        if (g01 && en && rd8(en + 0x5920) == 1 && en == base_en && base >= 0 && fc - base < 1200) waiting = 1; }
+    /* (Battle Arena, the game's own Squad Strike, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_HOLD6=0 off) a fighter loaded ahead (no KO) goes from + 0x5920
+     * = 1 to 6 when its module is there: at once on a game that still had the module, a frame later on one that loaded it (L2CDynamicModule-
+     * Manager): DESYNC (cssn1 frame 1497, cssr1 1775, cssr2 954, cssr7 383). Outside a change of fighter, a 6 seen on a frame that is not
+     * a step frame of the entry's loading is put back to 1 (once per load) and written again at its next step frame, the same frame on both
+     * games. (cssr3: never written again: crash at the entry's next load; cssr4: put back again and again after the step frame.) */
+    {   static int h6 = -1; if (h6 < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_HOLD6"); (void)e; h6 = !(k && k[0] == '0'); }
+        static uint64_t s1[4]; static int pend[4]; if (g_sq_hold_reset) { memset(s1, 0, sizeof s1); memset(pend, 0, sizeof pend); memset(g_h6arm, 0, sizeof g_h6arm); g_sq_hold_reset = 0; }
+        if (h6 && ek >= 0 && en && step > 0 && sq_gates()) {
+            int chg = 0; uint8_t v = rd8(en + 0x5920);
+            /* (run csst2, NETSIM=27, DESYNC 820) a fighter loaded ahead (loaded at step frame 811 on both games) while the OTHER side was in its
+             * change after a KO (part + d10 state 3 from 805): its 1 -> 6 came in that change, was not held, and its standby fighter (status b7)
+             * began at 819 on B and 820 on A. Now an entry armed by its own load is held during a change too (SSBU_SQ_HOLD6CHG=0: not, as before) */
+            static int hc = -1; if (hc < 0) { const char *e = getenv("SSBU_SQ_HOLD6CHG"); hc = !(e && e[0] == '0'); }
+            if (g_sq_obj && !hc) for (int k = 0; k < 3; k++) { uint32_t ps = rd32(g_sq_obj + (k == 0 ? 0x5b0 : k == 1 ? 0x950 : 0xd10) + 0x60); if (ps >= 2 && ps <= 4) chg = 1; }
+            if (v == 3) { s1[ek] = 0; pend[ek] = 0; }
+            if (v == 1 && base >= 0 && !pend[ek] && s1[ek] != en) { s1[ek] = en;      /* loaded, waiting: armed for this load */
+                static int w = -1; if (w < 0) w = getenv("SSBU_SQ_W5920") != NULL;      /* (RESEARCH) who writes the 6 */
+                if (w) { uint64_t a = en + 0x5920; debug_watch(&a, 1); printf("[squad] RESEARCH: watch on entry %llx + 0x5920 (armed at fight frame %lld)\n", (unsigned long long)en, (long long)fc); fflush(stdout); } }
+            if (pend[ek] && v == 1 && !((fc - base) % step) && fc != base) {
+                wr8(en + 0x5920, 6); pend[ek] = 0; s1[ek] = 0; v = 6;
+                printf("[squad] entry %llx: + 0x5920 6 written at fight frame %lld (step frame of its loading)\n", (unsigned long long)en, (long long)fc); fflush(stdout);
+            } else {
+            /* (runs csg4, csss1, csst3: crash 0xc0000005 reading 0x168 under f_71006b7ae0 at the next change of fighter; cssr3 the same after a
+             * 6 never written again) with SSBU_SQ_PUTGATE the only 6 still seen off a step frame comes from the put of a part IN its change
+             * (stepped by sq_gate: the same frame on both games); putting it back to 1 there left the entry half stood by. Now it is kept
+             * (SSBU_SQ_HOLD6REVERT=1: put back as before) */
+            static int rv = -1; if (rv < 0) { const char *e = getenv("SSBU_SQ_HOLD6REVERT"), *k = getenv("SSBU_SQ_PUTGATE"); rv = (e && e[0] == '1') || (k && k[0] == '0'); }
+            if (pend[ek] == 0 && s1[ek] == en && v == 6 && !rv) s1[ek] = 0;
+            else if (s1[ek] == en && v == 6 && !chg && base >= 0 && ((fc - base) % step || fc == base)) {
+                wr8(en + 0x5920, 1); pend[ek] = 1; s1[ek] = 0; v = 1;
+                printf("[squad] entry %llx: + 0x5920 6 at fight frame %lld (not a step frame): kept at 1 until the next step frame\n", (unsigned long long)en, (long long)fc); fflush(stdout);
+            } else if (s1[ek] == en && v == 6) s1[ek] = 0;
+            }
+            if (s1[ek] == en && base >= 0 && fc - base >= 1200) s1[ek] = 0;
+            if (pend[ek] || s1[ek] == en) waiting = 1;      /* (the base is kept while it waits) */
+            if (pend[ek] || s1[ek] == en) { g_h6arm[ek].en = en; g_h6arm[ek].base = base; } else if (g_h6arm[ek].en == en) g_h6arm[ek].en = 0;
+        } }
+    if (loading) g_sq_load_en = en;
+    {   static int lg = -1; if (lg < 0) lg = getenv("SSBU_SQ_ELOG") != NULL;      /* (research) every change of a loading entry's states, real and re-run passes */
+        static uint64_t last_en; static uint32_t last_v;
+        if (lg && en && en == g_sq_load_en) { long long rbn_now(void); uint32_t v = rd8(en + 0x5920) | (uint32_t)rd8(en + 0x591c) << 8 | (rd32(en + 0x13c) == 0xffffffffu ? 0x10000u : 0) | (uint32_t)rd8(en + 0x5921) << 24;
+            if (en != last_en || v != last_v) { printf("[squad] entry %llx at frame %lld (fight %lld): + 0x5920 %02x + 0x591c %02x + 0x5921 %02x%s\n", (unsigned long long)en, rbn_now(), (long long)fc, v & 255, v >> 8 & 255, v >> 24, v & 0x10000 ? " (not in the entry)" : ""); fflush(stdout); last_en = en; last_v = v; } } }
+    if (step <= 0 || !g_sq_made || !en || !o || !(loading || waiting)) { if (en == base_en) base = -1; if (ek >= 0) eb[ek].base = base; g_orig_sq_eload(c); return; }
     if (base < 0 || en != base_en || base > fc) { base = fc; base_en = en; }
+    if (ek >= 0) eb[ek].base = base;
     if ((fc - base) % step || fc == base) { g_sq_eload_n++; return; }      /* (the first step one period in: the frames before it run without guesses, rb_rollback.c rbg_squad_lock) */      /* (not a step frame: the entry's loading waits, as if its request were not done) */
     uint8_t sub0 = rd8(en + 0x591c);
     g_orig_sq_eload(c);
     printf("[squad] next fighter's loading: step at fight frame %lld (+%lld): sub-state %02x -> %02x%s%s\n", (long long)fc, (long long)(fc - base), sub0, rd8(en + 0x591c), rd8(en + 0x5920) != 3 ? " (loaded)" : rd8(en + 0x591c) == sub0 ? " (NOT advanced: its request not done in time)" : "", rd32(en + 0x13c) != 0xffffffffu ? " (fighter in the entry)" : "");
     fflush(stdout);
 }
-static void sq_init_hook(Ctx *c, void *user) { (void)user; g_sq_obj = c->x[0]; g_orig_sq_init(c);}
+static struct { uint64_t part; int64_t from; } g_sq_base[4];
+static void sq_init_hook(Ctx *c, void *user) { (void)user; g_sq_obj = c->x[0]; g_sq_gen++; { const char *e = getenv("SSBU_SQ_NEWFIGHT"); if (!(e && e[0] == '0')) memset(g_sq_base, 0, sizeof g_sq_base); } g_orig_sq_init(c);}
+/* (RESEARCH, SSBU_SQ_MODLOG=1) the fighter loader's modules: 0x71017e4940 (loader, kind) takes the kind's lua2cpp module from the
+ * L2CDynamicModuleManager ([0x7105326cd0]: map at + 0x40 by hash, module + 0x132 loaded, + 0x133 being dropped, + 0x134 count; its own
+ * thread loads / unloads: wall time); 0x71017e4790 = that loader's "ready" (vtable 0x710509eb10 slot 6: every module loaded, then the
+ * base's 0x71017e28c0); 0x71022b6f60 drops one. Logged with the rollback frame and the fight frame. */
+static ImportFn g_orig_mod_take, g_orig_mod_ready, g_orig_mod_drop;
+static long long sq_fc(void) { return g_sq_obj ? (long long)rd32(g_sq_obj + 0x112c) : -1; }
+/* (Battle Arena, game's squad, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_READYGATE=0 off) a loader that takes a module DURING the fight (a next fighter
+ * loaded ahead) becomes ready when the module manager's own thread is done: wall time (run csss1: ready at frame 2341 on A, 2340 on B,
+ * asked every frame by 0x7100650010, which the squad code runs before the entry's loading for an entry at + 0x5920 = 1; run cssh5:
+ * the fighter standing by began a frame apart, DESYNC 513). Such a loader answers "ready" only from a fixed frame on: counted from
+ * the first frame it is asked, at the first step frame (SSBU_SQ_STEP) the game waits here until it really is ready (at most 5 s), and
+ * that frame is kept, so re-run passes give the same answers. */
+static int g_rgate = -1;
+static struct { uint64_t o; long long base, at; } g_rg[16]; static int g_rg_n; static long long g_rg_last = -1;
+static void mod_take_hook(Ctx *c, void *user) {
+    (void)user; long long rbn_now(void); uint64_t o = c->x[0], ra = c->x[30]; int kind = (int)c->x[1];
+    g_orig_mod_take(c);
+    if (g_rgate > 0 && g_sq_made && sq_fc() > 0) { int k = 0; while (k < 16 && g_rg[k].o != o) k++;
+        if (k == 16) { k = g_rg_n++ & 15; g_rg[k].o = o; g_rg[k].base = -1; g_rg[k].at = -1; } }
+    if (getenv("SSBU_SQ_MODLOG")) printf("[squad] modlog: loader %llx takes the module of kind %d at frame %lld (fight %lld), caller %llx\n", (unsigned long long)o, kind, rbn_now(), sq_fc(), (unsigned long long)(ra - 4)); fflush(stdout);
+}
+static void mod_drop_hook(Ctx *c, void *user) {
+    (void)user; long long rbn_now(void); uint64_t ra = c->x[30], m = sr64(c->x[1]);
+    g_orig_mod_drop(c);
+    printf("[squad] modlog: module key %llx dropped at frame %lld (fight %lld), caller %llx\n", (unsigned long long)m, rbn_now(), sq_fc(), (unsigned long long)(ra - 4)); fflush(stdout);
+}
+static void mod_ready_hook(Ctx *c, void *user) {
+    (void)user; long long rbn_now(void); uint64_t o = c->x[0], ra = c->x[30];
+    uint64_t save[32]; memcpy(save, c->x, sizeof save);
+    g_orig_mod_ready(c);
+    if (g_rgate > 0 && g_sq_made && sq_gates()) {
+        long long fc = sq_fc(); if (fc >= 0 && fc < g_rg_last) memset(g_rg, 0, sizeof g_rg); if (fc >= 0) g_rg_last = fc;      /* (a new fight) */
+        int k = 0; while (k < 16 && (!g_rg[k].o || g_rg[k].o != o)) k++;
+        if (k < 16 && fc > 0) {
+            static int step = -1; if (step < 0) { const char *e = getenv("SSBU_SQ_STEP"); step = e && *e ? atoi(e) : 20; if (step <= 0) step = 20; }
+            int r = (int)(c->x[0] & 1);
+            if (g_rg[k].at >= 0) { if (fc < g_rg[k].at) c->x[0] = 0; }
+            else {
+                if (g_rg[k].base < 0 || g_rg[k].base > fc) g_rg[k].base = fc;
+                if ((fc - g_rg[k].base) % step || fc == g_rg[k].base) c->x[0] = 0;
+                else {
+                    ULONGLONG t0 = GetTickCount64();
+                    while (!r && GetTickCount64() - t0 < 5000) { Sleep(1); memcpy(c->x, save, sizeof save); g_orig_mod_ready(c); r = (int)(c->x[0] & 1); }
+                    g_rg[k].at = fc;
+                    printf("[squad] loader %llx (a module taken in the fight): ready from fight frame %lld (asked from %lld; waited %llu ms%s)\n", (unsigned long long)o, fc, g_rg[k].base, (unsigned long long)(GetTickCount64() - t0), r ? "" : ", NOT READY after 5 s"); fflush(stdout);
+                }
+            }
+        }
+    }
+    if (!getenv("SSBU_SQ_MODLOG")) return;
+    static struct { uint64_t o; int r; } t[16]; int k = 0; while (k < 16 && t[k].o && t[k].o != o) k++; if (k == 16) k = 0;
+    int r = (int)(c->x[0] & 1);
+    if (t[k].o != o || t[k].r != r) { printf("[squad] modlog: loader %llx ready %d at frame %lld (fight %lld), caller %llx\n", (unsigned long long)o, r, rbn_now(), sq_fc(), (unsigned long long)(ra - 4)); fflush(stdout); t[k].o = o; t[k].r = r; }
+}
 static int g_sq_made;
 /* ---- (Battle Arena) the next squad fighter's entry at a fixed frame (Squad Strike, Tag Team, online with rollback).
  * The game's squad object of the fight (made by 0x710157c100, which g_sq_obj is taken from) runs the change of fighter as a state
@@ -213,7 +351,7 @@ static ImportFn g_orig_sq_step; static int64_t g_sq_s2_from = -1; static long lo
 /* the change of fighter of each side: x0 = one of the squad object's per-side parts (+ 0x5b0, + 0x950, + 0xd10; run t21), its state at
  * x0 + 0x60 (the + 0xd70 above for + 0xd10); 0x7101589830 runs states 2 and 3, 0x710158a360 state 4 (the fighter put in): in states 2..4
  * both run only every SSBU_SQ_STEP frames from the first frame of state 2 (pair sq18b: state 4 also waits for a load) */
-static ImportFn g_orig_sq_put; static struct { uint64_t part; int64_t from; } g_sq_base[4];
+static ImportFn g_orig_sq_put;
 static int sq_gate(Ctx *c, const char *what) {      /* 1 = run the step now */
     static int on = -1, step = 20;
     if (on < 0) { const char *e = getenv("SSBU_SQ_GATE"), *k = getenv("SSBU_SQ_STEP"); on = !(e && e[0] == '0'); if (k && *k) step = atoi(k); }
@@ -232,11 +370,21 @@ static void sq_step_hook(Ctx *c, void *user) {
     (void)user; uint64_t part = c->x[0]; uint32_t st0 = g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 ? rd32(part + 0x60) : 0;
     if (!sq_gate(c, "step")) return;
     g_orig_sq_step(c);
+    if (getenv("SSBU_SQ_ELOG") && g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 && rd32(part + 0x60) != st0) { long long rbn_now(void); printf("[squad] part +%llx state %u -> %u at frame %lld (fight %u)\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rbn_now(), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
     if (st0 >= 2 && st0 <= 4 && rd32(part + 0x60) != st0) { printf("[squad] change of fighter (part +%llx): state %u -> %u at fight frame %u\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
 }
 static void sq_put_hook(Ctx *c, void *user) {
     (void)user; uint64_t part = c->x[0]; uint32_t st0 = g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 ? rd32(part + 0x60) : 0;
     if (!sq_gate(c, "put")) return;
+    /* (Battle Arena, game's squad, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_PUTGATE=0 off) run csst5 (hardware watch on + 0x5920): the 1 -> 6 of a fighter
+     * loaded ahead is written by THIS function (0x710158a360 -> 0x7100655f60 -> 0x7100656ee0, main thread) on the first frame the entry is
+     * ready: 3436 on A, 3437 on B; HOLD6 put it back to 1 later in the frame, after the standby fighter (status b7) had already begun on A:
+     * DESYNC 3436 (also csst3 7431 / 897, csst2 820). Now while an entry is armed (loaded ahead, at 1) this function runs for parts out of a
+     * change only on the step frames of that entry's loading, so the 6 and the standby fighter come at the same frame on both games. */
+    {   static int pg = -1; if (pg < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_PUTGATE"); (void)e; pg = !(k && k[0] == '0'); }
+        static int step = -1; if (step < 0) { const char *e = getenv("SSBU_SQ_STEP"); step = e && *e ? atoi(e) : 20; }
+        if (pg && step > 0 && g_sq_obj && !(st0 >= 2 && st0 <= 4) && sq_gates()) { int64_t fc = (int64_t)rd32(g_sq_obj + 0x112c);
+            for (int k = 0; k < 4; k++) if (g_h6arm[k].en && g_h6arm[k].base >= 0 && rd8(g_h6arm[k].en + 0x5920) == 1 && ((fc - g_h6arm[k].base) % step || fc == g_h6arm[k].base)) return; } }
     g_orig_sq_put(c);
     if (st0 >= 2 && st0 <= 4 && rd32(part + 0x60) != st0) { printf("[squad] change of fighter (part +%llx): state %u -> %u at fight frame %u\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
 }
@@ -365,12 +513,17 @@ static uint8_t g_sq_copy[2][0x480] __attribute__((aligned(16))); static int g_sq
  * Both games force + 0x454 = 1 with the agreed layout of each player, so a player's own controls are the same on both PCs. */
 #include "rb_hs.h"
 static int g_hs_wanted, g_hs_ok, g_hs_local, g_hs_lwr;
+/* (Battle Arena, SSBU_BA_SQUAD_CSS=1) the room plays the game's own Squad Strike: the squad is built by the game (0x7102311f00..:
+ * the record builder 5 times per side, x1 = side, w2 = side + 2 * fighter, the record = the squad table entry). g_tc_native: this
+ * record is one of those; g_tc_k its fighter. Only fighter 1 of a side runs hs_apply (handshake at side 0, LAYOUT at side 1);
+ * the others get the same room normalization (tc_norm) with the layout kept here. */
+static int g_bacss = -1, g_tc_native, g_tc_k; static uint16_t g_tc_lay[2][11];
 /* (0.2.15) a Local Wireless room's match is played as a local versus match (melee mode 1 -> 0, each player a local human on
  * port i): after the fight the game went on as after a LOCAL match (the local character select, out of the room: "the game
  * does not go back to the room"), and the joiner's own player still read port 2 (its pad is port 1) on the result screen.
  * When the fight ends (rb_rollback.c rbg_fight_off) the room's mode and both players' panel states are given back. */
 static int g_room_mode_was = -1, g_room_saved_n;
-static struct { uint64_t st; uint8_t b450[6]; uint32_t slot, prof; uint8_t lay[22]; } g_room_saved[2];      /* (R3 lwr) g_hs_lwr: a Local Wireless room's match played with rollback */
+static struct { uint64_t st; uint8_t b450[6]; uint32_t slot, prof; uint8_t lay[22]; uint8_t a4; } g_room_saved[2];      /* (R3 lwr) g_hs_lwr: a Local Wireless room's match played with rollback */
 static int g_hs_quick;
 /* (Arena, online matchmaking) a quick match from the Arena menu's Online Ranked tile (competitive.c comp_quickplay): both games
  * play the same locked rules whatever the player's own ruleset: stock (rule kind 1), 3 stocks, no items, no hazards (the
@@ -394,13 +547,20 @@ static void scene_clean_hook(Ctx *c, void *user) {
     wr8(MELEE_INFO, mode);
     printf("[rbnet] room match: the fight scene's clean-up ran as a local match's (melee mode %u kept for what follows)\n", mode); fflush(stdout);
 }
+static void bacss_after_match(void);
 void dm_room_restore(void) {
     if (g_room_mode_was < 0) return;
+    bacss_after_match();
+    int sq_native = g_bacss == 1 && dm_bacss_native();
+    if (sq_native) g_room_saved_n = 0;      /* (Battle Arena, game's squad: see below; other rooms as before) */
     printf("[rbnet] room match over: melee mode %u -> %d (the room's), %d player panel state(s) given back\n", rd8(MELEE_INFO), g_room_mode_was, g_room_saved_n);
     wr8(MELEE_INFO, (uint8_t)g_room_mode_was);
     g_room_clean = 1;
+    /* (Battle Arena, game's squad, 2026-11-09) the room's records are built from ONE panel state on the stack of the room's record
+     * constructor (0x710178f3ec / 0x710178f488: x0 = sp + 0xa8, filled by 0x7101787830 from the screens' table for each player): it is
+     * gone when the fight ends, so nothing is written back there (it would land on whatever stack frame is there now) */
     static int check = -1; if (check < 0) { const char *e = getenv("SSBU_RB_ROOM_RESTORE_CHECK"); check = !(e && *e == '0'); }
-    for (int i = 0; i < g_room_saved_n; i++) {
+    for (int j = 0; j < g_room_saved_n; j++) { int i = sq_native ? g_room_saved_n - 1 - j : j;      /* (Battle Arena, game's squad: backwards, when both records come from one panel state the first one saved is the room's own) */
         uint64_t st = g_room_saved[i].st; if (!st) continue;
         /* (2026-11-09) in a room both records are built from one panel state object that may be a temporary of the set-up
          * (gone after the fight, its memory used again): written back only if it still holds what the set-up wrote there
@@ -412,6 +572,7 @@ void dm_room_restore(void) {
         for (int k = 0; k < 6; k++) wr8(st + 0x450 + (uint64_t)k, g_room_saved[i].b450[k]);
         wr32(st + 0x210, g_room_saved[i].slot); wr32(st + 0x214, g_room_saved[i].prof);
         for (int k = 0; k < 22; k++) wr8(st + 0x54 + (uint64_t)k, g_room_saved[i].lay[k]);
+        wr8(st + 0xa4, g_room_saved[i].a4);      /* (Battle Arena, game's squad: the player number SSBU_BA_SQUAD_PNUM changed) */
     }
     fflush(stdout);
     g_room_mode_was = -1; g_room_saved_n = 0;
@@ -516,6 +677,10 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
         me.ctx_seed = rd32(GA(0x710530d380ULL)); safe_read(GA(0x71050c5ad0ULL), me.ctx_hist, sizeof me.ctx_hist); safe_read(MELEE_INFO + 0x420, me.ctx_stage, sizeof me.ctx_stage);   /* (hs12) the stage set-up's inputs (rb_hs.h) */
         if (getenv("SSBU_RB_NET_WATCH")) { uint64_t off = strtoull(getenv("SSBU_RB_NET_WATCH"), NULL, 16); if (off <= 1) off = 0x98;      /* (hs12: =<hex offset in the match block>) */
             uint64_t w[1] = {MELEE_INFO + (off & ~7ull)}; printf("[rbnet] research: match block + 0x%llx at the handshake = %016llx\n", (unsigned long long)(off & ~7ull), (unsigned long long)rd64(w[0])); debug_watch(w, 1); }
+        {   const char *e = getenv("SSBU_SQ_NETWATCH");      /* (RESEARCH) =<hex off>[,<hex off>..]: who writes these bytes of the room's net object from now on */
+            if (e && *e) { uint64_t net = sr64(sr64(sr64(GA(0x71052c3c58ULL)) + 8) + 0x88), w[4]; int n = 0; const char *p = e;
+                while (*p && n < 4) { w[n++] = *p == 'g' ? GA(strtoull(p + 1, NULL, 16) & ~7ull) : net + (strtoull(p, NULL, 16) & ~7ull);      /* (g<address>: a guest address) */ p = strchr(p, ','); if (!p) break; p++; }
+                if (net) { printf("[squadcss] RESEARCH: net object %llx watched at %d place(s)\n", (unsigned long long)net, n); fflush(stdout); debug_watch(w, n); } } }
         g_hs_ok = rbn_handshake(&me, &g_hs_m); g_hs_local = 0;
         {   int rbn_room_rollback(void); g_hs_lwr = g_hs_ok && rbn_room_rollback(); }
         {   int rbn_match_cancelled(void); if (!g_hs_ok && rbn_match_cancelled() == 2) return; }      /* (R3 pub2) a Local Wireless room fight: nothing changed */
@@ -557,7 +722,7 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
              * the mode written (test), -1 = not changed. */
             if (g_hs_lwr) {
                 const char *e = getenv("SSBU_RB_NET_ROOM_MODE"); int to = e && *e ? atoi(e) : 0; uint8_t was = rd8(MELEE_INFO);
-                g_room_mode_was = was; g_room_saved_n = 0;      /* (0.2.15) given back when the fight ends (dm_room_restore) */
+                if (!(g_tc_native && g_room_mode_was >= 0)) { g_room_mode_was = was; g_room_saved_n = 0; }      /* (0.2.15) given back when the fight ends (dm_room_restore); (Battle Arena, game's squad, run cssh5) the 2nd handshake (the squad's records) keeps what the room's records saved: else nothing was given back and the joiner's next select screen was broken */
                 if (to >= 0) wr8(MELEE_INFO, (uint8_t)to);
                 printf("[rbnet] room match: melee mode (match block + 0) %u -> %u: played as a local versus match with rollback (room maker = player 1)\n", was, rd8(MELEE_INFO));
                 fflush(stdout);
@@ -610,9 +775,10 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
             if (!has) { uint64_t p = GA(0x7105313518ULL); for (int k = 0; k < 11; k++) lay[k] = rd16(p + 0xc + 2ull * k); }      /* (the game's default profile) */
             printf("[rbnet] room match: player %d (%s): ui_chara %016llx colour %u; panel state: name tag %d, network player %d, controller slot %d, profile %d -> controller slot %d, a local human\n", idx + 1,
                    idx == local ? "this game's player" : "the other game's player", (unsigned long long)rd64(st + 0x88), rd8(st + 0x90), rd8(st + 0x450), rd8(st + 0x451), (int)rd32(st + 0x210), (int)rd32(st + 0x214), idx);
-            if (idx >= 0 && idx < 2) {                  /* (0.2.15) the room's own panel state, given back when the fight ends */
+            if (idx >= 0 && idx < 2) memcpy(g_tc_lay[idx], lay, sizeof lay);
+            if (idx >= 0 && idx < 2 && !g_tc_native) {      /* (0.2.15) the room's own panel state, given back when the fight ends */
                 g_room_saved[idx].st = st; safe_read(st + 0x450, g_room_saved[idx].b450, sizeof g_room_saved[idx].b450);
-                g_room_saved[idx].slot = rd32(st + 0x210); g_room_saved[idx].prof = rd32(st + 0x214); safe_read(st + 0x54, g_room_saved[idx].lay, sizeof g_room_saved[idx].lay);
+                g_room_saved[idx].slot = rd32(st + 0x210); g_room_saved[idx].prof = rd32(st + 0x214); safe_read(st + 0x54, g_room_saved[idx].lay, sizeof g_room_saved[idx].lay); g_room_saved[idx].a4 = rd8(st + 0xa4);
                 if (g_room_saved_n < idx + 1) g_room_saved_n = idx + 1; }
             wr8(st + 0x450, 1); wr8(st + 0x451, 0); wr32(st + 0x210, (uint32_t)idx); wr32(st + 0x214, 0xffffffffu);
             wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, lay[k]);
@@ -716,6 +882,7 @@ static void match_player_hook(Ctx *c, void *user) {
     if (c->x[1] == 0) g_sq_made = 0;
     if (c->x[1] < 2) { g_sq_st[c->x[1]] = c->x[0]; g_sq_x2[c->x[1]] = c->x[2]; }
     uint64_t st = c->x[0], rec = c->x[3]; int idx = (int)c->x[1];
+    if (getenv("SSBU_DEBUG_SCENES")) { printf("[squadcss] record builder: idx %d, w2 %d, record %llx, caller %llx, ui_chara %016llx colour %u type %u\n", idx, (int)c->x[2], (unsigned long long)rec, (unsigned long long)(c->x[30] - 4), (unsigned long long)rd64(st + 0x88), rd8(st + 0x90), rd32(st + 0x78)); fflush(stdout); }
     uint64_t was = rd64(st + 0x88); uint32_t type_was = rd32(st + 0x78);
     if (idx == 0) { g_hs_p1_ok = safe_read(st, g_hs_p1, sizeof g_hs_p1); InterlockedIncrement(&g_dm_setups); }
     if (idx == 0 && g_dm_list) {                          /* SSBU_DEBUG_MATCH_LIST: every new match set-up takes the next line (the last one stays) */
@@ -769,7 +936,26 @@ static void match_player_hook(Ctx *c, void *user) {
     }
     if (idx == 0) { void nnhid_lwr_styles(int on, int gc0, int gc1); nnhid_lwr_styles(0, 0, 0); }      /* (R3 lwr) a new set-up: the ports in their own kinds again */
     if (idx == 0) { void rbn_set_setup_waiting(int waiting); rbn_set_setup_waiting(c->x[30] == GA(0x71017911dcULL)); }      /* (R3 lwr) a Local Wireless room's waiting-stage fight: built from its own set-up (runs lwres2 / lwres3: return address 0x71017911dc; the room's match and the select screens: 0x710178f498) */
-    if (g_hs_wanted) hs_apply(st, idx, type_was);       /* R3: the match both online games agreed (rb_net.c handshake) */
+    {   uint64_t ra = c->x[30];
+        g_tc_native = g_bacss == 1 && ra >= GA(0x7102311f00ULL) && ra <= GA(0x7102312620ULL) && idx >= 0 && idx < 2;
+        g_tc_k = g_tc_native ? ((int)c->x[2] - idx) / 2 : 0; }
+    if (g_hs_wanted && g_tc_native && g_tc_k > 0) {     /* (Battle Arena, game's squad) fighters 2.. of a side: the room normalization only */
+        if (g_hs_ok && g_hs_lwr) { wr8(st + 0x450, 1); wr8(st + 0x451, 0); wr32(st + 0x210, (uint32_t)idx); wr32(st + 0x214, 0xffffffffu);
+            wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, g_tc_lay[idx][k]); }
+    } else if (g_hs_wanted) hs_apply(st, idx, type_was);       /* R3: the match both online games agreed (rb_net.c handshake) */
+    if (g_tc_native) g_sq_want = 0;                     /* (the game's own squad table: squad_build does not overwrite it) */
+    {   /* (Battle Arena, game's squad) the room's Squad Strike (sequence 02020000): every player record of players 1 / 2 (the room's
+         * match records and the squad's) gets the player number idx + 1 in panel state + 0xa4 (-> record + 0x258): the game gives each
+         * station its own numbering (run cssm5: host 2 / 1, joiner 1 / 2: match block + 0x7d8 / + 0xa38 differ, DESYNC at frame 1).
+         * squad_build stays off: the squad is the game's own (SSBU_BA_SQUAD_PNUM=0: the number as the game set it). */
+        static int pnum = -1; if (pnum < 0) { const char *e = getenv("SSBU_BA_SQUAD_PNUM"); pnum = !(e && e[0] == '0'); }
+        if (g_bacss == 1 && g_hs_wanted && idx >= 0 && idx < 2 && rd32(GA(0x71053040f0ULL)) == 0x02020000u) {
+            g_sq_want = 0;
+            if (pnum && rd8(st + 0xa4) != (uint8_t)(idx + 1)) {
+                if (getenv("SSBU_DEBUG_SCENES")) { printf("[squadcss] player %d record: panel state + 0xa4 %u -> %d (caller %llx)\n", idx + 1, rd8(st + 0xa4), idx + 1, (unsigned long long)(c->x[30] - 4)); fflush(stdout); }
+                wr8(st + 0xa4, (uint8_t)(idx + 1));
+            }
+        } }
     if (idx == 1) g_dm_state1_ok = safe_read(st, g_dm_state1, sizeof g_dm_state1);
     if (idx >= 0 && idx < 2) {                            /* (Battle Arena) this player's own panel state, kept for squad_build */
         if (g_sq_stcopy < 0) { const char *e = getenv("SSBU_SQ_STCOPY"); g_sq_stcopy = !(e && *e == '0'); }
@@ -777,6 +963,16 @@ static void match_player_hook(Ctx *c, void *user) {
         if (idx == 1 && g_sq_st[0] == g_sq_st[1]) { static int said; if (!said++) { printf("[squad] both players' records are built from one panel state object (%llx): each player's own copy is used\n", (unsigned long long)st); fflush(stdout); } }
     }
     g_orig_player_record(c);
+    if (g_tc_native) {                                  /* (Battle Arena, game's squad) */
+        if (g_hs_lwr && g_lwr_ctl_ok) { wr8(rec + 0x48, g_lwr_ctl[idx][LWR_CTL]);
+            if (idx == 1 && g_tc_k == 0) for (int j = 0; j < SQ_N; j++) wr8(SQ_TABLE + 8 + 0x268ull * (uint64_t)j + 0x48, g_lwr_ctl[0][LWR_CTL]); }
+        if (idx == 1) g_sq_made = 1;
+        if (g_tc_k == 0 && (rd8(MELEE_INFO + 0x39) != 3 || rd8(rec + 0x18) != 1)) { printf("[squad] WARNING: player %d's squad is not Tag Team with 1 stock (match block + 0x39 %u, record stocks %u)\n", idx + 1, rd8(MELEE_INFO + 0x39), rd8(rec + 0x18)); fflush(stdout); }
+        printf("[squad] player %d fighter %d: ui_chara %016llx colour %u -> entry %llx: fighter kind %d (the game's own squad; match block + 0 %u, + 0x39 %u)\n", idx + 1, g_tc_k + 1, (unsigned long long)rd64(rec), rd8(rec + 0x19), (unsigned long long)rec, (int)(int8_t)rd8(rec + 8), rd8(MELEE_INFO), rd8(MELEE_INFO + 0x39));
+        {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 3) { char t[48]; snprintf(t, sizeof t, "[squadcss] rec p%d k%d", idx + 1, g_tc_k + 1); hex_lines(t, rec, 0x268);
+                snprintf(t, sizeof t, "[squadcss] st p%d k%d", idx + 1, g_tc_k + 1); hex_lines(t, st, 0x460); } }      /* (research) the records / panel states, to compare the two games */
+        fflush(stdout);
+    }
     if (idx == 1 && ((g_sq_test > 0 && !g_hs_wanted) || (g_sq_want && g_hs_wanted && g_hs_ok && !g_hs_local && g_hs_lwr))) squad_build(c);      /* (Battle Arena) */
     {   void hs_show_agreed(int idx); if (g_hs_wanted && g_hs_ok && !g_hs_local && !g_hs_lwr) hs_show_agreed(idx); }      /* (Arena) the screens before the fight show the agreed players */
     if (idx == 1 && g_hs_lwr && g_lwr_ctl_ok) for (int i = 0; i < 2; i++) wr8(MI_PLAYER(i) - 8 + 0x48, g_lwr_ctl[i][LWR_CTL]);      /* (R3 lwr) each player's own option byte (record + 0x48, see lwr_own_controls) */
@@ -1030,7 +1226,361 @@ void dm_alloc_check(const char *when, long long frame) {
         }
     }
 }
+/* ---- (Battle Arena, SSBU_BA_SQUAD_CSS, RESEARCH probe) the room's character select in the Squad Strike layout.
+ * The game's Squad Strike opens the same CharaSelectScene with no parameter (MeleeTeamCompeSequenceScene state 0x710233cfd0,
+ * scene change at 0x710233db80); the layout comes from the current sequence (0x71053040f0 = SEQUENCE_MELEE_TEAM_COMPE).
+ * SSBU_DEBUG_SCENES=1: every scene change (0x7103726120) logged with its name, caller and the current sequence. */
+static ImportFn g_orig_scene_change, g_orig_vs_css;
+static uint32_t g_bacss_saved; static int g_bacss_on;
+#define BACSS_AREA GA(0x7105309974ULL)
+static void bacss_dump(const char *why) {
+    printf("[squadcss] %s: sequence %08x\n", why, rd32(GA(0x71053040f0ULL)));
+    for (int s = 0; s < 2; s++) for (int k = 0; k < 5; k++) {
+        char t[64]; snprintf(t, sizeof t, "[squadcss]  side %d chip %d A", s, k); hex_lines(t, BACSS_AREA + 0x54 + 0x1428ull * s + 0x1c8ull * k, 0x60);
+        snprintf(t, sizeof t, "[squadcss]  side %d chip %d B", s, k); hex_lines(t, BACSS_AREA + 0x54 + 0x8e8 + 0x1428ull * s + 0x240ull * k, 0x40);
+    }
+    fflush(stdout);
+}
+static int g_css_round;      /* (test aid) Squad Strike select screens opened */
+static void scene_change_hook(Ctx *c, void *user) {
+    (void)user;
+    char nm[72] = {0}, own[72] = {0}; uint32_t n = rd32(c->x[1] + 4), n2 = c->x[2] ? rd32(c->x[2] + 4) : 0;
+    if (n < 64) safe_read(c->x[1] + 8, nm, n);
+    if (n2 < 64 && c->x[2]) safe_read(c->x[2] + 8, own, n2);
+    printf("[squadcss] scene change: %s (from %s), param %llx, caller %llx, sequence %08x\n", nm, own, (unsigned long long)c->x[3], (unsigned long long)(c->x[30] - 4), rd32(GA(0x71053040f0ULL)));
+    fflush(stdout);
+    if (rd32(GA(0x71053040f0ULL)) == 0x02020000u && n < 32) { char m[48]; snprintf(m, sizeof m, "sc_%s", nm); void input_mark(const char *what); input_mark(m);
+        static struct { char nm[40]; int n; } cnt[24]; int k = 0; while (k < 24 && cnt[k].nm[0] && strcmp(cnt[k].nm, m)) k++;      /* (test aid) and sc_<scene>#<n> from the 2nd time on */
+        if (!strcmp(m, "sc_CharaSelectScene")) g_css_round++;
+        if (k < 24) { if (!cnt[k].nm[0]) snprintf(cnt[k].nm, sizeof cnt[k].nm, "%s", m); if (++cnt[k].n > 1) { char m2[56]; snprintf(m2, sizeof m2, "%s#%d", m, cnt[k].n); input_mark(m2); } } }      /* (test aid) SSBU_SEQ @sc_<scene> */
+    g_orig_scene_change(c);
+}
+static void vs_css_hook(Ctx *c, void *user) {
+    (void)user;
+    uint64_t self = c->x[0];
+    int rbn_ba_mode(void), nnldn_role(void);
+    if (g_bacss == 2 && rbn_ba_mode() > 0 && nnldn_role() > 0) {
+        volatile uint32_t *seq = (volatile uint32_t *)(uintptr_t)GA(0x71053040f0ULL);
+        if (rd32(self + 0x124) == 0 && !g_bacss_on) {
+            if (!rd64(GA(0x7105327e18ULL))) {         /* the Squad Strike select data (made by MeleeTeamCompeSequenceScene's set-up, 0x710233c070..): made here the same way */
+                uint64_t save[32]; memcpy(save, c->x, sizeof save);
+                c->x[0] = 0x10; c->x[1] = 8; call_guest(c, GA(0x710392dce0ULL)); uint64_t o = c->x[0];
+                if (o) { c->x[0] = o; call_guest(c, GA(0x7102349480ULL)); wr64(GA(0x7105327e18ULL), o); }
+                memcpy(c->x, save, sizeof save);
+                printf("[squadcss] Squad Strike select data made: %llx -> %llx\n", (unsigned long long)o, (unsigned long long)(o ? rd64(o) : 0));
+            }
+            g_bacss_saved = *seq; *seq = 0x02020000u; g_bacss_on = 1;
+            printf("[squadcss] the room's character select opens with the Squad Strike sequence (was %08x; parameter byte %u)\n", g_bacss_saved, rd8(self + 0x139)); fflush(stdout);
+        } else if (g_bacss_on) {
+            uint64_t mgr = rd64(self), m28 = rd64(mgr + 0x28);
+            if (rd64(m28 + 0x60) == 0 && rd64(m28 + 0x30) == rd64(m28 + 0x38) && rd64(rd64(mgr + 0x20) + 0x10) == 0) {
+                uint32_t res = rd32(mgr + 0x40);
+                char w[64]; snprintf(w, sizeof w, "character select done (result %u)", res); bacss_dump(w);
+                *seq = g_bacss_saved; g_bacss_on = 0;
+            }
+        }
+    }
+    g_orig_vs_css(c);
+}
+/* the Local sequence's state that starts the mode's sequence (0x710232f690, LocalSequenceScene; also a Local Wireless room's):
+ * 0x02010000 -> MeleeNormalSequenceScene, 0x02020000 -> MeleeTeamCompeSequenceScene (0x710232f808..). A room's other games
+ * follow the room maker's sequence (run cssp2: the joiner started MeleeTeamCompeSequenceScene by itself). */
+static ImportFn g_orig_local_launch, g_orig_tc_css;
+static void local_launch_hook(Ctx *c, void *user) {
+    (void)user;
+    int rbn_ba_mode(void), nnldn_role(void);
+    volatile uint32_t *seq = (volatile uint32_t *)(uintptr_t)GA(0x71053040f0ULL);
+    if (g_bacss == 1 && rd32(c->x[0] + 0x194) == 0) {
+        printf("[squadcss] the room's sequence starts: %08x (Battle Arena %d, room role %d)\n", *seq, rbn_ba_mode(), nnldn_role());
+        if (rbn_ba_mode() == 1 && nnldn_role() == 1 && *seq == 0x02010000u) { *seq = 0x02020000u; printf("[squadcss] Battle Arena room maker: the room plays the game's own Squad Strike (sequence 02020000)\n"); }
+        fflush(stdout);
+    }
+    g_orig_local_launch(c);
+}
+/* The Squad Strike select screen's chips: side s (0 = the room maker, 1 = the joiner), fighter k: entry A at BACSS_AREA + 0x54 +
+ * 0x1428 * s + 0x1c8 * k (0x7101787ce0 copies A + 0x28.. to the panel state + 0x70..: ui_chara A + 0x40 -> state + 0x88, colour
+ * A + 0x48 -> + 0x90, type A + 0x30 -> + 0x78). */
+#define BACSS_CHIP(s, k) (BACSS_AREA + 0x54 + 0x1428ull * (uint64_t)(s) + 0x1c8ull * (uint64_t)(k))
+static int bacss_chips(int s) { int n = 0; for (int k = 0; k < 3; k++) { uint64_t v = rd64(BACSS_CHIP(s, k) + 0x40); if ((v >> 56) == 0xc1 && (v & 0xffffffffffull)) n++; } return n; }
+static void bacss_show(const char *why) {
+    printf("[squadcss] %s: side 1 %016llx %016llx %016llx, side 2 %016llx %016llx %016llx\n", why,
+           (unsigned long long)rd64(BACSS_CHIP(0, 0) + 0x40), (unsigned long long)rd64(BACSS_CHIP(0, 1) + 0x40), (unsigned long long)rd64(BACSS_CHIP(0, 2) + 0x40),
+           (unsigned long long)rd64(BACSS_CHIP(1, 0) + 0x40), (unsigned long long)rd64(BACSS_CHIP(1, 1) + 0x40), (unsigned long long)rd64(BACSS_CHIP(1, 2) + 0x40));
+    fflush(stdout);
+}
+/* (RESEARCH, SSBU_SQ_CSSDUMP=<folder>) the main module's data segment, the sequence object, the select data object and the room's net
+ * object, written at calls 5 and 200 of each Squad Strike select screen (to compare a room's first and second select screen) */
+static void bacss_mem_dump(uint64_t self, int round, int call) {
+    const char *dir = getenv("SSBU_SQ_CSSDUMP"); if (!dir || !*dir) return;
+    int nnldn_role(void); char fn[400]; static uint8_t buf[0x10000];
+    struct { const char *nm; uint64_t a; size_t n; } r[4] = {
+        {"data", GA(0x7104f16000ULL), 0x2531000}, {"seq", self, 0x400}, {"tcobj", sr64(GA(0x7105327e18ULL)), 0x3b8},
+        {"net", sr64(sr64(sr64(GA(0x71052c3c58ULL)) + 8) + 0x88), 0x28000} };
+    for (int i = 0; i < 4; i++) {
+        snprintf(fn, sizeof fn, "%s/css_role%d_r%d_c%d_%s.bin", dir, nnldn_role(), round, call, r[i].nm);
+        FILE *f = fopen(fn, "wb"); if (!f) continue;
+        for (size_t o = 0; o < r[i].n; o += sizeof buf) { size_t k = r[i].n - o < sizeof buf ? r[i].n - o : sizeof buf; if (!r[i].a || !safe_read(r[i].a + o, buf, k)) memset(buf, 0, k); fwrite(buf, 1, k, f); }
+        fclose(f);
+    }
+    printf("[squadcss] RESEARCH: memory dumped at select screen %d call %d (seq %llx)\n", round, call, (unsigned long long)self); fflush(stdout);
+}
+/* (Battle Arena, game's squad, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_KEEPHOST=0 off) back in the room after a match, the JOINER's copy of the
+ * host's players (room net object [[[0x71052c3c58] + 8] + 0x88] + 0x24da0: the host station's 5 player entries of 0x1e0, + 0 station
+ * byte, + 0x21 kind; runs csss2 / csss6: 00 / 01 at the first select screen, ff / 0f = an empty entry at the second) is found reset,
+ * and the room's net update (0x71016e5310) then writes the select screen's side 1 as a free local seat: the joiner's own hand went to
+ * P1 and its real side 2 showed "Make everyone CPU" (cssh5, cssh6), the host waited with the joiner's old squad. The entries as they
+ * were when the first select screen ended are written back while they read empty. */
+static uint8_t g_kh_buf[0x968]; static int g_kh_ok, g_kh_after;
+static void bacss_after_match(void) { g_kh_after = 1; }
+static uint64_t kh_net(void) { return sr64(sr64(sr64(GA(0x71052c3c58ULL)) + 8) + 0x88); }
+static void bacss_keep_host(int capture) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SQ_KEEPHOST"); on = e && e[0] == '1';      /* (OFF by default: run csst1, written back but the joiner still lands on P1) */ }
+    int nnldn_role(void); if (!on || g_bacss != 1 || nnldn_role() != 2) return;
+    uint64_t net = kh_net(); if (!net) return;
+    if (capture) { uint8_t b[0x968]; int ok = safe_read(net + 0x24da0, b, sizeof b); if (ok && b[0] != 0xff) { memcpy(g_kh_buf, b, sizeof b); g_kh_ok = 1; } g_kh_after = 0;
+        printf("[squadcss] joiner: the host's player entries at the end of the select screen: net %llx, station %u kind %u%s\n", (unsigned long long)net, ok ? b[0] : 0xffu, ok ? b[0x21] : 0xffu, g_kh_ok ? " (kept)" : " (NOT kept)"); fflush(stdout); return; }
+    {   static uint8_t last = 0xfe; uint8_t now = rd8(net + 0x24da0); if (now != last) { printf("[squadcss] joiner: the host's first player entry now: station %u kind %u (net %llx; kept %d, after a match %d)\n", now, rd8(net + 0x24da0 + 0x21), (unsigned long long)net, g_kh_ok, g_kh_after); fflush(stdout); last = now; } }
+    if (!g_kh_after && rd8(net + 0x24da0) != 0xff) { safe_read(net + 0x24da0, g_kh_buf, sizeof g_kh_buf); g_kh_ok = 1; }      /* (run csss8: the entry reads empty again once the host picks; the last good one is kept) */
+    if (!g_kh_ok || !g_kh_after || rd8(net + 0x24da0) != 0xff) return;
+    for (size_t k = 0; k < sizeof g_kh_buf; k++) wr8(net + 0x24da0 + k, g_kh_buf[k]);
+    static int said; if (said++ < 5) { printf("[squadcss] joiner: the host's player entries in the room's net object read empty after the match: written back as at the first select screen (station %u, kind %u)\n", g_kh_buf[0], g_kh_buf[0x21]); fflush(stdout); }
+}
+static void tc_css_hook(Ctx *c, void *user) {      /* MeleeTeamCompeSequenceScene's character select state 0x710233cfd0 */
+    (void)user;
+    uint64_t self = c->x[0];
+    bacss_keep_host(0);
+    {   static int rd_seen = -1, calls; if (g_css_round != rd_seen) { rd_seen = g_css_round; calls = 0; } calls++;
+        if (calls == 5 || calls == 200) bacss_mem_dump(self, g_css_round, calls);
+        /* (Battle Arena, SSBU_BA_SQUAD_RULES=0 off) each game picked its Squad Strike ruleset from its OWN save (MeleeRuleScene): both are
+         * set to the room's rules before the fighters' records are built: the rule struct at 0x7105309974 (the squad builder 0x7102311f00
+         * copies it into every panel state + 4 .. + 0x1b): + 1 rule kind 1 (stock), + 6 stocks 1, + 0x2c style 2 (Tag Team: match block
+         * + 0x39 = 3 in every Tag Team run; checked and logged at the squad's records) */
+        static int rules = -1; if (rules < 0) { const char *e = getenv("SSBU_BA_SQUAD_RULES"); rules = !(e && e[0] == '0'); }
+        int rbn_ba_mode(void);
+        {   /* TEST ONLY: SSBU_SQ_TEST_STYLE=<room role>:<style> (1 = room maker, 2 = joiner): at each select screen's first call that game's rule
+             * struct gets this style, as if its save had another Squad Strike style (to check SSBU_BA_SQUAD_RULES with different saves) */
+            const char *e = getenv("SSBU_SQ_TEST_STYLE"); int rl = 0, sv = 0; int nnldn_role(void);
+            if (e && calls == 1 && sscanf(e, "%d:%d", &rl, &sv) == 2 && rl == nnldn_role()) { wr8(GA(0x7105309974ULL) + 0x2c, (uint8_t)sv); printf("[squadcss] TEST: rule struct style set to %d here (SSBU_SQ_TEST_STYLE)\n", sv); fflush(stdout); } }
+        if (rules && rbn_ba_mode() > 0) { uint64_t r = GA(0x7105309974ULL); uint8_t k = rd8(r + 1), s = rd8(r + 6), y = rd8(r + 0x2c);
+            if (k != 1 || s != 1 || y != 2) { wr8(r + 1, 1); wr8(r + 6, 1); wr8(r + 0x2c, 2);
+                printf("[squadcss] Battle Arena room rules: rule kind %u -> 1 (stock), stocks %u -> 1, style %u -> 2 (Tag Team)\n", k, s, y); fflush(stdout); }
+            else if (calls == 1) { printf("[squadcss] Battle Arena room rules: stock, 1 stock, Tag Team (as picked)\n"); fflush(stdout); } } }
+    int nnldn_role(void); int mine = nnldn_role() == 2 ? 1 : 0;
+    {   static int last_n[2] = {-1, -1};          /* (test aid) @sq_mine3: this game's side has its 3 fighters */
+        for (int s = 0; s < 2; s++) { int n = bacss_chips(s); if (n != last_n[s]) { last_n[s] = n; char w[48]; snprintf(w, sizeof w, "side %d has %d fighter(s)", s + 1, n); bacss_show(w); } }
+        {   int n = bacss_chips(mine); void input_mark(const char *what); static int said2, said3, round = 1;      /* (the entries lag the screen by one pick: 2 here = 3 shown) */
+            static int seen = 1; if (g_css_round > seen) { seen = g_css_round; said2 = said3 = 0; round = seen; }      /* (test aid) a new select screen: the marks again, as sq_mine2#<round> */
+            char m2[24], m3[24]; if (round > 1) { snprintf(m2, sizeof m2, "sq_mine2#%d", round); snprintf(m3, sizeof m3, "sq_mine3#%d", round); } else { strcpy(m2, "sq_mine2"); strcpy(m3, "sq_mine3"); }
+            if (n >= 2 && !said2++) input_mark(m2);
+            if (n >= 3 && !said3++) input_mark(m3); } }
+    if (rd32(self + 0x114)) {
+        uint64_t mgr = rd64(self), m28 = rd64(mgr + 0x28);
+        if (rd64(m28 + 0x60) == 0 && rd64(m28 + 0x30) == rd64(m28 + 0x38) && rd64(rd64(mgr + 0x20) + 0x10) == 0) {
+            static uint32_t last = 0xffffffffu; uint32_t res = rd32(mgr + 0x40);
+            if (res != last) {
+                last = res; char w[64]; snprintf(w, sizeof w, "Squad Strike select done (result %u)", res); bacss_show(w);
+                if (res == 1) bacss_keep_host(1);
+                /* TEST ONLY: SSBU_SQ_CSS_TEST_PICKS=<a>,<b>,<c>/<d>,<e>,<f> (the same on both games): the chips' fighters written here */
+                const char *e = getenv("SSBU_SQ_CSS_TEST_PICKS");
+                if (e && *e) {
+                    char buf[200]; snprintf(buf, sizeof buf, "%s", e); int sd = 0, k = 0;
+                    for (char *t = buf; *t && sd < 2; ) {
+                        char *end = t + strcspn(t, ",/"); char sep = *end; *end = 0;
+                        char nm[64]; snprintf(nm, sizeof nm, "ui_chara_%s", t);
+                        if (k < 3) { wr64(BACSS_CHIP(sd, k) + 0x40, 0xc100000000000000ull | hash40(nm)); k++; }
+                        if (!sep) break;
+                        if (sep == '/') { sd++; k = 0; }
+                        t = end + 1;
+                    }
+                    bacss_show("TEST: chips written (SSBU_SQ_CSS_TEST_PICKS)");
+                }
+            }
+        }
+    }
+    g_orig_tc_css(c);
+}
+/* (RESEARCH, SSBU_DEBUG_SCENES=2) MeleeTeamCompeSequenceScene's state 0x710233de20 waits for TeamCompeMatchupScene to end:
+ * the current scene object ([[mgr + 0x28] + 0x60]), its vtable and its first bytes, now and then */
+static ImportFn g_orig_tc_match;
+static void tc_match_hook(Ctx *c, void *user) {
+    (void)user;
+    static unsigned calls; static uint64_t last_sc; static uint8_t last[0x400];
+    uint64_t mgr = rd64(c->x[0]), m28 = mgr ? rd64(mgr + 0x28) : 0, sc = m28 ? rd64(m28 + 0x60) : 0;
+    static int last_st = -2; int st_now = sc && rd64(sc + 0x58) ? (int)rd32(rd64(sc + 0x58) + 0x128) : -1;
+    {   static uint64_t prev_sc; if (prev_sc && !sc && mgr) { printf("[squadcss] matchup scene ended: result %u (byte 0x710530996f %u, Local Wireless byte %u, sequence %08x)\n", rd32(mgr + 0x40), rd8(GA(0x710530996fULL)), rd8(GA(0x71053040f4ULL)), rd32(GA(0x71053040f0ULL))); fflush(stdout); } prev_sc = sc; }
+    {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (!(d && atoi(d) >= 2)) { calls++; g_orig_tc_match(c); return; } }
+    if (sc && (sc != last_sc || calls % 600 == 0 || st_now != last_st)) {
+        last_st = st_now;
+        uint8_t cur[0x400]; safe_read(sc, cur, sizeof cur);
+        printf("[squadcss] matchup wait %u: scene %llx vtable %llx (mgr %llx, m28 %llx)\n", calls, (unsigned long long)sc, (unsigned long long)rd64(sc), (unsigned long long)mgr, (unsigned long long)m28);
+        {   uint64_t sm = rd64(sc + 0x58), fo = rd64(rd64(GA(0x710532e7c8ULL)) + 8);      /* the scene's state machine (0x710197f170): index +0x124 into the ids at +0xd8, state +0x128, frames +0x12c */
+            if (sm) { printf("[squadcss]  states: index %d state %d frames %d prev %d | sm+8 %llx\n", (int)rd32(sm + 0x124), (int)rd32(sm + 0x128), (int)rd32(sm + 0x12c), (int)rd32(sm + 0x130), (unsigned long long)rd64(sm + 8)); hex_lines("[squadcss]  sm", sm + 0xd8, 0x80); }
+            if (fo) hex_lines("[squadcss]  worker 0x710532e7c8", fo + 0x50, 0x30); }
+        for (int o = 0; o < 0x400; o += 0x20) if (sc != last_sc || memcmp(cur + o, last + o, 0x20)) { char t[48]; snprintf(t, sizeof t, "[squadcss]  scene +%03x", o); hex_lines(t, sc + o, 0x20); }
+        memcpy(last, cur, sizeof last); last_sc = sc; fflush(stdout);
+    }
+    calls++;
+    g_orig_tc_match(c);
+}
+/* TeamCompeMatchupScene's state 7 (0x710197d5f0, this = the scene's state machine): after the VS screen it waits for the matchup
+ * UI's decision w = (ui + 0x248 ? 0 : ui + 0x2a0), ui = [[sm + 8] + 0x80]; 1 = to the fight. Offline (no Local Wireless flag at
+ * 0x71053040f4) w = 1 at once gives result 3 and the end state 9. In a room (online path, 0x710197d6dc..) w = 1 marks this station
+ * ready (0x71016a1f90, sm + 0x14c = 1) and then waits for the room's "all ready" byte (net + 0x26a62, net = [[[0x71052c3c58] + 8]
+ * + 0x88]) that our virtual LDN never brings (runs cssq9 / cssq11 / cssm3: both games in state 7 for minutes).
+ * SSBU_BA_SQUAD_CSS=1 (SSBU_BA_SQUAD_VS=0 off): once this game is ready for 30 frames, state 7 runs once as offline (flag cleared for
+ * the call): result 3 -> MeleeScene; the two games meet again at the rollback handshake on the record builder. */
+static ImportFn g_orig_tc_vs; static int g_bacss_vs; static volatile int g_in_order_msg;
+static void tc_vs_hook(Ctx *c, void *user) {
+    (void)user;
+    uint64_t sm = c->x[0], ui = rd64(rd64(sm + 8) + 0x80), nc = rd64(rd64(rd64(GA(0x71052c3c58ULL)) + 8) + 0x88), net = nc;
+    uint32_t frames = rd32(sm + 0x12c), w248 = ui ? rd32(ui + 0x248) : 0, w2a0 = ui ? rd32(ui + 0x2a0) : 0, ready = rd32(sm + 0x14c);
+    uint8_t all = net ? rd8(net + 0x26a62) : 0, lw = rd8(GA(0x71053040f4ULL));
+    static uint32_t ready_at; int bypass = 0;
+    if (frames <= 1) ready_at = 0;
+    if ((ready == 1 || (ready == 3 && w248 == 0 && w2a0 == 3)) && !ready_at) ready_at = frames;
+    if (getenv("SSBU_DEBUG_SCENES") && (frames % 300 == 1 || (ready == 1 && ready_at == frames)))
+        { printf("[squadcss] matchup state 7: frame %u ui %llx +248 %u +2a0 %u, ready %u, all-ready byte %u, local wireless %u\n", frames, (unsigned long long)ui, w248, w2a0, ready, all, lw); fflush(stdout); }
+    /* (Battle Arena, game's squad, SSBU_SQ_ORDERRESEND=0 off) run csst6 / csst7, the second matchup of a room: neither game sent its order
+     * (message 0x12f, sent from this state when the order on screen differs from the one kept at sm + 0x13d + 5 * side), so each waited for
+     * the other's for ever. While this game's order is complete and the other side's is still empty (ff), every 120 frames the kept copy of
+     * this game's order is cleared: the state sends it again (the same order; harmless if the other game already had it). */
+    {   static int rs = -1; if (rs < 0) { const char *e = getenv("SSBU_SQ_ORDERRESEND"); rs = !(e && e[0] == '0'); }
+        int nnldn_role(void); int mine = nnldn_role() == 2 ? 1 : 0; uint64_t L = sm + 0x13d + 5ull * (uint64_t)mine, Rm = sm + 0x13d + 5ull * (uint64_t)(1 - mine);
+        int lfull = (int8_t)rd8(L) >= 0 && (int8_t)rd8(L + 1) >= 0 && (int8_t)rd8(L + 2) >= 0, rnone = rd8(Rm) == 0xff;
+        if (getenv("SSBU_DEBUG_SCENES") && frames % 300 == 150) { printf("[squadcss] matchup state 7: frame %u order kept here %02x %02x %02x, other side %02x %02x %02x\n", frames, rd8(L), rd8(L + 1), rd8(L + 2), rd8(Rm), rd8(Rm + 1), rd8(Rm + 2));
+            /* (research) the room's phase list [net + 0x26a78 .. + 0x26a80] (12-byte items): state 7 sends the order only if item 3's + 1 != 3 and + 4 != 2 */
+            if (net) { uint64_t b = rd64(net + 0x26a78), e2 = rd64(net + 0x26a80); printf("[squadcss]  phase list %llu item(s):", (unsigned long long)(b && e2 > b ? (e2 - b) / 12 : 0));
+                for (uint64_t q = b; b && q < e2 && q < b + 12 * 6; q += 12) printf(" [%02x %02x %02x %02x %02x %02x %02x %02x %08x]", rd8(q), rd8(q + 1), rd8(q + 2), rd8(q + 3), rd8(q + 4), rd8(q + 5), rd8(q + 6), rd8(q + 7), rd32(q + 8));
+                printf("\n"); }
+            fflush(stdout); }
+        if (rs && g_bacss == 1 && lw && lfull && rnone && frames >= 120 && frames % 120 == 0) {
+            for (int k = 0; k < 5; k++) wr8(L + (uint64_t)k, 0xff);
+            static int said; if (said++ < 8) { printf("[squadcss] matchup: this game's order is set, the other side's never came: this game's order is sent again (frame %u, SSBU_SQ_ORDERRESEND)\n", frames); fflush(stdout); } } }
+    if (g_bacss_vs && lw && ready == 1 && ready_at && frames >= ready_at + 30 && !all) bypass = 1;
+    /* (after a match, runs cssr1 / cssr5) the result screen's OK gives w = 3: in a room the state then waits for the host station's record
+     * (net + 0x26a78); with ours it ended either as result 5 (stage vote, back to the room's select screen: cssr1) or, later, result 4
+     * (the end of the Squad Strike sequence and DestroyNetwork: cssr5, cssn8). Run as offline too: w = 3 -> result 5 on both games. */
+    if (g_bacss_vs && lw && ready == 3 && w248 == 0 && w2a0 == 3 && ready_at && frames >= ready_at + 30) bypass = 1;
+    /* (run csf1; csst7 / csst8) when the host's state 7 saw w = 3 first it ended on the online path and sent 0x131; the joiner followed it,
+     * and at the next order screen neither game sent its order (or, with SSBU_SQ_DROP131, the joiner waited for ever). Runs csst9 /
+     * csst10 (both ended through the offline run above) were fine. SSBU_SQ_RESULTNOW (=0 off): w = 3 runs as offline at once, on
+     * both games, so no 0x131 is ever sent. */
+    {   static int rn = -1; if (rn < 0) { const char *e = getenv("SSBU_SQ_RESULTNOW"); rn = !(e && e[0] == '0'); }
+        if (rn && g_bacss_vs && lw && w248 == 0 && w2a0 == 3) bypass = 1; }
+    if (bypass) {
+        volatile uint8_t *f = (volatile uint8_t *)(uintptr_t)GA(0x71053040f4ULL);
+        printf("[squadcss] matchup: this game ready for %u frames, the room's all-ready never comes: the VS screen ends as offline (result 3 -> the fight)\n", frames - ready_at); fflush(stdout);
+        *f = 0; g_in_order_msg = 1; g_orig_tc_vs(c); g_in_order_msg = 0; *f = lw;
+        printf("[squadcss] matchup: state 7 done: result %u, next state id %d\n", rd32(sm + 0x138), (int)rd32(sm + 0xd8 + 4 * rd32(sm + 0x124))); fflush(stdout);
+        return;
+    }
+    g_in_order_msg = 1; g_orig_tc_vs(c); g_in_order_msg = 0;      /* (state 7 sends this game's order only if 0x71016ea430 finds this game's side: SSBU_SQ_ORDERSIDE) */
+}
+/* (Battle Arena, game's squad) the fight set-up 0x71014d8620 stores the next value of the global xorshift128 (0x71052381c0) in
+ * match block + 0x98 (the fight's script generators come from it). The handshake set that generator from the agreed seed, but in
+ * the room's Squad Strike each game draws from it a different number of times between the handshake (the squad builder) and this
+ * set-up (run cssm6: + 0x98 differed, DESYNC at frame 1). SSBU_BA_SQUAD_CSS=1 (SSBU_BA_SQUAD_RESEED=0 off): the generator is set
+ * again from the agreed seed when the set-up starts. */
+static ImportFn g_orig_fight_setup; static int g_bacss_reseed;
+static void fight_setup_hook(Ctx *c, void *user) {
+    (void)user;
+    if (g_bacss_reseed && g_hs_wanted && g_hs_ok && g_hs_lwr && !g_hs_local && rd32(GA(0x71053040f0ULL)) == 0x02020000u) {
+        uint64_t g = GA(0x71052381c0ULL), z = g_hs_m.seed ^ 0x5351554144ull;      /* ("SQUAD": not the handshake's own sequence again) */
+        printf("[squadcss] fight set-up: the global generator %08x %08x %08x %08x set again from the agreed seed\n", rd32(g), rd32(g + 4), rd32(g + 8), rd32(g + 12));
+        for (int k = 0; k < 4; k++) { z += 0x9E3779B97F4A7C15ull; uint64_t y = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull; y = (y ^ (y >> 27)) * 0x94D049BB133111EBull; y ^= y >> 31; wr32(g + 4ull * k, (uint32_t)y | (k == 0)); }
+        /* run cssm8: + 0x98 is NOT drawn here in the room's Squad Strike (+ 0x9c = 0: the team compe sequence drew it before, on each
+         * game from its own generator: different at the handshake already); + 0x9c = 1 as in a room's versus match: drawn now */
+        if (!rd8(MELEE_INFO + 0x9c)) { wr8(MELEE_INFO + 0x9c, 1); printf("[squadcss] fight set-up: match block + 0x9c 0 -> 1 (+ 0x98 %08x drawn again from the agreed generator)\n", rd32(MELEE_INFO + 0x98)); }
+        fflush(stdout);
+    }
+    g_orig_fight_setup(c);
+    if (getenv("SSBU_DEBUG_SCENES") && rd32(GA(0x71053040f0ULL)) == 0x02020000u) { uint64_t g = GA(0x71052381c0ULL);
+        printf("[squadcss] fight set-up done: match block + 0x98 %08x + 0x9c %u, generator %08x %08x %08x %08x\n", rd32(MELEE_INFO + 0x98), rd8(MELEE_INFO + 0x9c), rd32(g), rd32(g + 4), rd32(g + 8), rd32(g + 12)); fflush(stdout); }
+}
+/* (RESEARCH, SSBU_SQ_MSGLOG=1) the room's messages: 0x7101685cb0 (net, w1 id, x2 data, w3 size) sends one, 0x7101698160 (net, x1 station,
+ * w2 id, x3 {size, data}) handles one received (ids 0xa3 .. 0xce; 0x71016f0550 the ones 0xb3 .. 0xce) */
+static ImportFn g_orig_msg_send, g_orig_msg_recv;
+static void msg_note(const char *dir, unsigned id, long st, unsigned size, uint64_t data) {
+    static unsigned cnt[2][0x400]; unsigned k = id & 0x3ff, d = dir[0] == 's';
+    if (++cnt[d][k] <= 6 || cnt[d][k] % 200 == 0) { long long rbn_now(void);
+        char t[100] = {0}; int n = 0; for (unsigned j = 0; data && j < size && j < 24; j++) { uint8_t b = 0; safe_read(data + j, &b, 1); n += snprintf(t + n, sizeof t - n, "%02x", b); }
+        printf("[squadcss] msg %s id %x station %ld size %u (#%u, frame %lld, scene round %d): %s\n", dir, id, st, size, cnt[d][k], rbn_now(), g_css_round, t); fflush(stdout); }
+}
+static void msg_send_hook(Ctx *c, void *user) { (void)user; msg_note("sent", (unsigned)c->x[1], -1, (unsigned)c->x[3], c->x[2]); g_orig_msg_send(c); }
+/* (Battle Arena, game's squad, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_B7FIX=0 off) the second select screen of a room (runs cssh5 / cssh6 /
+ * csst1: the joiner's hand on P1, its own side 2 "Make everyone CPU"). Message b7 (handler 0x71016f0964) carries one Squad Strike
+ * entry of a side: 0x1e0 bytes copied to net + 0x24da0 + side * 0x968 + k * 0x1e0 (net = [[[0x71052c3c58] + 8] + 0x88]), + 0x1e0 side,
+ * + 0x1e1 k; entry + 0 the station that owns it, + 0x21 its kind (low nibble station + 1, 0xf = a free seat). Each station sends
+ * its OWN side's entries (0x71016f5370, and every change from 0x7101686850), built from its select screen's chips; on the HOST its
+ * own chips say station ff / kind f (dumps of csss2: host side 1 ff / 0f at both screens), so the host's b7 tell the joiner that
+ * side 1 is a free seat. At the first screen the joiner's chips were already 00 / 01 (set when it joined) and only the net copy
+ * went ff; at the second screen the chips are made again from the net copy: side 1 = a free LOCAL seat, and the joiner's hand goes
+ * there. Fix: a b7 received from station S for S's own side with station ff gets station S and kind S + 1 (the values the joiner
+ * had for the host at the first screen), so the joiner's copy keeps the host as the owner of side 1. */
+static int g_b7fix = -1;
+/* (Battle Arena, game's squad) the matchup's order message 0x12f (handler 0x710197c2f0: x0 the scene, x1 the sender station, x3 {size, data})
+ * finds the sender's side with 0x71016ea430 (net + 0xa010, station); a side > 1 drops the message, and each game waits for the other's
+ * order for ever (run csst6, second match of a room: both games "OK" on their own side, "Choose Order" on the other's). Logged here
+ * (first 12 messages); SSBU_SQ_ORDERSIDE (on with SSBU_BA_SQUAD_CSS=1, =0 off): while that handler runs, a side not found for a room
+ * of two stations is the room maker's side 1 for station 0 and side 2 for the other. */
+static ImportFn g_orig_order_msg, g_orig_side_of; static int g_orderside = -1;
+static void side_of_hook(Ctx *c, void *user) {
+    (void)user; unsigned st = (unsigned)(c->x[1] & 0xff);
+    g_orig_side_of(c);
+    if (g_in_order_msg && g_orderside > 0 && (c->x[0] & 0xff) > 1 && st < 16) {
+        int nnldn_players(void); if (nnldn_players() == 2) { unsigned s = st == 0 ? 0 : 1; static int said; if (said++ < 8) printf("[squadcss] matchup: station %u has no side (0x71016ea430): side %u taken (SSBU_SQ_ORDERSIDE)\n", st, s + 1); fflush(stdout); c->x[0] = s; }
+    }
+}
+static void order_msg_hook(Ctx *c, void *user) {
+    (void)user; unsigned id = (unsigned)(c->x[2] & 0xffff), st = (unsigned)(c->x[1] & 0xff); uint64_t m = c->x[3];
+    static int said; if (said < 12 && (id == 0x12f || id == 0x130 || id == 0x131)) { said++; uint64_t d = m ? rd64(m + 8) : 0;
+        printf("[squadcss] matchup message %x from station %u: %02x %02x %02x %02x %02x (scene round %d)\n", id, st, d ? rd8(d) : 0xffu, d ? rd8(d + 1) : 0xffu, d ? rd8(d + 2) : 0xffu, d ? rd8(d + 3) : 0xffu, d ? rd8(d + 4) : 0xffu, g_css_round); fflush(stdout); }
+    /* (Battle Arena, game's squad, SSBU_SQ_DROP131=1 on, off by default) the result screen's decision 0x131 ("03": go on): runs csst7 / csst8, both games
+     * got the other's and the screen ended on the game's online path (no "ends as offline" line): at the next order screen neither game
+     * sent its order (state 7 never reached its send) and both waited for ever. Runs csst9 / csst10, at most one game got it and the
+     * screen ended through the offline run (tc_vs_hook): the next order screen worked. The decision is not taken from the other game:
+     * both end the result screen the offline way (w = 3 -> result 5 on both, as before). */
+    {   static int d131 = -1; if (d131 < 0) { const char *e = getenv("SSBU_SQ_DROP131"); d131 = e && e[0] == '1'; }      /* (OFF by default: run csf1, the joiner then waited for ever; SSBU_SQ_RESULTNOW instead) */
+        if (d131 && g_bacss == 1 && id == 0x131) { static int said; if (said++ < 4) { printf("[squadcss] matchup: the other game's result decision 0x131 not taken (the screen ends the offline way, SSBU_SQ_DROP131)\n"); fflush(stdout); } return; } }
+    g_in_order_msg = 1; g_orig_order_msg(c); g_in_order_msg = 0;
+}
+static void msg_recv_hook(Ctx *c, void *user) {
+    (void)user; uint64_t m = c->x[3];
+    if (getenv("SSBU_SQ_MSGLOG")) msg_note("received", (unsigned)(c->x[2] & 0xffff), (long)(c->x[1] & 0xff), m ? rd32(m) : 0, m ? rd64(m + 8) : 0);
+    if (g_b7fix > 0 && (c->x[2] & 0xffff) == 0xb7 && m && rd32(m) == 0x1e8) {
+        uint64_t d = rd64(m + 8); unsigned st = (unsigned)(c->x[1] & 0xff);
+        if (d && st < 16 && rd8(d) == 0xff && (rd8(d + 0x21) & 0x0f) == 0x0f && rd8(d + 0x1e0) < 2) {
+            uint64_t save[32]; memcpy(save, c->x, sizeof save);
+            c->x[0] = save[0] + 0xa010; c->x[1] = st; call_guest(c, GA(0x71016ea430ULL)); unsigned side = (unsigned)(c->x[0] & 0xff);      /* the side station S owns */
+            memcpy(c->x, save, sizeof save);
+            if (side == rd8(d + 0x1e0)) {
+                uint8_t k0 = rd8(d + 0x21); wr8(d, (uint8_t)st); wr8(d + 0x21, (uint8_t)((k0 & 0xf0) | ((st + 1) & 0x0f)));
+                static int said; if (said++ < 4) { printf("[squadcss] b7 from station %u (side %u, entry %u): owner ff -> %u, kind %02x -> %02x (SSBU_SQ_B7FIX)\n", st, side + 1, rd8(d + 0x1e1), st, k0, rd8(d + 0x21)); fflush(stdout); }
+            } else { static int said2; if (said2++ < 4) { printf("[squadcss] b7 from station %u for side %u with owner ff: the station's side is %u, not changed\n", st, rd8(d + 0x1e0) + 1, side + 1); fflush(stdout); } }
+        }
+    }
+    g_orig_msg_recv(c);
+}
+static void bacss_init(void) {
+    {   const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_B7FIX"); (void)e; g_b7fix = dm_bacss_on() && !(k && k[0] == '0'); }
+    if (getenv("SSBU_SQ_MSGLOG")) printf("[squadcss] RESEARCH: room message hook %d\n", hook_install(GA(0x7101685cb0ULL), msg_send_hook, NULL, &g_orig_msg_send));
+    if (getenv("SSBU_SQ_MSGLOG") || g_b7fix > 0) printf("[squadcss] hook on the room's received messages: %d (b7 owner fix %s)\n", hook_install(GA(0x7101698160ULL), msg_recv_hook, NULL, &g_orig_msg_recv), g_b7fix > 0 ? "on" : "off");
+    const char *e = getenv("SSBU_BA_SQUAD_CSS"); g_bacss = e && *e ? atoi(e) : BACSS_DEFAULT;      /* (default: BACSS_DEFAULT, 0 in 0.2.45) */
+    if (g_bacss == 1) { const char *k = getenv("SSBU_SQ_ORDERSIDE"); g_orderside = !(k && k[0] == '0');
+        printf("[squadcss] hooks on the matchup's messages %d, side of a station %d (order side fallback %s)\n", hook_install(GA(0x710197c2f0ULL), order_msg_hook, NULL, &g_orig_order_msg),
+               g_orderside ? hook_install(GA(0x71016ea430ULL), side_of_hook, NULL, &g_orig_side_of) : -1, g_orderside ? "on" : "off"); }
+    {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 1) printf("[squadcss] RESEARCH: hook on the matchup wait 0x710233de20: id %d\n", hook_install(GA(0x710233de20ULL), tc_match_hook, NULL, &g_orig_tc_match)); }
+    if (getenv("SSBU_DEBUG_SCENES")) printf("[squadcss] hook on the scene change: id %d\n", hook_install(GA(0x7103726120ULL), scene_change_hook, NULL, &g_orig_scene_change));
+    if (g_bacss == 2) printf("[squadcss] EXPERIMENT: Battle Arena rooms' character select in the Squad Strike layout: hook %d\n", hook_install(GA(0x7102334f50ULL), vs_css_hook, NULL, &g_orig_vs_css));
+    if (g_bacss == 1) printf("[squadcss] Battle Arena rooms play the game's own Squad Strike: hooks %d %d\n", hook_install(GA(0x710232f690ULL), local_launch_hook, NULL, &g_orig_local_launch), hook_install(GA(0x710233cfd0ULL), tc_css_hook, NULL, &g_orig_tc_css));
+    if (g_bacss == 1) { const char *r = getenv("SSBU_BA_SQUAD_RESEED"); g_bacss_reseed = !(r && r[0] == '0');
+        if (g_bacss_reseed) printf("[squadcss] hook on the fight set-up 0x71014d8620: id %d (the global generator set again from the agreed seed)\n", hook_install(GA(0x71014d8620ULL), fight_setup_hook, NULL, &g_orig_fight_setup)); }
+    if (g_bacss == 1) { const char *v = getenv("SSBU_BA_SQUAD_VS"); g_bacss_vs = !(v && v[0] == '0');
+        printf("[squadcss] hook on the matchup's state 7 (0x710197d5f0): id %d (the VS screen ends as offline once this game is ready: %s)\n", hook_install(GA(0x710197d5f0ULL), tc_vs_hook, NULL, &g_orig_tc_vs), g_bacss_vs ? "on" : "off, SSBU_BA_SQUAD_VS=0"); }
+    fflush(stdout);
+}
 void debug_mode_init(void) {
+    bacss_init();
     {   const char *e = getenv("SSBU_ALLOC_CHECK");
         if (!(e && e[0] == '0')) {
             e = getenv("SSBU_ALLOC_REPAIR"); g_ac_repair = !(e && e[0] == '0');
@@ -1055,7 +1605,11 @@ void debug_mode_init(void) {
         if (g_hs_wanted) printf("debug match: hook on the match controls set-up %llx: id %d (R3 lwr: Local Wireless room matches, each player's own controls)\n", (unsigned long long)GA(0x7101780440ULL), hook_install(GA(0x7101780440ULL), controls_fill_hook, NULL, &g_orig_controls_fill));
     }
     if (g_hs_wanted || getenv("SSBU_SQ_TEST")) { int a = hook_install(GA(0x710157c100ULL), sq_init_hook, NULL, &g_orig_sq_init), b = hook_install(GA(0x7101589830ULL), sq_step_hook, NULL, &g_orig_sq_step), l = hook_install(GA(0x71006556b0ULL), sq_eload_hook, NULL, &g_orig_sq_eload), p = hook_install(GA(0x710158a360ULL), sq_put_hook, NULL, &g_orig_sq_put);      /* (Battle Arena) */
-        printf("debug match: hooks on the squad object (init %d, change of fighter %d / %d, fighter load %d)\n", a, b, p, l); }
+        printf("debug match: hooks on the squad object (init %d, change of fighter %d / %d, fighter load %d)\n", a, b, p, l);
+        {   const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_READYGATE"); (void)e; g_rgate = !(k && k[0] == '0'); }
+        if (getenv("SSBU_SQ_MODLOG") || g_rgate > 0) printf("[squad] module hooks (log %s, ready at step frames %s) %d %d\n", getenv("SSBU_SQ_MODLOG") ? "on" : "off", g_rgate > 0 ? "on" : "off",
+                                             hook_install(GA(0x71017e4940ULL), mod_take_hook, NULL, &g_orig_mod_take), hook_install(GA(0x71017e4790ULL), mod_ready_hook, NULL, &g_orig_mod_ready));
+        if (getenv("SSBU_SQ_MODLOG")) printf("[squad] RESEARCH: module drop hook %d\n", hook_install(GA(0x71022b6f60ULL), mod_drop_hook, NULL, &g_orig_mod_drop)); }
     if (getenv("SSBU_DEBUG_RESEARCH")) printf("debug research: hook on the entry set-up: id %d\n", hook_install(FN_ENTRY_SETUP, research_entry_setup, NULL, &g_orig_entry_setup));
     if (getenv("SSBU_DEBUG_DUMP") || g_dm.text[0] || g_end_limit ||getenv("SSBU_DEBUG_RESEARCH") || getenv("SSBU_DEBUG_WATCHENTRY")) CreateThread(NULL, 0, dump_thread, NULL, 0, NULL);
 }

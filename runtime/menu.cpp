@@ -63,6 +63,7 @@ int nnaudio_volume(void); void nnaudio_set_volume(int percent);     /* nnaudio.c
 int nnpad_kb_vk(int idx); void nnpad_kb_bind(int idx, int vk); void nnpad_kb_player_set(int p); int nnpad_kb_player_cfg(void);      /* nnpad_sdl.c */
 const char *nnpad_kb_label(int idx); void nnpad_vk_name(int vk, char *o, int n); int nnpad_describe(char *out, int n); const char *nnpad_config_path(void);
 int nnaoc_owned(const int **list);                                   /* nnmisc.c */
+int dm_bacss_on(void);                                               /* debug_mode.c: Battle Arena rooms play the game's own Squad Strike (0.2.45 default) */
 long long nvn_front_presents(void); void nvn_front_osk_redraw(void); /* nvn_gl.c */
 const char *nvn_vk_device_name(void);                                /* nvn_vk_menu.c */
 int osk_active(void);                                                /* osk.c */
@@ -2127,7 +2128,7 @@ static void set_open(int on) {
         g_section_req = g_section;
         capture_cancel("menu opened");
         g_dlc_loaded = 0;
-        if (rbn_ba_mode() > 0) g_ba_screen = 1;      /* (Battle Arena) the squad screen first */
+        if (rbn_ba_mode() > 0 && !dm_bacss_on()) g_ba_screen = 1;      /* (Battle Arena) the squad screen first (not with SSBU_BA_SQUAD_CSS=1: the game's own Squad Strike select screen) */
         printf("menu: opened at presented frame %lld\n", g_frame);
     } else {
         InterlockedExchange(&g_open, 0);

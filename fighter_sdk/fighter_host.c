@@ -1184,6 +1184,14 @@ static void fh_hook(Ctx *c, void *user) {
     (void)user;
     uint64_t agent = c->x[0], boma = agent ? rd64(agent + 0x40) : 0;
     int rv_k = -1; uint64_t rv_boma = 0;
+    if (boma && (rd32(boma + 8) >> 28) == 0) {   /* (RESEARCH, SSBU_SQ_ORDERLOG=1) the order the fighters' frame lines come in (battle object ids):
+             * logged when a frame's order differs from the frame before (run csss9: DESYNC 4375 with the same two lines in the other order, a grab) */
+        static int ol = -1; if (ol < 0) ol = getenv("SSBU_SQ_ORDERLOG") != NULL;
+        if (ol) { long long rbn_now(void); static long long fr = -1; static uint32_t cur[8], prev[8]; static int nc, np;
+            long long now = rbn_now();
+            if (now != fr) { if (nc && np && (nc != np || memcmp(cur, prev, sizeof(uint32_t) * (size_t)nc))) { printf("[fight] order: frame %lld:", fr); for (int q = 0; q < nc; q++) printf(" %x", cur[q]); printf(" (before:"); for (int q = 0; q < np; q++) printf(" %x", prev[q]); printf(")\n"); }
+                if (nc) { memcpy(prev, cur, sizeof cur); np = nc; } nc = 0; fr = now; }
+            if (nc < 8) cur[nc++] = rd32(boma + 8); } }
     { static int dn; if (agent && dn < 12 && g_fh_n) { uint64_t key[2] = {agent, boma}; static uint64_t seen[16][2]; int f = 0; for (int q = 0; q < dn; q++) if (seen[q][0] == key[0]) f = 1; if (!f) { seen[dn][0] = agent; seen[dn][1] = boma; dn++; printf("[fight] S20t: frame line, agent %llx boma %llx category word %x, first fighter frame %lld\n", (unsigned long long)agent, (unsigned long long)boma, boma ? rd32(boma + 8) : 0, g_fh_f[0].frame); fflush(stdout); } } }
     if (boma && (rd32(boma + 8) >> 28) == 0) {
         int k = 0;
@@ -1264,6 +1272,11 @@ static void fh_hook(Ctx *c, void *user) {
             fd_call(c, FD_N("25DamageModule__damage_impl") "i", boma, 0, 0, 0, 0, 0, 0, &dmg);
             uint64_t rb = fh_rng_base(), rh = 0xcbf29ce484222325ull; uint32_t rc = 0, w[45];
             if (rb) { for (int i = 0; i < 45; i++) w[i] = rd32(rb + 4ull * i); for (int i = 0; i < 9; i++) rc += w[i * 5 + 4]; rh = fh_fnv(rh, w, sizeof w); }
+            {   static long long lo = -2, hi, wf = -1; static int wi = -1;      /* (research, SSBU_SQ_RNGLOG=<from>,<to>[,<generator>,<watch frame>]) the 9 generators' call counters per pass */
+                if (lo == -2) { const char *e = getenv("SSBU_SQ_RNGLOG"); lo = -1; if (e && *e) sscanf(e, "%lld,%lld,%d,%lld", &lo, &hi, &wi, &wf); }
+                long long rbn_now(void); long long nf = rbn_now();
+                if (rb && k == 0 && lo >= 0 && nf >= lo && nf <= hi) { printf("[rng] frame %lld F %lld calls", nf, f); for (int i = 0; i < 9; i++) printf(" %u", w[i * 5 + 4]); printf("\n"); }
+                if (rb && wi >= 0 && wi < 9 && wf >= 0 && nf >= wf) { void debug_watch(const uint64_t *a, int n); uint64_t a = rb + 4ull * (uint64_t)(wi * 5 + 4); wf = -1; printf("[rng] watch on generator %d's counter %llx from frame %lld\n", wi, (unsigned long long)a, nf); debug_watch(&a, 1); } }
             struct { long long f; int k, st; uint64_t mot; float mf, x, y, dmg; uint64_t rh; } rec;
             memset(&rec, 0, sizeof rec);
             rec.f = f; rec.k = g_fh_f[k].entry; rec.st = st; rec.mot = mot; rec.mf = mf; rec.x = x; rec.y = y; rec.dmg = dmg; rec.rh = rh;

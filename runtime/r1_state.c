@@ -2373,7 +2373,25 @@ void r1_dc_begin(void) {
     }
 }
 void r1_dc_end(void) { if (g_dc_lock_on > 0) ReleaseSRWLockShared(&g_dc_lock); }
-static void dc_copy_lock(int on) { if (g_dc_lock_on < 0) { const char *e = getenv("SSBU_RB_DCLOCK"); g_dc_lock_on = !(e && e[0] == '0'); } if (g_dc_lock_on) { if (on) AcquireSRWLockExclusive(&g_dc_lock); else ReleaseSRWLockExclusive(&g_dc_lock); } }
+/* (2026-11-09, run cssm9) a BLOCK: a TaskWorker inside the decommit (shared lock taken, then stuck in ZwFreeVirtualMemory, cpu 0) and the main
+ * thread waiting for the lock exclusive at a capture (Squad Strike fighter change): both games frozen for minutes. Now the capture / load waits
+ * at most SSBU_RB_DCLOCK_MS (default 50) and then copies without the lock (as SSBU_RB_DCLOCK=0), logged; SSBU_RB_DCLOCK_MS=0: waits forever. */
+static int g_dc_got, g_dc_wait_ms = -1; static long g_dc_timeouts;
+static void dc_copy_lock(int on) {
+    if (g_dc_lock_on < 0) { const char *e = getenv("SSBU_RB_DCLOCK"); g_dc_lock_on = !(e && e[0] == '0'); }
+    if (!g_dc_lock_on) return;
+    if (!on) { if (g_dc_got) ReleaseSRWLockExclusive(&g_dc_lock); g_dc_got = 0; return; }
+    if (g_dc_wait_ms < 0) { const char *e = getenv("SSBU_RB_DCLOCK_MS"); g_dc_wait_ms = e && *e ? atoi(e) : 50; }
+    if (!g_dc_wait_ms) { AcquireSRWLockExclusive(&g_dc_lock); g_dc_got = 1; return; }
+    double t0 = now_ms();
+    while (!(g_dc_got = TryAcquireSRWLockExclusive(&g_dc_lock) != 0)) {
+        if (now_ms() - t0 > g_dc_wait_ms) {
+            if (++g_dc_timeouts <= 20 || g_dc_timeouts % 100 == 0) LOG("r1: RING: a decommit holds the copy lock for more than %d ms (%ld times so far): this copy runs without it\n", g_dc_wait_ms, g_dc_timeouts);
+            return;
+        }
+        SwitchToThread();
+    }
+}
 static struct { uint64_t a, n; long long f; DWORD tid; ULONGLONG ms; char dc; } g_dch[1024]; static volatile LONG g_dch_n, g_dch_rn;
 static void dch_note(void *p, size_t n, int dc) {       /* (stability phase) history: the game's commits / decommits in 0..511, releases in 512..1023 */
     long long rbn_now(void); int i = dc == 2 ? 512 + ((InterlockedIncrement(&g_dch_rn) - 1) & 511) : (InterlockedIncrement(&g_dch_n) - 1) & 511;

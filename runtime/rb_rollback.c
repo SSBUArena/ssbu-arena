@@ -356,7 +356,7 @@ static long long g_sq_n_waits; static double g_sq_w_sum;
  * short): a rollback across a load in progress lost its request (pair sq14a: the loading stuck at sub-state 2 on the game that rolled
  * back). The window comes from the simulated state (the squad object: + 0xd00 set at the KO, + 0xd70 the change of fighter; any fighter
  * entry loading, + 0x5920 == 3: the other player's changes, sq15a) and lasts 90 frames more. SSBU_SQ_LOCK=0: off (test). */
-static int g_sq_lock; static long long g_sq_lock_frames;
+static int g_sq_lock; static long long g_sq_lock_frames; static long long g_sq_ld_busy = -1;      /* (the last frame whose settle waited for the file loader) */
 static void rbg_squad_lock(long long i) {
     extern uint64_t g_sq_obj; static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SQ_LOCK"); on = !(e && e[0] == '0'); }
     int was = g_sq_lock;
@@ -365,6 +365,13 @@ static void rbg_squad_lock(long long i) {
     int busy = dm_squad_entry_loading();
     if (act && g_sq_obj) for (int k = 0; k < 3; k++) { uint64_t part = g_sq_obj + (k == 0 ? 0x5b0 : k == 1 ? 0x950 : 0xd10);      /* (each side's part: state at + 0x60; debug_mode.c sq_gate; the word at - 0x10 is not a KO flag on every part: pair sq20b ran all in lockstep) */
         if (*(volatile uint32_t *)(uintptr_t)(part + 0x60) >= 2) busy = 1; }      /* (states 2..4; the first step comes 20 frames into state 2) */
+    {   /* (Battle Arena, the game's own Squad Strike in a room, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_LDLOCK=0 off) that match loads files at its
+         * start (frames ~30 and ~90, ResLoadingThread / ResInflateThread): a rollback across those loads gave a DESYNC some frames later
+         * (runs cssm12n27 frame 90, cssn5 frame 151, NETSIM=27). No guesses in the first 40 frames, and from a frame whose settle had to
+         * wait for the file loader (then the 90 frames below). */
+        static int nat = -1; if (nat < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_LDLOCK"); (void)e; int dm_bacss_on(void); nat = dm_bacss_on() && !(k && k[0] == '0'); }
+        int dm_bacss_native(void);
+        if (act && nat && dm_bacss_native() && (i < 40 || (g_sq_ld_busy >= 0 && i >= g_sq_ld_busy && i - g_sq_ld_busy < 2))) busy = 1; }
     if (act && busy) last = i;
     g_sq_lock = act && i - last < 90;                  /* (and 90 frames after: a rollback just after the load zeroed pages the loader had freed and taken again, pair sq15a) */
     if (g_sq_lock) g_sq_lock_frames++;
@@ -380,7 +387,7 @@ static void rbg_squad_settle(long long i) {
         int busy = 0; Ctx *tc; const char *nm; HANDLE h;
         for (int k = 0; guest_thread_info(k, &tc, &nm, &h); k++) {
             if (!tc || !nm || !(strstr(nm, "ResLoadingThread") || strstr(nm, "ResInflateThread") || strstr(nm, "ResUpdateThread") || strstr(nm, "L2CDynamicModuleManager") || strstr(nm, "TaskWorker"))) continue;
-            if (!waiting_import(tc->in_import)) { busy = 1; g_ra_busy = nm; break; }
+            if (!waiting_import(tc->in_import)) { busy = 1; g_ra_busy = nm; if (strstr(nm, "ResLoadingThread") || strstr(nm, "ResInflateThread")) g_sq_ld_busy = i; break; }
         }
         if (busy) { stable = 0; fq_t0 = -1; tries++; Sleep(1); continue; }
         if (fq_t0 < 0) fq_t0 = now_ms();
