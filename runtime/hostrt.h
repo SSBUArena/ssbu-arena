@@ -45,11 +45,12 @@ int cxxrt_guest_region_at(int i, uint64_t *base, uint64_t *size);     /* region 
 // PR #2 (jfb112697): shared prototype so a caller left with the old (void) form fails to build; size 0 = release of the region at base
 void cxxrt_mem_changed(uint64_t base, uint64_t size);
 
-/* Game builds (hostrt.c, docs/VERSIONS.md). 13.0.4 is the reference: every game address written in the runtime is a
+/* Game builds (hostrt.c, docs/VERSIONS.md): 13.0.2, 13.0.4, 13.0.5. 13.0.4 is the reference: every game address written in the runtime is a
  * 13.0.4 address, and GA() gives the address of the same thing in the build that runs (identity on 13.0.4). The layout
  * of main (segments, relocation and symbol tables, init array) is read from main.elf at load, not written down. */
-enum { GAME_13_0_4, GAME_13_0_5 };
+enum { GAME_13_0_4, GAME_13_0_5, GAME_13_0_2 };      /* (the numbers go into the rollback handshake and replays: never renumber) */
 extern int g_game_build;
+const char *game_build_name(void);                  /* "13.0.2", "13.0.4", "13.0.5" ("?" before main.elf is read) */
 extern volatile long g_host_exiting;          /* the player asked to exit or restart: faults are not reported (hostrt.c crash_filter) */
 typedef struct {
     uint64_t text_size, ro_start, data_start, file_image;         /* offsets from GUEST_BASE; file_image = bytes stored in the ELF */

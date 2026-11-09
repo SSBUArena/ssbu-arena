@@ -1,4 +1,4 @@
-"""Code fingerprints of the 13.0.4 code addresses the runtime names, for GA() on 13.0.5 (docs/VERSIONS.md).
+"""Code fingerprints of the 13.0.4 code addresses the runtime names, for GA() on 13.0.5 and 13.0.2 (docs/VERSIONS.md).
 
     python tools/port/ga_sigs.py <13.0.4 main.elf>          writes runtime/ga_sig_13_0_4.inc
 
@@ -66,9 +66,14 @@ def code_of(elf):
 
 
 def table_entries():
+    """the 13.0.4 code offsets of every build's code table (g_code_13_0_5, g_code_13_0_2)"""
     s = open(os.path.join(ROOT, 'runtime', 'hostrt.c'), encoding='utf-8').read()
-    t = s[s.index('g_code_13_0_5[][2]'):s.index('uint64_t ga(')]
-    return set(int(m, 16) for m in re.findall(r'\{0x([0-9a-f]+),\s*0x[0-9a-f]+\}', t))
+    out = set()
+    for name in ('g_code_13_0_5', 'g_code_13_0_2'):
+        t = s[s.index(name + '[][2] = {'):]
+        t = t[:t.index('};')]
+        out |= set(int(m, 16) for m in re.findall(r'\{0x([0-9a-f]+),\s*0x[0-9a-f]+\}', t))
+    return out
 
 
 def named_addresses():
@@ -109,7 +114,7 @@ def main():
         f.write('/* made by tools/port/ga_sigs.py from a 13.0.4 main.elf: 13.0.4 code offset, words before it, words hashed, hash (hostrt.c ga_find) */\n')
         for a, back, n, h in rows:
             f.write('    {0x%07x, %d, %d, 0x%016xull},\n' % (a, back, n, h))
-    print('%d fingerprints (%d for g_code_13_0_5 entries: SSBU_GA_CHECK=1 checks those), %d without one: %s'
+    print('%d fingerprints (%d for entries of the build tables: SSBU_GA_CHECK=1 checks those), %d without one: %s'
           % (len(rows), len(known & set(r[0] for r in rows)), len(none), ' '.join('%#x' % a for a in none) or '-'))
 
 

@@ -2,7 +2,8 @@
 // thing in the build that runs (identity on 13.0.4), like the runtime's GA() (runtime/hostrt.c).
 //
 // Which build runs: main's MOD0 header (its offset is the word at main + 4) gives the start of bss, which is one page
-// later in 13.0.5. On 13.0.5 a code address goes through the function map <mod folder>\ga_13_0_5.txt, lines
+// later in 13.0.5 and 13.0.2; the start of .eh_frame_hdr (MOD0 + 0x10) tells those two apart. On 13.0.5 a code address
+// goes through the function map <mod folder>\ga_13_0_5.txt (on 13.0.2: ga_13_0_2.txt), lines
 //     F <13.0.4 offset> <13.0.5 offset> <size>     one function (offsets from main's base, hex)
 //     S <13.0.4 start> <13.0.4 end> <delta>        a whole segment moved by delta (read-only data, data, bss)
 // (made on the user's PC from the two main.elf files; it holds offsets only, no code or data of the game).
@@ -19,7 +20,7 @@ namespace mod_ga_detail {
 static const uint64_t BASE = 0x7100000000ull;
 struct Fn { uint32_t old_, new_, size; };
 static Fn *g_fn;
-static int g_nfn, g_state;                  // g_state: 0 not looked, 1 = 13.0.4 (identity), 2 = 13.0.5 with a map, 3 = unknown / no map
+static int g_nfn, g_state;                  // g_state: 0 not looked, 1 = 13.0.4 (identity), 2 = 13.0.5 / 13.0.2 with a map, 3 = unknown / no map
 static struct { uint32_t lo, hi; int32_t d; } g_seg[8];
 static int g_nseg;
 
@@ -27,15 +28,15 @@ static int cmp_fn(const void *a, const void *b) { uint32_t x = ((const Fn *)a)->
 
 static void say(const char *t) { printf("mod_ga: %s\n", t); fflush(stdout); }
 
-static void load_map(void) {
+static void load_map(const char *build) {         // "13.0.5" or "13.0.2"
     char path[MAX_PATH * 2];
     HMODULE self = NULL;
     GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)(void *)&load_map, &self);
     GetModuleFileNameA(self, path, MAX_PATH);
     char *s = strrchr(path, '\\');
-    strcpy(s ? s + 1 : path, "ga_13_0_5.txt");
+    snprintf(s ? s + 1 : path, MAX_PATH, "ga_%c%c_0_%c.txt", build[0], build[1], build[5]);
     FILE *f = fopen(path, "r");
-    if (!f) { char m[MAX_PATH * 2 + 80]; snprintf(m, sizeof m, "13.0.5 runs but %s is missing: game addresses of this mod stay 13.0.4's", path); say(m); g_state = 3; return; }
+    if (!f) { char m[MAX_PATH * 2 + 80]; snprintf(m, sizeof m, "%s runs but %s is missing: game addresses of this mod stay 13.0.4's", build, path); say(m); g_state = 3; return; }
     int cap = 131072;
     g_fn = (Fn *)malloc(sizeof(Fn) * cap);
     char line[256];
@@ -46,7 +47,7 @@ static void load_map(void) {
     }
     fclose(f);
     qsort(g_fn, g_nfn, sizeof(Fn), cmp_fn);
-    char m[160]; snprintf(m, sizeof m, "13.0.5: %d functions, %d segments from ga_13_0_5.txt", g_nfn, g_nseg); say(m);
+    char m[160]; snprintf(m, sizeof m, "%s: %d functions, %d segments from %s", build, g_nfn, g_nseg, s ? s + 1 : path); say(m);
     g_state = 2;
 }
 
@@ -55,7 +56,7 @@ static void look(void) {
     uint32_t off = m + (uint32_t)*(volatile int32_t *)(uintptr_t)(BASE + m + 8);       // MOD0: magic, dynamic, bss start, ...
     if (*(volatile uint32_t *)(uintptr_t)(BASE + m) != 0x30444f4du) { say("no MOD0 at main's start: game addresses stay 13.0.4's"); g_state = 3; }
     else if (off == 0x52a9000u) g_state = 1;
-    else if (off == 0x52aa000u) load_map();
+    else if (off == 0x52aa000u) load_map(m + (uint32_t)*(volatile int32_t *)(uintptr_t)(BASE + m + 16) == 0x4aed760u ? "13.0.2" : "13.0.5");   // .eh_frame_hdr: 13.0.2 0x4aed760, 13.0.5 0x4aee5f0
     else { char t[120]; snprintf(t, sizeof t, "unknown build (bss at main + %x): game addresses stay 13.0.4's", off); say(t); g_state = 3; }
 }
 }  // namespace mod_ga_detail

@@ -109,7 +109,8 @@ static uint64_t rnd64(void) {
 
 /* ---------------------------------------------------------------- configuration */
 static int g_cfg = -1, g_log = 1, g_direct = 0;      /* g_direct: off by default (relay only, see online_direct above) */
-extern int g_game_build;             /* hostrt.c: 0 = 13.0.4, 1 = 13.0.5 (hostrt.h GAME_13_0_*), -1 before main.elf is read */
+extern int g_game_build;             /* hostrt.c: 0 = 13.0.4, 1 = 13.0.5, 2 = 13.0.2 (hostrt.h GAME_13_0_*), -1 before main.elf is read */
+const char *game_build_name(void);   /* hostrt.c */
 static char g_server[256], g_name[NAME_LEN + 1], g_code[NAME_LEN + 1] = "public", g_build[BUILD_LEN + 1] = NET_BUILD_DEFAULT;
 static uint16_t g_local_port;
 
@@ -350,8 +351,8 @@ static void configure(void) {
     if ((e = getenv("SSBU_ONLINE_BUILD")) && *e) snprintf(g_build, sizeof g_build, "%s", e);
     else {
         size_t l = strlen(g_build);
-        if (g_game_build >= 0)         /* players of 13.0.4 and 13.0.5 never share a room: the lobby and the LAN lobby part rooms by build */
-            snprintf(g_build + l, sizeof g_build - l, "-%s", g_game_build == 1 ? "13.0.5" : "13.0.4");
+        if (g_game_build >= 0)         /* players of different builds never share a room: the lobby and the LAN lobby part rooms by build */
+            snprintf(g_build + l, sizeof g_build - l, "-%s", game_build_name());
         l = strlen(g_build);
         if (g_nmods) snprintf(g_build + l, sizeof g_build - l, "+m%08x", g_mods_hash);      /* nor do different mod sets */
     }

@@ -42,7 +42,7 @@ namespace Arena
             setupDownload = download;
             SetupOverlay.Visibility = Visibility.Visible;
             SetupStageOn(1);
-            SetupIntro.Text = "SSBU Arena runs your own copy of Super Smash Bros. Ultimate (13.0.4 or 13.0.5) natively on this PC. " +
+            SetupIntro.Text = "SSBU Arena runs your own copy of Super Smash Bros. Ultimate (13.0.2, 13.0.4 or 13.0.5) natively on this PC. " +
                               "Nothing of the game is downloaded: the setup builds it from your files, here. About 25 GB of space; it takes a while once.";
             SetupBusy.Visibility = Visibility.Visible; SetupFiles.Visibility = Visibility.Collapsed; SetupRun.Visibility = Visibility.Collapsed;
             SetupFooter.Visibility = Visibility.Collapsed; SetupBusyButtons.Visibility = Visibility.Collapsed;
@@ -162,7 +162,7 @@ namespace Arena
             SetupPackageFields.Visibility = dump ? Visibility.Collapsed : Visibility.Visible;
             if (!dump)
             {
-                if (upd == "") { FieldState(SetupUpdateMark, SetupUpdateText, "bad", "Needed: your game's update 13.0.4 or 13.0.5 (.nsp / .nsz)."); ok = false; }
+                if (upd == "") { FieldState(SetupUpdateMark, SetupUpdateText, "bad", "Needed: your game's update 13.0.2, 13.0.4 or 13.0.5 (.nsp / .nsz)."); ok = false; }
                 else if (File.Exists(upd) || Directory.Exists(upd))
                     FieldState(SetupUpdateMark, SetupUpdateText, "ok", string.Equals(upd, found?.Update, StringComparison.OrdinalIgnoreCase) && found?.Build != null ? "Update " + found.Build + " (found on this PC)." : "Your update.");
                 else { FieldState(SetupUpdateMark, SetupUpdateText, "bad", "Not found."); ok = false; }
@@ -237,7 +237,7 @@ namespace Arena
 
         void SetupGameFile_Click(object sender, RoutedEventArgs e) { var f = PickFile("Your Super Smash Bros. Ultimate (base game)", "Game (*.xci;*.nsp;*.nsz;*.xcz)|*.xci;*.nsp;*.nsz;*.xcz|All files|*.*"); if (f != null) SetupGame.Text = f; }
         void SetupGameFolder_Click(object sender, RoutedEventArgs e) { var f = PickFolder("A dump of your game decrypted on the console (exefs and romfs inside), or a folder with your game package"); if (f != null) SetupGame.Text = f; }
-        void SetupUpdateFile_Click(object sender, RoutedEventArgs e) { var f = PickFile("Your game's update 13.0.4 or 13.0.5", "Update (*.nsp;*.nsz)|*.nsp;*.nsz|All files|*.*"); if (f != null) SetupUpdate.Text = f; }
+        void SetupUpdateFile_Click(object sender, RoutedEventArgs e) { var f = PickFile("Your game's update 13.0.2, 13.0.4 or 13.0.5", "Update (*.nsp;*.nsz)|*.nsp;*.nsz|All files|*.*"); if (f != null) SetupUpdate.Text = f; }
         void SetupKeysFile_Click(object sender, RoutedEventArgs e) { var f = PickFile("Your prod.keys (dumped from your Switch)", "Keys (*.keys)|*.keys|All files|*.*"); if (f != null) SetupKeys.Text = f; }
         void SetupFirmware_Click(object sender, RoutedEventArgs e) { var f = PickFolder("Your firmware dump (a folder of .nca files), or the extracted system fonts"); if (f != null) SetupFirmware.Text = f; }
         void SetupLocation_Click(object sender, RoutedEventArgs e) { var f = PickFolder("Where the game is unpacked and built (about 25 GB)"); if (f != null) SetupLocation.Text = Path.Combine(f, "SSBU Arena"); }

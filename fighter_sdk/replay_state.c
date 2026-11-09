@@ -232,7 +232,7 @@ static void rv_head_start(void) {
         else if (nick && *nick && (int)h->local_player == i && !(h->flags & 2)) snprintf(h->fighter[i].name, sizeof h->fighter[i].name, "%.31s", nick);
         else snprintf(h->fighter[i].name, sizeof h->fighter[i].name, "Player %d", h->fighter[i].entry + 1);
     }
-    snprintf(h->build, sizeof h->build, "%s", g_game_build == GAME_13_0_5 ? "13.0.5" : "13.0.4");
+    snprintf(h->build, sizeof h->build, "%s", game_build_name());
 }
 
 /* ---------------------------------------------------------------- the stage: collision lines by rays, a few per frame */
