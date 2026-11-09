@@ -64,6 +64,10 @@ RAW = {0x0: 'the image base',
        0x52c41b0: 'through ga() itself (rb_net.c declares it and does not include hostrt.h, where GA() is)',
        0x80000000: 'a free host range for a test stack (rb_rollback.c, SSBU_RB_NET_TEST_STK), not an address of the image'}
 
+# data addresses that are the bounds of a range, not of an object (no code forms them): only the one-page rule is checked
+BOUNDS = {0x5000000: 'lower bound of the graphics descriptor range (r1_ring.c sd_clear), inside data / bss',
+          0x5400000: 'upper bound of the graphics descriptor range (r1_ring.c sd_clear), inside data / bss'}
+
 
 class Elf:
     def __init__(self, path):
@@ -209,6 +213,9 @@ def main():
                    % (old, new, d, db, nb, da, na, ', own function same size' if own_ok else '', where))
         else:
             new = old + 0x1000
+            if old in BOUNDS:
+                report(data[0] <= new < data[0] + data[3] + 0x1000, '0x71%08x -> 0x71%08x  +0x1000  %s  [%s]' % (old, new, BOUNDS[old], where))
+                continue
             report(refs[new] > refs[old], '0x71%08x -> 0x71%08x  +0x1000  code references: new %d, old %d  [%s]' % (old, new, refs[new], refs[old], where))
     print('%d checks failed' % bad if bad else 'all checks passed')
     sys.exit(1 if bad else 0)
