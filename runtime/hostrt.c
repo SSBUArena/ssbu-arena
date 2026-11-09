@@ -28,22 +28,32 @@ MainLayout g_main;
 static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets from GUEST_BASE, sorted by the first */
     {0x0382a0, 0x0382a0},       /* FUN_71000382a0 (nvn_gl.c), 2,884 bytes in both */
     {0x047d20, 0x047d20},       /* clock read return address (nnsdk.c, fixed seed) */
+    {0x07f870, 0x07f870},     /* the HUD font job (r1_state.c SSBU_RB_FONTWAIT); found on the 13.0.5 dump */
     {0x081980, 0x081980},       /* allocation site, caller of a 1.4 MB block (rb_learned.c, the presentation pool) */
     {0x0a3fd8, 0x0a3fd8},       /* allocation site, caller of an 8 MB block (rb_learned.c) */
     {0x138534, 0x138534},       /* clock read return address (nnsdk.c, fixed seed) */
     {0x2c55e0, 0x2c55e0},       /* nninitStartup */
     {0x2c5620, 0x2c5620},       /* nnMain */
+    {0x45b940, 0x45b940},     /* replay clear-all (fighter_host.c); found on the 13.0.5 dump */
+    {0x45b980, 0x45b980},     /* replay clear (fighter_host.c); found on the 13.0.5 dump */
     {0x653240, 0x653240},       /* entry set-up (debug_mode.c) */
     /* (the entries marked "starts") each 13.0.5 address is a function start of 13.0.5's .eh_frame_hdr, and the 16 lifted
-     * 13.0.4 functions around it (tools/lifter/coverage/13.0.4.txt) start there at the same delta */
+     * 13.0.4 functions around it (tools/lifter/coverage/13.0.4.txt) start there at the same delta; the entries "found on the
+     * 13.0.5 dump" were checked on a real 13.0.5 main.elf: the fingerprint of ga_sig_13_0_4.inc is unique there and
+     * verify_13_0_5.py's neighbours agree */
+    {0x6556b0, 0x6556b0},     /* squad element load (debug_mode.c); found on the 13.0.5 dump */
     {0x134c690, 0x134c690},     /* fight scene clean-up (debug_mode.c, room rollback), starts: 12,080 bytes in 13.0.5, 0x2f30 to the next 13.0.4 function */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
     {0x14e58f0, 0x14e58f0},     /* battle builder (competitive.c), starts */
     {0x1519430, 0x1519430},     /* hook self-test function (hook_host.c) */
+    {0x157c100, 0x157c100},     /* squad init (debug_mode.c); found on the 13.0.5 dump */
+    {0x1589830, 0x1589830},     /* squad step (debug_mode.c); found on the 13.0.5 dump */
+    {0x158a360, 0x158a360},     /* squad hook 4 (debug_mode.c); found on the 13.0.5 dump */
     {0x16ccae0, 0x16cc940},     /* input delay of a local-wireless match (ldn_online.inc), starts; 400 bytes in both */
     {0x1780440, 0x17802a0},     /* match controls set-up (debug_mode.c, room rollback: each player's own controls; 63 / 63 words) */
     {0x1788260, 0x17880c0},     /* player record builder (debug_mode.c) */
     {0x17911dc, 0x17910fc},     /* return address of the room's waiting-stage record build (debug_mode.c; 43 / 43 words) */
+    {0x179d0a0, 0x179d060},     /* the game's clear of the squad table (debug_mode.c); found on the 13.0.5 dump */
     {0x179e440, 0x179e400},     /* select screen table entry copy (debug_mode.c, R3 online: player 2's panel) */
     {0x17df5f0, 0x17df5b0},     /* path sub-builder (newmodule_host.c) */
     {0x17dfe50, 0x17dfe10},     /* path sub-builder 2 (newmodule_host.c) */
@@ -52,6 +62,9 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x1bef020, 0x1bef020},     /* the Lua C function behind prg_func.open_pallet (competitive.c comp_open_local), starts */
     {0x1ea04d0, 0x1ea04d0},     /* formatter (newmodule_host.c) */
     {0x22b67d4, 0x22b67d4},     /* worker return address (newmodule_host.c) */
+    {0x22dc3d0, 0x22dc3d0},     /* skipped function 3, 10,328 bytes in both (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
+    {0x22dec30, 0x22dec30},     /* skipped function 2, 4 bytes (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
+    {0x22df110, 0x22df110},     /* skipped function 1, 84 bytes in both (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
     {0x232ce40, 0x232d290},     /* menu hook of the Arena UI (competitive.c comp_menu), starts */
     {0x23343e0, 0x2334830},     /* Smash versus: Rulesets state (competitive.c), starts */
     {0x23353d0, 0x2335820},     /* Smash versus: stage state (competitive.c), starts */
@@ -96,6 +109,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x36f7410, 0x36f79c0}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x3724a80, 0x3725030}, /* task tree walker (r1_ring.c, profile 2) */
     {0x3747270, 0x3747820}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3747b10, 0x37480c0},     /* main loop: return address of the Lua collector step (rb_rollback.c); found on the 13.0.5 dump */
     {0x3747b7c, 0x374812c}, /* render loop call site (r1_state.c) */
     {0x37494fc, 0x3749aac}, /* render loop call site, workers hold (r1_state.c) */
     {0x3749598, 0x3749b48}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
@@ -112,8 +126,13 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x37857f0, 0x3785da0}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x37a3ea0, 0x37a4450}, /* message text (newmodule_host.c) */
     {0x37a3fc0, 0x37a4570}, /* message label exists (newmodule_host.c) */
+    {0x37df7e0, 0x37dfd90},     /* SRV destructor (r1_ring.c SRVDIAG); found on the 13.0.5 dump */
+    {0x37df8b0, 0x37dfe60},     /* SRV destructor 2 (r1_ring.c SRVDIAG); found on the 13.0.5 dump */
     {0x37f0590, 0x37f0b40}, /* submission step (r1_state.c) */
+    {0x38156f0, 0x3815ca0},     /* binding retainer clear (r1_ring.c SSBU_RB_RETAINFIX); found on the 13.0.5 dump */
     {0x3816944, 0x3816ef4},     /* allocation site of the graphics 16 MB buffer (rb_learned.c) */
+    {0x3817170, 0x3817720},     /* binding retainer fill (r1_ring.c SSBU_RB_RETAINGEN); found on the 13.0.5 dump */
+    {0x3817f90, 0x3818540},     /* binding retainer fill 2 (r1_ring.c SSBU_RB_RETAINGEN); found on the 13.0.5 dump */
     {0x3828300, 0x38288b0},     /* function with catch (...) (cxxrt_selftest.h) */
     {0x382b690, 0x382bc40},     /* call site in it */
     {0x382cb34, 0x382d0e4},     /* its landing pad */
@@ -125,6 +144,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x386fc30, 0x38701e0},     /* graphics frame end (fighter_host.c, SSBU_DETERMINISTIC) */
     {0x38fae10, 0x38fb3c0},     /* luaD_throw */
     {0x38faf00, 0x38fb4b0},     /* luaD_rawrunprotected */
+    {0x38fe690, 0x38fec40},     /* Lua collector step (rb_rollback.c rbg_gc_hook); found on the 13.0.5 dump */
     {0x392dc40, 0x392e1f0},     /* jemalloc posix_memalign (rb_learned.c) */
     {0x392dce0, 0x392e290},     /* je_aligned_alloc (the game's memalign) */
     {0x392dd80, 0x392e330},     /* jemalloc realloc (rb_learned.c) */
@@ -221,9 +241,14 @@ int game_rb_blocked(void) {
     if (g_game_build < 0) return 0;                     /* (not known yet: asked again later) */
     const char *e = getenv("SSBU_R1_1305"), *t = getenv("SSBU_R1_1305_TEST");      /* (TEST ONLY: on 13.0.4, as if it were 13.0.5 here) */
     int is5 = g_game_build == GAME_13_0_5 || (t && t[0] == '1');
-    int v = is5 && !(e && e[0] == '1');
+    /* (2026-11-09, with a 13.0.5 dump) default ON again: the main loop is the same code at +0x5b0 (call sites, save point,
+     * H1, the skipped kicks checked), run-ahead ran 2985 speculative passes clean on 13.0.5 and a 13.0.5 room pair with
+     * rollback was IDENTICAL; the online rollback had stopped at start on a missing table entry (937476a). The player's
+     * crash was not reproduced; plain run-ahead now has the retainer fixes of the rollback too (r1_state.c ra_init).
+     * SSBU_R1_1305=0: off on 13.0.5 as in ea22712 (popup, menu notes, launcher text). */
+    int v = is5 && e && e[0] == '0';
     if (InterlockedCompareExchange(&b, v, -1) == -1 && is5) {
-        printf("r1: game update 13.0.5: run-ahead and online rollback %s (SSBU_R1_1305=%s)\n", v ? "OFF, not supported on 13.0.5 yet" : "ON as on 13.0.4", e ? e : "not set");
+        printf("r1: game update 13.0.5: run-ahead and online rollback %s (SSBU_R1_1305=%s)\n", v ? "OFF (SSBU_R1_1305=0)" : "ON as on 13.0.4", e ? e : "not set");
         fflush(stdout);
     }
     return b;

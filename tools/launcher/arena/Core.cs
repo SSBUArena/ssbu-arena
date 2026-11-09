@@ -133,8 +133,8 @@ namespace Arena
 
         /// <summary>the game build setup.py converted (state.json game_version, as scripts/run.py reads it): 13.0.4 or 13.0.5</summary>
         /// <summary>(issue #6) the game runs update 13.0.5: the game keeps run-ahead and the online rollback off there
-        /// (runtime/hostrt.c game_rb_blocked; SSBU_R1_1305=1 in the environment: on as before)</summary>
-        public static bool RollbackBlocked1305 => GameVersion() == "13.0.5" && Environment.GetEnvironmentVariable("SSBU_R1_1305") != "1";
+        /// (runtime/hostrt.c game_rb_blocked; since 2026-11-09 only with SSBU_R1_1305=0 in the environment)</summary>
+        public static bool RollbackBlocked1305 => GameVersion() == "13.0.5" && Environment.GetEnvironmentVariable("SSBU_R1_1305") == "0";      // (2026-11-09) on by default again: hostrt.c
         public const string Rollback1305Text = "Online matches with rollback are not supported on game update 13.0.5 yet.";
 
         static string GameVersion()

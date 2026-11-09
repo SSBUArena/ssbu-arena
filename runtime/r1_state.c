@@ -107,7 +107,7 @@ static long long g_pass_frames;
 /* run-ahead (round 5): SSBU_RUNAHEAD=1 (or graphics.ini `runahead = on`, gfx_options.c); default OFF.
  * R2 (r1_ring.c): SSBU_RB_SIM (the snapshot ring's rollback simulation) uses the same machinery; default OFF. */
 static int rgs_wanted(void); static void rgs_step(Ctx *c); static int rgs_poll(void); static void rgs_pad(uint64_t *b, int *lx, int *ly, int *rx, int *ry); static int rgs_skip_now(void); static void rgs_report(void); static void rgp_wait_note(uint64_t lr, double dt);
-/* (issue #6) on 13.0.5 run-ahead stays off (hostrt.c game_rb_blocked, SSBU_R1_1305=1: on); the player who turned it on (or
+/* (issue #6) on 13.0.5 run-ahead stays off (hostrt.c game_rb_blocked: only with SSBU_R1_1305=0 since 2026-11-09); the player who turned it on (or
  * whose launcher asked for the online rollback, rb_net.c) is told once the menus are on the screen */
 static DWORD WINAPI ra_1305_note(void *p) {
     long long nvn_front_frame_next(void); void menu_popup(const char *title, const char *text); extern const char *const g_rb_1305_text;
@@ -2169,6 +2169,17 @@ static void ra_init(void) {
     else if (rgs_wanted()) { if (getenv("SSBU_RB_SIM_SKIP")) g_rgs_skip = atoi(getenv("SSBU_RB_SIM_SKIP"));
         LOG("r1: RB SIM on (R2 snapshot ring): a rollback every %d real passes, k = 1..%d rotating, after %d captures; kick skip mask in re-run passes %d\n", g_rgs_n, g_rgs_k, g_rgs_warm, g_rgs_skip);
         rgs_lite_init(); }
+    else {
+        /* (issue #6, 2026-11-09) plain run-ahead: a 13.0.5 player's crash in nu::GraphicsDevice::Update (the render thread's
+         * jemalloc cache broken, freed from 0x71037def40 next to the shader resource view destructors) is the family the
+         * retainer fixes of the rollback (SSBU_RB_RETAINFIX a51c594, SSBU_RB_RETAINGEN 1b21fa4: a double release of a
+         * destroyed view) cure in re-run passes; a speculative pass is the same kind of pass, so they are on here too.
+         * The main loop, the save point and the skipped kicks were checked identical on a 13.0.5 dump (not the cause).
+         * SSBU_RA_RETAINFIX=0: off in plain run-ahead (as before); SSBU_RB_RETAINFIX / RETAINGEN=0 turn each one off. */
+        const char *e = getenv("SSBU_RA_RETAINFIX");
+        if (!(e && e[0] == '0')) sd_init();
+        else LOG("r1: RA retainer fixes off (SSBU_RA_RETAINFIX=0)\n");
+    }
     atexit(ra_report);
 }
 

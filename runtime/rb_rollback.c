@@ -282,11 +282,15 @@ static void rbg_skipf_hook(Ctx *c, void *user) {
     s->orig(c);
 }
 static const char *g_rbg_skipf_def = "71022df110,71022dec30,71022dc3d0";      /* (2026-11-02: -0.35 ms, pair IDENTICAL; SSBU_RB_SKIPF= (empty) for none) */
+/* (13.0.5) the same list as numbers, so that tools/port/ga_sigs.py and verify_13_0_5.py see them: GA() at hook_install; they are in
+ * g_code_13_0_5 (found on a 13.0.5 dump, same code at the same address). Before, GA() stopped a 13.0.5 game when the online rollback started. */
+static const uint64_t g_rbg_skipf_def_a[] = {0x71022df110ull, 0x71022dec30ull, 0x71022dc3d0ull};
 static void rbg_skipf_init(void) {
     const char *e = getenv("SSBU_RB_SKIPF"); if (!e) e = g_rbg_skipf_def;
     { const char *l = getenv("SSBU_RB_SKIPF_LAST"); if (l && l[0] == '0') g_rbg_skf_last = 0; }
+    int def = e == g_rbg_skipf_def, di = 0;
     while (e && *e && g_rbg_nskf < 32) {
-        uint64_t a = strtoull(e, NULL, 16); if (!a) break;
+        uint64_t a = def ? (di < 3 ? g_rbg_skipf_def_a[di++] : 0) : strtoull(e, NULL, 16); if (!a) break;
         RbgSkipF *s = &g_rbg_skf[g_rbg_nskf]; s->a = a;
         if (hook_install(GA(a), rbg_skipf_hook, s, &s->orig)) g_rbg_nskf++;
         LOG("r1: RB NET: skipped in re-run passes: %llx\n", (unsigned long long)a);

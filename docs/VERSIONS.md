@@ -72,7 +72,8 @@ be in `g_code_13_0_5`, and its delta must be the one at which the same-size func
 function) line up in the 13.0.5 unwind table; a data address must be formed by 13.0.5 code (ADRP + ADD/LDR/STR) more
 often at its new address than at its old one. It also checks the one-page rule against the segments, and that no
 `0x71xxxxxxxx` literal in code bypasses `GA()` without a stated reason. On the author's dump it reports
-`all checks passed` (46 code and data addresses, 3 segment checks, 7 literals that are not addresses of things that move).
+`all checks passed` (46 code and data addresses, 3 segment checks, 7 literals that are not addresses of things that move);
+on a 13.0.5 dump on 2026-11-09, after the additions since: `all checks passed` (210 checks).
 
 ## Adding a game address
 
@@ -89,10 +90,13 @@ add its 13.0.5 counterpart to `g_code_13_0_5` (sorted) and run the check above. 
 - `fighter_sdk/tools/`, `tools/audit/` and the scripts under `tests/` still name `binaries/13.0.4` and 13.0.4 constants:
   they are the author's analysis and test drivers, not part of the build.
 - A mod DLL that hooks a function of `main` by its address is written for one build.
-- Run-ahead and the online rollback are off on 13.0.5 (`runtime/hostrt.c`, `game_rb_blocked`): a 13.0.5 player's
-  run-ahead crashed a few seconds into every fight (render thread, `nu::GraphicsDevice::Update`, with many command lists
-  the real pass submitted unknown to the host), which 13.0.4 does not do, and the cause could not be found without a
-  13.0.5 dump. The game says so in a popup, on the settings menu's Online & netplay page and in the Online Ranked message;
-  the launcher in its Online settings. `SSBU_R1_1305=1` turns both on again (tests with a 13.0.5 dump);
-  `SSBU_R1_1305_TEST=1` (tests only) makes 13.0.4 take the 13.0.5 path.
+- Run-ahead and the online rollback run on 13.0.5 as on 13.0.4 again (since 2026-11-09). They had been turned off
+  (`runtime/hostrt.c`, `game_rb_blocked`) after a 13.0.5 player's run-ahead crashed a few seconds into every fight
+  (render thread, `nu::GraphicsDevice::Update`). Checked on a real 13.0.5 dump: the main loop is the same code at +0x5b0
+  (every kick / wait call site, the save point, the workers' hold and the skipped preparation kicks), run-ahead ran
+  ~3000 speculative passes without a crash, and a 13.0.5 room pair with rollback was IDENTICAL. The online rollback
+  had in fact stopped at start on 13.0.5 (a game address missing from `g_code_13_0_5`, fixed). The player's crash was
+  not reproduced; plain run-ahead now also has the rollback's retainer fixes (`SSBU_RA_RETAINFIX=0` turns them off).
+  `SSBU_R1_1305=0` turns both off on 13.0.5 as before (popup, menu notes, launcher text); `SSBU_R1_1305_TEST=1`
+  (tests only) makes 13.0.4 take the 13.0.5 path.
 - Replays: Nintendo's notes say replays from 9.0.0 to 13.0.4 may have compatibility issues in 13.0.5.
