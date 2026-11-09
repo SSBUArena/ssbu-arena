@@ -97,6 +97,8 @@ static volatile LONG g_exit_req;
 static int g_exit_popup, g_exit_asked;
 extern "C" void menu_request_exit(void) { InterlockedExchange(&g_exit_req, 1); }
 extern "C" int comp_in_options(void);                     /* competitive.c: the game's own options screen is open */
+extern "C" int game_rb_blocked(void);                     /* hostrt.c (issue #6): run-ahead and rollback off on 13.0.5 */
+extern "C" const char *const g_rb_1305_text;              /* hostrt.c: what the player is told about it */
 /* R3: the online match's message (any thread; copied under a lock, read by the render thread) */
 static SRWLOCK g_notice_lock = SRWLOCK_INIT;
 static char g_notice[512];
@@ -1181,7 +1183,8 @@ static int arena_online(void) {
         if (ns.state == NET_CONNECTED && ns.ping_ms >= 0) { ImGui::SameLine(); ImGui::Text("  ping %d ms", ns.ping_ms); }
         ImGui::Text("Server: %s", region);
         ImGui::Text("Player: %s", name && name[0] ? name : "-");
-        ImGui::Text("Rollback netcode: %s", rb && rb[0] ? "on" : "off");
+        if (rb && rb[0] && game_rb_blocked()) ImGui::TextColored(ImVec4(1, 0.75f, 0.2f, 1), "Rollback netcode: off. %s", g_rb_1305_text);      /* (issue #6) */
+        else ImGui::Text("Rollback netcode: %s", rb && rb[0] ? "on" : "off");
         ImGui::TextDisabled("Everything goes through the Arena server (relay only): no player ever sees another player's address.");
     }
     help("These are set in the SSBU Arena launcher (Settings > Online) and used when the game starts.");
@@ -1197,7 +1200,8 @@ static void sec_experimental(void) {
     ImGui::SameLine(); ImGui::Text("Run-ahead");
     tag(1, S.runahead != S0.runahead);
     ImGui::SameLine();
-    if (ra_build()) ImGui::TextDisabled("one frame less input delay in fights; costs a second pass of each frame on the CPU");
+    if (game_rb_blocked()) ImGui::TextColored(ImVec4(1, 0.75f, 0.2f, 1), "not supported on game update 13.0.5 yet: off whatever this switch says");      /* (issue #6) hostrt.c */
+    else if (ra_build()) ImGui::TextDisabled("one frame less input delay in fights; costs a second pass of each frame on the CPU");
     else ImGui::TextDisabled("not ready yet: it is being moved onto the normal build (like rollback)");
     ImGui::Separator();
     if (arena_online()) return;                          /* SSBU Arena: name, server and netcode come from the launcher */

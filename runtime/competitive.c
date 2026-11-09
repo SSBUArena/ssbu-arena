@@ -215,7 +215,9 @@ static int comp_quick_begin(void) {           /* 1 = the quick match starts (the
     int net_online(void), net_mode(void), net_rb_ready(void), rbn_on(void), rbn_handshake_wanted(void);
     void menu_popup(const char *title, const char *text);
     const char *why = NULL; int mode = net_online() > 0 ? net_mode() : -1;
+    int game_rb_blocked(void); extern const char *const g_rb_1305_text;
     if (net_online() <= 0) why = "Online play is off. Sign in to your SSBU Arena account in the launcher (Online on), then start the game again.";
+    else if (game_rb_blocked()) why = g_rb_1305_text;      /* (issue #6) hostrt.c */
     else if (!rbn_handshake_wanted() || rbn_on() <= 0) why = "Online matches need the rollback netcode: turn Rollback on in the launcher's Online settings, then start the game again.";
     else if (mode != 0 /* NET_MODE_LOBBY */ && mode != 1 /* NET_MODE_LAN */) why = "Matchmaking works through the online lobby, not in this online mode (a room you host or join).";
     else if (!net_rb_ready()) why = "Not connected to the online lobby (yet). Check your internet connection and try again in a few seconds.";

@@ -107,9 +107,28 @@ static long long g_pass_frames;
 /* run-ahead (round 5): SSBU_RUNAHEAD=1 (or graphics.ini `runahead = on`, gfx_options.c); default OFF.
  * R2 (r1_ring.c): SSBU_RB_SIM (the snapshot ring's rollback simulation) uses the same machinery; default OFF. */
 static int rgs_wanted(void); static void rgs_step(Ctx *c); static int rgs_poll(void); static void rgs_pad(uint64_t *b, int *lx, int *ly, int *rx, int *ry); static int rgs_skip_now(void); static void rgs_report(void); static void rgp_wait_note(uint64_t lr, double dt);
+/* (issue #6) on 13.0.5 run-ahead stays off (hostrt.c game_rb_blocked, SSBU_R1_1305=1: on); the player who turned it on (or
+ * whose launcher asked for the online rollback, rb_net.c) is told once the menus are on the screen */
+static DWORD WINAPI ra_1305_note(void *p) {
+    long long nvn_front_frame_next(void); void menu_popup(const char *title, const char *text); extern const char *const g_rb_1305_text;
+    for (int i = 0; i < 600 && nvn_front_frame_next() < 240; i++) Sleep(100);      /* the game's menus are up (about 4 s of frames) */
+    char t[320];
+    snprintf(t, sizeof t, "%s%s Offline play is not affected.", g_rb_1305_text, p ? " Run-ahead (Online & netplay page) is off for the same reason." : "");
+    menu_popup("Game update 13.0.5", t);
+    printf("r1: told the player: %s\n", t); fflush(stdout);      /* (not LOG: g_log is opened only when r1 is on) */
+    return 0;
+}
 static int ra_wanted(void) {
     static int w = -1;
-    if (w < 0) { const char *e = getenv("SSBU_RUNAHEAD"); int gfx_runahead(void); w = rgs_wanted() || (e ? (e[0] && e[0] != '0') : gfx_runahead()); }
+    if (w < 0) {
+        const char *e = getenv("SSBU_RUNAHEAD"); int gfx_runahead(void), game_rb_blocked(void);
+        int ra = e ? (e[0] && e[0] != '0') : gfx_runahead();
+        if (game_rb_blocked()) {
+            const char *rb = getenv("SSBU_RB_NET");
+            w = 0;
+            if (ra || (rb && rb[0] && rb[0] != '0')) CloseHandle(CreateThread(NULL, 0, ra_1305_note, ra ? (void *)1 : NULL, 0, NULL));
+        } else w = rgs_wanted() || ra;
+    }
     return w;
 }
 int r1_on(void) {
