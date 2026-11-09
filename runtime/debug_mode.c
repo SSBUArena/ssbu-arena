@@ -200,7 +200,12 @@ static void sq_eload_hook(Ctx *c, void *user) {
     if (step < 0) { const char *e = getenv("SSBU_SQ_STEP"); step = e && *e ? atoi(e) : 20; }
     uint64_t en = c->x[0], o = g_sq_obj;
     int64_t fc = o ? (int64_t)rd32(o + 0x112c) : 0;
-    int loading = en && rd8(en + 0x5920) == 3, waiting = en && en == base_en && base >= 0 && rd32(en + 0x13c) == 0xffffffffu && fc - base < 1200;      /* (after the files: its module, then the fighter put in the entry: + 0x13c -1 until then, runs t12 / t18; pair sq16a) */
+    int loading = en && rd8(en + 0x5920) == 3, waiting = en && en == base_en && base >= 0 && rd32(en + 0x13c) == 0xffffffffu && fc - base < 1200;
+    /* (research, SSBU_SQ_GATE01=1 with SSBU_BA_SQUAD_CSS=1; off by default) after "loaded" the entry waits at + 0x5920 = 1, then 6. Stepping
+     * that wait did not help (run cssr2: the 1 -> 6 of a fighter loaded ahead is written outside this function, frame 953 on A and 954 on B),
+     * and putting a 6 back to 1 until a step frame broke the game (cssr3: crash at the entry's next load; cssr4: 1 / 6 flip every frame) */
+    {   static int g01 = -1; if (g01 < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_GATE01"); g01 = e && e[0] == '1' && k && k[0] == '1'; }
+        if (g01 && en && rd8(en + 0x5920) == 1 && en == base_en && base >= 0 && fc - base < 1200) waiting = 1; }
     if (loading) g_sq_load_en = en;
     {   static int lg = -1; if (lg < 0) lg = getenv("SSBU_SQ_ELOG") != NULL;      /* (research) every change of a loading entry's states, real and re-run passes */
         static uint64_t last_en; static uint32_t last_v;
@@ -1197,6 +1202,8 @@ static void tc_match_hook(Ctx *c, void *user) {
     static unsigned calls; static uint64_t last_sc; static uint8_t last[0x400];
     uint64_t mgr = rd64(c->x[0]), m28 = mgr ? rd64(mgr + 0x28) : 0, sc = m28 ? rd64(m28 + 0x60) : 0;
     static int last_st = -2; int st_now = sc && rd64(sc + 0x58) ? (int)rd32(rd64(sc + 0x58) + 0x128) : -1;
+    {   static uint64_t prev_sc; if (prev_sc && !sc && mgr) { printf("[squadcss] matchup scene ended: result %u (byte 0x710530996f %u, Local Wireless byte %u, sequence %08x)\n", rd32(mgr + 0x40), rd8(GA(0x710530996fULL)), rd8(GA(0x71053040f4ULL)), rd32(GA(0x71053040f0ULL))); fflush(stdout); } prev_sc = sc; }
+    {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (!(d && atoi(d) >= 2)) { calls++; g_orig_tc_match(c); return; } }
     if (sc && (sc != last_sc || calls % 600 == 0 || st_now != last_st)) {
         last_st = st_now;
         uint8_t cur[0x400]; safe_read(sc, cur, sizeof cur);
@@ -1261,7 +1268,7 @@ static void fight_setup_hook(Ctx *c, void *user) {
 }
 static void bacss_init(void) {
     const char *e = getenv("SSBU_BA_SQUAD_CSS"); g_bacss = e && *e ? atoi(e) : 0;
-    {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 2) printf("[squadcss] RESEARCH: hook on the matchup wait 0x710233de20: id %d\n", hook_install(GA(0x710233de20ULL), tc_match_hook, NULL, &g_orig_tc_match)); }
+    {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 1) printf("[squadcss] RESEARCH: hook on the matchup wait 0x710233de20: id %d\n", hook_install(GA(0x710233de20ULL), tc_match_hook, NULL, &g_orig_tc_match)); }
     if (getenv("SSBU_DEBUG_SCENES")) printf("[squadcss] hook on the scene change: id %d\n", hook_install(GA(0x7103726120ULL), scene_change_hook, NULL, &g_orig_scene_change));
     if (g_bacss == 2) printf("[squadcss] EXPERIMENT: Battle Arena rooms' character select in the Squad Strike layout: hook %d\n", hook_install(GA(0x7102334f50ULL), vs_css_hook, NULL, &g_orig_vs_css));
     if (g_bacss == 1) printf("[squadcss] Battle Arena rooms play the game's own Squad Strike: hooks %d %d\n", hook_install(GA(0x710232f690ULL), local_launch_hook, NULL, &g_orig_local_launch), hook_install(GA(0x710233cfd0ULL), tc_css_hook, NULL, &g_orig_tc_css));
