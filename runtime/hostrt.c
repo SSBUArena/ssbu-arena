@@ -241,9 +241,14 @@ int game_rb_blocked(void) {
     if (g_game_build < 0) return 0;                     /* (not known yet: asked again later) */
     const char *e = getenv("SSBU_R1_1305"), *t = getenv("SSBU_R1_1305_TEST");      /* (TEST ONLY: on 13.0.4, as if it were 13.0.5 here) */
     int is5 = g_game_build == GAME_13_0_5 || (t && t[0] == '1');
-    int v = is5 && !(e && e[0] == '1');
+    /* (2026-11-09, with a 13.0.5 dump) default ON again: the main loop is the same code at +0x5b0 (call sites, save point,
+     * H1, the skipped kicks checked), run-ahead ran 2985 speculative passes clean on 13.0.5 and a 13.0.5 room pair with
+     * rollback was IDENTICAL; the online rollback had stopped at start on a missing table entry (937476a). The player's
+     * crash was not reproduced; plain run-ahead now has the retainer fixes of the rollback too (r1_state.c ra_init).
+     * SSBU_R1_1305=0: off on 13.0.5 as in ea22712 (popup, menu notes, launcher text). */
+    int v = is5 && e && e[0] == '0';
     if (InterlockedCompareExchange(&b, v, -1) == -1 && is5) {
-        printf("r1: game update 13.0.5: run-ahead and online rollback %s (SSBU_R1_1305=%s)\n", v ? "OFF, not supported on 13.0.5 yet" : "ON as on 13.0.4", e ? e : "not set");
+        printf("r1: game update 13.0.5: run-ahead and online rollback %s (SSBU_R1_1305=%s)\n", v ? "OFF (SSBU_R1_1305=0)" : "ON as on 13.0.4", e ? e : "not set");
         fflush(stdout);
     }
     return b;
