@@ -2915,7 +2915,13 @@ static int draw_prepare(unsigned prim) {
             uint32_t a = i < R.nattr ? R.vattr[i] : 0;
             int nf = (int)(a & 0xff), stream = (int)((a >> 8) & 31);
             VkFormat f = nf ? vertex_vkfmt(nf) : VK_FORMAT_UNDEFINED;
-            if (nf && !f) { static char msg[64]; snprintf(msg, sizeof msg, "vertex attribute format 0x%x", nf); nvn_vk_missing(msg); }
+            if (nf && !f) {   /* (2026-11-09) a format that is no vertex format (0x42 = BC1, a texture format, seen once in a rollback
+                               * room test, from a damaged attribute word): the attribute takes the constant binding below, as an
+                               * attribute the draw does not supply, instead of stopping the game. SSBU_VK_VFMT_STRICT=1: stop as before */
+                static int strict = -1; if (strict < 0) { const char *e = getenv("SSBU_VK_VFMT_STRICT"); strict = e && *e == '1'; }
+                if (strict) { static char msg[64]; snprintf(msg, sizeof msg, "vertex attribute format 0x%x", nf); nvn_vk_missing(msg); }
+                else { static uint8_t said[256]; if (!said[nf & 255]) { said[nf & 255] = 1; printf("nvn_vk_vfmt: vertex attribute format 0x%x is not a vertex format: attribute %d left to its constant value (SSBU_VK_VFMT_STRICT=1 stops here)\n", nf, i); fflush(stdout); } }
+            }
             if (nf && f) {   /* 2026-10-20 (render bugs V): each vertex format once in the log, with this GPU's support for it */
                 static uint8_t seen[256];
                 if (!seen[nf & 255]) { VkFormatProperties fp; memset(&fp, 0, sizeof fp); vkGetPhysicalDeviceFormatProperties(V.gpu, f, &fp); seen[nf & 255] = 1;
