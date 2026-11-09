@@ -175,6 +175,10 @@ uint64_t g_sq_obj; static ImportFn g_orig_sq_init;
 #endif
 int dm_bacss_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"); v = e && *e ? atoi(e) : BACSS_DEFAULT; } return v == 1; }
 int dm_bacss_native(void) { return dm_bacss_on() && rd32(GA(0x71053040f0ULL)) == 0x02020000u; }
+/* (run cshimgui, 2026-11-09: the ImGui squad of Battle Arena, SSBU_BA_SQUAD_CSS=0, DESYNC 850: the fighter loaded ahead stood by
+ * (status b7) a frame apart, the same race as the game's own squad) the hold / put / ready gates of a fighter loaded ahead act in
+ * EVERY squad match of a room; SSBU_SQ_GATES_ALL=0: only in the game's own Squad Strike (as in de3ffe3 .. b6ffb32) */
+static int sq_gates(void) { static int a = -1; if (a < 0) { const char *e = getenv("SSBU_SQ_GATES_ALL"); a = !(e && e[0] == '0'); } return a ? 1 : dm_bacss_native(); }
 void debug_watch(const uint64_t *addrs, int n);
 /* (Battle Arena) the next squad fighter's load at fixed frames. The fighter entry's own loading state machine 0x71006556b0 (entry
  * + 0x5920 = 3 while loading, sub-state + 0x591c 0 .. 0xe, the fighter put in the entry on the way (+ 0x13c -1 until then), + 0x5a80
@@ -229,9 +233,9 @@ static void sq_eload_hook(Ctx *c, void *user) {
      * Manager): DESYNC (cssn1 frame 1497, cssr1 1775, cssr2 954, cssr7 383). Outside a change of fighter, a 6 seen on a frame that is not
      * a step frame of the entry's loading is put back to 1 (once per load) and written again at its next step frame, the same frame on both
      * games. (cssr3: never written again: crash at the entry's next load; cssr4: put back again and again after the step frame.) */
-    {   static int h6 = -1; if (h6 < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_HOLD6"); (void)e; h6 = dm_bacss_on() && !(k && k[0] == '0'); }
+    {   static int h6 = -1; if (h6 < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_HOLD6"); (void)e; h6 = !(k && k[0] == '0'); }
         static uint64_t s1[4]; static int pend[4]; if (g_sq_hold_reset) { memset(s1, 0, sizeof s1); memset(pend, 0, sizeof pend); memset(g_h6arm, 0, sizeof g_h6arm); g_sq_hold_reset = 0; }
-        if (h6 && ek >= 0 && en && step > 0 && dm_bacss_native()) {
+        if (h6 && ek >= 0 && en && step > 0 && sq_gates()) {
             int chg = 0; uint8_t v = rd8(en + 0x5920);
             /* (run csst2, NETSIM=27, DESYNC 820) a fighter loaded ahead (loaded at step frame 811 on both games) while the OTHER side was in its
              * change after a KO (part + d10 state 3 from 805): its 1 -> 6 came in that change, was not held, and its standby fighter (status b7)
@@ -307,7 +311,7 @@ static void mod_ready_hook(Ctx *c, void *user) {
     (void)user; long long rbn_now(void); uint64_t o = c->x[0], ra = c->x[30];
     uint64_t save[32]; memcpy(save, c->x, sizeof save);
     g_orig_mod_ready(c);
-    if (g_rgate > 0 && g_sq_made && dm_bacss_native()) {
+    if (g_rgate > 0 && g_sq_made && sq_gates()) {
         long long fc = sq_fc(); if (fc >= 0 && fc < g_rg_last) memset(g_rg, 0, sizeof g_rg); if (fc >= 0) g_rg_last = fc;      /* (a new fight) */
         int k = 0; while (k < 16 && (!g_rg[k].o || g_rg[k].o != o)) k++;
         if (k < 16 && fc > 0) {
@@ -377,9 +381,9 @@ static void sq_put_hook(Ctx *c, void *user) {
      * ready: 3436 on A, 3437 on B; HOLD6 put it back to 1 later in the frame, after the standby fighter (status b7) had already begun on A:
      * DESYNC 3436 (also csst3 7431 / 897, csst2 820). Now while an entry is armed (loaded ahead, at 1) this function runs for parts out of a
      * change only on the step frames of that entry's loading, so the 6 and the standby fighter come at the same frame on both games. */
-    {   static int pg = -1; if (pg < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_PUTGATE"); (void)e; pg = dm_bacss_on() && !(k && k[0] == '0'); }
+    {   static int pg = -1; if (pg < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_PUTGATE"); (void)e; pg = !(k && k[0] == '0'); }
         static int step = -1; if (step < 0) { const char *e = getenv("SSBU_SQ_STEP"); step = e && *e ? atoi(e) : 20; }
-        if (pg && step > 0 && g_sq_obj && !(st0 >= 2 && st0 <= 4) && dm_bacss_native()) { int64_t fc = (int64_t)rd32(g_sq_obj + 0x112c);
+        if (pg && step > 0 && g_sq_obj && !(st0 >= 2 && st0 <= 4) && sq_gates()) { int64_t fc = (int64_t)rd32(g_sq_obj + 0x112c);
             for (int k = 0; k < 4; k++) if (g_h6arm[k].en && g_h6arm[k].base >= 0 && rd8(g_h6arm[k].en + 0x5920) == 1 && ((fc - g_h6arm[k].base) % step || fc == g_h6arm[k].base)) return; } }
     g_orig_sq_put(c);
     if (st0 >= 2 && st0 <= 4 && rd32(part + 0x60) != st0) { printf("[squad] change of fighter (part +%llx): state %u -> %u at fight frame %u\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
@@ -1602,7 +1606,7 @@ void debug_mode_init(void) {
     }
     if (g_hs_wanted || getenv("SSBU_SQ_TEST")) { int a = hook_install(GA(0x710157c100ULL), sq_init_hook, NULL, &g_orig_sq_init), b = hook_install(GA(0x7101589830ULL), sq_step_hook, NULL, &g_orig_sq_step), l = hook_install(GA(0x71006556b0ULL), sq_eload_hook, NULL, &g_orig_sq_eload), p = hook_install(GA(0x710158a360ULL), sq_put_hook, NULL, &g_orig_sq_put);      /* (Battle Arena) */
         printf("debug match: hooks on the squad object (init %d, change of fighter %d / %d, fighter load %d)\n", a, b, p, l);
-        {   const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_READYGATE"); (void)e; g_rgate = dm_bacss_on() && !(k && k[0] == '0'); }
+        {   const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_READYGATE"); (void)e; g_rgate = !(k && k[0] == '0'); }
         if (getenv("SSBU_SQ_MODLOG") || g_rgate > 0) printf("[squad] module hooks (log %s, ready at step frames %s) %d %d\n", getenv("SSBU_SQ_MODLOG") ? "on" : "off", g_rgate > 0 ? "on" : "off",
                                              hook_install(GA(0x71017e4940ULL), mod_take_hook, NULL, &g_orig_mod_take), hook_install(GA(0x71017e4790ULL), mod_ready_hook, NULL, &g_orig_mod_ready));
         if (getenv("SSBU_SQ_MODLOG")) printf("[squad] RESEARCH: module drop hook %d\n", hook_install(GA(0x71022b6f60ULL), mod_drop_hook, NULL, &g_orig_mod_drop)); }
