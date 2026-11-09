@@ -238,10 +238,18 @@ static void sq_eload_hook(Ctx *c, void *user) {
             if (pend[ek] && v == 1 && !((fc - base) % step) && fc != base) {
                 wr8(en + 0x5920, 6); pend[ek] = 0; s1[ek] = 0; v = 6;
                 printf("[squad] entry %llx: + 0x5920 6 written at fight frame %lld (step frame of its loading)\n", (unsigned long long)en, (long long)fc); fflush(stdout);
-            } else if (s1[ek] == en && v == 6 && !chg && base >= 0 && ((fc - base) % step || fc == base)) {
+            } else {
+            /* (runs csg4, csss1, csst3: crash 0xc0000005 reading 0x168 under f_71006b7ae0 at the next change of fighter; cssr3 the same after a
+             * 6 never written again) with SSBU_SQ_PUTGATE the only 6 still seen off a step frame comes from the put of a part IN its change
+             * (stepped by sq_gate: the same frame on both games); putting it back to 1 there left the entry half stood by. Now it is kept
+             * (SSBU_SQ_HOLD6REVERT=1: put back as before) */
+            static int rv = -1; if (rv < 0) { const char *e = getenv("SSBU_SQ_HOLD6REVERT"), *k = getenv("SSBU_SQ_PUTGATE"); rv = (e && e[0] == '1') || (k && k[0] == '0'); }
+            if (pend[ek] == 0 && s1[ek] == en && v == 6 && !rv) s1[ek] = 0;
+            else if (s1[ek] == en && v == 6 && !chg && base >= 0 && ((fc - base) % step || fc == base)) {
                 wr8(en + 0x5920, 1); pend[ek] = 1; s1[ek] = 0; v = 1;
                 printf("[squad] entry %llx: + 0x5920 6 at fight frame %lld (not a step frame): kept at 1 until the next step frame\n", (unsigned long long)en, (long long)fc); fflush(stdout);
             } else if (s1[ek] == en && v == 6) s1[ek] = 0;
+            }
             if (s1[ek] == en && base >= 0 && fc - base >= 1200) s1[ek] = 0;
             if (pend[ek] || s1[ek] == en) waiting = 1;      /* (the base is kept while it waits) */
             if (pend[ek] || s1[ek] == en) { g_h6arm[ek].en = en; g_h6arm[ek].base = base; } else if (g_h6arm[ek].en == en) g_h6arm[ek].en = 0;
