@@ -50,7 +50,7 @@ void cxxrt_mem_changed(uint64_t base, uint64_t size);
  * of main (segments, relocation and symbol tables, init array) is read from main.elf at load, not written down. */
 enum { GAME_13_0_4, GAME_13_0_5 };
 extern int g_game_build;
-const char *game_build_name(int b);           /* "13.0.4", "13.0.5" */
+const char *game_build_label(int b);           /* "13.0.4", "13.0.5" */
 int game_xver(void);                          /* (cross-version) 1 = online play with the other builds of the family (SSBU_XVER, default on) */
 int game_xver_with(int other);                /* 1 = a game of build other can play an online match with this one */
 extern volatile long g_host_exiting;          /* the player asked to exit or restart: faults are not reported (hostrt.c crash_filter) */

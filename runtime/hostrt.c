@@ -275,7 +275,7 @@ int game_rb_blocked(void) {
  * main's code differs (13.0.5: the handling of invalid data received online). The lobby sees them as one build
  * (net_relay.c: build id "...-13.0.x") and the rollback handshake accepts the other one (rb_net.c hs_check).
  * SSBU_XVER=0: each build plays only with itself, as before (build id "...-13.0.4" / "...-13.0.5"). */
-const char *game_build_name(int b) { return b == GAME_13_0_5 ? "13.0.5" : b == GAME_13_0_4 ? "13.0.4" : "unknown"; }
+const char *game_build_label(int b) { return b == GAME_13_0_5 ? "13.0.5" : b == GAME_13_0_4 ? "13.0.4" : "unknown"; }
 static int xver_member(int b) { return b == GAME_13_0_4 || b == GAME_13_0_5; }
 int game_xver(void) {                                   /* 1 = this game plays with the other builds of its family */
     static volatile LONG x = -1;
@@ -284,7 +284,7 @@ int game_xver(void) {                                   /* 1 = this game plays w
     const char *e = getenv("SSBU_XVER");
     int v = xver_member(g_game_build) && !(e && e[0] == '0');
     if (InterlockedCompareExchange(&x, v, -1) == -1) {
-        printf("xver: game update %s: online play with %s (SSBU_XVER=%s)\n", game_build_name(g_game_build),
+        printf("xver: game update %s: online play with %s (SSBU_XVER=%s)\n", game_build_label(g_game_build),
                v ? "13.0.4 and 13.0.5 as one version" : "the same game update only", e ? e : "not set");
         fflush(stdout);
     }

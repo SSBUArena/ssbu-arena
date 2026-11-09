@@ -60,6 +60,35 @@ bss moved by exactly one page (+0x1000).
 - `main`'s layout fields (`g_main`) replace the constants that described it: the init array in `boot.c` and in the C++
   runtime self-test, the start of the data segment in the image-protection check of `nnmisc.c`.
 
+## Playing online across builds (cross-version)
+
+13.0.4 and 13.0.5 play online together, rollback included, as if they were one version (`SSBU_XVER`, default on;
+`runtime/hostrt.c` `game_xver`). What was compared (2026-11-09, `tools/port/arc_cmp.py` and the segment check below):
+
+- `data.arc`: the same 590,711 paths at the same offsets with the same sizes; the stored bytes of one file differ:
+  `pokemon/togedemaru/motion/body/c00/end.nuanmb` (the Poke Ball Pokemon's exit animation), where 29 one-frame
+  material / visibility tracks (types vector, bool, float, texture, pattern; no bone transform) changed their constant
+  encoding from 5 to 2. Nothing that moves a fighter, a hitbox or a stage: rendering only.
+- `main`'s read-only data and data: every differing word is an address that moved (by +0x1000 for data, by the code
+  shift for pointers to code, and the relative offsets of jump tables and unwind tables by their difference).
+- `main`'s code: 8 functions changed size (13.0.4 addresses 0x169bef0, 0x178ab60 and 0x1799860 near the character
+  select's slot code, 0x18393d0, 0x23108b0, 0x2633c90 `create_stage`, 0x2b4d3c0 near the stage builder's, 0x2d33e90), all
+  else moved unchanged; this fits Nintendo's note (checks on data received online).
+- The rollback checksum (fighter_host.c: fighter entry, status, motion hash, frame, position, damage, the random
+  generators' words, the pads) holds values, not addresses.
+- Room pairs 13.0.4 against 13.0.5 with rollback (two matches each, NETSIM 0 and 27, and Squad Strike): IDENTICAL.
+
+How: the build id sent to the lobby is `ssbu-recomp-ldn1-13.0.x` for both (the lobby, the in-game LAN lobby and
+matchmaking part players by an exact build id, so no server change), and the rollback handshake (`rb_net.c` hs_check)
+accepts the other build of the family (log `[rbnet] handshake: cross-version match: game update 13.0.4 here, 13.0.5
+there`). The game's own Local Wireless room join works across the two as is. `SSBU_XVER=0`: build id `-13.0.4` /
+`-13.0.5` and the handshake refuses another build, as before; a game with `SSBU_XVER=0` and one without never see each
+other's rooms. Players of an older release (build id `-13.0.4` / `-13.0.5`) are in a part of their own, as before.
+
+Replays (`.ssbv`, the launcher's viewer) hold ids (ui_chara / motion hash40, kinds, stage ids) and positions, no
+addresses; `game_build` in the header is information only. The two games' files of a cross-version match have the same
+fighters, objects and frames (the stage-line scan of the first frames differs between any two games, also of one build).
+
 ## Checking the table on your own dump
 
 ```

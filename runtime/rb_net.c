@@ -298,10 +298,10 @@ static void hs_head(RbhMsg *m, int type) { memset(m, 0, sizeof *m); m->type = (u
 static void hs_send(const void *p, int n) { if (net_rb_send(p, n)) g_hs_tx++; }
 static int hs_check(const RbhMsg *m, char *why, size_t n) {           /* 0 = the other game cannot play this match with us */
     if (m->proto != RBH_PROTO) { snprintf(why, n, "handshake protocol %d here, %d there", RBH_PROTO, m->proto); return 0; }
-    int game_xver_with(int other); const char *game_build_name(int b);
+    int game_xver_with(int other); const char *game_build_label(int b);
     if (m->game_build != (int16_t)g_game_build && !game_xver_with(m->game_build)) {      /* (cross-version: SSBU_XVER, hostrt.c) */
-        snprintf(why, n, "game update %s here, %s there (build %d / %d): both players need the same game version", game_build_name(g_game_build), game_build_name(m->game_build), g_game_build, m->game_build); return 0; }
-    if (m->game_build != (int16_t)g_game_build) { static int said; if (!said) { said = 1; printf("[rbnet] handshake: cross-version match: game update %s here, %s there (SSBU_XVER)\n", game_build_name(g_game_build), game_build_name(m->game_build)); fflush(stdout); } }
+        snprintf(why, n, "game update %s here, %s there (build %d / %d): both players need the same game version", game_build_label(g_game_build), game_build_label(m->game_build), g_game_build, m->game_build); return 0; }
+    if (m->game_build != (int16_t)g_game_build) { static int said; if (!said) { said = 1; printf("[rbnet] handshake: cross-version match: game update %s here, %s there (SSBU_XVER)\n", game_build_label(g_game_build), game_build_label(m->game_build)); fflush(stdout); } }
     return 1;
 }
 static void hs_refuse(uint32_t echo, const char *why) {
