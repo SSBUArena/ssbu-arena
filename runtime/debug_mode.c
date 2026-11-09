@@ -195,6 +195,10 @@ static void sq_eload_hook(Ctx *c, void *user) {
     int64_t fc = o ? (int64_t)rd32(o + 0x112c) : 0;
     int loading = en && rd8(en + 0x5920) == 3, waiting = en && en == base_en && base >= 0 && rd32(en + 0x13c) == 0xffffffffu && fc - base < 1200;      /* (after the files: its module, then the fighter put in the entry: + 0x13c -1 until then, runs t12 / t18; pair sq16a) */
     if (loading) g_sq_load_en = en;
+    {   static int lg = -1; if (lg < 0) lg = getenv("SSBU_SQ_ELOG") != NULL;      /* (research) every change of a loading entry's states, real and re-run passes */
+        static uint64_t last_en; static uint32_t last_v;
+        if (lg && en && en == g_sq_load_en) { long long rbn_now(void); uint32_t v = rd8(en + 0x5920) | (uint32_t)rd8(en + 0x591c) << 8 | (rd32(en + 0x13c) == 0xffffffffu ? 0x10000u : 0) | (uint32_t)rd8(en + 0x5921) << 24;
+            if (en != last_en || v != last_v) { printf("[squad] entry %llx at frame %lld (fight %lld): + 0x5920 %02x + 0x591c %02x + 0x5921 %02x%s\n", (unsigned long long)en, rbn_now(), (long long)fc, v & 255, v >> 8 & 255, v >> 24, v & 0x10000 ? " (not in the entry)" : ""); fflush(stdout); last_en = en; last_v = v; } } }
     if (step <= 0 || !g_sq_made || !en || !o || !(loading || waiting)) { if (en == base_en) base = -1; g_orig_sq_eload(c); return; }
     if (base < 0 || en != base_en || base > fc) { base = fc; base_en = en; }
     if ((fc - base) % step || fc == base) { g_sq_eload_n++; return; }      /* (the first step one period in: the frames before it run without guesses, rb_rollback.c rbg_squad_lock) */      /* (not a step frame: the entry's loading waits, as if its request were not done) */
@@ -239,6 +243,7 @@ static void sq_step_hook(Ctx *c, void *user) {
     (void)user; uint64_t part = c->x[0]; uint32_t st0 = g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 ? rd32(part + 0x60) : 0;
     if (!sq_gate(c, "step")) return;
     g_orig_sq_step(c);
+    if (getenv("SSBU_SQ_ELOG") && g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 && rd32(part + 0x60) != st0) { long long rbn_now(void); printf("[squad] part +%llx state %u -> %u at frame %lld (fight %u)\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rbn_now(), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
     if (st0 >= 2 && st0 <= 4 && rd32(part + 0x60) != st0) { printf("[squad] change of fighter (part +%llx): state %u -> %u at fight frame %u\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
 }
 static void sq_put_hook(Ctx *c, void *user) {
