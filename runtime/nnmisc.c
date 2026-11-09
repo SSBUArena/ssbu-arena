@@ -826,7 +826,7 @@ static void socket_swap32(Ctx *c) { RET(bswap32((uint32_t)A0)); }
 
 /* nn::oe::GetDisplayVersion(DisplayVersion *): char[16], the version string of the running update (the build main.elf is,
  * hostrt.c). ARCropolis installs nothing unless it knows the version ([doc] nnsdk-rs oe.rs DisplayVersion { name: [u8; 16] }). */
-static void oe_GetDisplayVersion(Ctx *c) { memset((void *)(uintptr_t)A0, 0, 16); memcpy((void *)(uintptr_t)A0, g_game_build == GAME_13_0_5 ? "13.0.5" : "13.0.4", 6); }
+static void oe_GetDisplayVersion(Ctx *c) { memset((void *)(uintptr_t)A0, 0, 16); memcpy((void *)(uintptr_t)A0, game_build_name(), 6); }
 static void oe_ExitApplication(Ctx *c) {
     printf("\na plugin asked the application to exit (nn::oe::ExitApplication, caller 0x%llx): stopping.\n", (unsigned long long)c->x[30] - 4);
     trace_printf("nn::oe::ExitApplication (caller 0x%llx)\n", (unsigned long long)c->x[30] - 4);

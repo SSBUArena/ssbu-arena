@@ -10,18 +10,21 @@
 #include "hostrt.h"
 
 #define FILE_OFF 0x1000ULL
-#define IMAGE_SIZE 0x7500000ULL          /* the whole image with bss: 13.0.4 and 13.0.5 both end below it */
+#define IMAGE_SIZE 0x7500000ULL          /* the whole image with bss: 13.0.2, 13.0.4 and 13.0.5 all end below it */
 
 /* ---------------------------------------------------------------- game builds (docs/VERSIONS.md)
  * The layout of main is read from main.elf (load_layout): its PT_LOAD segments (nso2elf.py writes text, read-only data,
  * data with bss) and the dynamic section MOD0 points to. 13.0.4: text 0x0..0x39c7e90, read-only data from 0x39c8000, data
  * from 0x4f16000, 0x52a8570 bytes in the file; RELA 0x39c8070 / 0x7ad0d8, JMPREL 0x4175148 / 0xc600, SYMTAB 0x4197610,
  * INIT_ARRAY 0x52a7be0 / 0x990 (the constants this replaces). 13.0.5 (update v2031616): text 0x39c8440, everything after
- * it one page (0x1000) later with the same sizes.
- * GA(a): the running build's address of the 13.0.4 address a. Read-only data, data and bss moved as whole segments, so
- * those addresses move by the page; code moved by different amounts in different places (13.0.5 changed a handful of
+ * it one page (0x1000) later with the same sizes. 13.0.2 (update v1835008): text 0x39c7a90, read-only data at the same
+ * 0x39c8000 but 0x140 bytes longer (parts of it moved by 0 to +0x1c0; the relocation and symbol tables at its start did
+ * not move), data and bss one page later with the same sizes.
+ * GA(a): the running build's address of the 13.0.4 address a (g_builds below says how, build by build). On 13.0.5
+ * read-only data, data and bss moved as whole segments, so those addresses move by the page; on 13.0.2 data and bss
+ * do, and each read-only data address is in g_ro_13_0_2; code moved by different amounts in different places (13.0.5 changed a handful of
  * functions), so a code address must be in g_code_13_0_5, where each entry was found and checked as docs/VERSIONS.md says
- * (tools/port/verify_13_0_5.py repeats the check on a dump). A code address missing from it stops the program: calling the
+ * (tools/port/verify_build.py repeats the check on a dump; g_code_13_0_2 likewise). A code address missing from it stops the program: calling the
  * wrong function silently would be worse. */
 int g_game_build = -1;                               /* set by load_layout */
 MainLayout g_main;
@@ -29,7 +32,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     /* (the entries marked "starts") each 13.0.5 address is a function start of 13.0.5's .eh_frame_hdr, and the 16 lifted
      * 13.0.4 functions around it (tools/lifter/coverage/13.0.4.txt) start there at the same delta; the entries "found on the
      * 13.0.5 dump" were checked on a real 13.0.5 main.elf: the fingerprint of ga_sig_13_0_4.inc is unique there and
-     * verify_13_0_5.py's neighbours agree */
+     * verify_build.py's neighbours agree */
     {0x0382a0, 0x0382a0},       /* FUN_71000382a0 (nvn_gl.c), 2,884 bytes in both */
     {0x047d20, 0x047d20},       /* clock read return address (nnsdk.c, fixed seed) */
     {0x07f870, 0x07f870},     /* the HUD font job (r1_state.c SSBU_RB_FONTWAIT); found on the 13.0.5 dump */
@@ -173,10 +176,180 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x39a4040, 0x39a45f0},     /* zstd: decompress stream (nvn_vk_store.c) */
     {0x39bfb30, 0x39c00e0}, /* raw copy of uncompressed files (loose_files.c) */
 };
-/* A code address missing from g_code_13_0_5: the same code near it in the 13.0.5 image (tools/port/ga_sigs.py). Each
+/* 13.0.2 (2026-11-09, on a real 13.0.2 dump): every code address the sources name. Each was found by its fingerprint
+ * (ga_sig_13_0_4.inc: one place within +-0x1000) and the same-size functions of the decompilation on both sides of it
+ * line up in 13.0.2's unwind table at the same delta (tools/port/verify_build.py --build 13.0.2: all checks passed).
+ * Code moved little: 0 up to 0x17f4ac0, then -0x20, +0x250 from 0x33049d0, -0x400 from 0x35a3e80 to the end. */
+static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets from GUEST_BASE, sorted by the first */
+    {0x0382a0, 0x0382a0},     /* FUN_71000382a0 (nvn_gl.c) */
+    {0x047d20, 0x047d20},     /* clock read return address (nnsdk.c, fixed seed) */
+    {0x07f870, 0x07f870},     /* the HUD font job (r1_state.c SSBU_RB_FONTWAIT) */
+    {0x081980, 0x081980},     /* allocation site, caller of a 1.4 MB block (rb_learned.c, the presentation pool) */
+    {0x0a3fd8, 0x0a3fd8},     /* allocation site, caller of an 8 MB block (rb_learned.c) */
+    {0x138534, 0x138534},     /* clock read return address (nnsdk.c, fixed seed) */
+    {0x2c55e0, 0x2c55e0},     /* nninitStartup */
+    {0x2c5620, 0x2c5620},     /* nnMain */
+    {0x45b940, 0x45b940},     /* replay clear-all (fighter_host.c) */
+    {0x45b980, 0x45b980},     /* replay clear (fighter_host.c) */
+    {0x653240, 0x653240},     /* entry set-up (debug_mode.c) */
+    {0x6556b0, 0x6556b0},     /* squad element load (debug_mode.c) */
+    {0x134c690, 0x134c690},     /* fight scene clean-up (debug_mode.c, room rollback) */
+    {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
+    {0x14d8620, 0x14d8620},     /* Battle Arena squad (debug_mode.c) */
+    {0x14e58f0, 0x14e58f0},     /* battle builder (competitive.c) */
+    {0x1519430, 0x1519430},     /* hook self-test function (hook_host.c) */
+    {0x157c100, 0x157c100},     /* squad init (debug_mode.c) */
+    {0x1589830, 0x1589830},     /* squad step (debug_mode.c) */
+    {0x158a360, 0x158a360},     /* squad hook 4 (debug_mode.c) */
+    {0x1685cb0, 0x1685cb0},     /* Battle Arena squad (debug_mode.c) */
+    {0x1698160, 0x1698160},     /* Battle Arena squad (debug_mode.c) */
+    {0x16ccae0, 0x16ccae0},     /* input delay of a local-wireless match (ldn_online.inc) */
+    {0x16ea430, 0x16ea430},     /* Battle Arena squad (debug_mode.c) */
+    {0x1780440, 0x1780440},     /* match controls set-up (debug_mode.c, room rollback: each player's own controls) */
+    {0x1788260, 0x1788260},     /* player record builder (debug_mode.c) */
+    {0x17911dc, 0x17911dc},     /* return address of the room's waiting-stage record build (debug_mode.c) */
+    {0x179d0a0, 0x179d0a0},     /* the game's clear of the squad table (debug_mode.c) */
+    {0x179e440, 0x179e440},     /* select screen table entry copy (debug_mode.c, R3 online: player 2's panel) */
+    {0x17df5f0, 0x17df5f0},     /* path sub-builder (newmodule_host.c) */
+    {0x17dfe50, 0x17dfe50},     /* path sub-builder 2 (newmodule_host.c) */
+    {0x17e4790, 0x17e4790},     /* Battle Arena squad (debug_mode.c) */
+    {0x17e4940, 0x17e4940},     /* Battle Arena squad (debug_mode.c) */
+    {0x197c2f0, 0x197c2d0},     /* Battle Arena squad (debug_mode.c) */
+    {0x197d5f0, 0x197d5d0},     /* Battle Arena squad (debug_mode.c) */
+    {0x1af97f0, 0x1af97d0},     /* PalletMenu layout controller (competitive.c comp_pallet_ready, and a function pointer comp_pallet checks) */
+    {0x1af9ee0, 0x1af9ec0},     /* the other function pointer comp_pallet checks (competitive.c) */
+    {0x1bef020, 0x1bef000},     /* the Lua C function behind prg_func.open_pallet (competitive.c comp_open_local) */
+    {0x1ea04d0, 0x1ea04b0},     /* formatter (newmodule_host.c) */
+    {0x22b67d4, 0x22b67b4},     /* worker return address (newmodule_host.c) */
+    {0x22b6f60, 0x22b6f40},     /* Battle Arena squad (debug_mode.c) */
+    {0x22dc3d0, 0x22dc3b0},     /* skipped function 3 */
+    {0x22dec30, 0x22dec10},     /* skipped function 2 */
+    {0x22df110, 0x22df0f0},     /* skipped function 1 */
+    {0x2311f00, 0x2311ee0},     /* Battle Arena squad (debug_mode.c) */
+    {0x2312620, 0x2312600},     /* Battle Arena squad (debug_mode.c) */
+    {0x232ce40, 0x232ce20},     /* menu hook of the Arena UI (competitive.c comp_menu) */
+    {0x232f690, 0x232f670},     /* Battle Arena squad (debug_mode.c) */
+    {0x23343e0, 0x23343c0},     /* Smash versus: Rulesets state (competitive.c) */
+    {0x2334f50, 0x2334f30},     /* Battle Arena squad (debug_mode.c) */
+    {0x23353d0, 0x23353b0},     /* Smash versus: stage state (competitive.c) */
+    {0x233cfd0, 0x233cfb0},     /* Battle Arena squad (debug_mode.c) */
+    {0x233de20, 0x233de00},     /* Battle Arena squad (debug_mode.c) */
+    {0x2349480, 0x2349460},     /* Battle Arena squad (debug_mode.c) */
+    {0x235cbf0, 0x235cbd0},     /* scene dispatcher (competitive.c) */
+    {0x32384c0, 0x32384a0},     /* fighter picture path (newmodule_host.c) */
+    {0x3261d60, 0x3261d40},     /* name_id getter (newmodule_host.c) */
+    {0x353e330, 0x353e580},     /* path -> file index (newmodule_host.c) */
+    {0x35444c0, 0x3544710},     /* resource service inflate thread: start (loose_files.c) */
+    {0x3544d88, 0x3544fd8},     /* inflate thread call site (loose_files.c) */
+    {0x3544e18, 0x3545068},     /* inflate thread call site 2 (loose_files.c) */
+    {0x3545198, 0x35453e8},     /* inflate thread call site 3 (loose_files.c) */
+    {0x35456d8, 0x3545928},     /* and the end of its range (loose_files.c) */
+    {0x3548240, 0x3548490},     /* job runner (r1_ring.c, profile 2) */
+    {0x3549170, 0x35493c0},     /* worker kick 2 (r1_state.c) */
+    {0x354a5ac, 0x354a7fc},     /* task workers' idle wait, a return address (r1_ring.c); the 17 lifted starts around it at +0x5b0 */
+    {0x354c720, 0x354c970},     /* worker kick (r1_state.c) */
+    {0x3559e08, 0x355a058},     /* allocation site of an 8 MB block (rb_learned.c) */
+    {0x355b540, 0x355b790},     /* EffectManager update (r1_ring.c, profile 2) */
+    {0x3569c70, 0x3569ec0},     /* pad sentinel reset (r1_ring.c, profile 2) */
+    {0x356d7a0, 0x356d9f0},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3575c60, 0x3575eb0},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3575fa0, 0x35761f0},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x35763c0, 0x3576610},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3593c40, 0x3593e90},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x35b5c50, 0x35b5850},     /* ostringstream code (cxxrt_selftest.h) */
+    {0x35c13d0, 0x35c0fd0},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x36186d0, 0x36182d0},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3618b80, 0x3618780},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3618ef0, 0x3618af0},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3619080, 0x3618c80},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x361d040, 0x361cc40},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x361e7e0, 0x361e3e0},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3632850, 0x3632450},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x36676e0, 0x36672e0},     /* input poll (r1_ring.c, profile 2) */
+    {0x366d1f0, 0x366cdf0},     /* clock read return address (nnsdk.c, fixed seed) */
+    {0x366d388, 0x366cf88},     /* clock read return address (nnsdk.c, fixed seed) */
+    {0x36e6e00, 0x36e6a00},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x36f2814, 0x36f2414},     /* call site (os_threads.c) */
+    {0x36f2c00, 0x36f2800},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x36f2d40, 0x36f2940},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x36f6070, 0x36f5c70},     /* movie audio output Flush (nnmovie_mf.c) */
+    {0x36f7410, 0x36f7010},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3724a80, 0x3724680},     /* task tree walker (r1_ring.c, profile 2) */
+    {0x3726120, 0x3725d20},     /* Battle Arena squad (debug_mode.c) */
+    {0x3747270, 0x3746e70},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3747b10, 0x3747710},     /* main loop: return address of the Lua collector step (rb_rollback.c) */
+    {0x3747b7c, 0x374777c},     /* render loop call site (r1_state.c) */
+    {0x37494fc, 0x37490fc},     /* render loop call site, workers hold (r1_state.c) */
+    {0x3749598, 0x3749198},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x3749b24, 0x3749724},     /* render loop: run-ahead save point (r1_state.c) */
+    {0x374b4f8, 0x374b0f8},     /* render loop: preparation call (r1_state.c) */
+    {0x374b528, 0x374b128},     /* render loop: preparation call 2 (r1_state.c) */
+    {0x374b558, 0x374b158},     /* render loop: preparation call 3 (r1_state.c) */
+    {0x374c0d8, 0x374bcd8},     /* render loop: render call (r1_state.c) */
+    {0x374c398, 0x374bf98},     /* render loop: logic call (r1_state.c) */
+    {0x374c5b8, 0x374c1b8},     /* render loop: logic call 2 (r1_state.c) */
+    {0x374e000, 0x374dc00},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x375ea70, 0x375e670},     /* input dispatch (r1_ring.c, profile 2) */
+    {0x3760cf8, 0x37608f8},     /* allocation site of the 1.4 MB blocks (rb_learned.c) */
+    {0x37857f0, 0x37853f0},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x37a3ea0, 0x37a3aa0},     /* message text (newmodule_host.c) */
+    {0x37a3fc0, 0x37a3bc0},     /* message label exists (newmodule_host.c) */
+    {0x37df7e0, 0x37df3e0},     /* SRV destructor (r1_ring.c SRVDIAG) */
+    {0x37df8b0, 0x37df4b0},     /* SRV destructor 2 (r1_ring.c SRVDIAG) */
+    {0x37f0590, 0x37f0190},     /* submission step (r1_state.c) */
+    {0x38156f0, 0x38152f0},     /* binding retainer clear (r1_ring.c SSBU_RB_RETAINFIX) */
+    {0x3816944, 0x3816544},     /* allocation site of the graphics 16 MB buffer (rb_learned.c) */
+    {0x3817170, 0x3816d70},     /* binding retainer fill (r1_ring.c SSBU_RB_RETAINGEN) */
+    {0x3817f90, 0x3817b90},     /* binding retainer fill 2 (r1_ring.c SSBU_RB_RETAINGEN) */
+    {0x3828300, 0x3827f00},     /* function with catch (...) (cxxrt_selftest.h) */
+    {0x382b690, 0x382b290},     /* call site in it */
+    {0x382cb34, 0x382c734},     /* its landing pad */
+    {0x3839a10, 0x3839610},     /* function with catch (std::ios_base::failure &) (cxxrt_selftest.h) */
+    {0x3839b94, 0x3839794},     /* call site in it */
+    {0x3839de8, 0x38399e8},     /* its landing pad */
+    {0x3864700, 0x3864300},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x38697e0, 0x38693e0},     /* EH main test function (nnsdk2.c) */
+    {0x386fc30, 0x386f830},     /* graphics frame end (fighter_host.c, SSBU_DETERMINISTIC) */
+    {0x38fae10, 0x38faa10},     /* luaD_throw */
+    {0x38faf00, 0x38fab00},     /* luaD_rawrunprotected */
+    {0x38fe690, 0x38fe290},     /* Lua collector step (rb_rollback.c rbg_gc_hook) */
+    {0x392dc40, 0x392d840},     /* jemalloc posix_memalign (rb_learned.c) */
+    {0x392dce0, 0x392d8e0},     /* je_aligned_alloc (the game's memalign) */
+    {0x392dd80, 0x392d980},     /* jemalloc realloc (rb_learned.c) */
+    {0x392e590, 0x392e190},     /* free_default (the game's free) */
+    {0x392e8a0, 0x392e4a0},     /* jemalloc malloc_size (rb_learned.c) */
+    {0x3931cb0, 0x39318b0},     /* jemalloc, the alloc check's arena hook (debug_mode.c ac_fill_hook) */
+    {0x3931e50, 0x3931a50},     /* jemalloc extent_nfree_get (debug_mode.c, alloc check) */
+    {0x39a3e70, 0x39a3a70},     /* zstd: free stream (nvn_vk_store.c) */
+    {0x39a4040, 0x39a3c40},     /* zstd: decompress stream (nvn_vk_store.c) */
+    {0x39bfb30, 0x39bf730},     /* raw copy of uncompressed files (loose_files.c): the PLT stub of memcpy, no fingerprint: its GOT slot is memcpy's in both */
+};
+/* 13.0.2's read-only data starts where 13.0.4's does but parts of it moved by different amounts (0 before 0x452ac40,
+ * then +0x190..+0x1c0, +0x140 at the end): each address is listed, found by its bytes and by the code that forms it */
+static const uint64_t g_ro_13_0_2[][2] = {
+    {0x4470aa8, 0x4470aa8},     /* shader stage offsets table (nvn_vk_m4.c) */
+    {0x4862158, 0x4862318},     /* jemalloc bin infos (debug_mode.c, alloc check) */
+};
+/* What GA() does on each build (indexed by GAME_13_0_*): the code table, and the read-only data table or the one delta
+ * of that segment; data and bss move by data_delta. 13.0.4 is the reference (no table: identity). */
+typedef struct { const char *name; uint64_t text_size; const uint64_t (*code)[2]; size_t ncode; const uint64_t (*ro)[2]; size_t nro;
+                 int64_t ro_delta, data_delta; } GameBuild;
+#define N_(t) (sizeof t / sizeof t[0])
+static const GameBuild g_builds[] = {
+    [GAME_13_0_4] = {"13.0.4", 0x39c7e90, NULL, 0, NULL, 0, 0, 0},
+    [GAME_13_0_5] = {"13.0.5", 0x39c8440, g_code_13_0_5, N_(g_code_13_0_5), NULL, 0, 0x1000, 0x1000},
+    [GAME_13_0_2] = {"13.0.2", 0x39c7a90, g_code_13_0_2, N_(g_code_13_0_2), g_ro_13_0_2, N_(g_ro_13_0_2), 0, 0x1000},
+};
+const char *game_build_name(void) { return g_game_build >= 0 && g_game_build < (int)N_(g_builds) ? g_builds[g_game_build].name : "?"; }
+static int64_t ga_lookup(const uint64_t (*t)[2], size_t n, uint64_t o) {      /* the table's offset for o, or -1 */
+    int lo = 0, hi = (int)n - 1;
+    while (lo <= hi) { int mid = (lo + hi) / 2; if (t[mid][0] == o) return (int64_t)t[mid][1]; if (t[mid][0] < o) lo = mid + 1; else hi = mid - 1; }
+    return -1;
+}
+/* A code address missing from the build's table: the same code near it in the image that runs (tools/port/ga_sigs.py). Each
  * fingerprint is FNV-1a 64 over n masked instruction words from the address (back words before it); the place within
- * +-0x1000 whose hash is the 13.0.4 one, if there is exactly one, is the address on 13.0.5 (code moved by at most
- * +-0x5b0). The masking must stay the same as ga_sigs.py's. SSBU_GA_CHECK=1 checks every table entry against the search. */
+ * +-0x1000 whose hash is the 13.0.4 one, if there is exactly one, is the address in this build (code moved by at most
+ * +0x5b0 on 13.0.5, -0x400..+0x250 on 13.0.2). The masking must stay the same as ga_sigs.py's. SSBU_GA_CHECK=1 checks every table entry against the search. */
 static const struct { uint32_t a; uint8_t back, n; uint64_t h; } g_ga_sig[] = {
 #include "ga_sig_13_0_4.inc"
 };
@@ -203,7 +376,7 @@ static uint64_t ga_hash(uint64_t at, int n) {
     }
     return h;
 }
-/* the 13.0.5 offset of 13.0.4 code offset o found by its code, or -1 (no fingerprint, or no place or more than one) */
+/* the offset in this build of 13.0.4 code offset o found by its code, or -1 (no fingerprint, or no place or more than one) */
 static int64_t ga_find(uint64_t o) {
     int lo = 0, hi = (int)(sizeof g_ga_sig / sizeof g_ga_sig[0]) - 1, k = -1;
     while (lo <= hi) { int mid = (lo + hi) / 2; if (g_ga_sig[mid].a == o) { k = mid; break; } if (g_ga_sig[mid].a < o) lo = mid + 1; else hi = mid - 1; }
@@ -222,14 +395,18 @@ static struct { uint64_t o, r; } g_ga_found[256]; static volatile LONG g_ga_nfou
 uint64_t ga(uint64_t a) {
     if (g_game_build < 0) { printf("\nGA: game address %llx asked for before main.elf was read: stopping\n", (unsigned long long)a); report_and_exit(8); }
     if (g_game_build == GAME_13_0_4 || a < GUEST_BASE || a >= GUEST_BASE + IMAGE_SIZE) return a;
+    const GameBuild *b = &g_builds[g_game_build];
     uint64_t o = a - GUEST_BASE;
-    if (o >= 0x39c8000) return a + 0x1000;            /* 13.0.4's read-only data, data and bss: one page later */
-    int lo = 0, hi = (int)(sizeof g_code_13_0_5 / sizeof g_code_13_0_5[0]) - 1;
-    while (lo <= hi) {
-        int mid = (lo + hi) / 2;
-        if (g_code_13_0_5[mid][0] == o) return GUEST_BASE + g_code_13_0_5[mid][1];
-        if (g_code_13_0_5[mid][0] < o) lo = mid + 1; else hi = mid - 1;
+    if (o >= 0x4f16000) return a + (uint64_t)b->data_delta;       /* 13.0.4's data and bss */
+    if (o >= 0x39c8000) {                                           /* 13.0.4's read-only data */
+        if (!b->ro) return a + (uint64_t)b->ro_delta;
+        int64_t r = ga_lookup(b->ro, b->nro, o);
+        if (r >= 0) return GUEST_BASE + (uint64_t)r;
+        printf("\nGA: the 13.0.4 read-only data address %llx has no %s counterpart in hostrt.c (g_ro_%s): stopping\n", (unsigned long long)a, b->name, b->name);
+        report_and_exit(8);
     }
+    int64_t t = ga_lookup(b->code, b->ncode, o);
+    if (t >= 0) return GUEST_BASE + (uint64_t)t;
     for (LONG i = 0; i < g_ga_nfound; i++) if (g_ga_found[i].o == o) return GUEST_BASE + g_ga_found[i].r;
     int64_t r = ga_find(o);
     if (r >= 0) {
@@ -237,11 +414,11 @@ uint64_t ga(uint64_t a) {
         LONG n = g_ga_nfound;
         if (n < (LONG)(sizeof g_ga_found / sizeof g_ga_found[0])) { g_ga_found[n].o = o; g_ga_found[n].r = (uint64_t)r; InterlockedExchange(&g_ga_nfound, n + 1); }
         InterlockedExchange(&g_ga_lock, 0);
-        printf("GA: 13.0.4 code address %llx is not in g_code_13_0_5: found on 13.0.5 by its code at %llx (%+lld)\n", (unsigned long long)a,
+        printf("GA: 13.0.4 code address %llx is not in the %s table: found on %s by its code at %llx (%+lld)\n", (unsigned long long)a, b->name, b->name,
                (unsigned long long)(GUEST_BASE + (uint64_t)r), (long long)r - (long long)o);
         return GUEST_BASE + (uint64_t)r;
     }
-    printf("\nGA: the 13.0.4 code address %llx has no 13.0.5 counterpart in hostrt.c (g_code_13_0_5) and its code was not found: stopping\n", (unsigned long long)a);
+    printf("\nGA: the 13.0.4 code address %llx has no %s counterpart in hostrt.c (its g_code_ table) and its code was not found: stopping\n", (unsigned long long)a, b->name);
     report_and_exit(8);
     return a;
 }
@@ -274,9 +451,16 @@ int game_rb_blocked(void) {
  * (every fighter, stage and rule file), read-only data and data are the same apart from addresses that moved; only
  * main's code differs (13.0.5: the handling of invalid data received online). The lobby sees them as one build
  * (net_relay.c: build id "...-13.0.x") and the rollback handshake accepts the other one (rb_net.c hs_check).
- * SSBU_XVER=0: each build plays only with itself, as before (build id "...-13.0.4" / "...-13.0.5"). */
-const char *game_build_label(int b) { return b == GAME_13_0_5 ? "13.0.5" : b == GAME_13_0_4 ? "13.0.4" : "unknown"; }
-static int xver_member(int b) { return b == GAME_13_0_4 || b == GAME_13_0_5; }
+ * SSBU_XVER=0: each build plays only with itself, as before (build id "...-13.0.2" / "...-13.0.4" / "...-13.0.5"). */
+const char *game_build_label(int b) { return b >= 0 && b < (int)N_(g_builds) ? g_builds[b].name : "unknown"; }
+/* 13.0.2 too (its data.arc differs from 13.0.4's in 19 files: 18 item / Poke Ball Pokemon animations whose only change is
+ * the encoding of one-frame material / visibility tracks, and one colour value; main's code in version constants and the
+ * network library). SSBU_XVER_1302=0: 13.0.2 plays only with itself. */
+static int xver_member(int b) {
+    static int no1302 = -1;
+    if (no1302 < 0) { const char *e = getenv("SSBU_XVER_1302"); no1302 = e && e[0] == '0'; }
+    return b == GAME_13_0_4 || b == GAME_13_0_5 || (b == GAME_13_0_2 && !no1302);
+}
 int game_xver(void) {                                   /* 1 = this game plays with the other builds of its family */
     static volatile LONG x = -1;
     if (x >= 0) return x;
@@ -285,7 +469,7 @@ int game_xver(void) {                                   /* 1 = this game plays w
     int v = xver_member(g_game_build) && !(e && e[0] == '0');
     if (InterlockedCompareExchange(&x, v, -1) == -1) {
         printf("xver: game update %s: online play with %s (SSBU_XVER=%s)\n", game_build_label(g_game_build),
-               v ? "13.0.4 and 13.0.5 as one version" : "the same game update only", e ? e : "not set");
+               v ? (xver_member(GAME_13_0_2) ? "13.0.2, 13.0.4 and 13.0.5 as one version" : "13.0.4 and 13.0.5 as one version") : "the same game update only", e ? e : "not set");
         fflush(stdout);
     }
     return x;
@@ -293,17 +477,19 @@ int game_xver(void) {                                   /* 1 = this game plays w
 int game_xver_with(int other) {                         /* 1 = a game of build other can play an online match with this one */
     return other == g_game_build || (game_xver() && xver_member(other));
 }
-/* SSBU_GA_CHECK=1 on 13.0.5: every g_code_13_0_5 entry against the search by code (does the search find the places the
- * table was checked for? a tester's game.log answers it before trusting it for the addresses not in the table) */
+/* SSBU_GA_CHECK=1 on 13.0.5 / 13.0.2: every entry of the build's code table against the search by code (does the search
+ * find the places the table was checked for? a tester's game.log answers it before trusting it for the addresses not in
+ * the table) */
 static void ga_check_table(void) {
+    const GameBuild *b = &g_builds[g_game_build];
     int same = 0, other = 0, none = 0;
-    for (size_t i = 0; i < sizeof g_code_13_0_5 / sizeof g_code_13_0_5[0]; i++) {
-        int64_t r = ga_find(g_code_13_0_5[i][0]);
+    for (size_t i = 0; i < b->ncode; i++) {
+        int64_t r = ga_find(b->code[i][0]);
         if (r < 0) none++;
-        else if ((uint64_t)r == g_code_13_0_5[i][1]) same++;
-        else { other++; printf("GA check: %llx: table %llx, by its code %llx\n", (unsigned long long)g_code_13_0_5[i][0], (unsigned long long)g_code_13_0_5[i][1], (unsigned long long)r); }
+        else if ((uint64_t)r == b->code[i][1]) same++;
+        else { other++; printf("GA check: %llx: table %llx, by its code %llx\n", (unsigned long long)b->code[i][0], (unsigned long long)b->code[i][1], (unsigned long long)r); }
     }
-    printf("GA check: %d table entries found at the same place by their code, %d at another, %d not found\n", same, other, none);
+    printf("GA check (%s): %d table entries found at the same place by their code, %d at another, %d not found\n", b->name, same, other, none);
 }
 /* main.elf's program headers (before the image is read) and the build */
 static void load_layout(FILE *f, const char *elf) {
@@ -322,9 +508,8 @@ static void load_layout(FILE *f, const char *elf) {
     }
     if (n != 3) { fprintf(stderr, "%s: %d PT_LOAD segments, 3 expected (convert the dump with tools/extract/nso2elf.py)\n", elf, n); exit(1); }
     g_main.text_size = load[0][1]; g_main.ro_start = load[1][0]; g_main.data_start = load[2][0]; g_main.file_image = load[2][0] + load[2][1];
-    if (g_main.text_size == 0x39c7e90) g_game_build = GAME_13_0_4;
-    else if (g_main.text_size == 0x39c8440) g_game_build = GAME_13_0_5;
-    else { fprintf(stderr, "%s: code size %#llx is not a build this runtime knows (13.0.4: 0x39c7e90, 13.0.5: 0x39c8440)\n", elf, (unsigned long long)g_main.text_size); exit(1); }
+    for (int i = 0; i < (int)N_(g_builds); i++) if (g_main.text_size == g_builds[i].text_size) g_game_build = i;
+    if (g_game_build < 0) { fprintf(stderr, "%s: code size %#llx is not a build this runtime knows (13.0.2: 0x39c7a90, 13.0.4: 0x39c7e90, 13.0.5: 0x39c8440)\n", elf, (unsigned long long)g_main.text_size); exit(1); }
     if (load[2][0] + load[2][2] > IMAGE_SIZE) { fprintf(stderr, "%s: the image (%#llx bytes with bss) does not fit IMAGE_SIZE\n", elf, (unsigned long long)(load[2][0] + load[2][2])); exit(1); }
 }
 /* the dynamic section, from the image in memory: MOD0 at text + 4 gives its offset */
@@ -337,7 +522,7 @@ static void load_dynamic(void) {
         else if (tag == 6) g_main.symtab = v; else if (tag == 5) g_main.strtab = v; else if (tag == 25) g_main.init_array = v; else if (tag == 27) g_main.init_arraysz = v;
     }
     printf("main: build %s, text %#llx, data at %#llx, RELA %#llx / %#llx, JMPREL %#llx / %#llx, SYMTAB %#llx, INIT_ARRAY %#llx / %#llx\n",
-           g_game_build == GAME_13_0_5 ? "13.0.5" : "13.0.4", (unsigned long long)g_main.text_size, (unsigned long long)g_main.data_start,
+           game_build_name(), (unsigned long long)g_main.text_size, (unsigned long long)g_main.data_start,
            (unsigned long long)g_main.rela, (unsigned long long)g_main.relasz, (unsigned long long)g_main.jmprel, (unsigned long long)g_main.pltrelsz,
            (unsigned long long)g_main.symtab, (unsigned long long)g_main.init_array, (unsigned long long)g_main.init_arraysz);
 }
@@ -1394,7 +1579,7 @@ void runtime_init(const char *elf, const char *trace_path) {
     if (fread(mem, 1, g_main.file_image, f) != g_main.file_image) { fprintf(stderr, "short read on image\n"); exit(1); }
     fclose(f);
     InterlockedExchange(&g_image_ready, 1);
-    if (g_game_build == GAME_13_0_5) { const char *e = getenv("SSBU_GA_CHECK"); if (e && *e == '1') ga_check_table(); }
+    if (g_game_build != GAME_13_0_4) { const char *e = getenv("SSBU_GA_CHECK"); if (e && *e == '1') ga_check_table(); }
     load_dynamic();
 
     unsigned long long rel = 0, sym_int = 0, sym_ext = 0, sym_weak = 0, other = 0;

@@ -53,8 +53,8 @@ import build_location  # noqa: E402  (the install location chosen in the install
 STEPS =['deps', 'stage', 'convert', 'modules', 'tables', 'lift', 'sdk', 'compile', 'nro', 'link', 'rollback', 'check']
 # The game builds this port handles, told apart by the size of main's code (the first segment of the converted dump).
 # 13.0.4 is the reference build: the game addresses written in the runtime are 13.0.4 addresses, and GA() (runtime/hostrt.c)
-# gives their 13.0.5 counterparts (docs/VERSIONS.md says how they were found). sdk is the same module in both builds.
-GAME_BUILDS = {0x39c7e90: '13.0.4', 0x39c8440: '13.0.5'}
+# gives their 13.0.2 / 13.0.5 counterparts (docs/VERSIONS.md says how they were found). sdk is the same module in every build.
+GAME_BUILDS = {0x39c7a90: '13.0.2', 0x39c7e90: '13.0.4', 0x39c8440: '13.0.5'}
 SDK_TEXT_SIZE = 0x540950
 EXE = 'ssbu_native.exe'
 # what step_stage copies into build/work: (repository folder, folder in work, only files ending with)
@@ -945,9 +945,9 @@ def step_convert(cx):
         known = GAME_BUILDS.get(got) if name == 'main' else got == SDK_TEXT_SIZE
         if 'MISMATCH' in out or not known:
             raise Fail('%s is not a build this port knows (code size %#x, or a segment hash mismatch): it handles Super Smash Bros. '
-                       'Ultimate %s (update applied). Your dump is from another version: usually an older update (13.0.3 or '
-                       'before) or the base game without its update. Fix: give the installer the base game AND the 13.0.4 '
-                       '(v1966080) or 13.0.5 update file instead of this dump folder, or dump again with that update installed'
+                       'Ultimate %s (update applied). Your dump is from another version: usually an older update (13.0.1 or '
+                       'before, or 13.0.3) or the base game without its update. Fix: give the installer the base game AND the 13.0.2 '
+                       '(v1835008), 13.0.4 (v1966080) or 13.0.5 update file instead of this dump folder, or dump again with that update installed'
                        % (name, got, ' and '.join(sorted(GAME_BUILDS.values()))))
         if name == 'main':
             version = known

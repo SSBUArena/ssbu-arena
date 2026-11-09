@@ -1143,7 +1143,7 @@
               <StackPanel Orientation="Horizontal" Margin="0,7,0,0"><ContentControl x:Name="SetupGameMark"/><TextBlock x:Name="SetupGameText" Style="{StaticResource Small}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="640"/></StackPanel>
 
               <StackPanel x:Name="SetupPackageFields">
-                <TextBlock Text="UPDATE 13.0.4 OR 13.0.5" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
+                <TextBlock Text="UPDATE 13.0.2, 13.0.4 OR 13.0.5" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
                 <DockPanel>
                   <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="40" Padding="14,0" Margin="10,0,0,0" FontSize="15" Click="SetupUpdateFile_Click">File</Button>
                   <TextBox x:Name="SetupUpdate" Height="40" VerticalContentAlignment="Center" TextChanged="SetupField_Changed"/>
