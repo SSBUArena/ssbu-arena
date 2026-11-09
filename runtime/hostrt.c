@@ -208,6 +208,26 @@ uint64_t ga(uint64_t a) {
     report_and_exit(8);
     return a;
 }
+/* (issue #6, 2026-11-09) Run-ahead (r1_state.c) and the online rollback (rb_net.c) save and restore the whole game state at
+ * places of the main loop found and tested on 13.0.4. On 13.0.5 a player's run-ahead crashed a few seconds into every fight
+ * (render thread, nu::GraphicsDevice::Update: the game's own free on a broken cache, the same place 13.0.4 crashed at
+ * when re-run passes skipped job groups they need), and 13.0.5 has never been tested here (no 13.0.5 dump). So on 13.0.5
+ * both stay off and the player is told (menu.cpp, competitive.c, the launcher); offline play is the same as before.
+ * SSBU_R1_1305=1: run-ahead and rollback on 13.0.5 as before (tests). On 13.0.4 this answers 0 and nothing changes. */
+const char *const g_rb_1305_text = "Online matches with rollback are not supported on game update 13.0.5 yet.";
+int game_rb_blocked(void) {
+    static volatile LONG b = -1;
+    if (b >= 0) return b;
+    if (g_game_build < 0) return 0;                     /* (not known yet: asked again later) */
+    const char *e = getenv("SSBU_R1_1305"), *t = getenv("SSBU_R1_1305_TEST");      /* (TEST ONLY: on 13.0.4, as if it were 13.0.5 here) */
+    int is5 = g_game_build == GAME_13_0_5 || (t && t[0] == '1');
+    int v = is5 && !(e && e[0] == '1');
+    if (InterlockedCompareExchange(&b, v, -1) == -1 && is5) {
+        printf("r1: game update 13.0.5: run-ahead and online rollback %s (SSBU_R1_1305=%s)\n", v ? "OFF, not supported on 13.0.5 yet" : "ON as on 13.0.4", e ? e : "not set");
+        fflush(stdout);
+    }
+    return b;
+}
 /* SSBU_GA_CHECK=1 on 13.0.5: every g_code_13_0_5 entry against the search by code (does the search find the places the
  * table was checked for? a tester's game.log answers it before trusting it for the addresses not in the table) */
 static void ga_check_table(void) {

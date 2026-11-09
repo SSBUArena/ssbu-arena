@@ -50,6 +50,8 @@ int rbn_on(void) {
     const char *e = getenv("SSBU_RB_NET");
     g_on = e && e[0] && e[0] != '0';
     if (!g_on) return 0;
+    {   int game_rb_blocked(void);                      /* (issue #6) 13.0.5: no rollback (hostrt.c; SSBU_R1_1305=1: as before) */
+        if (game_rb_blocked()) { g_on = 0; printf("[rbnet] off: online rollback is not supported on game update 13.0.5 yet (SSBU_RB_NET=%s asked for it; SSBU_R1_1305=1 turns it on)\n", e); fflush(stdout); return 0; } }
     if (!_strnicmp(e, "loop", 4)) { g_loop = 1; if (e[4] == ',') g_loop_lat = atoi(e + 5); }
     g_local = 0;
     if (!g_loop && net_online() && net_mode() == 3) g_local = 1;      /* NET_MODE_JOIN */
@@ -201,7 +203,8 @@ static uint32_t exe_stamp(void) {
 int rbn_handshake_wanted(void) {
     static int w = -1;
     if (w < 0) { const char *e = getenv("SSBU_RB_NET"), *h = getenv("SSBU_RB_NET_HANDSHAKE");
-        w = e && e[0] && e[0] != '0' && _strnicmp(e, "loop", 4) && !(h && h[0] == '0'); }
+        int game_rb_blocked(void);
+        w = e && e[0] && e[0] != '0' && _strnicmp(e, "loop", 4) && !(h && h[0] == '0') && !game_rb_blocked(); }      /* (issue #6: no rollback on 13.0.5, no handshake) */
     return w;
 }
 uint64_t rbn_match_seed(void) {
