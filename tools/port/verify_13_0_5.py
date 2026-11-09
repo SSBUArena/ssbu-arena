@@ -62,6 +62,7 @@ RAW = {0x0: 'the image base',
        0x1a028b0: 'the amiibo panel hooks (nnapplet.c): installed on 13.0.4 only',
        0x1a1dbf0: 'the amiibo panel hooks', 0x1a1fa30: 'the amiibo panel hooks',
        0x52c41b0: 'through ga() itself (rb_net.c declares it and does not include hostrt.h, where GA() is)',
+       0x22df110: 'g_rbg_skipf_def (rb_rollback.c): a string, GA() where it is read', 0x22dec30: 'g_rbg_skipf_def', 0x22dc3d0: 'g_rbg_skipf_def',
        0x80000000: 'a free host range for a test stack (rb_rollback.c, SSBU_RB_NET_TEST_STK), not an address of the image'}
 
 # data addresses that are the bounds of a range, not of an object (no code forms them): only the one-page rule is checked

@@ -62,6 +62,9 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x1bef020, 0x1bef020},     /* the Lua C function behind prg_func.open_pallet (competitive.c comp_open_local), starts */
     {0x1ea04d0, 0x1ea04d0},     /* formatter (newmodule_host.c) */
     {0x22b67d4, 0x22b67d4},     /* worker return address (newmodule_host.c) */
+    {0x22dc3d0, 0x22dc3d0},     /* skipped function 3, 10,328 bytes in both (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
+    {0x22dec30, 0x22dec30},     /* skipped function 2, 4 bytes (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
+    {0x22df110, 0x22df110},     /* skipped function 1, 84 bytes in both (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
     {0x232ce40, 0x232d290},     /* menu hook of the Arena UI (competitive.c comp_menu), starts */
     {0x23343e0, 0x2334830},     /* Smash versus: Rulesets state (competitive.c), starts */
     {0x23353d0, 0x2335820},     /* Smash versus: stage state (competitive.c), starts */
