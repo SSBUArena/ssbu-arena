@@ -243,6 +243,60 @@ static void sq_eload_hook(Ctx *c, void *user) {
     fflush(stdout);
 }
 static void sq_init_hook(Ctx *c, void *user) { (void)user; g_sq_obj = c->x[0]; g_orig_sq_init(c);}
+/* (RESEARCH, SSBU_SQ_MODLOG=1) the fighter loader's modules: 0x71017e4940 (loader, kind) takes the kind's lua2cpp module from the
+ * L2CDynamicModuleManager ([0x7105326cd0]: map at + 0x40 by hash, module + 0x132 loaded, + 0x133 being dropped, + 0x134 count; its own
+ * thread loads / unloads: wall time); 0x71017e4790 = that loader's "ready" (vtable 0x710509eb10 slot 6: every module loaded, then the
+ * base's 0x71017e28c0); 0x71022b6f60 drops one. Logged with the rollback frame and the fight frame. */
+static ImportFn g_orig_mod_take, g_orig_mod_ready, g_orig_mod_drop;
+static long long sq_fc(void) { return g_sq_obj ? (long long)rd32(g_sq_obj + 0x112c) : -1; }
+/* (Battle Arena, game's squad, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_READYGATE=0 off) a loader that takes a module DURING the fight (a next fighter
+ * loaded ahead) becomes ready when the module manager's own thread is done: wall time (run csss1: ready at frame 2341 on A, 2340 on B,
+ * asked every frame by 0x7100650010, which the squad code runs before the entry's loading for an entry at + 0x5920 = 1; run cssh5:
+ * the fighter standing by began a frame apart, DESYNC 513). Such a loader answers "ready" only from a fixed frame on: counted from
+ * the first frame it is asked, at the first step frame (SSBU_SQ_STEP) the game waits here until it really is ready (at most 5 s), and
+ * that frame is kept, so re-run passes give the same answers. */
+static int g_rgate = -1;
+static struct { uint64_t o; long long base, at; } g_rg[16]; static int g_rg_n; static long long g_rg_last = -1;
+static void mod_take_hook(Ctx *c, void *user) {
+    (void)user; long long rbn_now(void); uint64_t o = c->x[0], ra = c->x[30]; int kind = (int)c->x[1];
+    g_orig_mod_take(c);
+    if (g_rgate > 0 && g_sq_made && sq_fc() > 0) { int k = 0; while (k < 16 && g_rg[k].o != o) k++;
+        if (k == 16) { k = g_rg_n++ & 15; g_rg[k].o = o; g_rg[k].base = -1; g_rg[k].at = -1; } }
+    if (getenv("SSBU_SQ_MODLOG")) printf("[squad] modlog: loader %llx takes the module of kind %d at frame %lld (fight %lld), caller %llx\n", (unsigned long long)o, kind, rbn_now(), sq_fc(), (unsigned long long)(ra - 4)); fflush(stdout);
+}
+static void mod_drop_hook(Ctx *c, void *user) {
+    (void)user; long long rbn_now(void); uint64_t ra = c->x[30], m = sr64(c->x[1]);
+    g_orig_mod_drop(c);
+    printf("[squad] modlog: module key %llx dropped at frame %lld (fight %lld), caller %llx\n", (unsigned long long)m, rbn_now(), sq_fc(), (unsigned long long)(ra - 4)); fflush(stdout);
+}
+static void mod_ready_hook(Ctx *c, void *user) {
+    (void)user; long long rbn_now(void); uint64_t o = c->x[0], ra = c->x[30];
+    uint64_t save[32]; memcpy(save, c->x, sizeof save);
+    g_orig_mod_ready(c);
+    if (g_rgate > 0 && g_sq_made) {
+        long long fc = sq_fc(); if (fc >= 0 && fc < g_rg_last) memset(g_rg, 0, sizeof g_rg); if (fc >= 0) g_rg_last = fc;      /* (a new fight) */
+        int k = 0; while (k < 16 && (!g_rg[k].o || g_rg[k].o != o)) k++;
+        if (k < 16 && fc > 0) {
+            static int step = -1; if (step < 0) { const char *e = getenv("SSBU_SQ_STEP"); step = e && *e ? atoi(e) : 20; if (step <= 0) step = 20; }
+            int r = (int)(c->x[0] & 1);
+            if (g_rg[k].at >= 0) { if (fc < g_rg[k].at) c->x[0] = 0; }
+            else {
+                if (g_rg[k].base < 0 || g_rg[k].base > fc) g_rg[k].base = fc;
+                if ((fc - g_rg[k].base) % step || fc == g_rg[k].base) c->x[0] = 0;
+                else {
+                    ULONGLONG t0 = GetTickCount64();
+                    while (!r && GetTickCount64() - t0 < 5000) { Sleep(1); memcpy(c->x, save, sizeof save); g_orig_mod_ready(c); r = (int)(c->x[0] & 1); }
+                    g_rg[k].at = fc;
+                    printf("[squad] loader %llx (a module taken in the fight): ready from fight frame %lld (asked from %lld; waited %llu ms%s)\n", (unsigned long long)o, fc, g_rg[k].base, (unsigned long long)(GetTickCount64() - t0), r ? "" : ", NOT READY after 5 s"); fflush(stdout);
+                }
+            }
+        }
+    }
+    if (!getenv("SSBU_SQ_MODLOG")) return;
+    static struct { uint64_t o; int r; } t[16]; int k = 0; while (k < 16 && t[k].o && t[k].o != o) k++; if (k == 16) k = 0;
+    int r = (int)(c->x[0] & 1);
+    if (t[k].o != o || t[k].r != r) { printf("[squad] modlog: loader %llx ready %d at frame %lld (fight %lld), caller %llx\n", (unsigned long long)o, r, rbn_now(), sq_fc(), (unsigned long long)(ra - 4)); fflush(stdout); t[k].o = o; t[k].r = r; }
+}
 static int g_sq_made;
 /* ---- (Battle Arena) the next squad fighter's entry at a fixed frame (Squad Strike, Tag Team, online with rollback).
  * The game's squad object of the fight (made by 0x710157c100, which g_sq_obj is taken from) runs the change of fighter as a state
@@ -561,6 +615,10 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
         me.ctx_seed = rd32(GA(0x710530d380ULL)); safe_read(GA(0x71050c5ad0ULL), me.ctx_hist, sizeof me.ctx_hist); safe_read(MELEE_INFO + 0x420, me.ctx_stage, sizeof me.ctx_stage);   /* (hs12) the stage set-up's inputs (rb_hs.h) */
         if (getenv("SSBU_RB_NET_WATCH")) { uint64_t off = strtoull(getenv("SSBU_RB_NET_WATCH"), NULL, 16); if (off <= 1) off = 0x98;      /* (hs12: =<hex offset in the match block>) */
             uint64_t w[1] = {MELEE_INFO + (off & ~7ull)}; printf("[rbnet] research: match block + 0x%llx at the handshake = %016llx\n", (unsigned long long)(off & ~7ull), (unsigned long long)rd64(w[0])); debug_watch(w, 1); }
+        {   const char *e = getenv("SSBU_SQ_NETWATCH");      /* (RESEARCH) =<hex off>[,<hex off>..]: who writes these bytes of the room's net object from now on */
+            if (e && *e) { uint64_t net = sr64(sr64(sr64(GA(0x71052c3c58ULL)) + 8) + 0x88), w[4]; int n = 0; const char *p = e;
+                while (*p && n < 4) { w[n++] = net + (strtoull(p, NULL, 16) & ~7ull); p = strchr(p, ','); if (!p) break; p++; }
+                if (net) { printf("[squadcss] RESEARCH: net object %llx watched at %d place(s)\n", (unsigned long long)net, n); fflush(stdout); debug_watch(w, n); } } }
         g_hs_ok = rbn_handshake(&me, &g_hs_m); g_hs_local = 0;
         {   int rbn_room_rollback(void); g_hs_lwr = g_hs_ok && rbn_room_rollback(); }
         {   int rbn_match_cancelled(void); if (!g_hs_ok && rbn_match_cancelled() == 2) return; }      /* (R3 pub2) a Local Wireless room fight: nothing changed */
@@ -1187,9 +1245,27 @@ static void bacss_show(const char *why) {
            (unsigned long long)rd64(BACSS_CHIP(1, 0) + 0x40), (unsigned long long)rd64(BACSS_CHIP(1, 1) + 0x40), (unsigned long long)rd64(BACSS_CHIP(1, 2) + 0x40));
     fflush(stdout);
 }
+/* (RESEARCH, SSBU_SQ_CSSDUMP=<folder>) the main module's data segment, the sequence object, the select data object and the room's net
+ * object, written at calls 5 and 200 of each Squad Strike select screen (to compare a room's first and second select screen) */
+static void bacss_mem_dump(uint64_t self, int round, int call) {
+    const char *dir = getenv("SSBU_SQ_CSSDUMP"); if (!dir || !*dir) return;
+    int nnldn_role(void); char fn[400]; static uint8_t buf[0x10000];
+    struct { const char *nm; uint64_t a; size_t n; } r[4] = {
+        {"data", GA(0x7104f16000ULL), 0x2531000}, {"seq", self, 0x400}, {"tcobj", sr64(GA(0x7105327e18ULL)), 0x3b8},
+        {"net", sr64(sr64(sr64(GA(0x71052c3c58ULL)) + 8) + 0x88), 0x28000} };
+    for (int i = 0; i < 4; i++) {
+        snprintf(fn, sizeof fn, "%s/css_role%d_r%d_c%d_%s.bin", dir, nnldn_role(), round, call, r[i].nm);
+        FILE *f = fopen(fn, "wb"); if (!f) continue;
+        for (size_t o = 0; o < r[i].n; o += sizeof buf) { size_t k = r[i].n - o < sizeof buf ? r[i].n - o : sizeof buf; if (!r[i].a || !safe_read(r[i].a + o, buf, k)) memset(buf, 0, k); fwrite(buf, 1, k, f); }
+        fclose(f);
+    }
+    printf("[squadcss] RESEARCH: memory dumped at select screen %d call %d (seq %llx)\n", round, call, (unsigned long long)self); fflush(stdout);
+}
 static void tc_css_hook(Ctx *c, void *user) {      /* MeleeTeamCompeSequenceScene's character select state 0x710233cfd0 */
     (void)user;
     uint64_t self = c->x[0];
+    {   static int rd_seen = -1, calls; if (g_css_round != rd_seen) { rd_seen = g_css_round; calls = 0; } calls++;
+        if (calls == 5 || calls == 200) bacss_mem_dump(self, g_css_round, calls); }
     int nnldn_role(void); int mine = nnldn_role() == 2 ? 1 : 0;
     {   static int last_n[2] = {-1, -1};          /* (test aid) @sq_mine3: this game's side has its 3 fighters */
         for (int s = 0; s < 2; s++) { int n = bacss_chips(s); if (n != last_n[s]) { last_n[s] = n; char w[48]; snprintf(w, sizeof w, "side %d has %d fighter(s)", s + 1, n); bacss_show(w); } }
@@ -1337,7 +1413,11 @@ void debug_mode_init(void) {
         if (g_hs_wanted) printf("debug match: hook on the match controls set-up %llx: id %d (R3 lwr: Local Wireless room matches, each player's own controls)\n", (unsigned long long)GA(0x7101780440ULL), hook_install(GA(0x7101780440ULL), controls_fill_hook, NULL, &g_orig_controls_fill));
     }
     if (g_hs_wanted || getenv("SSBU_SQ_TEST")) { int a = hook_install(GA(0x710157c100ULL), sq_init_hook, NULL, &g_orig_sq_init), b = hook_install(GA(0x7101589830ULL), sq_step_hook, NULL, &g_orig_sq_step), l = hook_install(GA(0x71006556b0ULL), sq_eload_hook, NULL, &g_orig_sq_eload), p = hook_install(GA(0x710158a360ULL), sq_put_hook, NULL, &g_orig_sq_put);      /* (Battle Arena) */
-        printf("debug match: hooks on the squad object (init %d, change of fighter %d / %d, fighter load %d)\n", a, b, p, l); }
+        printf("debug match: hooks on the squad object (init %d, change of fighter %d / %d, fighter load %d)\n", a, b, p, l);
+        {   const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_READYGATE"); g_rgate = e && e[0] == '1' && !(k && k[0] == '0'); }
+        if (getenv("SSBU_SQ_MODLOG") || g_rgate > 0) printf("[squad] module hooks (log %s, ready at step frames %s) %d %d\n", getenv("SSBU_SQ_MODLOG") ? "on" : "off", g_rgate > 0 ? "on" : "off",
+                                             hook_install(GA(0x71017e4940ULL), mod_take_hook, NULL, &g_orig_mod_take), hook_install(GA(0x71017e4790ULL), mod_ready_hook, NULL, &g_orig_mod_ready));
+        if (getenv("SSBU_SQ_MODLOG")) printf("[squad] RESEARCH: module drop hook %d\n", hook_install(GA(0x71022b6f60ULL), mod_drop_hook, NULL, &g_orig_mod_drop)); }
     if (getenv("SSBU_DEBUG_RESEARCH")) printf("debug research: hook on the entry set-up: id %d\n", hook_install(FN_ENTRY_SETUP, research_entry_setup, NULL, &g_orig_entry_setup));
     if (getenv("SSBU_DEBUG_DUMP") || g_dm.text[0] || g_end_limit ||getenv("SSBU_DEBUG_RESEARCH") || getenv("SSBU_DEBUG_WATCHENTRY")) CreateThread(NULL, 0, dump_thread, NULL, 0, NULL);
 }
