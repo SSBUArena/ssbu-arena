@@ -1126,7 +1126,9 @@ static void scene_change_hook(Ctx *c, void *user) {
     if (n2 < 64 && c->x[2]) safe_read(c->x[2] + 8, own, n2);
     printf("[squadcss] scene change: %s (from %s), param %llx, caller %llx, sequence %08x\n", nm, own, (unsigned long long)c->x[3], (unsigned long long)(c->x[30] - 4), rd32(GA(0x71053040f0ULL)));
     fflush(stdout);
-    if (rd32(GA(0x71053040f0ULL)) == 0x02020000u && n < 32) { char m[40]; snprintf(m, sizeof m, "sc_%s", nm); void input_mark(const char *what); input_mark(m); }      /* (test aid) SSBU_SEQ @sc_<scene> */
+    if (rd32(GA(0x71053040f0ULL)) == 0x02020000u && n < 32) { char m[48]; snprintf(m, sizeof m, "sc_%s", nm); void input_mark(const char *what); input_mark(m);
+        static struct { char nm[40]; int n; } cnt[24]; int k = 0; while (k < 24 && cnt[k].nm[0] && strcmp(cnt[k].nm, m)) k++;      /* (test aid) and sc_<scene>#<n> from the 2nd time on */
+        if (k < 24) { if (!cnt[k].nm[0]) snprintf(cnt[k].nm, sizeof cnt[k].nm, "%s", m); if (++cnt[k].n > 1) { char m2[56]; snprintf(m2, sizeof m2, "%s#%d", m, cnt[k].n); input_mark(m2); } } }      /* (test aid) SSBU_SEQ @sc_<scene> */
     g_orig_scene_change(c);
 }
 static void vs_css_hook(Ctx *c, void *user) {
@@ -1188,9 +1190,11 @@ static void tc_css_hook(Ctx *c, void *user) {      /* MeleeTeamCompeSequenceScen
     int nnldn_role(void); int mine = nnldn_role() == 2 ? 1 : 0;
     {   static int last_n[2] = {-1, -1};          /* (test aid) @sq_mine3: this game's side has its 3 fighters */
         for (int s = 0; s < 2; s++) { int n = bacss_chips(s); if (n != last_n[s]) { last_n[s] = n; char w[48]; snprintf(w, sizeof w, "side %d has %d fighter(s)", s + 1, n); bacss_show(w); } }
-        {   int n = bacss_chips(mine); void input_mark(const char *what); static int said2, said3;      /* (the entries lag the screen by one pick: 2 here = 3 shown) */
-            if (n >= 2 && !said2++) input_mark("sq_mine2");
-            if (n >= 3 && !said3++) input_mark("sq_mine3"); } }
+        {   int n = bacss_chips(mine); void input_mark(const char *what); static int said2, said3, round = 1;      /* (the entries lag the screen by one pick: 2 here = 3 shown) */
+            if (n == 0 && said2) { said2 = said3 = 0; round++; }      /* (test aid) a new select screen: the marks again, as sq_mine2#<round> */
+            char m2[24], m3[24]; if (round > 1) { snprintf(m2, sizeof m2, "sq_mine2#%d", round); snprintf(m3, sizeof m3, "sq_mine3#%d", round); } else { strcpy(m2, "sq_mine2"); strcpy(m3, "sq_mine3"); }
+            if (n >= 2 && !said2++) input_mark(m2);
+            if (n >= 3 && !said3++) input_mark(m3); } }
     if (rd32(self + 0x114)) {
         uint64_t mgr = rd64(self), m28 = rd64(mgr + 0x28);
         if (rd64(m28 + 0x60) == 0 && rd64(m28 + 0x30) == rd64(m28 + 0x38) && rd64(rd64(mgr + 0x20) + 0x10) == 0) {
