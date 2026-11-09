@@ -1278,7 +1278,7 @@ static uint8_t g_kh_buf[0x968]; static int g_kh_ok, g_kh_after;
 static void bacss_after_match(void) { g_kh_after = 1; }
 static uint64_t kh_net(void) { return sr64(sr64(sr64(GA(0x71052c3c58ULL)) + 8) + 0x88); }
 static void bacss_keep_host(int capture) {
-    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SQ_KEEPHOST"); on = !(e && e[0] == '0'); }
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SQ_KEEPHOST"); on = e && e[0] == '1';      /* (OFF by default: run csst1, written back but the joiner still lands on P1) */ }
     int nnldn_role(void); if (!on || g_bacss != 1 || nnldn_role() != 2) return;
     uint64_t net = kh_net(); if (!net) return;
     if (capture) { uint8_t b[0x968]; int ok = safe_read(net + 0x24da0, b, sizeof b); if (ok && b[0] != 0xff) { memcpy(g_kh_buf, b, sizeof b); g_kh_ok = 1; } g_kh_after = 0;
