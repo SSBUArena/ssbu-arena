@@ -1184,6 +1184,14 @@ static void fh_hook(Ctx *c, void *user) {
     (void)user;
     uint64_t agent = c->x[0], boma = agent ? rd64(agent + 0x40) : 0;
     int rv_k = -1; uint64_t rv_boma = 0;
+    if (boma && (rd32(boma + 8) >> 28) == 0) {   /* (RESEARCH, SSBU_SQ_ORDERLOG=1) the order the fighters' frame lines come in (battle object ids):
+             * logged when a frame's order differs from the frame before (run csss9: DESYNC 4375 with the same two lines in the other order, a grab) */
+        static int ol = -1; if (ol < 0) ol = getenv("SSBU_SQ_ORDERLOG") != NULL;
+        if (ol) { long long rbn_now(void); static long long fr = -1; static uint32_t cur[8], prev[8]; static int nc, np;
+            long long now = rbn_now();
+            if (now != fr) { if (nc && np && (nc != np || memcmp(cur, prev, sizeof(uint32_t) * (size_t)nc))) { printf("[fight] order: frame %lld:", fr); for (int q = 0; q < nc; q++) printf(" %x", cur[q]); printf(" (before:"); for (int q = 0; q < np; q++) printf(" %x", prev[q]); printf(")\n"); }
+                if (nc) { memcpy(prev, cur, sizeof cur); np = nc; } nc = 0; fr = now; }
+            if (nc < 8) cur[nc++] = rd32(boma + 8); } }
     { static int dn; if (agent && dn < 12 && g_fh_n) { uint64_t key[2] = {agent, boma}; static uint64_t seen[16][2]; int f = 0; for (int q = 0; q < dn; q++) if (seen[q][0] == key[0]) f = 1; if (!f) { seen[dn][0] = agent; seen[dn][1] = boma; dn++; printf("[fight] S20t: frame line, agent %llx boma %llx category word %x, first fighter frame %lld\n", (unsigned long long)agent, (unsigned long long)boma, boma ? rd32(boma + 8) : 0, g_fh_f[0].frame); fflush(stdout); } } }
     if (boma && (rd32(boma + 8) >> 28) == 0) {
         int k = 0;

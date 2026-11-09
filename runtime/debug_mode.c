@@ -215,9 +215,15 @@ static void sq_eload_hook(Ctx *c, void *user) {
         static uint64_t s1[4]; static int pend[4];
         if (h6 && ek >= 0 && en && step > 0) {
             int chg = 0; uint8_t v = rd8(en + 0x5920);
-            if (g_sq_obj) for (int k = 0; k < 3; k++) { uint32_t ps = rd32(g_sq_obj + (k == 0 ? 0x5b0 : k == 1 ? 0x950 : 0xd10) + 0x60); if (ps >= 2 && ps <= 4) chg = 1; }
+            /* (run csst2, NETSIM=27, DESYNC 820) a fighter loaded ahead (loaded at step frame 811 on both games) while the OTHER side was in its
+             * change after a KO (part + d10 state 3 from 805): its 1 -> 6 came in that change, was not held, and its standby fighter (status b7)
+             * began at 819 on B and 820 on A. Now an entry armed by its own load is held during a change too (SSBU_SQ_HOLD6CHG=0: not, as before) */
+            static int hc = -1; if (hc < 0) { const char *e = getenv("SSBU_SQ_HOLD6CHG"); hc = !(e && e[0] == '0'); }
+            if (g_sq_obj && !hc) for (int k = 0; k < 3; k++) { uint32_t ps = rd32(g_sq_obj + (k == 0 ? 0x5b0 : k == 1 ? 0x950 : 0xd10) + 0x60); if (ps >= 2 && ps <= 4) chg = 1; }
             if (v == 3) { s1[ek] = 0; pend[ek] = 0; }
-            if (v == 1 && base >= 0 && !pend[ek] && s1[ek] != en) s1[ek] = en;      /* loaded, waiting: armed for this load */
+            if (v == 1 && base >= 0 && !pend[ek] && s1[ek] != en) { s1[ek] = en;      /* loaded, waiting: armed for this load */
+                static int w = -1; if (w < 0) w = getenv("SSBU_SQ_W5920") != NULL;      /* (RESEARCH) who writes the 6 */
+                if (w) { uint64_t a = en + 0x5920; debug_watch(&a, 1); printf("[squad] RESEARCH: watch on entry %llx + 0x5920 (armed at fight frame %lld)\n", (unsigned long long)en, (long long)fc); fflush(stdout); } }
             if (pend[ek] && v == 1 && !((fc - base) % step) && fc != base) {
                 wr8(en + 0x5920, 6); pend[ek] = 0; s1[ek] = 0; v = 6;
                 printf("[squad] entry %llx: + 0x5920 6 written at fight frame %lld (step frame of its loading)\n", (unsigned long long)en, (long long)fc); fflush(stdout);
@@ -1433,9 +1439,38 @@ static void msg_note(const char *dir, unsigned id, long st, unsigned size, uint6
         printf("[squadcss] msg %s id %x station %ld size %u (#%u, frame %lld, scene round %d): %s\n", dir, id, st, size, cnt[d][k], rbn_now(), g_css_round, t); fflush(stdout); }
 }
 static void msg_send_hook(Ctx *c, void *user) { (void)user; msg_note("sent", (unsigned)c->x[1], -1, (unsigned)c->x[3], c->x[2]); g_orig_msg_send(c); }
-static void msg_recv_hook(Ctx *c, void *user) { (void)user; uint64_t m = c->x[3]; msg_note("received", (unsigned)(c->x[2] & 0xffff), (long)(c->x[1] & 0xff), m ? rd32(m) : 0, m ? rd64(m + 8) : 0); g_orig_msg_recv(c); }
+/* (Battle Arena, game's squad, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_B7FIX=0 off) the second select screen of a room (runs cssh5 / cssh6 /
+ * csst1: the joiner's hand on P1, its own side 2 "Make everyone CPU"). Message b7 (handler 0x71016f0964) carries one Squad Strike
+ * entry of a side: 0x1e0 bytes copied to net + 0x24da0 + side * 0x968 + k * 0x1e0 (net = [[[0x71052c3c58] + 8] + 0x88]), + 0x1e0 side,
+ * + 0x1e1 k; entry + 0 the station that owns it, + 0x21 its kind (low nibble station + 1, 0xf = a free seat). Each station sends
+ * its OWN side's entries (0x71016f5370, and every change from 0x7101686850), built from its select screen's chips; on the HOST its
+ * own chips say station ff / kind f (dumps of csss2: host side 1 ff / 0f at both screens), so the host's b7 tell the joiner that
+ * side 1 is a free seat. At the first screen the joiner's chips were already 00 / 01 (set when it joined) and only the net copy
+ * went ff; at the second screen the chips are made again from the net copy: side 1 = a free LOCAL seat, and the joiner's hand goes
+ * there. Fix: a b7 received from station S for S's own side with station ff gets station S and kind S + 1 (the values the joiner
+ * had for the host at the first screen), so the joiner's copy keeps the host as the owner of side 1. */
+static int g_b7fix = -1;
+static void msg_recv_hook(Ctx *c, void *user) {
+    (void)user; uint64_t m = c->x[3];
+    if (getenv("SSBU_SQ_MSGLOG")) msg_note("received", (unsigned)(c->x[2] & 0xffff), (long)(c->x[1] & 0xff), m ? rd32(m) : 0, m ? rd64(m + 8) : 0);
+    if (g_b7fix > 0 && (c->x[2] & 0xffff) == 0xb7 && m && rd32(m) == 0x1e8) {
+        uint64_t d = rd64(m + 8); unsigned st = (unsigned)(c->x[1] & 0xff);
+        if (d && st < 16 && rd8(d) == 0xff && (rd8(d + 0x21) & 0x0f) == 0x0f && rd8(d + 0x1e0) < 2) {
+            uint64_t save[32]; memcpy(save, c->x, sizeof save);
+            c->x[0] = save[0] + 0xa010; c->x[1] = st; call_guest(c, GA(0x71016ea430ULL)); unsigned side = (unsigned)(c->x[0] & 0xff);      /* the side station S owns */
+            memcpy(c->x, save, sizeof save);
+            if (side == rd8(d + 0x1e0)) {
+                uint8_t k0 = rd8(d + 0x21); wr8(d, (uint8_t)st); wr8(d + 0x21, (uint8_t)((k0 & 0xf0) | ((st + 1) & 0x0f)));
+                static int said; if (said++ < 4) { printf("[squadcss] b7 from station %u (side %u, entry %u): owner ff -> %u, kind %02x -> %02x (SSBU_SQ_B7FIX)\n", st, side + 1, rd8(d + 0x1e1), st, k0, rd8(d + 0x21)); fflush(stdout); }
+            } else { static int said2; if (said2++ < 4) { printf("[squadcss] b7 from station %u for side %u with owner ff: the station's side is %u, not changed\n", st, rd8(d + 0x1e0) + 1, side + 1); fflush(stdout); } }
+        }
+    }
+    g_orig_msg_recv(c);
+}
 static void bacss_init(void) {
-    if (getenv("SSBU_SQ_MSGLOG")) printf("[squadcss] RESEARCH: room message hooks %d %d\n", hook_install(GA(0x7101685cb0ULL), msg_send_hook, NULL, &g_orig_msg_send), hook_install(GA(0x7101698160ULL), msg_recv_hook, NULL, &g_orig_msg_recv));
+    {   const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_B7FIX"); g_b7fix = e && e[0] == '1' && !(k && k[0] == '0'); }
+    if (getenv("SSBU_SQ_MSGLOG")) printf("[squadcss] RESEARCH: room message hook %d\n", hook_install(GA(0x7101685cb0ULL), msg_send_hook, NULL, &g_orig_msg_send));
+    if (getenv("SSBU_SQ_MSGLOG") || g_b7fix > 0) printf("[squadcss] hook on the room's received messages: %d (b7 owner fix %s)\n", hook_install(GA(0x7101698160ULL), msg_recv_hook, NULL, &g_orig_msg_recv), g_b7fix > 0 ? "on" : "off");
     const char *e = getenv("SSBU_BA_SQUAD_CSS"); g_bacss = e && *e ? atoi(e) : 0;
     {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 1) printf("[squadcss] RESEARCH: hook on the matchup wait 0x710233de20: id %d\n", hook_install(GA(0x710233de20ULL), tc_match_hook, NULL, &g_orig_tc_match)); }
     if (getenv("SSBU_DEBUG_SCENES")) printf("[squadcss] hook on the scene change: id %d\n", hook_install(GA(0x7103726120ULL), scene_change_hook, NULL, &g_orig_scene_change));
