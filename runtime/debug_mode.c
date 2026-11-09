@@ -1232,10 +1232,14 @@ static void tc_vs_hook(Ctx *c, void *user) {
     uint8_t all = net ? rd8(net + 0x26a62) : 0, lw = rd8(GA(0x71053040f4ULL));
     static uint32_t ready_at; int bypass = 0;
     if (frames <= 1) ready_at = 0;
-    if (ready == 1 && !ready_at) ready_at = frames;
+    if ((ready == 1 || (ready == 3 && w248 == 0 && w2a0 == 3)) && !ready_at) ready_at = frames;
     if (getenv("SSBU_DEBUG_SCENES") && (frames % 300 == 1 || (ready == 1 && ready_at == frames)))
         { printf("[squadcss] matchup state 7: frame %u ui %llx +248 %u +2a0 %u, ready %u, all-ready byte %u, local wireless %u\n", frames, (unsigned long long)ui, w248, w2a0, ready, all, lw); fflush(stdout); }
     if (g_bacss_vs && lw && ready == 1 && ready_at && frames >= ready_at + 30 && !all) bypass = 1;
+    /* (after a match, runs cssr1 / cssr5) the result screen's OK gives w = 3: in a room the state then waits for the host station's record
+     * (net + 0x26a78); with ours it ended either as result 5 (stage vote, back to the room's select screen: cssr1) or, later, result 4
+     * (the end of the Squad Strike sequence and DestroyNetwork: cssr5, cssn8). Run as offline too: w = 3 -> result 5 on both games. */
+    if (g_bacss_vs && lw && ready == 3 && w248 == 0 && w2a0 == 3 && ready_at && frames >= ready_at + 30) bypass = 1;
     if (bypass) {
         volatile uint8_t *f = (volatile uint8_t *)(uintptr_t)GA(0x71053040f4ULL);
         printf("[squadcss] matchup: this game ready for %u frames, the room's all-ready never comes: the VS screen ends as offline (result 3 -> the fight)\n", frames - ready_at); fflush(stdout);
