@@ -1432,6 +1432,7 @@ static void sd_clear(Ctx *c, void *user) {
     }
     g_sd_orig_clear(c);
 }
+static int g_rgn_on; static void rgn_call(Ctx *c, int which, ImportFn orig);      /* (alloc crash) below */
 /* the binding list a command block is filled from (FUN 0x7103817170: x0 block, [x1, x2) entries of 0x30, type at + 8 (1 = SRV), the object at + 0x18) */
 static ImportFn g_sd_orig_fill; static volatile LONG g_sd_srcbad;
 static void sd_fill(Ctx *c, void *user) {
@@ -1452,7 +1453,7 @@ static void sd_fill(Ctx *c, void *user) {
                 (unsigned long long)st[0], (unsigned long long)st[1], (unsigned long long)st[2], (unsigned long long)st[3], (unsigned long long)st[4], (unsigned long long)st[5], (unsigned long long)st[6], (unsigned long long)st[7], (unsigned long long)st[8], (unsigned long long)st[9]);
         }
     }
-    g_sd_orig_fill(c);
+    if (g_rgn_on > 0) rgn_call(c, 0, g_sd_orig_fill); else g_sd_orig_fill(c);
 }
 /* the other filler (FUN 0x7103817f90, from the material's own list [[x1 + 8] + 0x70]): the block's SRV table checked after it ran */
 static ImportFn g_sd_orig_fill2; static volatile LONG g_sd_srcbad2;
@@ -1462,7 +1463,7 @@ static void sd_fill2(Ctx *c, void *user) {
     static struct { uint64_t l; long long ff[3]; } lt[4096];
     unsigned hh = (unsigned)((a1 * 0x9e3779b97f4a7c15ull) >> 52); int pk = sd_pk(); long long seen[3] = {-1, -1, -1};
     for (int j = 0; j < 8; j++) { unsigned s = (hh + (unsigned)j) & 4095; if (lt[s].l == a1 || !lt[s].l) { if (!lt[s].l) { lt[s].l = a1; lt[s].ff[0] = lt[s].ff[1] = lt[s].ff[2] = -1; } memcpy(seen, lt[s].ff, sizeof seen); lt[s].ff[pk] = g_ff; break; } }
-    g_sd_orig_fill2(c);
+    if (g_rgn_on > 0) rgn_call(c, 1, g_sd_orig_fill2); else g_sd_orig_fill2(c);
     uint64_t vinst = GA(0x7105240a68ull), vlo = GA(0x7105000000ull), vhi = GA(0x7105400000ull), cnt = rd64(b + 0x508);
     for (uint64_t k = 0; k < cnt && k < 16; k++) {
         uint64_t o = rd64(b + 0x288 + 0x28 * k + 0x10); if (!o) continue;
@@ -1486,6 +1487,56 @@ static void sd_fill2(Ctx *c, void *user) {
         }
     }
 }
+/* ---- (alloc crash, 2026-11-09) SSBU_RB_RETAINGEN (default 1 with the snapshot ring; =0 off: as before). The two fillers of a command's
+ * binding block (FUN 0x7103817170: list [x1, x2); FUN 0x7103817f90: list x1, x2 entries; entries of 0x30: + 8 type, 1 = SRV, 3 = UAV,
+ * + 0x18 the object, + 0x20 the address of its record's generation word, + 0x28 the generation the list saw) make a retainer for each SRV /
+ * UAV entry (table + 0x288 / + 0x510 of the block, 0x28 each, counts at + 0x508 / + 0x5b0): + 0x10 the object, + 0x18 its record
+ * [object + 8], + 0x20 the record's CURRENT generation; and they add a reference ([record + 8] + 1) ONLY if the list's generation is still
+ * the record's. The release (f_71038156f0) takes one away whenever the retainer's own generation is still the record's: so an entry
+ * whose list generation is stale gives a retainer that takes away a reference it never added. In a game without rollback such an entry
+ * does not exist. In re-run passes it does (the stale effect material lists, HANDOFF_RBCRASH: SRVDIAG showed "gen word 1, taken 0"):
+ * - the view is dead: the release deletes it a second time (the RETAINFIX case above, caught there by its vtable);
+ * - the view's memory and record were used again by a NEW view (jemalloc gives the freed 160 bytes back first): every check passes, the
+ *   release takes away one of the new view's references, the new view is deleted while its texture still owns it, and the texture's
+ *   destructor on the resource thread frees it again: heap broken, then crashes in a free (pair cssm12, B: nu::GraphicsDevice::Update
+ *   thread, ResourceAdapterContract<Texture_NX> dtor 71037d4950 -> SRV dtor 71037df8b0 -> jemalloc free -> rtree read at 0x1fc00).
+ * Here: such a retainer gets no record (+ 0x18 = 0, as the game's own retainer of a null object), so its release does nothing; the draw
+ * path (0x7103812c6c) reads only + 0x10, so what a re-run pass draws is unchanged. Cost: 3 reads per SRV / UAV entry. */
+static ImportFn g_rgn_orig[2]; static volatile LONG g_rgn_n[3], g_rgn_live[3], g_rgn_said;
+static void rgn_call(Ctx *c, int which, ImportFn orig) {
+    uint64_t b = c->x[0], l = c->x[1], n = which ? c->x[2] : (c->x[2] - c->x[1]) / 0x30;
+    uint8_t no[64]; int any = 0;
+    if (n > 64) n = 64;                                   /* (the block holds 16 SRV + 4 UAV: more would be the game's own overflow stop) */
+    for (uint64_t j = 0; j < n; j++) {
+        uint64_t p = l + 0x30 * j; int32_t ty = (int32_t)rd32(p + 8); ty ^= ty >> 31;
+        no[j] = 0;
+        if (ty != 1 && ty != 3) continue;
+        uint64_t o = rd64(p + 0x18), gp = rd64(p + 0x20);
+        if (o && (!gp || rd64(gp) != rd64(p + 0x28))) { no[j] = 1; any = 1; }
+    }
+    if (!any) { orig(c); return; }
+    uint64_t si = rd64(b + 0x508), ui = rd64(b + 0x5b0);
+    orig(c);
+    uint64_t vinst = GA(0x7105240a68ull), vlo = GA(0x7105000000ull), vhi = GA(0x7105400000ull);
+    for (uint64_t j = 0; j < n; j++) {
+        uint64_t p = l + 0x30 * j; int32_t ty = (int32_t)rd32(p + 8); ty ^= ty >> 31;
+        if (ty != 1 && ty != 3) continue;
+        uint64_t k = ty == 1 ? si++ : ui++;
+        if (!no[j] || k >= (ty == 1 ? 16u : 4u)) continue;
+        uint64_t e = b + (ty == 1 ? 0x288 : 0x510) + 0x28 * k, o = rd64(p + 0x18);
+        if (rd64(e + 0x10) != o) continue;                /* (not the retainer made from this entry: left as it is) */
+        uint64_t rec = rd64(e + 0x18), vt = rd64(o);
+        int live = vt != vinst && vt >= vlo && vt < vhi && rd64(o + 8) == rec;      /* what RETAINFIX would have let through */
+        int pk = sd_pk(); InterlockedIncrement(&g_rgn_n[pk]); if (live) InterlockedIncrement(&g_rgn_live[pk]);
+        if (InterlockedIncrement(&g_rgn_said) <= 12)
+            LOG("r1: RB retainer gen fix: fight frame %lld, pass kind %d, thread %lu: block %llx %s retainer %llu from a stale list entry (object %llx vtable %llx, gen word %llx = %llx, list saw %llx): no reference was added, so none is taken away%s\n",
+                g_ff, pk, GetCurrentThreadId(), (unsigned long long)b, ty == 1 ? "SRV" : "UAV", (unsigned long long)k, (unsigned long long)o, (unsigned long long)vt, (unsigned long long)rd64(p + 0x20),
+                (unsigned long long)(rd64(p + 0x20) ? rd64(rd64(p + 0x20)) : 0), (unsigned long long)rd64(p + 0x28), live ? " (the object looks ALIVE: a view made again in the same memory; RETAINFIX alone would have released it)" : "");
+        wr64(e + 0x18, 0); wr64(e + 0x20, 0);
+    }
+}
+static void rgn_hook0(Ctx *c, void *user) { (void)user; rgn_call(c, 0, g_rgn_orig[0]); }
+static void rgn_hook1(Ctx *c, void *user) { (void)user; rgn_call(c, 1, g_rgn_orig[1]); }
 /* (rb crash, 2026-11-08) SSBU_RB_RETAINFIX (default 1 with the snapshot ring; =0 off): the same check without the log, and such a retainer is
  * left alone: its object is dead (nu::Instance vtable, a vtable outside the image, or another record at + 8 = the memory was used again), so
  * the release could only delete it a second time. In a game without rollback such a retainer never exists (the game would crash), so this
@@ -1496,6 +1547,11 @@ static void sd_fill2(Ctx *c, void *user) {
 static void sd_init(void) {
     const char *e = getenv("SSBU_RB_SRVDIAG"); g_sd_on = e ? atoi(e) : 0;
     e = getenv("SSBU_RB_RETAINFIX"); g_sd_fix = !(e && e[0] == '0');
+    e = getenv("SSBU_RB_RETAINGEN"); g_rgn_on = !(e && e[0] == '0');
+    if (g_rgn_on && g_sd_on <= 0) {
+        int a0 = hook_install(GA(0x7103817170ull), rgn_hook0, NULL, &g_rgn_orig[0]), a1 = hook_install(GA(0x7103817f90ull), rgn_hook1, NULL, &g_rgn_orig[1]);
+        LOG("r1: RB retainer gen fix (SSBU_RB_RETAINGEN): %s\n", a0 && a1 ? "on" : "hook FAILED"); }
+    else if (g_rgn_on) LOG("r1: RB retainer gen fix (SSBU_RB_RETAINGEN): on (inside the SRVDIAG hooks)\n");
     if (g_sd_on <= 0) { if (g_sd_fix) LOG("r1: RB retainer fix (SSBU_RB_RETAINFIX): %s\n", hook_install(GA(0x71038156f0ull), sd_clear, NULL, &g_sd_orig_clear) ? "on" : "hook FAILED"); return; }
     hook_install(GA(0x7103817170ull), sd_fill, NULL, &g_sd_orig_fill);
     hook_install(GA(0x7103817f90ull), sd_fill2, NULL, &g_sd_orig_fill2);
@@ -1504,6 +1560,8 @@ static void sd_init(void) {
     LOG("r1: SRVDIAG %d: retainer check %s, SRV destructors %s / %s\n", g_sd_on, a ? "hooked" : "FAILED", b ? "hooked" : "FAILED", d ? "hooked" : "FAILED");
 }
 static void sd_report(void) {
+    if (g_rgn_on > 0 && (g_rgn_n[0] | g_rgn_n[1] | g_rgn_n[2])) LOG("r1: RB retainer gen fix: retainers from a stale list entry, per pass kind (normal or real / re-run / last re-run): %ld / %ld / %ld; of them on an object that looks alive (a view made again in the same memory): %ld / %ld / %ld\n",
+        g_rgn_n[0], g_rgn_n[1], g_rgn_n[2], g_rgn_live[0], g_rgn_live[1], g_rgn_live[2]);
     if (g_sd_fix && g_sd_bad) LOG("r1: RB retainer fix: %ld releases of a dead object skipped so far (%ld command blocks checked)\n", g_sd_bad, g_sd_checked);
     if (g_sd_on <= 0) return;
     LOG("r1: SRVDIAG report: %ld binding blocks checked, %ld bad retainers; SRV destructions in the fight %ld: main normal/real %lld, re-run %lld, last re-run %lld; other threads %lld / %lld / %lld\n",
