@@ -71,8 +71,9 @@ moved by one page (+0x1000).
 
 ## Playing online across builds (cross-version)
 
-13.0.4 and 13.0.5 play online together, rollback included, as if they were one version (`SSBU_XVER`, default on;
-`runtime/hostrt.c` `game_xver`). What was compared (2026-11-09, `tools/port/arc_cmp.py` and the segment check below):
+13.0.2, 13.0.4 and 13.0.5 play online together, rollback included, as if they were one version (`SSBU_XVER`, default
+on; `runtime/hostrt.c` `game_xver`; `SSBU_XVER_1302=0` leaves 13.0.2 out). What was compared for 13.0.5 against 13.0.4
+(2026-11-09, `tools/port/arc_cmp.py` and the segment check below):
 
 - `data.arc`: the same 590,711 paths at the same offsets with the same sizes; the stored bytes of one file differ:
   `pokemon/togedemaru/motion/body/c00/end.nuanmb` (the Poke Ball Pokemon's exit animation), where 29 one-frame
@@ -85,13 +86,21 @@ moved by one page (+0x1000).
   else moved unchanged; this fits Nintendo's note (checks on data received online).
 - The rollback checksum (fighter_host.c: fighter entry, status, motion hash, frame, position, damage, the random
   generators' words, the pads) holds values, not addresses.
+- 30 more functions differ only in constants: the game's own version number (0xd004 / 0xd005 and the like).
 - Room pairs 13.0.4 against 13.0.5 with rollback (two matches each, NETSIM 0 and 27, and Squad Strike): IDENTICAL.
 
-How: the build id sent to the lobby is `ssbu-recomp-ldn1-13.0.x` for both (the lobby, the in-game LAN lobby and
+13.0.2 against 13.0.4: `data.arc` differs in 19 files, 18 animations of items and Poke Ball Pokemon (club, thunder,
+bumper, hammer, doseisan, sandbag, fairybottle, mechakoopa, dolphinbomb, thundersword, staffroulette; rokon, rokona,
+zoroark, dedenne, togedemaru, latiaslatios) with the same kind of change as above (one-frame material / visibility
+tracks, no bone transform: the hitboxes that follow bones do not move) and one colour value of a per-player colour table;
+`main`'s code differs in version constants and in network library code (the 13.0.2 notes above). Room pairs 13.0.4
+and 13.0.5 against 13.0.2 with rollback: IDENTICAL.
+
+How: the build id sent to the lobby is `ssbu-recomp-ldn1-13.0.x` for all three (the lobby, the in-game LAN lobby and
 matchmaking part players by an exact build id, so no server change), and the rollback handshake (`rb_net.c` hs_check)
 accepts the other build of the family (log `[rbnet] handshake: cross-version match: game update 13.0.4 here, 13.0.5
-there`). The game's own Local Wireless room join works across the two as is. `SSBU_XVER=0`: build id `-13.0.4` /
-`-13.0.5` and the handshake refuses another build, as before; a game with `SSBU_XVER=0` and one without never see each
+there`). The game's own Local Wireless room join works across the two as is. `SSBU_XVER=0`: build id `-13.0.2` /
+`-13.0.4` / `-13.0.5` and the handshake refuses another build, as before; a game with `SSBU_XVER=0` and one without never see each
 other's rooms. Players of an older release (build id `-13.0.4` / `-13.0.5`) are in a part of their own, as before.
 
 Replays (`.ssbv`, the launcher's viewer) hold ids (ui_chara / motion hash40, kinds, stage ids) and positions, no
