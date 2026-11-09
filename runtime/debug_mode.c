@@ -190,6 +190,13 @@ int dm_squad_entry_loading(void) {                  /* (rb_rollback.c) a fighter
 static void sq_eload_hook(Ctx *c, void *user) {
     (void)user;
     static int step = -1; static int64_t base = -1; static uint64_t base_en;
+    /* (Battle Arena, game's squad, run cssn4) the room's Squad Strike loads BOTH sides' next fighters at the same time: with one base the
+     * two entries reset it in turn and neither ever stepped (loading stuck at sub-state 05 / 0a, no guesses for the rest of the match). Now
+     * one base per entry (SSBU_SQ_EBASE=0: the single base, the old way). */
+    static int per = -1; static struct { uint64_t en; int64_t base; } eb[4]; if (per < 0) { const char *e = getenv("SSBU_SQ_EBASE"); per = !(e && e[0] == '0'); }
+    uint64_t en0 = c->x[0]; int ek = -1;
+    if (per && en0) { for (int i = 0; i < 4; i++) if (eb[i].en == en0) ek = i; if (ek < 0) for (int i = 0; i < 4; i++) if (!eb[i].en) { ek = i; eb[i].en = en0; eb[i].base = -1; break; } if (ek < 0) { ek = 0; eb[0].en = en0; eb[0].base = -1; }
+        base = eb[ek].base; base_en = en0; }
     if (step < 0) { const char *e = getenv("SSBU_SQ_STEP"); step = e && *e ? atoi(e) : 20; }
     uint64_t en = c->x[0], o = g_sq_obj;
     int64_t fc = o ? (int64_t)rd32(o + 0x112c) : 0;
@@ -199,8 +206,9 @@ static void sq_eload_hook(Ctx *c, void *user) {
         static uint64_t last_en; static uint32_t last_v;
         if (lg && en && en == g_sq_load_en) { long long rbn_now(void); uint32_t v = rd8(en + 0x5920) | (uint32_t)rd8(en + 0x591c) << 8 | (rd32(en + 0x13c) == 0xffffffffu ? 0x10000u : 0) | (uint32_t)rd8(en + 0x5921) << 24;
             if (en != last_en || v != last_v) { printf("[squad] entry %llx at frame %lld (fight %lld): + 0x5920 %02x + 0x591c %02x + 0x5921 %02x%s\n", (unsigned long long)en, rbn_now(), (long long)fc, v & 255, v >> 8 & 255, v >> 24, v & 0x10000 ? " (not in the entry)" : ""); fflush(stdout); last_en = en; last_v = v; } } }
-    if (step <= 0 || !g_sq_made || !en || !o || !(loading || waiting)) { if (en == base_en) base = -1; g_orig_sq_eload(c); return; }
+    if (step <= 0 || !g_sq_made || !en || !o || !(loading || waiting)) { if (en == base_en) base = -1; if (ek >= 0) eb[ek].base = base; g_orig_sq_eload(c); return; }
     if (base < 0 || en != base_en || base > fc) { base = fc; base_en = en; }
+    if (ek >= 0) eb[ek].base = base;
     if ((fc - base) % step || fc == base) { g_sq_eload_n++; return; }      /* (the first step one period in: the frames before it run without guesses, rb_rollback.c rbg_squad_lock) */      /* (not a step frame: the entry's loading waits, as if its request were not done) */
     uint8_t sub0 = rd8(en + 0x591c);
     g_orig_sq_eload(c);
