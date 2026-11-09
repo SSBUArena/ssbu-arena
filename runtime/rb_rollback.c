@@ -369,8 +369,9 @@ static void rbg_squad_lock(long long i) {
          * start (frames ~30 and ~90, ResLoadingThread / ResInflateThread): a rollback across those loads gave a DESYNC some frames later
          * (runs cssm12n27 frame 90, cssn5 frame 151, NETSIM=27). No guesses in the first 40 frames, and from a frame whose settle had to
          * wait for the file loader (then the 90 frames below). */
-        static int nat = -1; if (nat < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_LDLOCK"); nat = e && e[0] == '1' && !(k && k[0] == '0'); }
-        if (act && nat && (i < 40 || (g_sq_ld_busy >= 0 && i >= g_sq_ld_busy && i - g_sq_ld_busy < 2))) busy = 1; }
+        static int nat = -1; if (nat < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_LDLOCK"); (void)e; int dm_bacss_on(void); nat = dm_bacss_on() && !(k && k[0] == '0'); }
+        int dm_bacss_native(void);
+        if (act && nat && dm_bacss_native() && (i < 40 || (g_sq_ld_busy >= 0 && i >= g_sq_ld_busy && i - g_sq_ld_busy < 2))) busy = 1; }
     if (act && busy) last = i;
     g_sq_lock = act && i - last < 90;                  /* (and 90 frames after: a rollback just after the load zeroed pages the loader had freed and taken again, pair sq15a) */
     if (g_sq_lock) g_sq_lock_frames++;
