@@ -1,8 +1,8 @@
-# Game builds: 13.0.4 and 13.0.5
+# Game builds: 13.0.2, 13.0.4 and 13.0.5
 
-The port runs **13.0.4** and **13.0.5** (update v2031616, released 1 September 2026, which replaced 13.0.4 on consoles;
+The port runs **13.0.2** (update v1835008), **13.0.4** and **13.0.5** (update v2031616, released 1 September 2026, which replaced 13.0.4 on consoles;
 Nintendo's notes list one change: "Fixed behavior that occurs when invalid data is sent or received in online battles").
-Both are built from the same sources. 13.0.4 stays the reference: every game address written in the sources is a 13.0.4
+All are built from the same sources. 13.0.4 stays the reference: every game address written in the sources is a 13.0.4
 address.
 
 ## How a build is recognised
@@ -11,6 +11,7 @@ Step `convert` reads the size of `main`'s code (the first segment of the convert
 
 | `main` code size | build | converted dump |
 |---|---|---|
+| 0x39c7a90 | 13.0.2 | `build/binaries/13.0.2/` |
 | 0x39c7e90 | 13.0.4 | `build/binaries/13.0.4/` |
 | 0x39c8440 | 13.0.5 | `build/binaries/13.0.5/` |
 
@@ -24,14 +25,14 @@ main: build 13.0.5, text 0x39c8440, data at 0x4f17000, RELA 0x39c9070 / 0x7ad0d8
 
 ## What differs, measured on the binaries
 
-| | 13.0.4 | 13.0.5 |
-|---|---|---|
-| `main` code | 0x39c7e90 bytes | 0x39c8440 (+0x5b0) |
-| `main` read-only data | at 0x39c8000, 0x154df60 bytes | at 0x39c9000, same size |
-| `main` data | at 0x4f16000, 0x392570 bytes in the file | at 0x4f17000, same size |
-| `main` RELA / JMPREL / SYMTAB / STRTAB / INIT_ARRAY | 0x39c8070 / 0x4175148 / 0x4197610 / 0x41c11f0 / 0x52a7be0 | each +0x1000, same sizes |
-| `sdk` | code 0x540950, image 0xcfb000, 25,400 symbols | same layout; the same 1,375 functions lift |
-| script modules in `data.arc` | 98 | 98 |
+| | 13.0.4 | 13.0.5 | 13.0.2 |
+|---|---|---|---|
+| `main` code | 0x39c7e90 bytes | 0x39c8440 (+0x5b0) | 0x39c7a90 (-0x400) |
+| `main` read-only data | at 0x39c8000, 0x154df60 bytes | at 0x39c9000, same size | at 0x39c8000, 0x154e0a0 bytes (+0x140) |
+| `main` data | at 0x4f16000, 0x392570 bytes in the file | at 0x4f17000, same size | at 0x4f17000, same size |
+| `main` RELA / JMPREL / SYMTAB / STRTAB / INIT_ARRAY | 0x39c8070 / 0x4175148 / 0x4197610 / 0x41c11f0 / 0x52a7be0 | each +0x1000, same sizes | the same as 13.0.4; INIT_ARRAY +0x1000 |
+| `sdk` | code 0x540950, image 0xcfb000, 25,400 symbols | same layout; the same 1,375 functions lift | identical to 13.0.4 (also `subsdk0`, `rtld`) |
+| script modules in `data.arc` | 98 | 98 | 98 |
 
 Code: the 13.0.4 function list of the matching decompilation (sbergeron42/ssbu-decomp, `data/functions.csv`, 37,496
 functions inside the code) was lined up with 13.0.5's own unwind table (`.eh_frame_hdr`, 110,842 entries) by function size.
@@ -40,6 +41,12 @@ by -0x1a0 / -0x40; after that it moves by +0x450, +0x490, +0x590 and finally +0x
 size under these offsets; most of the rest are entries whose Ghidra boundaries are approximate. Read-only data, data and
 bss moved by exactly one page (+0x1000).
 
+13.0.2, the same way: code is at the same address up to 0x71017f4ac0, then moves by -0x20, by +0x250 from 0x71033049d0
+and by -0x400 from 0x71035a3e80 to the end (27,638 functions match by size). Only 35 of 110,842 functions differ from
+13.0.4 at all; 29 of them only in a version constant (0xd002 / 0xd004, 0x1c / 0x1e, 2 / 4). Read-only data starts at
+the same address with its tables unmoved, but parts of it after 0x710452ac40 moved by +0x140 to +0x1c0; data and bss
+moved by one page (+0x1000).
+
 ## How the sources handle both
 
 - **The layout of `main`** is read from `main.elf` instead of being written down: the lifter (`tools/lifter/recomp.py`,
@@ -47,15 +54,17 @@ bss moved by exactly one page (+0x1000).
   headers and the relocation tables, symbol table and init array from the dynamic section that MOD0 points to. The
   constants this replaces are in the comments next to that code.
 - **Game addresses** are written as their 13.0.4 value and passed through `GA()` (`runtime/hostrt.h`), which gives the
-  address in the build that runs. On 13.0.4 it returns its argument. On 13.0.5 an address in read-only data, data or bss
-  moves by one page, and an address in code is looked up in `g_code_13_0_5` (`runtime/hostrt.c`), one line per
-  address the runtime uses. A code address that is not in that table is looked for by its code: `runtime/ga_sig_13_0_4.inc`
+  address in the build that runs (`g_builds` in `runtime/hostrt.c` says how, build by build). On 13.0.4 it returns its
+  argument. On 13.0.5 an address in read-only data, data or bss moves by one page, and an address in code is looked up
+  in `g_code_13_0_5` (`runtime/hostrt.c`), one line per address the runtime uses. On 13.0.2 data and bss move by one
+  page, a read-only data address is looked up in `g_ro_13_0_2` (it stops the program when it is not there) and a code
+  address in `g_code_13_0_2`, which lists every code address the sources name. A code address that is not in that table is looked for by its code: `runtime/ga_sig_13_0_4.inc`
   (made by `tools/port/ga_sigs.py` from a 13.0.4 `main.elf`; addresses and hashes only) holds a fingerprint of the code at
   each address the sources name, a hash of a few instructions with the parts that change when code moves masked out, chosen
-  so that it is unique within +-0x1000 on 13.0.4. On 13.0.5 `GA()` takes the one place within +-0x1000 with that hash
-  and logs `found on 13.0.5 by its code`. An address with no fingerprint, or whose code is found at no place or at more
+  so that it is unique within +-0x1000 on 13.0.4. On 13.0.5 and 13.0.2 `GA()` takes the one place within +-0x1000 with that
+  hash and logs `found on <build> by its code`. An address with no fingerprint, or whose code is found at no place or at more
   than one, stops the program with a message: calling the wrong function silently would be worse. So does `GA()` before
-  `main.elf` has been read. `SSBU_GA_CHECK=1` on 13.0.5 checks every table entry against the search at start and logs
+  `main.elf` has been read. `SSBU_GA_CHECK=1` on 13.0.5 or 13.0.2 checks every entry of the build's code table against the search at start and logs
   the count (`GA check: ...`): it shows whether the search finds the right places on a real 13.0.5 dump.
 - `main`'s layout fields (`g_main`) replace the constants that described it: the init array in `boot.c` and in the C++
   runtime self-test, the start of the data segment in the image-protection check of `nnmisc.c`.
@@ -63,23 +72,31 @@ bss moved by exactly one page (+0x1000).
 ## Checking the table on your own dump
 
 ```
-python tools/port/verify_13_0_5.py build/binaries/13.0.5/main.elf <functions.csv>
+python tools/port/verify_build.py build/binaries/13.0.5/main.elf <functions.csv>
+python tools/port/verify_build.py build/binaries/13.0.2/main.elf <functions.csv> --ref build/binaries/13.0.4/main.elf
 ```
 
+(the build is told by the size of the code, `--build 13.0.2` makes another size a failure; `verify_13_0_5.py` is the
+same check under its old name)
+
 `<functions.csv>` is `data/functions.csv` of sbergeron42/ssbu-decomp (addresses, sizes and names; no code). The script
-finds every game address in `runtime/` and `fighter_sdk/` and checks what `GA()` answers on 13.0.5: a code address must
-be in `g_code_13_0_5`, and its delta must be the one at which the same-size functions on both sides of it (or its own
-function) line up in the 13.0.5 unwind table; a data address must be formed by 13.0.5 code (ADRP + ADD/LDR/STR) more
+finds every game address in `runtime/` and `fighter_sdk/` and checks what `GA()` answers on that build: a code address must
+be in the build's code table, and its delta must be the one at which the same-size functions on both sides of it (or its
+own function) line up in the build's unwind table, and the search by its fingerprint must find the same place (a place
+inside a function that changed size passes when its fingerprint finds it between the deltas of the functions on either
+side); a 13.0.2 read-only data address must be in `g_ro_13_0_2`, formed by 13.0.2 code and, with `--ref`, hold the
+13.0.4 bytes; a data address must be formed by 13.0.5 code (ADRP + ADD/LDR/STR) more
 often at its new address than at its old one. It also checks the one-page rule against the segments, and that no
 `0x71xxxxxxxx` literal in code bypasses `GA()` without a stated reason. On the author's dump it reports
 `all checks passed` (46 code and data addresses, 3 segment checks, 7 literals that are not addresses of things that move);
-on a 13.0.5 dump on 2026-11-09, after the additions since: `all checks passed` (210 checks).
+on a 13.0.5 dump on 2026-11-09, after the additions since: `all checks passed` (210 checks); on a 13.0.2 dump on 2026-11-09 with `--ref`: `all checks passed` (234 checks).
 
 ## Adding a game address
 
 Write the 13.0.4 address and wrap it: `GA(0x71xxxxxxxxull)`. If it is in code, run
 `python tools/port/ga_sigs.py build/binaries/13.0.4/main.elf` so it gets a fingerprint; with a 13.0.5 dump at hand, also
-add its 13.0.5 counterpart to `g_code_13_0_5` (sorted) and run the check above. An address only known on 13.0.5 cannot be written this way; find its
+add its 13.0.5 counterpart to `g_code_13_0_5` (sorted) and run the check above; likewise `g_code_13_0_2` with a 13.0.2
+dump (a 13.0.2 address missing from it is still looked for by its fingerprint). An address only known on 13.0.5 cannot be written this way; find its
 13.0.4 counterpart with the same method, or say so in the pull request.
 
 ## Not covered
