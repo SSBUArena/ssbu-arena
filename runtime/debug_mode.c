@@ -500,11 +500,17 @@ static void scene_clean_hook(Ctx *c, void *user) {
     wr8(MELEE_INFO, mode);
     printf("[rbnet] room match: the fight scene's clean-up ran as a local match's (melee mode %u kept for what follows)\n", mode); fflush(stdout);
 }
+static void bacss_after_match(void);
 void dm_room_restore(void) {
     if (g_room_mode_was < 0) return;
+    bacss_after_match();
+    if (g_bacss == 1) g_room_saved_n = 0;      /* (Battle Arena, game's squad: see below) */
     printf("[rbnet] room match over: melee mode %u -> %d (the room's), %d player panel state(s) given back\n", rd8(MELEE_INFO), g_room_mode_was, g_room_saved_n);
     wr8(MELEE_INFO, (uint8_t)g_room_mode_was);
     g_room_clean = 1;
+    /* (Battle Arena, game's squad, 2026-11-09) the room's records are built from ONE panel state on the stack of the room's record
+     * constructor (0x710178f3ec / 0x710178f488: x0 = sp + 0xa8, filled by 0x7101787830 from the screens' table for each player): it is
+     * gone when the fight ends, so nothing is written back there (it would land on whatever stack frame is there now) */
     for (int j = 0; j < g_room_saved_n; j++) { int i = g_bacss == 1 ? g_room_saved_n - 1 - j : j;      /* (Battle Arena, game's squad: backwards, when both records come from one panel state the first one saved is the room's own) */
         uint64_t st = g_room_saved[i].st; if (!st) continue;
         for (int k = 0; k < 6; k++) wr8(st + 0x450 + (uint64_t)k, g_room_saved[i].b450[k]);
@@ -617,7 +623,7 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
             uint64_t w[1] = {MELEE_INFO + (off & ~7ull)}; printf("[rbnet] research: match block + 0x%llx at the handshake = %016llx\n", (unsigned long long)(off & ~7ull), (unsigned long long)rd64(w[0])); debug_watch(w, 1); }
         {   const char *e = getenv("SSBU_SQ_NETWATCH");      /* (RESEARCH) =<hex off>[,<hex off>..]: who writes these bytes of the room's net object from now on */
             if (e && *e) { uint64_t net = sr64(sr64(sr64(GA(0x71052c3c58ULL)) + 8) + 0x88), w[4]; int n = 0; const char *p = e;
-                while (*p && n < 4) { w[n++] = net + (strtoull(p, NULL, 16) & ~7ull); p = strchr(p, ','); if (!p) break; p++; }
+                while (*p && n < 4) { w[n++] = *p == 'g' ? GA(strtoull(p + 1, NULL, 16) & ~7ull) : net + (strtoull(p, NULL, 16) & ~7ull);      /* (g<address>: a guest address) */ p = strchr(p, ','); if (!p) break; p++; }
                 if (net) { printf("[squadcss] RESEARCH: net object %llx watched at %d place(s)\n", (unsigned long long)net, n); fflush(stdout); debug_watch(w, n); } } }
         g_hs_ok = rbn_handshake(&me, &g_hs_m); g_hs_local = 0;
         {   int rbn_room_rollback(void); g_hs_lwr = g_hs_ok && rbn_room_rollback(); }
@@ -905,6 +911,7 @@ static void match_player_hook(Ctx *c, void *user) {
         if (g_hs_lwr && g_lwr_ctl_ok) { wr8(rec + 0x48, g_lwr_ctl[idx][LWR_CTL]);
             if (idx == 1 && g_tc_k == 0) for (int j = 0; j < SQ_N; j++) wr8(SQ_TABLE + 8 + 0x268ull * (uint64_t)j + 0x48, g_lwr_ctl[0][LWR_CTL]); }
         if (idx == 1) g_sq_made = 1;
+        if (g_tc_k == 0 && (rd8(MELEE_INFO + 0x39) != 3 || rd8(rec + 0x18) != 1)) { printf("[squad] WARNING: player %d's squad is not Tag Team with 1 stock (match block + 0x39 %u, record stocks %u)\n", idx + 1, rd8(MELEE_INFO + 0x39), rd8(rec + 0x18)); fflush(stdout); }
         printf("[squad] player %d fighter %d: ui_chara %016llx colour %u -> entry %llx: fighter kind %d (the game's own squad; match block + 0 %u, + 0x39 %u)\n", idx + 1, g_tc_k + 1, (unsigned long long)rd64(rec), rd8(rec + 0x19), (unsigned long long)rec, (int)(int8_t)rd8(rec + 8), rd8(MELEE_INFO), rd8(MELEE_INFO + 0x39));
         {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 3) { char t[48]; snprintf(t, sizeof t, "[squadcss] rec p%d k%d", idx + 1, g_tc_k + 1); hex_lines(t, rec, 0x268);
                 snprintf(t, sizeof t, "[squadcss] st p%d k%d", idx + 1, g_tc_k + 1); hex_lines(t, st, 0x460); } }      /* (research) the records / panel states, to compare the two games */
@@ -1261,11 +1268,40 @@ static void bacss_mem_dump(uint64_t self, int round, int call) {
     }
     printf("[squadcss] RESEARCH: memory dumped at select screen %d call %d (seq %llx)\n", round, call, (unsigned long long)self); fflush(stdout);
 }
+/* (Battle Arena, game's squad, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_KEEPHOST=0 off) back in the room after a match, the JOINER's copy of the
+ * host's players (room net object [[[0x71052c3c58] + 8] + 0x88] + 0x24da0: the host station's 5 player entries of 0x1e0, + 0 station
+ * byte, + 0x21 kind; runs csss2 / csss6: 00 / 01 at the first select screen, ff / 0f = an empty entry at the second) is found reset,
+ * and the room's net update (0x71016e5310) then writes the select screen's side 1 as a free local seat: the joiner's own hand went to
+ * P1 and its real side 2 showed "Make everyone CPU" (cssh5, cssh6), the host waited with the joiner's old squad. The entries as they
+ * were when the first select screen ended are written back while they read empty. */
+static uint8_t g_kh_buf[0x968]; static int g_kh_ok, g_kh_after;
+static void bacss_after_match(void) { g_kh_after = 1; }
+static uint64_t kh_net(void) { return sr64(sr64(sr64(GA(0x71052c3c58ULL)) + 8) + 0x88); }
+static void bacss_keep_host(int capture) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SQ_KEEPHOST"); on = !(e && e[0] == '0'); }
+    int nnldn_role(void); if (!on || g_bacss != 1 || nnldn_role() != 2) return;
+    uint64_t net = kh_net(); if (!net) return;
+    if (capture) { uint8_t b[0x968]; if (safe_read(net + 0x24da0, b, sizeof b) && b[0] != 0xff) { memcpy(g_kh_buf, b, sizeof b); g_kh_ok = 1; g_kh_after = 0; } return; }
+    if (!g_kh_ok || !g_kh_after || rd8(net + 0x24da0) != 0xff) return;
+    for (size_t k = 0; k < sizeof g_kh_buf; k++) wr8(net + 0x24da0 + k, g_kh_buf[k]);
+    static int said; if (said++ < 5) { printf("[squadcss] joiner: the host's player entries in the room's net object read empty after the match: written back as at the first select screen (station %u, kind %u)\n", g_kh_buf[0], g_kh_buf[0x21]); fflush(stdout); }
+}
 static void tc_css_hook(Ctx *c, void *user) {      /* MeleeTeamCompeSequenceScene's character select state 0x710233cfd0 */
     (void)user;
     uint64_t self = c->x[0];
+    bacss_keep_host(0);
     {   static int rd_seen = -1, calls; if (g_css_round != rd_seen) { rd_seen = g_css_round; calls = 0; } calls++;
-        if (calls == 5 || calls == 200) bacss_mem_dump(self, g_css_round, calls); }
+        if (calls == 5 || calls == 200) bacss_mem_dump(self, g_css_round, calls);
+        /* (Battle Arena, SSBU_BA_SQUAD_RULES=0 off) each game picked its Squad Strike ruleset from its OWN save (MeleeRuleScene): both are
+         * set to the room's rules before the fighters' records are built: the rule struct at 0x7105309974 (the squad builder 0x7102311f00
+         * copies it into every panel state + 4 .. + 0x1b): + 1 rule kind 1 (stock), + 6 stocks 1, + 0x2c style 2 (Tag Team: match block
+         * + 0x39 = 3 in every Tag Team run; checked and logged at the squad's records) */
+        static int rules = -1; if (rules < 0) { const char *e = getenv("SSBU_BA_SQUAD_RULES"); rules = !(e && e[0] == '0'); }
+        int rbn_ba_mode(void);
+        if (rules && rbn_ba_mode() > 0) { uint64_t r = GA(0x7105309974ULL); uint8_t k = rd8(r + 1), s = rd8(r + 6), y = rd8(r + 0x2c);
+            if (k != 1 || s != 1 || y != 2) { wr8(r + 1, 1); wr8(r + 6, 1); wr8(r + 0x2c, 2);
+                printf("[squadcss] Battle Arena room rules: rule kind %u -> 1 (stock), stocks %u -> 1, style %u -> 2 (Tag Team)\n", k, s, y); fflush(stdout); }
+            else if (calls == 1) { printf("[squadcss] Battle Arena room rules: stock, 1 stock, Tag Team (as picked)\n"); fflush(stdout); } } }
     int nnldn_role(void); int mine = nnldn_role() == 2 ? 1 : 0;
     {   static int last_n[2] = {-1, -1};          /* (test aid) @sq_mine3: this game's side has its 3 fighters */
         for (int s = 0; s < 2; s++) { int n = bacss_chips(s); if (n != last_n[s]) { last_n[s] = n; char w[48]; snprintf(w, sizeof w, "side %d has %d fighter(s)", s + 1, n); bacss_show(w); } }
@@ -1280,6 +1316,7 @@ static void tc_css_hook(Ctx *c, void *user) {      /* MeleeTeamCompeSequenceScen
             static uint32_t last = 0xffffffffu; uint32_t res = rd32(mgr + 0x40);
             if (res != last) {
                 last = res; char w[64]; snprintf(w, sizeof w, "Squad Strike select done (result %u)", res); bacss_show(w);
+                if (res == 1) bacss_keep_host(1);
                 /* TEST ONLY: SSBU_SQ_CSS_TEST_PICKS=<a>,<b>,<c>/<d>,<e>,<f> (the same on both games): the chips' fighters written here */
                 const char *e = getenv("SSBU_SQ_CSS_TEST_PICKS");
                 if (e && *e) {
@@ -1375,7 +1412,19 @@ static void fight_setup_hook(Ctx *c, void *user) {
     if (getenv("SSBU_DEBUG_SCENES") && rd32(GA(0x71053040f0ULL)) == 0x02020000u) { uint64_t g = GA(0x71052381c0ULL);
         printf("[squadcss] fight set-up done: match block + 0x98 %08x + 0x9c %u, generator %08x %08x %08x %08x\n", rd32(MELEE_INFO + 0x98), rd8(MELEE_INFO + 0x9c), rd32(g), rd32(g + 4), rd32(g + 8), rd32(g + 12)); fflush(stdout); }
 }
+/* (RESEARCH, SSBU_SQ_MSGLOG=1) the room's messages: 0x7101685cb0 (net, w1 id, x2 data, w3 size) sends one, 0x7101698160 (net, x1 station,
+ * w2 id, x3 {size, data}) handles one received (ids 0xa3 .. 0xce; 0x71016f0550 the ones 0xb3 .. 0xce) */
+static ImportFn g_orig_msg_send, g_orig_msg_recv;
+static void msg_note(const char *dir, unsigned id, long st, unsigned size, uint64_t data) {
+    static unsigned cnt[2][0x400]; unsigned k = id & 0x3ff, d = dir[0] == 's';
+    if (++cnt[d][k] <= 6 || cnt[d][k] % 200 == 0) { long long rbn_now(void);
+        char t[100] = {0}; int n = 0; for (unsigned j = 0; data && j < size && j < 24; j++) { uint8_t b = 0; safe_read(data + j, &b, 1); n += snprintf(t + n, sizeof t - n, "%02x", b); }
+        printf("[squadcss] msg %s id %x station %ld size %u (#%u, frame %lld, scene round %d): %s\n", dir, id, st, size, cnt[d][k], rbn_now(), g_css_round, t); fflush(stdout); }
+}
+static void msg_send_hook(Ctx *c, void *user) { (void)user; msg_note("sent", (unsigned)c->x[1], -1, (unsigned)c->x[3], c->x[2]); g_orig_msg_send(c); }
+static void msg_recv_hook(Ctx *c, void *user) { (void)user; uint64_t m = c->x[3]; msg_note("received", (unsigned)(c->x[2] & 0xffff), (long)(c->x[1] & 0xff), m ? rd32(m) : 0, m ? rd64(m + 8) : 0); g_orig_msg_recv(c); }
 static void bacss_init(void) {
+    if (getenv("SSBU_SQ_MSGLOG")) printf("[squadcss] RESEARCH: room message hooks %d %d\n", hook_install(GA(0x7101685cb0ULL), msg_send_hook, NULL, &g_orig_msg_send), hook_install(GA(0x7101698160ULL), msg_recv_hook, NULL, &g_orig_msg_recv));
     const char *e = getenv("SSBU_BA_SQUAD_CSS"); g_bacss = e && *e ? atoi(e) : 0;
     {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 1) printf("[squadcss] RESEARCH: hook on the matchup wait 0x710233de20: id %d\n", hook_install(GA(0x710233de20ULL), tc_match_hook, NULL, &g_orig_tc_match)); }
     if (getenv("SSBU_DEBUG_SCENES")) printf("[squadcss] hook on the scene change: id %d\n", hook_install(GA(0x7103726120ULL), scene_change_hook, NULL, &g_orig_scene_change));
