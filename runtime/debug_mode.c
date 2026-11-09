@@ -399,8 +399,16 @@ void dm_room_restore(void) {
     printf("[rbnet] room match over: melee mode %u -> %d (the room's), %d player panel state(s) given back\n", rd8(MELEE_INFO), g_room_mode_was, g_room_saved_n);
     wr8(MELEE_INFO, (uint8_t)g_room_mode_was);
     g_room_clean = 1;
+    static int check = -1; if (check < 0) { const char *e = getenv("SSBU_RB_ROOM_RESTORE_CHECK"); check = !(e && *e == '0'); }
     for (int i = 0; i < g_room_saved_n; i++) {
         uint64_t st = g_room_saved[i].st; if (!st) continue;
+        /* (2026-11-09) in a room both records are built from one panel state object that may be a temporary of the set-up
+         * (gone after the fight, its memory used again): written back only if it still holds what the set-up wrote there
+         * (+ 0x450 1, + 0x451 0, + 0x210 a slot 0 / 1, + 0x214 -1); otherwise nothing is written. SSBU_RB_ROOM_RESTORE_CHECK=0: always */
+        if (check && !(rd8(st + 0x450) == 1 && rd8(st + 0x451) == 0 && rd32(st + 0x210) < 2 && rd32(st + 0x214) == 0xffffffffu)) {
+            printf("[rbnet] room match over: player %d's panel state at %llx no longer holds the set-up's values: not written back\n", i + 1, (unsigned long long)st);
+            continue;
+        }
         for (int k = 0; k < 6; k++) wr8(st + 0x450 + (uint64_t)k, g_room_saved[i].b450[k]);
         wr32(st + 0x210, g_room_saved[i].slot); wr32(st + 0x214, g_room_saved[i].prof);
         for (int k = 0; k < 22; k++) wr8(st + 0x54 + (uint64_t)k, g_room_saved[i].lay[k]);
