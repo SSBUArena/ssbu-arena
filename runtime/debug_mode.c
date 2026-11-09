@@ -163,10 +163,17 @@ static void parse_match(const char *s) {
 static void match_player_hook(Ctx *c, void *user);
 static ImportFn g_orig_player_record;
 uint64_t g_sq_obj; static ImportFn g_orig_sq_init;
-/* (Battle Arena, 0.2.45) the room maker's Battle Arena rooms play the game's own Squad Strike (select screen of Smash, below) by default:
- * SSBU_BA_SQUAD_CSS unset or 1 = on, 0 = the old way (the ImGui squad screen and squad_build). dm_bacss_native(): this match is such a
+/* (Battle Arena) SSBU_BA_SQUAD_CSS=1: the room maker's Battle Arena rooms play the game's own Squad Strike (select screen of Smash,
+ * below); unset or 0 = the old way (the ImGui squad screen and squad_build). Default OFF for 0.2.45 (de3ffe3 had it on): in the final
+ * runs (csh1..6, all IDENTICAL) one game froze once in a squad match (csh2, main thread in a load wait under f_71004ce3b0) and the
+ * crash under f_71006b7ae0 (csg4, csss1, csst3) is not proven gone; SSBU_BA_SQUAD_CSS_DEFAULT_ON at build time turns it on. dm_bacss_native(): this match is such a
  * match (the current sequence is SEQUENCE_MELEE_TEAM_COMPE 0x02020000): the step / hold / ready gates of that match act only then. */
-int dm_bacss_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"); v = e && *e ? atoi(e) : 1; } return v == 1; }
+#ifdef SSBU_BA_SQUAD_CSS_DEFAULT_ON
+#define BACSS_DEFAULT 1
+#else
+#define BACSS_DEFAULT 0
+#endif
+int dm_bacss_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"); v = e && *e ? atoi(e) : BACSS_DEFAULT; } return v == 1; }
 int dm_bacss_native(void) { return dm_bacss_on() && rd32(GA(0x71053040f0ULL)) == 0x02020000u; }
 void debug_watch(const uint64_t *addrs, int n);
 /* (Battle Arena) the next squad fighter's load at fixed frames. The fighter entry's own loading state machine 0x71006556b0 (entry
@@ -1554,7 +1561,7 @@ static void bacss_init(void) {
     {   const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_B7FIX"); (void)e; g_b7fix = dm_bacss_on() && !(k && k[0] == '0'); }
     if (getenv("SSBU_SQ_MSGLOG")) printf("[squadcss] RESEARCH: room message hook %d\n", hook_install(GA(0x7101685cb0ULL), msg_send_hook, NULL, &g_orig_msg_send));
     if (getenv("SSBU_SQ_MSGLOG") || g_b7fix > 0) printf("[squadcss] hook on the room's received messages: %d (b7 owner fix %s)\n", hook_install(GA(0x7101698160ULL), msg_recv_hook, NULL, &g_orig_msg_recv), g_b7fix > 0 ? "on" : "off");
-    const char *e = getenv("SSBU_BA_SQUAD_CSS"); g_bacss = e && *e ? atoi(e) : 1;      /* (0.2.45: on by default; 0 = the ImGui squad screen) */
+    const char *e = getenv("SSBU_BA_SQUAD_CSS"); g_bacss = e && *e ? atoi(e) : BACSS_DEFAULT;      /* (default: BACSS_DEFAULT, 0 in 0.2.45) */
     if (g_bacss == 1) { const char *k = getenv("SSBU_SQ_ORDERSIDE"); g_orderside = !(k && k[0] == '0');
         printf("[squadcss] hooks on the matchup's messages %d, side of a station %d (order side fallback %s)\n", hook_install(GA(0x710197c2f0ULL), order_msg_hook, NULL, &g_orig_order_msg),
                g_orderside ? hook_install(GA(0x71016ea430ULL), side_of_hook, NULL, &g_orig_side_of) : -1, g_orderside ? "on" : "off"); }
