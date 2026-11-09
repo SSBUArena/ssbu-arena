@@ -511,8 +511,16 @@ void dm_room_restore(void) {
     /* (Battle Arena, game's squad, 2026-11-09) the room's records are built from ONE panel state on the stack of the room's record
      * constructor (0x710178f3ec / 0x710178f488: x0 = sp + 0xa8, filled by 0x7101787830 from the screens' table for each player): it is
      * gone when the fight ends, so nothing is written back there (it would land on whatever stack frame is there now) */
+    static int check = -1; if (check < 0) { const char *e = getenv("SSBU_RB_ROOM_RESTORE_CHECK"); check = !(e && *e == '0'); }
     for (int j = 0; j < g_room_saved_n; j++) { int i = g_bacss == 1 ? g_room_saved_n - 1 - j : j;      /* (Battle Arena, game's squad: backwards, when both records come from one panel state the first one saved is the room's own) */
         uint64_t st = g_room_saved[i].st; if (!st) continue;
+        /* (2026-11-09) in a room both records are built from one panel state object that may be a temporary of the set-up
+         * (gone after the fight, its memory used again): written back only if it still holds what the set-up wrote there
+         * (+ 0x450 1, + 0x451 0, + 0x210 a slot 0 / 1, + 0x214 -1); otherwise nothing is written. SSBU_RB_ROOM_RESTORE_CHECK=0: always */
+        if (check && !(rd8(st + 0x450) == 1 && rd8(st + 0x451) == 0 && rd32(st + 0x210) < 2 && rd32(st + 0x214) == 0xffffffffu)) {
+            printf("[rbnet] room match over: player %d's panel state at %llx no longer holds the set-up's values: not written back\n", i + 1, (unsigned long long)st);
+            continue;
+        }
         for (int k = 0; k < 6; k++) wr8(st + 0x450 + (uint64_t)k, g_room_saved[i].b450[k]);
         wr32(st + 0x210, g_room_saved[i].slot); wr32(st + 0x214, g_room_saved[i].prof);
         for (int k = 0; k < 22; k++) wr8(st + 0x54 + (uint64_t)k, g_room_saved[i].lay[k]);
