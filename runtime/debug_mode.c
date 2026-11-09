@@ -206,6 +206,28 @@ static void sq_eload_hook(Ctx *c, void *user) {
      * and putting a 6 back to 1 until a step frame broke the game (cssr3: crash at the entry's next load; cssr4: 1 / 6 flip every frame) */
     {   static int g01 = -1; if (g01 < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_GATE01"); g01 = e && e[0] == '1' && k && k[0] == '1'; }
         if (g01 && en && rd8(en + 0x5920) == 1 && en == base_en && base >= 0 && fc - base < 1200) waiting = 1; }
+    /* (Battle Arena, the game's own Squad Strike, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_HOLD6=0 off) a fighter loaded ahead (no KO) goes from + 0x5920
+     * = 1 to 6 when its module is there: at once on a game that still had the module, a frame later on one that loaded it (L2CDynamicModule-
+     * Manager): DESYNC (cssn1 frame 1497, cssr1 1775, cssr2 954, cssr7 383). Outside a change of fighter, a 6 seen on a frame that is not
+     * a step frame of the entry's loading is put back to 1 (once per load) and written again at its next step frame, the same frame on both
+     * games. (cssr3: never written again: crash at the entry's next load; cssr4: put back again and again after the step frame.) */
+    {   static int h6 = -1; if (h6 < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_HOLD6"); h6 = e && e[0] == '1' && !(k && k[0] == '0'); }
+        static uint64_t s1[4]; static int pend[4];
+        if (h6 && ek >= 0 && en && step > 0) {
+            int chg = 0; uint8_t v = rd8(en + 0x5920);
+            if (g_sq_obj) for (int k = 0; k < 3; k++) { uint32_t ps = rd32(g_sq_obj + (k == 0 ? 0x5b0 : k == 1 ? 0x950 : 0xd10) + 0x60); if (ps >= 2 && ps <= 4) chg = 1; }
+            if (v == 3) { s1[ek] = 0; pend[ek] = 0; }
+            if (v == 1 && base >= 0 && !pend[ek] && s1[ek] != en) s1[ek] = en;      /* loaded, waiting: armed for this load */
+            if (pend[ek] && v == 1 && !((fc - base) % step) && fc != base) {
+                wr8(en + 0x5920, 6); pend[ek] = 0; s1[ek] = 0; v = 6;
+                printf("[squad] entry %llx: + 0x5920 6 written at fight frame %lld (step frame of its loading)\n", (unsigned long long)en, (long long)fc); fflush(stdout);
+            } else if (s1[ek] == en && v == 6 && !chg && base >= 0 && ((fc - base) % step || fc == base)) {
+                wr8(en + 0x5920, 1); pend[ek] = 1; s1[ek] = 0; v = 1;
+                printf("[squad] entry %llx: + 0x5920 6 at fight frame %lld (not a step frame): kept at 1 until the next step frame\n", (unsigned long long)en, (long long)fc); fflush(stdout);
+            } else if (s1[ek] == en && v == 6) s1[ek] = 0;
+            if (s1[ek] == en && base >= 0 && fc - base >= 1200) s1[ek] = 0;
+            if (pend[ek] || s1[ek] == en) waiting = 1;      /* (the base is kept while it waits) */
+        } }
     if (loading) g_sq_load_en = en;
     {   static int lg = -1; if (lg < 0) lg = getenv("SSBU_SQ_ELOG") != NULL;      /* (research) every change of a loading entry's states, real and re-run passes */
         static uint64_t last_en; static uint32_t last_v;
