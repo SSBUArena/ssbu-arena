@@ -1442,6 +1442,12 @@ static void tc_vs_hook(Ctx *c, void *user) {
      * (net + 0x26a78); with ours it ended either as result 5 (stage vote, back to the room's select screen: cssr1) or, later, result 4
      * (the end of the Squad Strike sequence and DestroyNetwork: cssr5, cssn8). Run as offline too: w = 3 -> result 5 on both games. */
     if (g_bacss_vs && lw && ready == 3 && w248 == 0 && w2a0 == 3 && ready_at && frames >= ready_at + 30) bypass = 1;
+    /* (run csf1; csst7 / csst8) when the host's state 7 saw w = 3 first it ended on the online path and sent 0x131; the joiner followed it,
+     * and at the next order screen neither game sent its order (or, with SSBU_SQ_DROP131, the joiner waited for ever). Runs csst9 /
+     * csst10 (both ended through the offline run above) were fine. SSBU_SQ_RESULTNOW (=0 off): w = 3 runs as offline at once, on
+     * both games, so no 0x131 is ever sent. */
+    {   static int rn = -1; if (rn < 0) { const char *e = getenv("SSBU_SQ_RESULTNOW"); rn = !(e && e[0] == '0'); }
+        if (rn && g_bacss_vs && lw && w248 == 0 && w2a0 == 3) bypass = 1; }
     if (bypass) {
         volatile uint8_t *f = (volatile uint8_t *)(uintptr_t)GA(0x71053040f4ULL);
         printf("[squadcss] matchup: this game ready for %u frames, the room's all-ready never comes: the VS screen ends as offline (result 3 -> the fight)\n", frames - ready_at); fflush(stdout);
@@ -1510,12 +1516,12 @@ static void order_msg_hook(Ctx *c, void *user) {
     (void)user; unsigned id = (unsigned)(c->x[2] & 0xffff), st = (unsigned)(c->x[1] & 0xff); uint64_t m = c->x[3];
     static int said; if (said < 12 && (id == 0x12f || id == 0x130 || id == 0x131)) { said++; uint64_t d = m ? rd64(m + 8) : 0;
         printf("[squadcss] matchup message %x from station %u: %02x %02x %02x %02x %02x (scene round %d)\n", id, st, d ? rd8(d) : 0xffu, d ? rd8(d + 1) : 0xffu, d ? rd8(d + 2) : 0xffu, d ? rd8(d + 3) : 0xffu, d ? rd8(d + 4) : 0xffu, g_css_round); fflush(stdout); }
-    /* (Battle Arena, game's squad, SSBU_SQ_DROP131=0 off) the result screen's decision 0x131 ("03": go on): runs csst7 / csst8, both games
+    /* (Battle Arena, game's squad, SSBU_SQ_DROP131=1 on, off by default) the result screen's decision 0x131 ("03": go on): runs csst7 / csst8, both games
      * got the other's and the screen ended on the game's online path (no "ends as offline" line): at the next order screen neither game
      * sent its order (state 7 never reached its send) and both waited for ever. Runs csst9 / csst10, at most one game got it and the
      * screen ended through the offline run (tc_vs_hook): the next order screen worked. The decision is not taken from the other game:
      * both end the result screen the offline way (w = 3 -> result 5 on both, as before). */
-    {   static int d131 = -1; if (d131 < 0) { const char *e = getenv("SSBU_SQ_DROP131"); d131 = !(e && e[0] == '0'); }
+    {   static int d131 = -1; if (d131 < 0) { const char *e = getenv("SSBU_SQ_DROP131"); d131 = e && e[0] == '1'; }      /* (OFF by default: run csf1, the joiner then waited for ever; SSBU_SQ_RESULTNOW instead) */
         if (d131 && g_bacss == 1 && id == 0x131) { static int said; if (said++ < 4) { printf("[squadcss] matchup: the other game's result decision 0x131 not taken (the screen ends the offline way, SSBU_SQ_DROP131)\n"); fflush(stdout); } return; } }
     g_in_order_msg = 1; g_orig_order_msg(c); g_in_order_msg = 0;
 }
