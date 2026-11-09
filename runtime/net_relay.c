@@ -350,8 +350,11 @@ static void configure(void) {
     if ((e = getenv("SSBU_ONLINE_BUILD")) && *e) snprintf(g_build, sizeof g_build, "%s", e);
     else {
         size_t l = strlen(g_build);
-        if (g_game_build >= 0)         /* players of 13.0.4 and 13.0.5 never share a room: the lobby and the LAN lobby part rooms by build */
-            snprintf(g_build + l, sizeof g_build - l, "-%s", g_game_build == 1 ? "13.0.5" : "13.0.4");
+        int game_xver(void); const char *game_build_name(int b);
+        /* the lobby and the LAN lobby part rooms (and matchmaking) by build: with SSBU_XVER (default on) 13.0.4 and 13.0.5
+         * have one build id, "-13.0.x", and meet; SSBU_XVER=0: "-13.0.4" / "-13.0.5", they never share a room (as before) */
+        if (g_game_build >= 0)
+            snprintf(g_build + l, sizeof g_build - l, "-%s", game_xver() ? "13.0.x" : game_build_name(g_game_build));
         l = strlen(g_build);
         if (g_nmods) snprintf(g_build + l, sizeof g_build - l, "+m%08x", g_mods_hash);      /* nor do different mod sets */
     }

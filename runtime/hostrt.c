@@ -270,6 +270,29 @@ int game_rb_blocked(void) {
     }
     return b;
 }
+/* (cross-version, docs/VERSIONS.md) the game builds that play online together as if they were one version: their data.arc
+ * (every fighter, stage and rule file), read-only data and data are the same apart from addresses that moved; only
+ * main's code differs (13.0.5: the handling of invalid data received online). The lobby sees them as one build
+ * (net_relay.c: build id "...-13.0.x") and the rollback handshake accepts the other one (rb_net.c hs_check).
+ * SSBU_XVER=0: each build plays only with itself, as before (build id "...-13.0.4" / "...-13.0.5"). */
+const char *game_build_name(int b) { return b == GAME_13_0_5 ? "13.0.5" : b == GAME_13_0_4 ? "13.0.4" : "unknown"; }
+static int xver_member(int b) { return b == GAME_13_0_4 || b == GAME_13_0_5; }
+int game_xver(void) {                                   /* 1 = this game plays with the other builds of its family */
+    static volatile LONG x = -1;
+    if (x >= 0) return x;
+    if (g_game_build < 0) return 0;                     /* (not known yet: asked again later) */
+    const char *e = getenv("SSBU_XVER");
+    int v = xver_member(g_game_build) && !(e && e[0] == '0');
+    if (InterlockedCompareExchange(&x, v, -1) == -1) {
+        printf("xver: game update %s: online play with %s (SSBU_XVER=%s)\n", game_build_name(g_game_build),
+               v ? "13.0.4 and 13.0.5 as one version" : "the same game update only", e ? e : "not set");
+        fflush(stdout);
+    }
+    return x;
+}
+int game_xver_with(int other) {                         /* 1 = a game of build other can play an online match with this one */
+    return other == g_game_build || (game_xver() && xver_member(other));
+}
 /* SSBU_GA_CHECK=1 on 13.0.5: every g_code_13_0_5 entry against the search by code (does the search find the places the
  * table was checked for? a tester's game.log answers it before trusting it for the addresses not in the table) */
 static void ga_check_table(void) {
