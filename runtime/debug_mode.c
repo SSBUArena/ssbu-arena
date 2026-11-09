@@ -1281,7 +1281,10 @@ static void bacss_keep_host(int capture) {
     static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SQ_KEEPHOST"); on = !(e && e[0] == '0'); }
     int nnldn_role(void); if (!on || g_bacss != 1 || nnldn_role() != 2) return;
     uint64_t net = kh_net(); if (!net) return;
-    if (capture) { uint8_t b[0x968]; if (safe_read(net + 0x24da0, b, sizeof b) && b[0] != 0xff) { memcpy(g_kh_buf, b, sizeof b); g_kh_ok = 1; g_kh_after = 0; } return; }
+    if (capture) { uint8_t b[0x968]; int ok = safe_read(net + 0x24da0, b, sizeof b); if (ok && b[0] != 0xff) { memcpy(g_kh_buf, b, sizeof b); g_kh_ok = 1; } g_kh_after = 0;
+        printf("[squadcss] joiner: the host's player entries at the end of the select screen: net %llx, station %u kind %u%s\n", (unsigned long long)net, ok ? b[0] : 0xffu, ok ? b[0x21] : 0xffu, g_kh_ok ? " (kept)" : " (NOT kept)"); fflush(stdout); return; }
+    {   static uint8_t last = 0xfe; uint8_t now = rd8(net + 0x24da0); if (now != last) { printf("[squadcss] joiner: the host's first player entry now: station %u kind %u (net %llx; kept %d, after a match %d)\n", now, rd8(net + 0x24da0 + 0x21), (unsigned long long)net, g_kh_ok, g_kh_after); fflush(stdout); last = now; } }
+    if (!g_kh_after && rd8(net + 0x24da0) != 0xff) { safe_read(net + 0x24da0, g_kh_buf, sizeof g_kh_buf); g_kh_ok = 1; }      /* (run csss8: the entry reads empty again once the host picks; the last good one is kept) */
     if (!g_kh_ok || !g_kh_after || rd8(net + 0x24da0) != 0xff) return;
     for (size_t k = 0; k < sizeof g_kh_buf; k++) wr8(net + 0x24da0 + k, g_kh_buf[k]);
     static int said; if (said++ < 5) { printf("[squadcss] joiner: the host's player entries in the room's net object read empty after the match: written back as at the first select screen (station %u, kind %u)\n", g_kh_buf[0], g_kh_buf[0x21]); fflush(stdout); }
