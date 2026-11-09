@@ -1415,6 +1415,17 @@ static void tc_vs_hook(Ctx *c, void *user) {
     if ((ready == 1 || (ready == 3 && w248 == 0 && w2a0 == 3)) && !ready_at) ready_at = frames;
     if (getenv("SSBU_DEBUG_SCENES") && (frames % 300 == 1 || (ready == 1 && ready_at == frames)))
         { printf("[squadcss] matchup state 7: frame %u ui %llx +248 %u +2a0 %u, ready %u, all-ready byte %u, local wireless %u\n", frames, (unsigned long long)ui, w248, w2a0, ready, all, lw); fflush(stdout); }
+    /* (Battle Arena, game's squad, SSBU_SQ_ORDERRESEND=0 off) run csst6 / csst7, the second matchup of a room: neither game sent its order
+     * (message 0x12f, sent from this state when the order on screen differs from the one kept at sm + 0x13d + 5 * side), so each waited for
+     * the other's for ever. While this game's order is complete and the other side's is still empty (ff), every 120 frames the kept copy of
+     * this game's order is cleared: the state sends it again (the same order; harmless if the other game already had it). */
+    {   static int rs = -1; if (rs < 0) { const char *e = getenv("SSBU_SQ_ORDERRESEND"); rs = !(e && e[0] == '0'); }
+        int nnldn_role(void); int mine = nnldn_role() == 2 ? 1 : 0; uint64_t L = sm + 0x13d + 5ull * (uint64_t)mine, Rm = sm + 0x13d + 5ull * (uint64_t)(1 - mine);
+        int lfull = (int8_t)rd8(L) >= 0 && (int8_t)rd8(L + 1) >= 0 && (int8_t)rd8(L + 2) >= 0, rnone = rd8(Rm) == 0xff;
+        if (getenv("SSBU_DEBUG_SCENES") && frames % 300 == 150) { printf("[squadcss] matchup state 7: frame %u order kept here %02x %02x %02x, other side %02x %02x %02x\n", frames, rd8(L), rd8(L + 1), rd8(L + 2), rd8(Rm), rd8(Rm + 1), rd8(Rm + 2)); fflush(stdout); }
+        if (rs && g_bacss == 1 && lw && lfull && rnone && frames >= 120 && frames % 120 == 0) {
+            for (int k = 0; k < 5; k++) wr8(L + (uint64_t)k, 0xff);
+            static int said; if (said++ < 8) { printf("[squadcss] matchup: this game's order is set, the other side's never came: this game's order is sent again (frame %u, SSBU_SQ_ORDERRESEND)\n", frames); fflush(stdout); } } }
     if (g_bacss_vs && lw && ready == 1 && ready_at && frames >= ready_at + 30 && !all) bypass = 1;
     /* (after a match, runs cssr1 / cssr5) the result screen's OK gives w = 3: in a room the state then waits for the host station's record
      * (net + 0x26a78); with ours it ended either as result 5 (stage vote, back to the room's select screen: cssr1) or, later, result 4
@@ -1471,6 +1482,25 @@ static void msg_send_hook(Ctx *c, void *user) { (void)user; msg_note("sent", (un
  * there. Fix: a b7 received from station S for S's own side with station ff gets station S and kind S + 1 (the values the joiner
  * had for the host at the first screen), so the joiner's copy keeps the host as the owner of side 1. */
 static int g_b7fix = -1;
+/* (Battle Arena, game's squad) the matchup's order message 0x12f (handler 0x710197c2f0: x0 the scene, x1 the sender station, x3 {size, data})
+ * finds the sender's side with 0x71016ea430 (net + 0xa010, station); a side > 1 drops the message, and each game waits for the other's
+ * order for ever (run csst6, second match of a room: both games "OK" on their own side, "Choose Order" on the other's). Logged here
+ * (first 12 messages); SSBU_SQ_ORDERSIDE (on with SSBU_BA_SQUAD_CSS=1, =0 off): while that handler runs, a side not found for a room
+ * of two stations is the room maker's side 1 for station 0 and side 2 for the other. */
+static ImportFn g_orig_order_msg, g_orig_side_of; static volatile int g_in_order_msg; static int g_orderside = -1;
+static void side_of_hook(Ctx *c, void *user) {
+    (void)user; unsigned st = (unsigned)(c->x[1] & 0xff);
+    g_orig_side_of(c);
+    if (g_in_order_msg && g_orderside > 0 && (c->x[0] & 0xff) > 1 && st < 16) {
+        int nnldn_players(void); if (nnldn_players() == 2) { unsigned s = st == 0 ? 0 : 1; printf("[squadcss] order message from station %u: no side found, side %u taken (SSBU_SQ_ORDERSIDE)\n", st, s + 1); fflush(stdout); c->x[0] = s; }
+    }
+}
+static void order_msg_hook(Ctx *c, void *user) {
+    (void)user; unsigned id = (unsigned)(c->x[2] & 0xffff), st = (unsigned)(c->x[1] & 0xff); uint64_t m = c->x[3];
+    static int said; if (said < 12 && (id == 0x12f || id == 0x130 || id == 0x131)) { said++; uint64_t d = m ? rd64(m + 8) : 0;
+        printf("[squadcss] matchup message %x from station %u: %02x %02x %02x %02x %02x (scene round %d)\n", id, st, d ? rd8(d) : 0xffu, d ? rd8(d + 1) : 0xffu, d ? rd8(d + 2) : 0xffu, d ? rd8(d + 3) : 0xffu, d ? rd8(d + 4) : 0xffu, g_css_round); fflush(stdout); }
+    g_in_order_msg = 1; g_orig_order_msg(c); g_in_order_msg = 0;
+}
 static void msg_recv_hook(Ctx *c, void *user) {
     (void)user; uint64_t m = c->x[3];
     if (getenv("SSBU_SQ_MSGLOG")) msg_note("received", (unsigned)(c->x[2] & 0xffff), (long)(c->x[1] & 0xff), m ? rd32(m) : 0, m ? rd64(m + 8) : 0);
@@ -1493,6 +1523,9 @@ static void bacss_init(void) {
     if (getenv("SSBU_SQ_MSGLOG")) printf("[squadcss] RESEARCH: room message hook %d\n", hook_install(GA(0x7101685cb0ULL), msg_send_hook, NULL, &g_orig_msg_send));
     if (getenv("SSBU_SQ_MSGLOG") || g_b7fix > 0) printf("[squadcss] hook on the room's received messages: %d (b7 owner fix %s)\n", hook_install(GA(0x7101698160ULL), msg_recv_hook, NULL, &g_orig_msg_recv), g_b7fix > 0 ? "on" : "off");
     const char *e = getenv("SSBU_BA_SQUAD_CSS"); g_bacss = e && *e ? atoi(e) : 0;
+    if (g_bacss == 1) { const char *k = getenv("SSBU_SQ_ORDERSIDE"); g_orderside = !(k && k[0] == '0');
+        printf("[squadcss] hooks on the matchup's messages %d, side of a station %d (order side fallback %s)\n", hook_install(GA(0x710197c2f0ULL), order_msg_hook, NULL, &g_orig_order_msg),
+               g_orderside ? hook_install(GA(0x71016ea430ULL), side_of_hook, NULL, &g_orig_side_of) : -1, g_orderside ? "on" : "off"); }
     {   const char *d = getenv("SSBU_DEBUG_SCENES"); if (d && atoi(d) >= 1) printf("[squadcss] RESEARCH: hook on the matchup wait 0x710233de20: id %d\n", hook_install(GA(0x710233de20ULL), tc_match_hook, NULL, &g_orig_tc_match)); }
     if (getenv("SSBU_DEBUG_SCENES")) printf("[squadcss] hook on the scene change: id %d\n", hook_install(GA(0x7103726120ULL), scene_change_hook, NULL, &g_orig_scene_change));
     if (g_bacss == 2) printf("[squadcss] EXPERIMENT: Battle Arena rooms' character select in the Squad Strike layout: hook %d\n", hook_install(GA(0x7102334f50ULL), vs_css_hook, NULL, &g_orig_vs_css));
