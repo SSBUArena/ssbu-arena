@@ -73,8 +73,9 @@ namespace Arena
         // the masks from the game's own lists):
         //  - Challenges (the board "clear_getter", 124 panels): the bit array at CHALLENGES (u32 words), 3 bits per
         //    challenge by its save_no: +0 cleared (written where the game checks the condition, 0x7101777d0c), +1 shown
-        //    (the board revealed its panel and gave the reward: 0x7101a8c214), +2 opened with a hammer (0x7101a8f028,
-        //    left as it is). Cleared and shown: no "Challenge complete!", no reveal, no reward to give.
+        //    (the board revealed its panel and gave the reward: 0x7101a8c214), +2 a mark the board shows on a panel not cleared
+        //    yet (set with a hammer, 0x7101a8f028; left as it is). Cleared and shown: no "Challenge complete!", no
+        //    reveal, no reward to give; the board reads 124/124 (seen in the game, 2026-11-10).
         //  - Music: owned at BGM_OWNED (1309 bits by ui_bgm_db save_no, the game's subfield 0x10 of the unlock flags at
         //    +0x20) and the same list at BGM_KNOWN (+0x5b45dc, a fresh save holds the same bits: a song owned but not
         //    there is new); every base-game song, not the DLC ones (the game sets those from the add-on contents).
@@ -85,7 +86,9 @@ namespace Arena
         //    the list whose rows name howtoplay_*.html): marked as already read.
         //  - Fighters: Ensure above (base-game ones).
         // A copy of the save is kept in <saves>\save-backups first (before-complete-<time>). Spirits are not given (their
-        // collection is a separate structure, not studied): the game gives none after a match anyway.
+        // collection is a separate structure, +0x43471c, not studied): the game gives none after a match anyway. The
+        // add-on contents (DLC) are left to the game: at the first start with new add-on contents it unlocks their
+        // fighters, stages, songs and Mii outfits itself and announces them once (X skips them all).
         const int Challenges = 0x555BB8, ChallengeCount = 124, BgmOwned = 0x1D0, BgmKnown = 0x5B45DC, Hats = 0x20, Bodies = 0x54, Movies = 0x30C, Help = 0x310;
         const string BgmMask =
             "ffffffffdfffff7cfdfeffebffbfffffbfcbdf8984df7ffffffffffffffffdfffffffffffffffbfffffffffffffffbffffffffffffffa3ea3ff8fefff9ffffffffff0100000000000000" +
