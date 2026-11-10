@@ -87,13 +87,15 @@ namespace Arena
         //  - Milestones ("Traguardi", dated records of 8 bytes at MILESTONES, as the fighters' at +0x54fea8: bits 0-11
         //    year, 12-15 month, 16-20 day, 21-25 hour, 26-31 minute, 32-37 second, 48-55 how, 63 set): the two the game
         //    adds itself for the Challenges board's panels ("50 panels unlocked" ...), records 133 and 134, written as
-        //    the game writes them (how 2, dated now) when missing; else the next start would announce them (0.2.47).
+        //    the game writes them (how 2, dated now) when missing, and their bits in the "reached" list at
+        //    MILESTONES_REACHED (+0x5506a8, a bit per record: what the game checks before announcing one); without
+        //    them the next start announces them (seen with the launcher, 2026-11-10).
         //  - Fighters: Ensure above (base-game ones).
         // A copy of the save is kept in <saves>\save-backups first (before-complete-<time>). Spirits are not given (their
         // collection is a separate structure, +0x43471c, not studied): the game gives none after a match anyway. The
         // add-on contents (DLC) are left to the game: at the first start with new add-on contents it unlocks their
         // fighters, stages, songs and Mii outfits itself and announces them once (X skips them all).
-        const int Challenges = 0x555BB8, ChallengeCount = 124, BgmOwned = 0x1D0, BgmKnown = 0x5B45DC, Hats = 0x20, Bodies = 0x54, Movies = 0x30C, Help = 0x310, Milestones = 0x54FED8;
+        const int Challenges = 0x555BB8, ChallengeCount = 124, BgmOwned = 0x1D0, BgmKnown = 0x5B45DC, Hats = 0x20, Bodies = 0x54, Movies = 0x30C, Help = 0x310, Milestones = 0x54FED8, MilestonesReached = 0x5506A8;
         static readonly int[] BoardMilestones = { 133, 134 };
         const string BgmMask =
             "ffffffffdfffff7cfdfeffebffbfffffbfcbdf8984df7ffffffffffffffffdfffffffffffffffbfffffffffffffffbffffffffffffffa3ea3ff8fefff9ffffffffff0100000000000000" +
@@ -138,7 +140,13 @@ namespace Arena
                 ulong rec = (ulong)t.Year | (ulong)t.Month << 12 | (ulong)t.Day << 16 | (ulong)t.Hour << 21 | (ulong)t.Minute << 26 | (ulong)t.Second << 32 | 2UL << 48 | 1UL << 63;
                 int milestones = 0;
                 foreach (int m in BoardMilestones)
-                    if (BitConverter.ToUInt64(d, Milestones + 8 * m) == 0) { Array.Copy(BitConverter.GetBytes(rec), 0, d, Milestones + 8 * m, 8); milestones++; }
+                {
+                    bool reached = (d[MilestonesReached + m / 8] >> (m % 8) & 1) != 0;
+                    if (reached && BitConverter.ToUInt64(d, Milestones + 8 * m) != 0) continue;
+                    if (BitConverter.ToUInt64(d, Milestones + 8 * m) == 0) Array.Copy(BitConverter.GetBytes(rec), 0, d, Milestones + 8 * m, 8);
+                    d[MilestonesReached + m / 8] |= (byte)(1 << (m % 8));
+                    milestones++;
+                }
                 if (challenges + songs + heard + outfits + movies + help + milestones == 0) return "";
                 string backups = Path.Combine(saves, "save-backups");
                 Directory.CreateDirectory(backups);
