@@ -1397,8 +1397,172 @@ static void cp_page_nt(uint8_t *d, const uint8_t *s) {
         _mm_stream_si128(D + i + 4, a4); _mm_stream_si128(D + i + 5, a5); _mm_stream_si128(D + i + 6, a6); _mm_stream_si128(D + i + 7, a7);
     }
 }
-static void cp_part(int k) { size_t a = g_ncj * (size_t)k / (size_t)(g_ncp + 1), b = g_ncj * (size_t)(k + 1) / (size_t)(g_ncp + 1);
+/* (rb-ms 2026-11-10) g_cp_cond == 2 (ring load, SSBU_RB_LOADCMP=2): each 64-byte line written only if it differs (the lines that
+ * hold the loaded value stay in the caches of the threads that have them, main's included); g_cp_lines[k] counts the lines written.
+ * g_cp_mw: main's share of a cp_run against a helper's (1 = equal shares, 0 = main copies nothing: SSBU_RB_CPMAIN). */
+static volatile long long g_cp_lines[9]; static double g_cp_mw = 1.0;
+static long long cp_page_lines(uint8_t *d, const uint8_t *s) {
+    long long w = 0;
+    for (int o = 0; o < PG; o += 64) {
+        __m128i a0 = _mm_loadu_si128((const __m128i *)(s + o)), a1 = _mm_loadu_si128((const __m128i *)(s + o + 16)), a2 = _mm_loadu_si128((const __m128i *)(s + o + 32)), a3 = _mm_loadu_si128((const __m128i *)(s + o + 48));
+        __m128i b0 = _mm_loadu_si128((const __m128i *)(d + o)), b1 = _mm_loadu_si128((const __m128i *)(d + o + 16)), b2 = _mm_loadu_si128((const __m128i *)(d + o + 32)), b3 = _mm_loadu_si128((const __m128i *)(d + o + 48));
+        __m128i e = _mm_and_si128(_mm_and_si128(_mm_cmpeq_epi8(a0, b0), _mm_cmpeq_epi8(a1, b1)), _mm_and_si128(_mm_cmpeq_epi8(a2, b2), _mm_cmpeq_epi8(a3, b3)));
+        if (_mm_movemask_epi8(e) != 0xffff) {
+            _mm_storeu_si128((__m128i *)(d + o), a0); _mm_storeu_si128((__m128i *)(d + o + 16), a1); _mm_storeu_si128((__m128i *)(d + o + 32), a2); _mm_storeu_si128((__m128i *)(d + o + 48), a3);
+            w++;
+        }
+    }
+    return w;
+}
+/* (rb-ms 2026-11-10) SSBU_RB_LOADHASH: a ring load skips the pages that already hold the value it loads, without reading that value.
+ * Measured (LOADCMP=2 counts, BF loop bench): of the ~3500 pages a load writes, 61% hold the loaded value already and only 9% of the
+ * 64-byte lines differ, but reading the value (a pool buffer, in DRAM: the captures write it with non-temporal stores) is what costs.
+ * So each capture hashes the page while it copies it (the data is in registers: no extra memory read), the hash kept per pool buffer
+ * (g_cph, 128 bits); a load hashes the page in memory (in the caches: written in the frames just thrown away) and copies only when the
+ * hashes differ. g_cp_hmode: 1 = capture (copy + hash), 2 = load (skip when equal). A 128-bit hash with a key per position in the page
+ * (swapped blocks hash differently). */
+static uint8_t *g_cph_pool; static size_t g_cph_n; static uint64_t *g_cph; static uint8_t *g_cph_ok; static int g_cp_hmode;
+static volatile long long g_cph_skip[9], g_cph_chk[9];
+static const uint64_t g_hk[8] = {0xbe4ba423396cfeb8ull, 0x1cad21f72c81017cull, 0xdb979083e96dd4deull, 0x1f67b3b7a4a44072ull,
+                                0x78e5c0cc4ee679cbull, 0x2172ffcc7dd05a82ull, 0x8e2443f7744608b8ull, 0x4c263a81e69035e0ull};
+#define HSTEP(acc, d, k) do { __m128i _x = _mm_xor_si128((d), (k)); \
+    (acc) = _mm_add_epi64((acc), _mm_add_epi64(_mm_mul_epu32(_x, _mm_srli_epi64(_x, 32)), _mm_shuffle_epi32((d), 0x4e))); } while (0)
+static inline uint64_t h_rotl(uint64_t x, int r) { return (x << r) | (x >> (64 - r)); }
+static void h_fold(const __m128i *acc, uint64_t out[2]) {
+    uint64_t h0 = 0x243f6a8885a308d3ull, h1 = 0x13198a2e03707344ull;
+    for (int j = 0; j < 8; j++) { uint64_t l[2]; _mm_storeu_si128((__m128i *)l, acc[j]);
+        h0 = h_rotl(h0 ^ l[0], 29) * 0xff51afd7ed558ccdull; h1 = h_rotl(h1 ^ l[1], 31) * 0xc4ceb9fe1a85ec53ull;
+        h0 ^= h_rotl(l[1], 17); h1 ^= h_rotl(l[0], 43); }
+    h0 ^= h0 >> 33; h0 *= 0xff51afd7ed558ccdull; h0 ^= h0 >> 29; h1 ^= h1 >> 33; h1 *= 0xc4ceb9fe1a85ec53ull; h1 ^= h1 >> 31;
+    out[0] = h0; out[1] = h1;
+}
+#define H_INIT __m128i acc[8], kv[8], ks = _mm_set1_epi64x((long long)0x9e3779b97f4a7c15ull); \
+    for (int j = 0; j < 8; j++) { acc[j] = _mm_setzero_si128(); kv[j] = _mm_set_epi64x((long long)g_hk[j], (long long)h_rotl(g_hk[j], 23)); }
+#define H_BLOCK(a0, a1, a2, a3, a4, a5, a6, a7) do { HSTEP(acc[0], a0, kv[0]); HSTEP(acc[1], a1, kv[1]); HSTEP(acc[2], a2, kv[2]); HSTEP(acc[3], a3, kv[3]); \
+    HSTEP(acc[4], a4, kv[4]); HSTEP(acc[5], a5, kv[5]); HSTEP(acc[6], a6, kv[6]); HSTEP(acc[7], a7, kv[7]); \
+    kv[0] = _mm_add_epi64(kv[0], ks); kv[1] = _mm_add_epi64(kv[1], ks); kv[2] = _mm_add_epi64(kv[2], ks); kv[3] = _mm_add_epi64(kv[3], ks); \
+    kv[4] = _mm_add_epi64(kv[4], ks); kv[5] = _mm_add_epi64(kv[5], ks); kv[6] = _mm_add_epi64(kv[6], ks); kv[7] = _mm_add_epi64(kv[7], ks); } while (0)
+static void page_hash(const uint8_t *s, uint64_t out[2]) {
+    const __m128i *S = (const __m128i *)s; H_INIT
+    for (int i = 0; i < 4096 / 16; i += 8) {
+        __m128i a0 = _mm_loadu_si128(S + i), a1 = _mm_loadu_si128(S + i + 1), a2 = _mm_loadu_si128(S + i + 2), a3 = _mm_loadu_si128(S + i + 3);
+        __m128i a4 = _mm_loadu_si128(S + i + 4), a5 = _mm_loadu_si128(S + i + 5), a6 = _mm_loadu_si128(S + i + 6), a7 = _mm_loadu_si128(S + i + 7);
+        H_BLOCK(a0, a1, a2, a3, a4, a5, a6, a7);
+    }
+    h_fold(acc, out);
+}
+static void cp_page_nt_h(uint8_t *d, const uint8_t *s, uint64_t out[2]) {      /* cp_page_nt + the hash of the bytes copied */
+    __m128i *D = (__m128i *)d; const __m128i *S = (const __m128i *)s; H_INIT
+    for (int i = 0; i < 4096 / 16; i += 8) {
+        __m128i a0 = _mm_loadu_si128(S + i), a1 = _mm_loadu_si128(S + i + 1), a2 = _mm_loadu_si128(S + i + 2), a3 = _mm_loadu_si128(S + i + 3);
+        __m128i a4 = _mm_loadu_si128(S + i + 4), a5 = _mm_loadu_si128(S + i + 5), a6 = _mm_loadu_si128(S + i + 6), a7 = _mm_loadu_si128(S + i + 7);
+        _mm_stream_si128(D + i, a0); _mm_stream_si128(D + i + 1, a1); _mm_stream_si128(D + i + 2, a2); _mm_stream_si128(D + i + 3, a3);
+        _mm_stream_si128(D + i + 4, a4); _mm_stream_si128(D + i + 5, a5); _mm_stream_si128(D + i + 6, a6); _mm_stream_si128(D + i + 7, a7);
+        H_BLOCK(a0, a1, a2, a3, a4, a5, a6, a7);
+    }
+    h_fold(acc, out);
+}
+/* The same hash 32 bytes at a time on a CPU with AVX2 (the same values as the SSE2 one, checked on test pages; a process uses one of
+ * the two for all its captures and loads, chosen once by cph_pick; SSBU_RB_LOADHASH_AVX2=0: always SSE2). Speed per 4 KB page in the
+ * cache (Ryzen 5 3600, -O1): SSE2 0.27 us, AVX2 0.13 us (memcpy 0.03 us). */
+#include <immintrin.h>
+#include <intrin.h>
+#ifndef __AVXINTRIN_H                                   /* (clang in MSVC mode: immintrin.h leaves the AVX headers out without -mavx) */
+#include <avxintrin.h>
+#endif
+#ifndef __AVX2INTRIN_H
+#include <avx2intrin.h>
+#endif
+#define HSTEP8(acc, d, k) do { __m256i _x = _mm256_xor_si256((d), (k)); \
+    (acc) = _mm256_add_epi64((acc), _mm256_add_epi64(_mm256_mul_epu32(_x, _mm256_srli_epi64(_x, 32)), _mm256_shuffle_epi32((d), 0x4e))); } while (0)
+#define H8_INIT __m256i acc[4], kv[4], ks = _mm256_set1_epi64x((long long)0x9e3779b97f4a7c15ull); \
+    for (int j = 0; j < 4; j++) { acc[j] = _mm256_setzero_si256(); kv[j] = _mm256_set_epi64x((long long)g_hk[2 * j + 1], (long long)h_rotl(g_hk[2 * j + 1], 23), (long long)g_hk[2 * j], (long long)h_rotl(g_hk[2 * j], 23)); }
+#define H8_BLOCK(a0, a1, a2, a3) do { HSTEP8(acc[0], a0, kv[0]); HSTEP8(acc[1], a1, kv[1]); HSTEP8(acc[2], a2, kv[2]); HSTEP8(acc[3], a3, kv[3]); \
+    kv[0] = _mm256_add_epi64(kv[0], ks); kv[1] = _mm256_add_epi64(kv[1], ks); kv[2] = _mm256_add_epi64(kv[2], ks); kv[3] = _mm256_add_epi64(kv[3], ks); } while (0)
+__attribute__((target("avx2"))) static void h8_fold(const __m256i *acc, uint64_t out[2]) {
+    __m128i a[8]; for (int j = 0; j < 4; j++) { a[2 * j] = _mm256_castsi256_si128(acc[j]); a[2 * j + 1] = _mm256_extracti128_si256(acc[j], 1); }
+    h_fold(a, out);
+}
+__attribute__((target("avx2"))) static void page_hash_avx2(const uint8_t *s, uint64_t out[2]) {
+    const __m256i *S = (const __m256i *)s; H8_INIT
+    for (int i = 0; i < 4096 / 32; i += 4) {
+        __m256i a0 = _mm256_loadu_si256(S + i), a1 = _mm256_loadu_si256(S + i + 1), a2 = _mm256_loadu_si256(S + i + 2), a3 = _mm256_loadu_si256(S + i + 3);
+        H8_BLOCK(a0, a1, a2, a3);
+    }
+    h8_fold(acc, out);
+}
+__attribute__((target("avx2"))) static void cp_page_nt_h_avx2(uint8_t *d, const uint8_t *s, uint64_t out[2]) {
+    __m256i *D = (__m256i *)d; const __m256i *S = (const __m256i *)s; H8_INIT
+    for (int i = 0; i < 4096 / 32; i += 4) {
+        __m256i a0 = _mm256_loadu_si256(S + i), a1 = _mm256_loadu_si256(S + i + 1), a2 = _mm256_loadu_si256(S + i + 2), a3 = _mm256_loadu_si256(S + i + 3);
+        _mm256_stream_si256(D + i, a0); _mm256_stream_si256(D + i + 1, a1); _mm256_stream_si256(D + i + 2, a2); _mm256_stream_si256(D + i + 3, a3);
+        H8_BLOCK(a0, a1, a2, a3);
+    }
+    h8_fold(acc, out);
+}
+static void (*g_ph)(const uint8_t *, uint64_t *) = page_hash;
+static void (*g_cph_cp)(uint8_t *, const uint8_t *, uint64_t *) = cp_page_nt_h;
+static int g_cph_avx2;
+__attribute__((target("xsave"))) static void cph_pick(void) {                              /* once, before the first capture */
+    const char *e = getenv("SSBU_RB_LOADHASH_AVX2"); if (e && e[0] == '0') return;
+    int r[4]; __cpuid(r, 0); if (r[0] < 7) return;
+    __cpuid(r, 1); if (!(r[2] & (1 << 27)) || !(r[2] & (1 << 28))) return;      /* OSXSAVE, AVX */
+    unsigned long long x = _xgetbv(0); if ((x & 6) != 6) return;                  /* the OS saves the YMM registers */
+    __cpuidex(r, 7, 0); if (!(r[1] & (1 << 5))) return;                           /* AVX2 */
+    g_ph = page_hash_avx2; g_cph_cp = cp_page_nt_h_avx2; g_cph_avx2 = 1;
+}
+static inline long long cph_index(const uint8_t *p) {    /* a pool buffer's index (its hash slot), -1 = not a pool buffer */
+    if (!g_cph || p < g_cph_pool) return -1;
+    size_t o = (size_t)(p - g_cph_pool) / PG; return o < g_cph_n ? (long long)o : -1;
+}
+/* (rb-ms) SSBU_RB_LOADHASH bit 2: a capture does not keep a page that hashes as its newest value (written, but with the same bytes):
+ * the helper flags its new buffer (g_cph_same) instead of copying, the ring then gives the buffer back and drops its undo entry
+ * (r1_ring.c rg_cap_dedup). g_cj_prev[i]: the hash slot of job i's newest value (-1: none), set by cp_add_prev. */
+static uint8_t *g_cph_same; static long long *g_cj_prev; static size_t g_cj_prevcap; static int g_cph_dedup;
+static volatile long long g_cph_same_n[9];
+static void cp_add_prev(uint8_t *d, const uint8_t *s, long long prev) {
+    cp_add(d, s);
+    if (g_cj_prevcap < g_cjcap) { long long *n = realloc(g_cj_prev, g_cjcap * sizeof *n); if (!n) { g_cph_dedup = 0; return; } g_cj_prev = n; g_cj_prevcap = g_cjcap; }
+    g_cj_prev[g_ncj - 1] = prev;
+}
+static void cp_part_hash(size_t a, size_t b, int k) {
+    if (g_cp_hmode == 1) {                                  /* capture: copy + hash (destination = pool buffer) */
+        long long same = 0;
+        for (size_t i = a; i < b; i++) {
+            long long x = cph_index(g_cj[i].d); uint64_t h[2];
+            long long pv = g_cph_dedup && x >= 0 ? g_cj_prev[i] : -1;
+            if (pv >= 0 && g_cph_ok[pv]) {
+                g_ph(g_cj[i].s, h);
+                if (h[0] == g_cph[2 * pv] && h[1] == g_cph[2 * pv + 1]) { g_cph_same[x] = 1; same++; continue; }
+                if (g_cp_nt) cp_page_nt(g_cj[i].d, g_cj[i].s); else memcpy(g_cj[i].d, g_cj[i].s, PG);
+            }
+            else if (g_cp_nt) g_cph_cp(g_cj[i].d, g_cj[i].s, h); else { memcpy(g_cj[i].d, g_cj[i].s, PG); g_ph(g_cj[i].s, h); }
+            if (x >= 0) { g_cph[2 * x] = h[0]; g_cph[2 * x + 1] = h[1]; g_cph_ok[x] = 1; if (g_cph_dedup) g_cph_same[x] = 0; }
+        }
+        g_cph_same_n[k < 9 ? k : 8] += same;
+        if (g_cp_nt) _mm_sfence();
+        return;
+    }
+    long long sk = 0, ck = 0, l = 0, w = 0;                 /* load: source = pool buffer with a hash -> skip when the page hashes the same */
+    for (size_t i = a; i < b; i++) {
+        long long x = cph_index(g_cj[i].s);
+        if (x >= 0 && g_cph_ok[x]) { uint64_t h[2]; g_ph(g_cj[i].d, h); ck++;
+            if (h[0] == g_cph[2 * x] && h[1] == g_cph[2 * x + 1]) { sk++; continue; } }
+        if (g_cp_cond == 2) { long long n = cp_page_lines(g_cj[i].d, g_cj[i].s); l += n; w += n != 0; }
+        else if (g_cp_nt) cp_page_nt(g_cj[i].d, g_cj[i].s);
+        else memcpy(g_cj[i].d, g_cj[i].s, PG);
+    }
+    if (g_cp_nt) _mm_sfence();
+    g_cph_skip[k < 9 ? k : 8] += sk; g_cph_chk[k < 9 ? k : 8] += ck;
+    if (g_cp_cond == 2) { g_cp_wrote[k < 9 ? k : 8] += w; g_cp_lines[k < 9 ? k : 8] += l; }
+}
+static void cp_part(int k) {
+    size_t a, b;
+    if (g_cp_mw == 1.0) { a = g_ncj * (size_t)k / (size_t)(g_ncp + 1); b = g_ncj * (size_t)(k + 1) / (size_t)(g_ncp + 1); }
+    else { double W = g_cp_mw + g_ncp; a = k == 0 ? 0 : (size_t)((double)g_ncj * (g_cp_mw + k - 1) / W); b = k >= g_ncp ? g_ncj : (size_t)((double)g_ncj * (g_cp_mw + k) / W); }
+    if (g_cp_hmode && !g_cp_cmp) { cp_part_hash(a, b, k); return; }
     if (g_cp_cmp) { for (size_t i = a; i < b; i++) g_cp_cmp[i] = memcmp(g_cj[i].d, g_cj[i].s, PG) != 0; }
+    else if (g_cp_cond == 2) { long long w = 0, l = 0; for (size_t i = a; i < b; i++) { long long n = cp_page_lines(g_cj[i].d, g_cj[i].s); l += n; w += n != 0; } g_cp_wrote[k < 9 ? k : 8] += w; g_cp_lines[k < 9 ? k : 8] += l; }
     else if (g_cp_cond) { long long w = 0; for (size_t i = a; i < b; i++) if (memcmp(g_cj[i].d, g_cj[i].s, PG)) { memcpy(g_cj[i].d, g_cj[i].s, PG); w++; } g_cp_wrote[k < 9 ? k : 8] += w; }
     else if (g_cp_nt) { for (size_t i = a; i < b; i++) cp_page_nt(g_cj[i].d, g_cj[i].s); _mm_sfence(); }
     else for (size_t i = a; i < b; i++) memcpy(g_cj[i].d, g_cj[i].s, PG); }
