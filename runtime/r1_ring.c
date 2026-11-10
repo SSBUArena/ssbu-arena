@@ -989,8 +989,10 @@ static long long g_rg_ldpg, g_rg_recommit, g_rg_rewake;           /* (R3 net3) p
  * are not: a state saved between "+ 0xe0 = 2, signalled" and the loader's wake-up, loaded after the loader went idle again, says the
  * loader is awake while it sleeps, and NOTHING wakes it again: every file request after that waits for good (as the task workers'
  * wake-ups did, above). After every load: a loader asleep at its idle wait while the loaded state says it is awake or was signalled
- * (+ 0xe0 == 2, or + 0xe4 == 4), and an inflater asleep at its wait while + 0x248 says it works or its batch is not done, are woken
- * (an extra wake-up is harmless: the thread finds the queues as they are and goes idle). SSBU_RB_LOADERWAKE=0: off. */
+ * (+ 0xe0 == 2, or + 0xe4 == 4), and an inflater asleep at its wait while + 0x248 says it works, are woken
+ * (an extra wake-up is harmless: the thread finds the queues as they are and goes idle). SSBU_RB_LOADERWAKE=0: off.
+ * Seen in run csv1 (match 2, NETSIM 27): the load of frame 1094 gave + 0xe0 3, + 0xe4 4 with the loader asleep on both games; a
+ * request queued then waits until the NEXT request (each one sets + 0xe4 = 1), for good if main waits for it first (csh2). */
 static long long g_rg_ldwake[2];
 static void rg_loader_print(void (*pr)(const char *fmt, ...)) {      /* (in the freeze report: os_threads.c os_wait_print) */
     uint64_t svc = *(volatile uint64_t *)(uintptr_t)GA(0x7105331f28ull);
@@ -1015,7 +1017,7 @@ static void rg_loader_wake(long long frame) {
         if (g_rg_ldwake[0] <= 20) LOG("r1: RING load of frame %lld: the resource loader sleeps while the loaded state says it is awake / signalled (+0xe0 %u, +0xe4 %u): woken (%d; %lld so far)\n", frame, e0, e4, k, g_rg_ldwake[0]);
     }
     sig = 0;
-    if (os_r1_event_waiter(GA(0x7103544504ull), &sig) && !sig && (busy || bi < bn)) {
+    if (os_r1_event_waiter(GA(0x7103544504ull), &sig) && !sig && busy) {      /* (run csv1: + 0x228 / + 0x22c are not a progress: "0 of N" also after the batch is done) */
         int k = os_r1_wake_waits_from(GA(0x7103544504ull)); g_rg_ldwake[1]++;
         if (g_rg_ldwake[1] <= 20) LOG("r1: RING load of frame %lld: the resource inflater sleeps while the loaded state says it works (+0x248 %u, batch %u of %u): woken (%d; %lld so far)\n", frame, busy, bi, bn, k, g_rg_ldwake[1]);
     }
