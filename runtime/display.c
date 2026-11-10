@@ -522,6 +522,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         { static LONG once; if (!InterlockedExchange(&once, 1)) CloseHandle(CreateThread(NULL, 0, close_watchdog, NULL, 0, NULL)); }
         printf("\nwindow closed by the user after %lld frames\n", (long long)g_frames);
         { extern volatile LONG g_display_close; InterlockedExchange(&g_display_close, 1); }      /* session 14: a hold of ours (the first-run shader preparation) ends at once */
+        { extern volatile LONG g_host_exiting; InterlockedExchange(&g_host_exiting, 1); }      /* (0.2.47) a fault while the game ends is not reported (hostrt.c crash_filter; crash report of 2026-11-09, 0.2.45: a host thread after the window was closed) */
         if (!oe_exit_request()) report_and_exit(0);
         return 0;
     }
