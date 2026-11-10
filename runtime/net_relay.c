@@ -1413,6 +1413,10 @@ static void send_join(void) {
 
 static DWORD WINAPI client_thread(LPVOID unused) {
     (void)unused;
+    /* (0.2.47) the receive thread: it blocks in recvfrom and works for microseconds, but at normal priority it waited behind
+     * the game's busy threads (several time-critical, the process above normal) when the processor was full (rollback
+     * re-runs): late pads and ping spikes. SSBU_NET_RXPRIO=0: normal priority, as before. */
+    { const char *e = getenv("SSBU_NET_RXPRIO"); if (!(e && *e == '0')) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST); }
     static uint8_t buf[65536];
     while (!setup()) {
         if (g_mode == NET_MODE_LOBBY && g_auto && ms_now() - g_unjoined_since > GONE_AFTER_MS) { lobby_fallback_to_lan(); break; }

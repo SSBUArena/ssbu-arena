@@ -664,6 +664,8 @@ static HANDLE g_rq_ev;                                   /* (phase 3) set for ev
 HANDLE rbn_rx_event(void) { if (!g_rq_ev) { HANDLE e = CreateEventW(NULL, FALSE, FALSE, NULL); if (InterlockedCompareExchangePointer((PVOID *)&g_rq_ev, e, NULL)) CloseHandle(e); } return g_rq_ev; }
 static volatile LONG64 g_rx_pkts, g_rx_bad, g_rx_drop, g_tx_pkts, g_tx_fail, g_rx_last_ms, g_rx_oldmatch;
 static volatile LONG g_rtt_us = -1, g_rtt_min_us = -1;
+static volatile LONG g_rtt_hist[5], g_rtt_hist_n;      /* (0.2.47) the last 5 round trips, for the ping shown (rbn_rtt_ms) */
+static void rtt_hist_add(long rtt) { LONG k = InterlockedIncrement(&g_rtt_hist_n) - 1; InterlockedExchange(&g_rtt_hist[k % 5], rtt); }
 static long long g_rtt_n; static double g_rtt_sum;      /* (under g_rq_lock) */
 #define TSQ 64
 static int32_t g_tsq[TSQ]; static int g_tsq_n;          /* clock-offset samples waiting for the main thread (under g_rq_lock) */
@@ -703,6 +705,7 @@ void rbn_rx(const uint8_t *p, int n) {
         long rtt = (long)(now_us() - m.echo_us);
         if (rtt <= 0 || rtt >= 5000000) return;
         InterlockedExchange(&g_rtt_us, rtt); if (g_rtt_min_us < 0 || rtt < g_rtt_min_us) InterlockedExchange(&g_rtt_min_us, rtt);
+        rtt_hist_add(rtt);
         AcquireSRWLockExclusive(&g_rq_lock);
         g_rtt_sum += rtt; g_rtt_n++;
         if (g_started && m.frame > 0 && g_cur > 0 && g_tsq_n < TSQ) g_tsq[g_tsq_n++] = (int32_t)((g_cur - m.frame) * 16683 - rtt / 2);   /* > 0: this game runs ahead */
@@ -723,11 +726,12 @@ static int rbn_peer_heard_ms(void) {                    /* (R3 lwr) any rollback
 }
 static void rtt_reset(void) {                           /* (R3 net3) */
     AcquireSRWLockExclusive(&g_rq_lock); g_rtt_sum = 0; g_rtt_n = 0; ReleaseSRWLockExclusive(&g_rq_lock);
-    InterlockedExchange(&g_rtt_us, -1); InterlockedExchange(&g_rtt_min_us, -1);
+    InterlockedExchange(&g_rtt_us, -1); InterlockedExchange(&g_rtt_min_us, -1); InterlockedExchange(&g_rtt_hist_n, 0);
 }
 /* a thread that pings the other player every 100 ms from the start (the delay is chosen from it when the match begins) */
 static DWORD WINAPI ping_thread(void *u) {
     (void)u;
+    { const char *e = getenv("SSBU_NET_RXPRIO"); if (!(e && *e == '0')) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST); }      /* (0.2.47) the ping's send time is not delayed by busy game threads */
     for (;;) {
         Sleep(100);
         if (!net_rb_ready()) continue;
@@ -1044,7 +1048,17 @@ double rbn_pace_extra(long long f) {
     if (g_ts_left > 0) { g_ts_left--; return g_ts_extra; }
     return 0;
 }
-int rbn_rtt_ms(void) { return g_rtt_us > 0 ? (int)(g_rtt_us / 1000) : -1; }
+/* (0.2.47) the ping the player sees: the median of the last 5 round trips, not the last one alone (one late packet showed as
+ * a spike on the overlay). SSBU_PING_SMOOTH=0: the last round trip, as before. The input delay and the time sync keep using the
+ * raw samples. */
+int rbn_rtt_ms(void) {
+    static int smooth = -1; if (smooth < 0) { const char *e = getenv("SSBU_PING_SMOOTH"); smooth = !(e && *e == '0'); }
+    if (!smooth || g_rtt_hist_n < 3) return g_rtt_us > 0 ? (int)(g_rtt_us / 1000) : -1;
+    long v[5]; int n = g_rtt_hist_n < 5 ? (int)g_rtt_hist_n : 5;
+    for (int i = 0; i < n; i++) v[i] = g_rtt_hist[i];
+    for (int i = 1; i < n; i++) for (int j = i; j > 0 && v[j] < v[j - 1]; j--) { long t = v[j]; v[j] = v[j - 1]; v[j - 1] = t; }
+    return (int)(v[n / 2] / 1000);
+}
 void rbn_resend(void) { if (g_started) send_pads(); }
 /* the match-start barrier: an empty PADS message says "in the match" (count 0, newest 0) */
 void rbn_hello(void) {
