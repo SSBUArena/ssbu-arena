@@ -131,7 +131,7 @@ namespace Arena
             return Path.Combine(Repo, "build");
         }
 
-        /// <summary>the game build setup.py converted (state.json game_version, as scripts/run.py reads it): 13.0.4 or 13.0.5</summary>
+        /// <summary>the game build setup.py converted (state.json game_version, as scripts/run.py reads it): 13.0.2, 13.0.4 or 13.0.5</summary>
         /// <summary>(issue #6) the game runs update 13.0.5: the game keeps run-ahead and the online rollback off there
         /// (runtime/hostrt.c game_rb_blocked; since 2026-11-09 only with SSBU_R1_1305=0 in the environment)</summary>
         public static bool RollbackBlocked1305 => GameVersion() == "13.0.5" && Environment.GetEnvironmentVariable("SSBU_R1_1305") == "0";      // (2026-11-09) on by default again: hostrt.c
@@ -142,7 +142,7 @@ namespace Arena
             try
             {
                 string st = Path.Combine(Build, "state.json");
-                var m = File.Exists(st) ? Regex.Match(File.ReadAllText(st), "\"game_version\"\\s*:\\s*\"(13\\.0\\.[45])\"") : null;
+                var m = File.Exists(st) ? Regex.Match(File.ReadAllText(st), "\"game_version\"\\s*:\\s*\"(13\\.0\\.[245])\"") : null;
                 if (m != null && m.Success) return m.Groups[1].Value;
             }
             catch { }

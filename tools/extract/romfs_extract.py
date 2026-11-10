@@ -262,7 +262,7 @@ class PatchedRomfs:
             t = lambda n: struct.unpack('<Q', n.header[0x210:0x218])[0]
             raise SystemExit('the file given as the update is not an update of the game (its program NCA %s, title %016x, has '
                              'no patch RomFS): choose the update package (its name usually has [01006A800016E800] and a '
-                             'version such as v1966080 = 13.0.4 or v2031616 = 13.0.5) as "Update" and the game itself '
+                             'version such as v1835008 = 13.0.2, v1966080 = 13.0.4 or v2031616 = 13.0.5) as "Update" and the game itself '
                              '([01006A800016E000][v0]) as "Base game"' % (update.name, t(update)))
         fs = self.usec['fs']
         assert fs[0x8:0xC] == b'IVFC'

@@ -17,7 +17,7 @@ also written to build\\install_state.json; scripts/setup.py keeps its own build\
  2. precheck  scripts/precheck.py: Windows, CPU, RAM, disk, Vulkan, codecs, build tools.
  3. packages  Python packages (requirements.txt) through pip (no --user inside the private deps\\python).
  4. inputs    scripts/find_inputs.py looks for what you did not give: prod.keys (emulator folders), firmware, the base game,
-              its update 13.0.4 / 13.0.5 and DLC next to it. A prod.keys outside ~/.switch is not copied: the tools get its
+              its update 13.0.2 / 13.0.4 / 13.0.5 and DLC next to it. A prod.keys outside ~/.switch is not copied: the tools get its
               path in SSBU_PROD_KEYS. Key values are never printed.
  5. dump      build\\dump from base + update (tools/extract/dump_folder.py; .nsz and .nca are read by romfs_extract.py), or the
               dump folder you have. DLC paths are recorded in install_state.json.
@@ -252,7 +252,7 @@ def ask_files(a):
     else:
         pk = [('Switch packages', '*.nsp *.xci *.nsz *.nca'), ('All files', '*.*')]
         a.base = filedialog.askopenfilename(title='The BASE game (v0): .nsp, .xci or .nsz', filetypes=pk) or None
-        a.update = filedialog.askopenfilename(title='The UPDATE 13.0.4 or 13.0.5: .nsp or .nsz', filetypes=pk) or None
+        a.update = filedialog.askopenfilename(title='The UPDATE 13.0.2, 13.0.4 or 13.0.5: .nsp or .nsz', filetypes=pk) or None
         if not a.keys and not os.path.exists(os.path.join(os.path.expanduser('~'), '.switch', 'prod.keys')):
             a.keys = filedialog.askopenfilename(title='Your prod.keys', filetypes=[('keys', '*.keys'), ('All files', '*.*')]) or None
     root.destroy()
@@ -464,7 +464,7 @@ def step_inputs(cx):
             if pick:
                 upd, why_u = pick['path'], 'game %s, the newest found%s' % (pick['build'], ' next to the base game' if near else '')
         keys = a.keys or best.get('prod_keys')
-        for what, v in (('the base game (.xci / .nsp / .nsz)', base), ('the update 13.0.4 or 13.0.5', upd), ('prod.keys', keys)):
+        for what, v in (('the base game (.xci / .nsp / .nsz)', base), ('the update 13.0.2, 13.0.4 or 13.0.5', upd), ('prod.keys', keys)):
             if not v:
                 cx.blockers.append('missing: ' + what)
         if base:
@@ -1136,7 +1136,7 @@ def parse(argv):
     ap.add_argument('--progress-json', action='store_true', help='also print "##ssbu {json}" progress lines')
     ap.add_argument('--dry-run', action='store_true', help='say what each step would do ("would ..."), change nothing')
     ap.add_argument('--base', help='the base game: .xci / .nsp / .nsz / .nca, or a folder holding it')
-    ap.add_argument('--update', help='the update 13.0.4 or 13.0.5: .nsp / .nsz / .nca, or a folder holding it')
+    ap.add_argument('--update', help='the update 13.0.2, 13.0.4 or 13.0.5: .nsp / .nsz / .nca, or a folder holding it')
     ap.add_argument('--dlc', action='append', default=[], help='a DLC package (repeatable); its add-on id is read from the file name and listed in build/config/dlc.txt')
     ap.add_argument('--keys', help='your prod.keys (used where it is, never copied)')
     ap.add_argument('--dump', help='a dump folder you already have (exefs\\ and romfs\\ inside)')

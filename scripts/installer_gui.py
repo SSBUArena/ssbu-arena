@@ -47,7 +47,7 @@ class App:
         self.rows = []
         for r, (label, var, kind, tip) in enumerate((
                 ('Base game', self.base, 'pkg', '.nsp, .xci or .nsz of the game itself (v0)'),
-                ('Update 13.0.4 or 13.0.5', self.update, 'pkg', '.nsp or .nsz of the update'),
+                ('Update 13.0.2, 13.0.4 or 13.0.5', self.update, 'pkg', '.nsp or .nsz of the update'),
                 ('prod.keys (packages only)', self.keys, 'keys', 'your console\'s keys, needed only to read package files'),
                 ('Firmware (optional)', self.fw, 'dir', 'optional: your firmware\'s own fonts; without it open-source fonts are used')), start=1):
             self.rows.append(self.field(src, r, label, var, kind, tip))

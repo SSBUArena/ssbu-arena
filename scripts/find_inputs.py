@@ -26,9 +26,9 @@ import time
 
 APP_ID = 0x01006A800016E000                 # Super Smash Bros. Ultimate (base)
 UPDATE_ID = 0x01006A800016E800              # its update
-# update version number -> game build (docs/VERSIONS.md: 13.0.4 = v1966080, 13.0.5 = v2031616)
-BUILDS = {1966080: '13.0.4', 2031616: '13.0.5'}
-BUILD_ORDER = ['13.0.5', '13.0.4']          # newest first
+# update version number -> game build (docs/VERSIONS.md: 13.0.2 = v1835008, 13.0.4 = v1966080, 13.0.5 = v2031616)
+BUILDS = {1835008: '13.0.2', 1966080: '13.0.4', 2031616: '13.0.5'}
+BUILD_ORDER = ['13.0.5', '13.0.4', '13.0.2']          # newest first
 GAME_EXT = ('.xci', '.nsp', '.nsz', '.xcz', '.nca')
 HUGE = 4 << 30                              # an .xci/.nsp this big and called Smash is a game even if its name has no id
 
@@ -250,7 +250,7 @@ def find_firmware(emus, extra_dirs):
 
 _TID = re.compile(r'\[(01[0-9A-Fa-f]{14})\]')
 _VER = re.compile(r'\[v(\d+)\]', re.I)
-_BUILD = re.compile(r'\b(13\.0\.[45])\b')
+_BUILD = re.compile(r'\b(13\.0\.[245])\b')
 
 
 def _ids_from_package(path):
@@ -311,7 +311,7 @@ def classify_game_file(path):
     if kind == 'update' and build is None:
         b = _BUILD.search(name) or _BUILD.search(os.path.basename(os.path.dirname(path)))
         build = b.group(1) if b else None
-        m2 = re.search(r'(?<!\d)130([45])(?!\d)', name)                   # e.g. update_1305.nsp
+        m2 = re.search(r'(?<!\d)130([245])(?!\d)', name)                   # e.g. update_1305.nsp
         if build is None and m2:
             build = '13.0.' + m2.group(1)
     ext = os.path.splitext(low)[1]
@@ -480,7 +480,7 @@ def pick_best(keys, firmware, base, updates, dlc, dumps):
         if 'base' not in best:
             miss.append('the base game')
         if 'update' not in best:
-            miss.append('an update 13.0.4 or 13.0.5')
+            miss.append('an update 13.0.2, 13.0.4 or 13.0.5')
         best['plan'] = 'missing: ' + ', '.join(miss)
     if 'firmware' not in best and 'dump' in best and not any(d.get('fonts') for d in dumps):
         best['firmware_note'] = 'no firmware or fonts found: the game stops at start without the system fonts'
@@ -516,7 +516,7 @@ def scan(extra=()):
     result['best'] = pick_best(keys, firmware, base, updates, dlc, dumps)
     unsupported = [u for u in updates if not u['build']]
     if unsupported:
-        result['notes'].append('%d update(s) of a version this port does not run (only 13.0.4 = v1966080 and 13.0.5 = v2031616)'
+        result['notes'].append('%d update(s) of a version this port does not run (only 13.0.2 = v1835008, 13.0.4 = v1966080 and 13.0.5 = v2031616)'
                                % len(unsupported))
     if any(g['needs_zstandard'] for g in games):
         result['notes'].append('.nsz/.xcz files need: pip install zstandard pycryptodome (tools/extract/nsz_to_nsp.py)')
@@ -538,7 +538,7 @@ def summary(r):
     section('Keys:', r['keys'], 'no prod.keys (put it in %USERPROFILE%\\.switch\\prod.keys, dump it from your own console)')
     section('Firmware / system fonts:', r['firmware'], 'none (a firmware folder of .nca files, or its sysdata\\fonts)')
     section('Base game:', r['base'], 'none')
-    section('Updates:', r['updates'], 'none (13.0.4 or 13.0.5 needed)')
+    section('Updates:', r['updates'], 'none (13.0.2, 13.0.4 or 13.0.5 needed)')
     lines.append('  DLC: %d package(s)%s' % (len(r['dlc']), ' (not needed to run: they only unlock their content, '
                                             'tools/audit/dlc_list.py writes config\\dlc.txt)' if r['dlc'] else ''))
     section('Extracted dumps:', r['dumps'], 'none')
