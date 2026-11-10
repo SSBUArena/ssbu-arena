@@ -69,7 +69,7 @@ settings stay.
 | ⚔️ | **Battle Arena**: Squad Strike (3 fighters each, 1 stock each) in an online room with rollback, picked on Smash's own Squad Strike screen, match after match | Live |
 | 🎞️ | **Replays**: every match recorded and stored compact (~0.7 MB for 7 minutes). Watch them in the launcher with the game's 3D fighters and stages, or as a hitbox diagram on [ssbuarena.com/replays](https://www.ssbuarena.com/replays). Make one public to share its link | Live |
 | 🎮 | **Arena main menu**: Smash, Online Rooms, Battle Arena, Online Matchmaking, Settings and Exit, with an in-game settings menu | Live |
-| 🔓 | **Ready save**: every base fighter unlocked; optionally a complete save (all challenges, music, Mii outfits and movies) so no rewards pop up between matches | Live |
+| 🔓 | **Ready save**: every base fighter unlocked and the save completed (all challenges, music, Mii outfits and movies), so no rewards pop up between matches; a backup is made first and it can be turned off | Live |
 | 🩺 | **Crash reports**: if the game crashes, the launcher sends its log (user and PC names removed) to help fix it; can be turned off | Live |
 | 💾 | **Light archive**: only what competitive 1v1 needs (8.8 of 16.4 GB) | Live |
 | 👥 | Friends, invites and Arena lobbies | In development |
