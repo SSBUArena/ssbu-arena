@@ -77,8 +77,8 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x22dc3d0, 0x22dc3d0},     /* skipped function 3, 10,328 bytes in both (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
     {0x22dec30, 0x22dec30},     /* skipped function 2, 4 bytes (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
     {0x22df110, 0x22df110},     /* skipped function 1, 84 bytes in both (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
-    {0x2311f00, 0x2311f6c}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
-    {0x2312620, 0x231268c}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x2311f00, 0x2311f6c}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09); 2026-11-10: +0x6c checked by hand, the whole range 0x2311f00..0x2312620 is the same code there (456 instructions, its 5 calls of the record builder at +0x6c) */
+    {0x2312620, 0x231268c}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09); 2026-11-10: +0x6c checked by hand, the whole range 0x2311f00..0x2312620 is the same code there (456 instructions, its 5 calls of the record builder at +0x6c) */
     {0x232ce40, 0x232d290},     /* menu hook of the Arena UI (competitive.c comp_menu), starts */
     {0x232f690, 0x232fae0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x23343e0, 0x2334830},     /* Smash versus: Rulesets state (competitive.c), starts */
@@ -91,7 +91,9 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x32384c0, 0x3238a70}, /* fighter picture path (newmodule_host.c) */
     {0x3261d60, 0x3262310}, /* name_id getter (newmodule_host.c) */
     {0x353e330, 0x353e8e0},     /* path -> file index (newmodule_host.c) */
+    {0x354314c, 0x35436fc},     /* resource loader's idle wait, a return address (r1_ring.c rg_loader_wake); checked on the 13.0.5 dump (2026-11-10) */
     {0x35444c0, 0x3544a70},     /* resource service inflate thread: start (loose_files.c) */
+    {0x3544504, 0x3544ab4},     /* resource inflater's idle wait, a return address (r1_ring.c rg_loader_wake); checked on the 13.0.5 dump */
     {0x3544d88, 0x3545338}, /* inflate thread call site (loose_files.c) */
     {0x3544e18, 0x35453c8}, /* inflate thread call site 2 (loose_files.c) */
     {0x3545198, 0x3545748}, /* inflate thread call site 3 (loose_files.c) */
@@ -239,7 +241,9 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x32384c0, 0x32384a0},     /* fighter picture path (newmodule_host.c) */
     {0x3261d60, 0x3261d40},     /* name_id getter (newmodule_host.c) */
     {0x353e330, 0x353e580},     /* path -> file index (newmodule_host.c) */
+    {0x354314c, 0x354339c},     /* resource loader's idle wait, a return address (r1_ring.c rg_loader_wake); checked on the 13.0.2 dump (2026-11-10) */
     {0x35444c0, 0x3544710},     /* resource service inflate thread: start (loose_files.c) */
+    {0x3544504, 0x3544754},     /* resource inflater's idle wait, a return address (r1_ring.c rg_loader_wake); checked on the 13.0.2 dump */
     {0x3544d88, 0x3544fd8},     /* inflate thread call site (loose_files.c) */
     {0x3544e18, 0x3545068},     /* inflate thread call site 2 (loose_files.c) */
     {0x3545198, 0x35453e8},     /* inflate thread call site 3 (loose_files.c) */

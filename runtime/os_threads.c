@@ -620,6 +620,7 @@ static void osw_enter(const char *what, uint64_t key, uint64_t lr) {
 static void osw_leave(void) { if (t_osw >= 0 && t_osw < 512) g_osw[t_osw].key = 0; }
 static void obj_note_signal(Obj *o, uint64_t lr) { o->nsig++; o->sig_ms = GetTickCount64(); o->sig_tid = GetCurrentThreadId(); o->sig_lr = lr; }
 static Obj *obj_peek(uint64_t key);                   /* below: a look-up without the table lock */
+void (*g_os_wait_extra)(void (*pr)(const char *fmt, ...));
 void os_wait_print(void (*pr)(const char *fmt, ...)) {      /* (the Linux freeze report has its own os_wait_report below) */
     ULONGLONG now = GetTickCount64();
     int n = g_osw_n < 512 ? (int)g_osw_n : 512, any = 0;
@@ -637,6 +638,7 @@ void os_wait_print(void (*pr)(const char *fmt, ...)) {      /* (the Linux freeze
            (unsigned long)o->sig_tid, sn ? sn : "host", (unsigned long long)o->sig_lr);
     }
     if (!any) pr("  guest waits (os_threads.c): no guest thread in an event or condition-variable wait\n");
+    if (g_os_wait_extra) g_os_wait_extra(pr);              /* (r1_ring.c rg_loader_print: the resource service's hand-shake) */
 }
 static void ev_signal(Ctx *c) {
     L1O("event SIGNAL", A0);
@@ -681,6 +683,19 @@ int os_r1_wake_waits_from(uint64_t lr) {
         k++;
     }
     return k;
+}
+/* (Battle Arena squad, run csh2: main waited for good on a file load) a guest thread in an event wait called from `lr` (the
+ * resource loader's or inflater's idle wait): its event's key, 0 when none; *sig = that event is signalled already. No lock. */
+uint64_t os_r1_event_waiter(uint64_t lr, int *sig) {
+    int n = g_osw_n < 512 ? (int)g_osw_n : 512;
+    for (int i = 0; i < n; i++) {
+        uint64_t key = g_osw[i].key; const char *w = g_osw[i].what;
+        if (!key || g_osw[i].lr != lr || !w || strncmp(w, "event", 5)) continue;
+        Obj *o = obj_peek(key);
+        if (sig) *sig = o ? *(volatile int *)&o->signaled : 0;
+        return key;
+    }
+    return 0;
 }
 static void ev_clear(Ctx *c) { Obj *o = obj(A0); EnterCriticalSection(&o->cs); o->signaled = 0; LeaveCriticalSection(&o->cs); }
 static int ev_wait_ms(Obj *o, DWORD ms) {

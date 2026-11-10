@@ -478,7 +478,9 @@ static void fib_reap_delete(void) {                      /* threads running agai
     }
     g_fr_npick = 0;
 }
+static void rg_loader_print(void (*pr)(const char *fmt, ...));      /* (below) */
 int r1_ring_capture(long long frame, Ctx *c) {
+    { extern void (*g_os_wait_extra)(void (*pr)(const char *fmt, ...)); g_os_wait_extra = rg_loader_print; }
     R1_CTR("capture (frame)", frame, 0);
     double t0 = now_ms(); int seg_was = g_rgp_seg; g_rgp_seg = 4;
     if (!g_rg_ready) {                                    /* the first time: r1's full save (shadow filled, marks on: one hitch), the ring's base */
@@ -977,6 +979,47 @@ static void rgc_after_tt(void) {                           /* after the copies a
 static long long g_rg_refused;                        /* (R3 pub1) loads refused: a thread still running after the hold */
 static long long g_rg_rezero;                         /* (Arena) pages decommitted at the loaded frame, committed since: zeroed by the load */
 static long long g_rg_ldpg, g_rg_recommit, g_rg_rewake;           /* (R3 net3) pages to load, all loads (the written ones: g_cp_wrote); pages committed again by a load */
+/* (Battle Arena squad, run csh2, 2026-11-10: main waited > 5 min in the game's release of a weapon's resource handle, 0x7103737a10
+ * polling its job; ResLoadingThread / ResInflateThread asleep at their events, last woken 43 s before, at the last change of fighter)
+ * The resource service (*(0x7105331f28)) keeps its threads' hand-shake in guest memory: + 0xe0 = 2 "the loader is awake" (written by
+ * ResUpdateThread before it signals the loader's event [[svc + 8]], and by the loader itself when it wakes; 3 when it goes idle;
+ * the loader waits only if it reads + 0xe0 != 2, ResUpdateThread signals only if + 0xe0 != 2), + 0xe4 the update thread's count
+ * to that signal (4 = signalled, 0 = the loader took the queues), + 0x248 = 1 while the inflater works (ResUpdateThread's own update
+ * is skipped meanwhile), + 0x228 / + 0x22c the inflater's batch. A ring load puts that memory back, the events are host objects and
+ * are not: a state saved between "+ 0xe0 = 2, signalled" and the loader's wake-up, loaded after the loader went idle again, says the
+ * loader is awake while it sleeps, and NOTHING wakes it again: every file request after that waits for good (as the task workers'
+ * wake-ups did, above). After every load: a loader asleep at its idle wait while the loaded state says it is awake or was signalled
+ * (+ 0xe0 == 2, or + 0xe4 == 4), and an inflater asleep at its wait while + 0x248 says it works or its batch is not done, are woken
+ * (an extra wake-up is harmless: the thread finds the queues as they are and goes idle). SSBU_RB_LOADERWAKE=0: off. */
+static long long g_rg_ldwake[2];
+static void rg_loader_print(void (*pr)(const char *fmt, ...)) {      /* (in the freeze report: os_threads.c os_wait_print) */
+    uint64_t svc = *(volatile uint64_t *)(uintptr_t)GA(0x7105331f28ull);
+    if (!svc || (svc >> 32) == 0) return;
+    volatile uint8_t *s = (volatile uint8_t *)(uintptr_t)svc;
+    uint64_t fs = *(volatile uint64_t *)(s + 0xd0);
+    pr("  resource service %llx: loader hand-shake +0xe0 %u, +0xe4 %u, +0xe6 %u, +0xe7 %u; inflater busy +0x248 %u, batch %u of %u; update flag [+0xd0]+0x68 %u; woken after loads %lld / %lld\n",
+       (unsigned long long)svc, *(volatile uint32_t *)(s + 0xe0), s[0xe4], s[0xe6], s[0xe7], s[0x248], *(volatile uint32_t *)(s + 0x228), *(volatile uint32_t *)(s + 0x22c),
+       fs ? *(volatile uint8_t *)(uintptr_t)(fs + 0x68) : 0, g_rg_ldwake[0], g_rg_ldwake[1]);
+}
+static void rg_loader_wake(long long frame) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_LOADERWAKE"); on = !(e && e[0] == '0'); }
+    if (!on) return;
+    uint64_t svc = *(volatile uint64_t *)(uintptr_t)GA(0x7105331f28ull);
+    if (!svc || (svc >> 32) == 0) return;
+    uint64_t os_r1_event_waiter(uint64_t lr, int *sig); int os_r1_wake_waits_from(uint64_t lr);
+    volatile uint8_t *s = (volatile uint8_t *)(uintptr_t)svc;
+    int sig = 0; uint32_t e0 = *(volatile uint32_t *)(s + 0xe0); uint8_t e4 = s[0xe4], busy = s[0x248];
+    uint32_t bi = *(volatile uint32_t *)(s + 0x228), bn = *(volatile uint32_t *)(s + 0x22c);
+    if (os_r1_event_waiter(GA(0x710354314cull), &sig) && !sig && (e0 == 2 || e4 == 4)) {
+        int k = os_r1_wake_waits_from(GA(0x710354314cull)); g_rg_ldwake[0]++;
+        if (g_rg_ldwake[0] <= 20) LOG("r1: RING load of frame %lld: the resource loader sleeps while the loaded state says it is awake / signalled (+0xe0 %u, +0xe4 %u): woken (%d; %lld so far)\n", frame, e0, e4, k, g_rg_ldwake[0]);
+    }
+    sig = 0;
+    if (os_r1_event_waiter(GA(0x7103544504ull), &sig) && !sig && (busy || bi < bn)) {
+        int k = os_r1_wake_waits_from(GA(0x7103544504ull)); g_rg_ldwake[1]++;
+        if (g_rg_ldwake[1] <= 20) LOG("r1: RING load of frame %lld: the resource inflater sleeps while the loaded state says it works (+0x248 %u, batch %u of %u): woken (%d; %lld so far)\n", frame, busy, bi, bn, k, g_rg_ldwake[1]);
+    }
+}
 void dm_alloc_check(const char *when, long long frame);    /* debug_mode.c */
 /* (0.2.40, crash "match start memcpy", r1_ring_load + 0x7c2, 2026-11-06 rc1_0_2) a page of window 1 the load writes that is
  * only reserved now (state MEM_RESERVE, no game decommit of it in the history, g_dc not set): the load's memset / page copy
@@ -1110,6 +1153,7 @@ int r1_ring_load(long long frame, Ctx *c) {
         g_rg_rewake += os_r1_wake_waits_from(GA(0x710354a5acull));
         {   extern long long g_wake_nolock; static long long seen; static int said;      /* (crash phase) a wake-up done without the event's lock */
             if (g_wake_nolock != seen) { seen = g_wake_nolock; if (said++ < 10) LOG("r1: RING: load at frame %lld: a worker's event was locked by a suspended thread: woken without its lock (%lld so far)\n", (long long)frame, seen); } } }
+    rg_loader_wake(frame);
     { double _t = now_ms(); dm_alloc_check("after the load", frame); g_tt[16] += now_ms() - _t; g_ttn[16]++; }
     { extern volatile LONG g_font_job_in; g_font_job_in = 0; }      /* (crash phase) every capture was taken with the font job not running: so is the loaded state */
     unpark();
@@ -1717,7 +1761,7 @@ static void rgs_report(void) {
         g_rgx_n[1], g_rgx_n[1] ? g_rgx_ms[1] / g_rgx_n[1] : 0.0, g_rgx_n[1] ? (double)g_rgx_pages[1] / g_rgx_n[1] : 0.0, g_rgx_fallback[1]);
     {   long long w = 0; for (int q = 0; q < 9; q++) w += g_cp_wrote[q];
         LOG("r1: RING loads (net3, SSBU_RB_LOADCMP): pages to load %lld, of them written (they differed) %lld (%.1f%%)\n", g_rg_ldpg, w, g_rg_ldpg ? 100.0 * (double)w / (double)g_rg_ldpg : 0.0); }
-    LOG("r1: RING loads: pages committed again (freed by the game after the loaded frame) %lld; pages decommitted at the loaded frame and committed since, zeroed %lld; task worker wake-ups given again %lld\n", g_rg_recommit, g_rg_rezero, g_rg_rewake);
+    LOG("r1: RING loads: pages committed again (freed by the game after the loaded frame) %lld; pages decommitted at the loaded frame and committed since, zeroed %lld; task worker wake-ups given again %lld; resource loader / inflater woken after a load (SSBU_RB_LOADERWAKE) %lld / %lld\n", g_rg_recommit, g_rg_rezero, g_rg_rewake, g_rg_ldwake[0], g_rg_ldwake[1]);
     for (int k = 0; k < RG_MAXSLOT; k++) {
         int m = g_rgl_n[k]; if (!m) continue;
         static double v[RG_NL], h[RG_NL], cpy[RG_NL]; double p = 0;
