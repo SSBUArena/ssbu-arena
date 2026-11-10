@@ -348,8 +348,25 @@ namespace Arena
             if (Repo == null || RomFS == null) return File.Exists(list) ? list : null;
             string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\replay\replay_assets.py"), arc = Path.Combine(RomFS, "data.arc");
             if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return null;
-            var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + dir + "\" --replay \"" + replay + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
-            using (var p = Process.Start(psi)) p.WaitForExit(300000);
+            var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + dir + "\" --replay \"" + replay + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true };
+            // (0.2.46) what the tool said, in build\replay_assets.log: in 0.2.41 .. 0.2.45 it failed on every compact (version 5)
+            // replay without a trace, and the viewer showed no models
+            var log = new StringBuilder();
+            try
+            {
+                using (var p = Process.Start(psi))
+                {
+                    p.OutputDataReceived += (s, e) => { if (e.Data != null) lock (log) log.AppendLine(e.Data); };
+                    p.ErrorDataReceived += (s, e) => { if (e.Data != null) lock (log) log.AppendLine(e.Data); };
+                    p.BeginOutputReadLine(); p.BeginErrorReadLine();
+                    bool done = p.WaitForExit(300000);
+                    if (done) p.WaitForExit();
+                    lock (log) log.Insert(0, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + Path.GetFileName(replay) + (done ? " exit " + p.ExitCode : " still running after 300 s") + "\r\n");
+                }
+            }
+            catch (Exception e) { log.Insert(0, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + Path.GetFileName(replay) + ": " + e.Message + "\r\n"); }
+            try { lock (log) File.WriteAllText(Path.Combine(Build, "replay_assets.log"), log.ToString()); } catch { }
             return File.Exists(list) ? list : null;
         }
 

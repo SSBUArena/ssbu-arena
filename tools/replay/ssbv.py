@@ -43,6 +43,10 @@ class Ssbv:
         body = data[self.header_size:self.header_size + self.body_size]
         if self.codec == 1:
             body = zlib.decompress(body, -15)
+        if self.version == 5:           # (0.2.41) the compact body the launcher writes after each match: expanded back to version 4
+            from ssbv5 import v5_to_v4
+            body, _ = v5_to_v4(body)
+            self.version = 4
         self.lines = [struct.unpack_from("<4fI", body, 20 * i) for i in range(self.nlines)]
         self.frames = []
         o = 20 * self.nlines
