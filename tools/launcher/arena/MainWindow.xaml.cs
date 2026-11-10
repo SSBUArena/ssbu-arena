@@ -329,6 +329,7 @@ namespace Arena
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
             Core.ShaderLoad = Math.Max(0, ShaderBox.SelectedIndex);
             Core.CloseToTray = CloseBox.SelectedIndex == 1;
+            if ((CompleteBox.SelectedIndex == 1) != Core.CompleteSave) Core.CompleteSaveChosen = true;      // (0.2.47) a choice of the player: kept
             Core.CompleteSave = CompleteBox.SelectedIndex == 1;
             Core.StageBg = Math.Max(0, BgBox.SelectedIndex);
             Core.Fps = FpsBox.IsChecked == true;

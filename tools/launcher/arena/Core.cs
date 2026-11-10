@@ -78,7 +78,8 @@ namespace Arena
         public static string WindowSize = "1280x720";
         public static int Volume = 100;
         public static bool CloseToTray;                                   // (0.2.26) launcher.ini close_to_tray: the X leaves the launcher in the notification area
-        public static bool CompleteSave;                                  // (complete save) launcher.ini complete_save: everything unlocked and shown in the save (BaseSave.Complete); SSBU_COMPLETE_SAVE=1 / 0 wins
+        public static bool CompleteSave = true;                           // (complete save) launcher.ini complete_save: everything unlocked and shown in the save (BaseSave.Complete); SSBU_COMPLETE_SAVE=1 / 0 wins
+        public static bool CompleteSaveChosen;                            // (0.2.47) on by default: complete_save counts only with complete_save_choice = 1 (0.2.46 wrote "off" for everyone)
         public static int StageBg;                                        // (0.2.20) launcher.ini stage_bg: 0 original, 1 black, 2 custom (SSBU_STAGE_BG)
         public static double DeadZone = 0.10;                             // (0.2.20) controllers.ini [general] deadzone
         public static double OuterZone = 0.98;                            // (0.2.31) controllers.ini [general] outer_zone: full deflection from there
@@ -182,7 +183,8 @@ namespace Arena
             Ping = Get(L, "ping") != "off";
             StageBg = Get(L, "stage_bg") == "off" ? 1 : Get(L, "stage_bg") == "custom" ? 2 : 0;
             CloseToTray = Get(L, "close_to_tray") == "on";
-            CompleteSave = Get(L, "complete_save") == "on";
+            CompleteSaveChosen = Get(L, "complete_save_choice") == "1";
+            CompleteSave = CompleteSaveChosen ? Get(L, "complete_save") != "off" : true;      // (0.2.47) on unless the player turned it off
             ShaderLoad = Get(L, "shader_load") == "start" ? 1 : Get(L, "shader_load") == "loading" ? 2 : 0;
             CrashReports = Get(L, "crash_reports") != "off";
             InputDelay = int.TryParse(Get(L, "input_delay"), out var idl) && idl >= 1 && idl <= 5 ? idl : 2;      // ("auto" of 0.2.37 and older: 2)
@@ -291,7 +293,7 @@ namespace Arena
             File.WriteAllLines(LauncherIni, new[] {
                 "# written by the launcher", "saves = " + Saves, "nickname = " + n,
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
-                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + InputDelay, "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "complete_save = " + (CompleteSave ? "on" : "off"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
+                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + InputDelay, "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "complete_save = " + (CompleteSave ? "on" : "off"), "complete_save_choice = " + (CompleteSaveChosen ? "1" : "0"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off") }, Encoding.ASCII);
             var gfx = GfxValues();
