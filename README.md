@@ -13,7 +13,7 @@ and one small launcher that sets everything up and keeps it up to date.
 [![Website](https://img.shields.io/badge/website-ssbuarena.com-65c7ff)](https://www.ssbuarena.com/)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-lightgrey)
-![Game versions](https://img.shields.io/badge/game-13.0.4%20%7C%2013.0.5-green)
+![Game versions](https://img.shields.io/badge/game-13.0.2%20%7C%2013.0.4%20%7C%2013.0.5-green)
 
 **[Download for Windows](https://github.com/ssbuarena/ssbu-arena/releases/latest/download/SSBU-Arena.exe)** ·
 [Website](https://www.ssbuarena.com/) ·
@@ -24,7 +24,7 @@ and one small launcher that sets everything up and keeps it up to date.
 
 > [!IMPORTANT]
 > **This repository contains no game code, no game assets, no keys and no firmware.**
-> You need your own legally obtained copy of the game (13.0.4 or 13.0.5). Everything derived from it is built on
+> You need your own legally obtained copy of the game (update 13.0.2, 13.0.4 or 13.0.5). Everything derived from it is built on
 > your PC, from your copy, and never leaves it.
 
 > [!NOTE]
@@ -38,7 +38,7 @@ and one small launcher that sets everything up and keeps it up to date.
 | You need | |
 |---|---|
 | **Windows 10 or 11, 64-bit** | A graphics card with a Vulkan 1.3 driver |
-| **Your own copy of the game** | Update 13.0.4 or 13.0.5, with the keys and firmware from your own console. The setup finds them in the folders of the usual emulators |
+| **Your own copy of the game** | Update 13.0.2, 13.0.4 or 13.0.5 (they all play together online), with the keys and firmware from your own console. The setup finds them in the folders of the usual emulators |
 | **About 25 GB free** | The game unpacked from your copy and the files built from it |
 | **About 20 minutes, once** | The first setup builds the game for your PC. Updates afterwards take a few minutes |
 
@@ -60,12 +60,17 @@ settings stay.
 
 | | Feature | State |
 |---|---|---|
-| 🌐 | **Rollback netcode online**: the game's own Local Wireless rooms played over the internet, with rollback instead of the game's delay-based netcode | Live |
+| 🌐 | **Rollback netcode online**: the game's own Local Wireless rooms played over the internet as **Online Rooms**, with rollback instead of the game's delay-based netcode | Live |
+| 🔀 | **One game across updates**: 13.0.2, 13.0.4 and 13.0.5 meet in the same rooms and play together with rollback, as if they were one version | Live |
 | 🛡️ | **Relay-only server**: every packet goes through the server, no hole punching, no player ever learns another player's IP | Live |
 | 📶 | **Ping on screen** in every online match, next to each player | Live |
-| 🏆 | **Competitive mode**: the six legal stages (Battlefield, Small Battlefield, Final Destination, Pokémon Stadium 2, Smashville, Town and City), no items, no Final Smash meter, no hazards | Live |
+| 🏆 | **Competitive mode**: the six legal stages (Battlefield, Small Battlefield, Final Destination, Pokémon Stadium 2, Smashville, Town and City), no items, no Final Smash meter, no hazards, no pausing | Live |
 | 🖥️ | **SSBU Arena launcher** ([`tools/launcher/arena`](tools/launcher/arena)): one-file download, guided setup, automatic updates, account sign-in, controllers, video and audio settings, shader preparation | Live |
-| 🎮 | **Arena main menu**: Smash, Online LDN, Battle Arena, Online Matchmaking, Settings and Exit, with an in-game settings menu | Live |
+| ⚔️ | **Battle Arena**: Squad Strike (3 fighters each, 1 stock each) in an online room with rollback, picked on Smash's own Squad Strike screen, match after match | Live |
+| 🎞️ | **Replays**: every match recorded and stored compact (~0.7 MB for 7 minutes). Watch them in the launcher with the game's 3D fighters and stages, or as a hitbox diagram on [ssbuarena.com/replays](https://www.ssbuarena.com/replays). Make one public to share its link | Live |
+| 🎮 | **Arena main menu**: Smash, Online Rooms, Battle Arena, Online Matchmaking, Settings and Exit, with an in-game settings menu | Live |
+| 🔓 | **Ready save**: every base fighter unlocked; optionally a complete save (all challenges, music, Mii outfits and movies) so no rewards pop up between matches | Live |
+| 🩺 | **Crash reports**: if the game crashes, the launcher sends its log (user and PC names removed) to help fix it; can be turned off | Live |
 | 💾 | **Light archive**: only what competitive 1v1 needs (8.8 of 16.4 GB) | Live |
 | 👥 | Friends, invites and Arena lobbies | In development |
 | 📈 | Automatic ranked 1v1 with skill-based ratings | In development |
@@ -121,7 +126,9 @@ sees a virtual address of the server's network.
 ## Credits
 
 SSBU Arena is made by **[Acid236](https://github.com/Acid236)**: online play through the relay server, rollback
-netcode online, the ping overlay, the competitive mode and light archive, the Arena menu and the launcher.
+netcode online, the ping overlay, the competitive mode and light archive, the Arena menu, Battle Arena, replays, the
+support for several game updates and the launcher. Thanks to **aspect3322** for the first 13.0.5 address work (PR #2)
+and to everyone who reports bugs and sends crash logs.
 
 It exists because of **[OpenSmash-Ultimate / ssbu-recomp](https://github.com/OpenSmash-Ultimate/ssbu-recomp)**.
 Thank you to **Denkishi**, who created it and wrote most of it, and to its contributors: **Stephen Jayakar**,

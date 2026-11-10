@@ -14,7 +14,7 @@ Nothing has to be installed first.
    are not touched, deleting `deps\` removes it), clears the downloaded-file mark (Unblock-File) and opens the installer
    window (`scripts\installer_window.ps1`). The window has already looked for your files: `prod.keys` and firmware in
    `%USERPROFILE%\.switch` and in the folders of yuzu, Ryujinx, suyu, sudachi and eden (also portable `user\` folders and
-   their game folders), the base game (`.xci`, `.nsp`, `.nsz`, `.nca` or an extracted dump folder), the 13.0.4 or 13.0.5
+   their game folders), the base game (`.xci`, `.nsp`, `.nsz`, `.nca` or an extracted dump folder), the 13.0.2, 13.0.4 or 13.0.5
    update and the DLC `.nsp` beside it (`scripts\find_inputs.py`; key files are checked by key name only, no key value
    is read into anything). It also checks the PC (64-bit Windows 10/11, CPU, RAM, free disk measured against what a build
    takes, Vulkan, the movie codecs: `scripts\precheck.py`). **Install location** says where the big files go: the
@@ -130,7 +130,7 @@ Without any of these the deps step and the link step say so, and the log of a ru
 
 ## What you dump from your own console
 
-The port handles **Super Smash Bros. Ultimate 13.0.4 and 13.0.5** (base game with the 13.0.4 or 13.0.5 update applied) and
+The port handles **Super Smash Bros. Ultimate 13.0.2, 13.0.4 and 13.0.5** (base game with one of these updates applied) and
 nothing else; step `convert` tells them apart and refuses another build ([docs/VERSIONS.md](docs/VERSIONS.md)). From
 your own copy of the game, with the homebrew dumping tools you prefer (for example nxdumptool, running on a console you
 own), produce a folder:
@@ -184,7 +184,7 @@ format is documented in `tools/lifter/sdklift.py` and `tools/audit/lift_select.p
 |---|---|
 | `deps` | checks every tool above and the dump; runs a test compile and link |
 | `stage` | lays the sources out in `build/work` (the tools expect their old single-folder layout) |
-| `convert` | `main` and `sdk` (NSO) to `build/binaries/<13.0.4 or 13.0.5>/*.elf`; checks the build and the segment hashes |
+| `convert` | `main` and `sdk` (NSO) to `build/binaries/<13.0.2, 13.0.4 or 13.0.5>/*.elf`; checks the build and the segment hashes |
 | `modules` | extracts the game's script modules (NRO) from `data.arc`, writes their address map and registry |
 | `tables` | generates every header and table the runtime needs (imports, SDK data, self-test vectors, exception-table tests) |
 | `lift` | lifts the main executable (`recomp_eh.py`) |
@@ -360,7 +360,7 @@ contacted. Off by default and absent from the default exe:
   `vswhere.exe` at `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\` and calls the batch file by its absolute path;
   a harmless "vswhere" notice from `vcvars64.bat` in `build/logs/link.log` can be ignored when the DLL is produced.
 - `missing input: ...main.npdm`: the ExeFS dump lacks `main.npdm`; dump the whole ExeFS.
-- `main is not a build this port knows` / `sdk is not a build this port knows`: not 13.0.4 or 13.0.5 with the update applied.
+- `main is not a build this port knows` / `sdk is not a build this port knows`: not 13.0.2, 13.0.4 or 13.0.5 with the update applied.
 - `the list of SDK functions to lift was not found`: `tools/lifter/sdklift_roots.txt` is missing from your clone.
 - No music (the menus and fights are silent apart from some effects), and the run's log says `nn::codec: libopus NOT
   FOUND`: there is no libopus beside the exe; see libopus under "What you need", then run `--redo link`.

@@ -11,7 +11,7 @@ both players down.
 1. **Sign in in the launcher** with your Arena account ([create one](https://www.ssbuarena.com/signup)). Online play is
    on by default; it needs a signed-in player, whose player name is the one the other players see.
 2. **Press Play.** The game joins our server (`eu-germany.ssbuarena.com`, UDP port 39010) as it starts.
-3. In the Arena menu choose **Online LDN**: it opens the game's own Local Wireless rooms, played over the internet.
+3. In the Arena menu choose **Online Rooms**: it opens the game's own Local Wireless rooms, played over the internet.
    - **Host:** create a room. When someone asks to join ("wants to join!"), accept.
    - **Guest:** find the room in the Rooms List and join it.
    - Both vote a stage and pick fighters; the room maker starts the match.
@@ -36,10 +36,12 @@ competitive rules (no ranking yet). **Battle Arena** is coming: Arena lobbies wi
 
 ## Requirements
 
-- **Same game update** (13.0.4 or 13.0.5) and the **same mods** on both sides. The game version and a hash of the
-  loaded mods are part of the build id shown in the log (`[online] on`, `[online] mods`).
-- Rooms of another version or another mod set are listed but can't be joined: a box says why, for example
-  "Different version: this room is 13.0.4, you have 13.0.5" or "MISSING: <mod names>".
+- **Any supported game update**: 13.0.2, 13.0.4 and 13.0.5 play together (since 0.2.46; `SSBU_XVER=0` keeps a game to
+  its own update; see [VERSIONS.md](VERSIONS.md)). Both players need the same SSBU Arena release family (0.2.46 or
+  later) and the **same mods**. A hash of the loaded mods is part of the build id shown in the log (`[online] on`,
+  `[online] mods`).
+- Rooms of another mod set (or, with `SSBU_XVER=0`, another update) are listed but can't be joined: a box says why,
+  for example "Different version" or "MISSING: <mod names>".
 - The launcher keeps everyone on the latest release, so players who update normally match.
 
 ## Limits today

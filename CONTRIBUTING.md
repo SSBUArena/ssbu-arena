@@ -78,7 +78,7 @@ is being rewritten.
 
 ## Building
 
-See [BUILDING.md](BUILDING.md). You need your own dump of version 13.0.4 or 13.0.5; the build takes about 45 minutes
+See [BUILDING.md](BUILDING.md). You need your own dump of version 13.0.2, 13.0.4 or 13.0.5; the build takes about 45 minutes
 the first time and generates several gigabytes of files that git ignores.
 
 ## Reporting a problem

@@ -2,7 +2,7 @@
 
 A native Linux build: the game becomes an ELF executable and shared libraries, with SDL3 for the window, sound and
 controllers, Vulkan for graphics and FFmpeg for the movies. No Wine and no emulator. As on Windows, the repository holds
-no game code: everything is generated on your PC from **your own dump** of Super Smash Bros. Ultimate **13.0.4 or 13.0.5**
+no game code: everything is generated on your PC from **your own dump** of Super Smash Bros. Ultimate **13.0.2, 13.0.4 or 13.0.5**
 (only 13.0.4 has been tried on Linux so far).
 
 ```
@@ -32,7 +32,7 @@ Tested on one PC: CachyOS (Arch-based, kernel 7.2), 24 threads, 31 GB RAM, NVIDI
 
 ## What you need
 
-- **A dump of the game, 13.0.4 or 13.0.5** (base game with the update applied), from a console you own. The layout is the
+- **A dump of the game, 13.0.2, 13.0.4 or 13.0.5** (base game with the update applied), from a console you own. The layout is the
   same as on Windows, see [BUILDING.md, "What you dump from your own console"](BUILDING.md#what-you-dump-from-your-own-console):
   ```
   <dump>/exefs/          main, sdk, rtld, subsdk0, main.npdm
