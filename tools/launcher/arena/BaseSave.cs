@@ -81,14 +81,16 @@ namespace Arena
         //  - Mii Fighter outfits: hats at HATS (+0x20, ui_mii_hat_db), bodies at BODIES (+0x54, ui_mii_body_db), the
         //    ones not sold as paid add-ons.
         //  - Movies of the Vault: MOVIES (+0x30c, ui_movie_db, 9).
+        //  - The "how to play" pages a mode shows the first time it is opened: HELP (+0x310, subfield 0x22, 60 pages,
+        //    the list whose rows name howtoplay_*.html): marked as already read.
         //  - Fighters: Ensure above (base-game ones).
         // A copy of the save is kept in <saves>\save-backups first (before-complete-<time>). Spirits are not given (their
         // collection is a separate structure, not studied): the game gives none after a match anyway.
-        const int Challenges = 0x555BB8, ChallengeCount = 124, BgmOwned = 0x1D0, BgmKnown = 0x5B45DC, Hats = 0x20, Bodies = 0x54, Movies = 0x30C;
+        const int Challenges = 0x555BB8, ChallengeCount = 124, BgmOwned = 0x1D0, BgmKnown = 0x5B45DC, Hats = 0x20, Bodies = 0x54, Movies = 0x30C, Help = 0x310;
         const string BgmMask =
             "ffffffffdfffff7cfdfeffebffbfffffbfcbdf8984df7ffffffffffffffffdfffffffffffffffbfffffffffffffffbffffffffffffffa3ea3ff8fefff9ffffffffff0100000000000000" +
             "b0ffbafffeff0b3effff7f00ffffffffffffffffff01b0fffffffff3ff0f8e0ffef7fbe5bfaaaaaaaaaaaaca377f1d53eaff679ce37fffbeefffe5fe25f8f7dfff03";
-        const string HatsMask = "ffffffffffffffffff7f", BodiesMask = "ffffffffffffffffffffffff", MoviesMask = "ff01";
+        const string HatsMask = "ffffffffffffffffff7f", BodiesMask = "ffffffffffffffffffffffff", MoviesMask = "ff01", HelpMask = "ffffffffffffff0f";
 
         static byte[] Hex(string h) { var b = new byte[h.Length / 2]; for (int i = 0; i < b.Length; i++) b[i] = Convert.ToByte(h.Substring(2 * i, 2), 16); return b; }
 
@@ -123,8 +125,8 @@ namespace Arena
                 Or(d, Challenges, ch);
                 byte[] bgm = Hex(BgmMask);
                 int songs = Or(d, BgmOwned, bgm);
-                int heard = Or(d, BgmKnown, bgm), outfits = Or(d, Hats, Hex(HatsMask)) + Or(d, Bodies, Hex(BodiesMask)), movies = Or(d, Movies, Hex(MoviesMask));
-                if (challenges + songs + heard + outfits + movies == 0) return "";
+                int heard = Or(d, BgmKnown, bgm), outfits = Or(d, Hats, Hex(HatsMask)) + Or(d, Bodies, Hex(BodiesMask)), movies = Or(d, Movies, Hex(MoviesMask)), help = Or(d, Help, Hex(HelpMask));
+                if (challenges + songs + heard + outfits + movies + help == 0) return "";
                 string backups = Path.Combine(saves, "save-backups");
                 Directory.CreateDirectory(backups);
                 File.Copy(file, Path.Combine(backups, "system_data.bin.before-complete-" + DateTime.Now.ToString("yyyyMMdd-HHmmss")), true);
@@ -132,8 +134,8 @@ namespace Arena
                 File.WriteAllBytes(tmp, d);
                 File.Copy(tmp, file, true);
                 File.Delete(tmp);
-                return string.Format("complete save: {0} challenges cleared, {1} songs given ({2} marked known), {3} Mii outfits, {4} movies (a copy of the save is in save-backups)",
-                                     challenges, songs, heard, outfits, movies);
+                return string.Format("complete save: {0} challenges cleared, {1} songs given ({2} marked known), {3} Mii outfits, {4} movies, {5} help pages read (a copy of the save is in save-backups)",
+                                     challenges, songs, heard, outfits, movies, help);
             }
             catch (Exception e) { return "complete save: " + e.Message; }
         }

@@ -8,6 +8,7 @@ Prints, as hex (bit n = save_no n, little endian), the masks BaseSave.cs holds:
   HATS    ui_mii_hat_db rows not added by a paid update (is_patch 0)                save +0x20
   BODIES  ui_mii_body_db rows not added by a paid update (is_patch 0)               save +0x54
   MOVIES  ui_movie_db rows not DLC                                                  save +0x30c
+  HELP    the "how to play" pages a mode shows the first time (save_no >= 0)         save +0x310
   CHALLENGES the count of ui challenge rows ("clear_getter_*", the Challenges board) save +0x555bb8, 3 bits each
 Generated 2026-11-10 from the 13.0.4 data.arc.
 """
@@ -23,8 +24,8 @@ from arc_extract import Arc     # noqa: E402
 
 M40 = 0xffffffffff
 DB = 'ui/param/database/'
-# file names by their hash40 (the archive keeps no names): the challenges' list
-CHALLENGE_DB = 0x1676e4c0c4
+# file names by their hash40 (the archive keeps no names): the challenges' list, the how-to-play pages
+CHALLENGE_DB, HELP_DB = 0x1676e4c0c4, 0x13498650ff
 
 
 def h40(s):
@@ -84,6 +85,7 @@ def main():
         'HATS': mask(rows(arc, 'ui_mii_hat_db.prc'), lambda r: not r.get(h40('is_patch'))),
         'BODIES': mask(rows(arc, 'ui_mii_body_db.prc'), lambda r: not r.get(h40('is_patch'))),
         'MOVIES': mask(rows(arc, 'ui_movie_db.prc'), lambda r: not r.get(h40('is_dlc'))),
+        'HELP': mask(rows(arc, HELP_DB), lambda r: True),
     }
     for k, v in out.items():
         print('%-8s %3d bits of %4d: %s' % (k, sum(bin(x).count('1') for x in v), len(v) * 8, v.hex()))
