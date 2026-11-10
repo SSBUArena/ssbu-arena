@@ -985,6 +985,11 @@
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Ryujinx_Click" FontSize="16">Import from Ryujinx</Button>
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="ImportFolder_Click" FontSize="16">Import from folder</Button>
                 </WrapPanel>
+                <TextBlock Text="UNLOCKS" Style="{StaticResource FieldLabel}" Margin="0,20,0,6"/>
+                <ComboBox x:Name="CompleteBox" Width="480" HorizontalAlignment="Left" SelectionChanged="Field_Changed">
+                  <ComboBoxItem>As the game keeps them</ComboBoxItem><ComboBoxItem>Everything already unlocked: no rewards after the matches</ComboBoxItem>
+                </ComboBox>
+                <TextBlock Style="{StaticResource Small}" FontSize="14" Margin="0,6,0,0" TextWrapping="Wrap" Text="Challenges, music, Mii outfits and movies given and already shown, before the next start. A copy of the save is kept in save-backups."/>
               </StackPanel>
 
               <!-- DLC -->
