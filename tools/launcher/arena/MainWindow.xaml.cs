@@ -296,6 +296,7 @@ namespace Arena
             AspectBox.SelectedIndex = Core.Aspect;
             ShaderBox.SelectedIndex = Core.ShaderLoad;
             CloseBox.SelectedIndex = Core.CloseToTray ? 1 : 0;
+            CompleteBox.SelectedIndex = Core.CompleteSave ? 1 : 0;      // (complete save) BaseSave.Complete
             BgBox.SelectedIndex = Core.StageBg; BgFolder.Visibility = Core.StageBg == 2 ? Visibility.Visible : Visibility.Collapsed;
             FpsBox.IsChecked = Core.Fps;
             KbBox.SelectedIndex = Core.Keyboard;
@@ -328,6 +329,7 @@ namespace Arena
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
             Core.ShaderLoad = Math.Max(0, ShaderBox.SelectedIndex);
             Core.CloseToTray = CloseBox.SelectedIndex == 1;
+            Core.CompleteSave = CompleteBox.SelectedIndex == 1;
             Core.StageBg = Math.Max(0, BgBox.SelectedIndex);
             Core.Fps = FpsBox.IsChecked == true;
             Core.Keyboard = Math.Max(0, KbBox.SelectedIndex);
