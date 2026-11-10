@@ -63,7 +63,7 @@ namespace Arena
             xinput = Core.XInputCount();
             if (Environment.GetEnvironmentVariable("SSBU_ARENA_CRASH_TEST") == "1")      // (test) the newest crash file sent as after a game
                 Task.Run(() => { for (int w = 0; w < 60 && !Account.SignedIn; w++) System.Threading.Thread.Sleep(500); bool sent = CrashReport.SendIfCrashed(DateTime.MinValue, out bool crashed); Updater.Log("crash test: crashed " + crashed + ", sent " + sent); });
-            Loaded += (s, e) => { RunChecks(); FindPads(); OpenFromArgs(); OpenReplayFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); Task.Run(() => Core.MakeAvatars()).ContinueWith(t => FillAvatars(), TaskScheduler.FromCurrentSynchronizationContext()); };
+            Loaded += (s, e) => { StartOnlineCount(); RunChecks(); FindPads(); OpenFromArgs(); OpenReplayFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); Task.Run(() => Core.MakeAvatars()).ContinueWith(t => FillAvatars(), TaskScheduler.FromCurrentSynchronizationContext()); };
             Scaled.SizeChanged += (s, e) => Rescale();
             SizeChanged += (s, e) => Rescale();
         }

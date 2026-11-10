@@ -187,6 +187,9 @@ namespace Arena
             public ArenaHttpException(int status, string body) : base("Server answered " + status) { Status = status; Body = body ?? ""; }
         }
 
+        /// <summary>(0.2.48) a public read without signing in (the publishable key): lobby_status</summary>
+        public static string Anon(string path) { return Http("GET", path, null, Key); }
+
         static string Http(string method, string path, string body, string bearer)
         {
             var rq = (HttpWebRequest)WebRequest.Create(Url + path);
