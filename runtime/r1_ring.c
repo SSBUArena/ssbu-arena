@@ -1173,9 +1173,10 @@ int r1_ring_load(long long frame, Ctx *c) {
         if (!src) memset(a, 0, PG); else cp_add(a, src);
     }
     {   /* (R3 net3) SSBU_RB_LOADCMP=1 (option, default off: measured no faster, na0 / na1): a page is written only if it differs from the value loaded;
-         * (rb-ms) =2: each 64-byte line written only if it differs (r1_state.c cp_page_lines). SSBU_RB_LOADNT=1 (test): the load writes with
-         * non-temporal stores. SSBU_RB_CPMAIN: main's share of the copies (rg_cpmain) */
-        static int lc = -1, lnt; if (lc < 0) { const char *e = getenv("SSBU_RB_LOADCMP"); lc = e && e[0] == '1' ? 1 : e && e[0] == '2' ? 2 : 0; e = getenv("SSBU_RB_LOADNT"); lnt = e && e[0] == '1'; }
+         * (rb-ms) =2: each 64-byte line written only if it differs (r1_state.c cp_page_lines). SSBU_RB_LOADNT (default ON since rb-ms
+         * 2026-11-11, =0 the old way): the load writes with non-temporal stores (no read for ownership of ~14 MB, the loaded lines
+         * do not push the game's data out of the caches): loop bench BF -0.6..-0.9 ms, load 2.37 -> 1.9 ms. SSBU_RB_CPMAIN: main's share of the copies (rg_cpmain) */
+        static int lc = -1, lnt; if (lc < 0) { const char *e = getenv("SSBU_RB_LOADCMP"); lc = e && e[0] == '1' ? 1 : e && e[0] == '2' ? 2 : 0; e = getenv("SSBU_RB_LOADNT"); lnt = !(e && e[0] == '0'); }
         g_cp_cond = lc; g_cp_nt = lc != 1 && lnt; g_cp_mw = rg_cpmain(0); g_cp_hmode = g_cph && (rg_loadhash() & 1) ? 2 : 0; cp_run(); g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_cond = 0; g_cp_nt = 0; }
     InterlockedExchange(&g_rg_loading, 0);
     { static LONG64 said; if (g_rg_loadfault != said) { said = g_rg_loadfault; LOG("r1: RING load of frame %lld: a page only reserved was written: committed and copied (%lld so far, SSBU_RB_LOADFAULT)\n", frame, (long long)said); } }
