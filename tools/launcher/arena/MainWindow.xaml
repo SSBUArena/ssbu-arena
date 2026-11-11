@@ -72,6 +72,13 @@
         <RadioButton x:Name="TabChanges" Style="{StaticResource NavTab}" Content="What's new" Checked="Tab_Checked" Visibility="Collapsed"/>
         <RadioButton x:Name="TabSettings" Style="{StaticResource NavTab}" Content="Settings" Checked="Tab_Checked" Visibility="Collapsed"/>
       </StackPanel>
+      <Border x:Name="OnlineCountBox" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,64,0" Padding="11,5,12,5" CornerRadius="12"
+              BorderBrush="{StaticResource LineSoft}" BorderThickness="1" Visibility="Collapsed" ToolTip="Players connected to the Arena server, updated every 5 minutes">
+        <StackPanel Orientation="Horizontal">
+          <Ellipse Width="8" Height="8" Fill="{StaticResource Good}" VerticalAlignment="Center"/>
+          <TextBlock x:Name="OnlineCountText" FontSize="14" Foreground="#9FC7A9" Margin="8,0,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
+      </Border>
       <Button x:Name="GearButton" Style="{StaticResource IconButton}" HorizontalAlignment="Right" VerticalAlignment="Center" Padding="8" Click="Gear_Click" ToolTip="Settings">
         <Path Data="{StaticResource GearGeometry}" Width="24" Height="24" Stretch="Uniform"
               Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.7" StrokeLineJoin="Round"/>
