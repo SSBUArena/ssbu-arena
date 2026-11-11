@@ -623,11 +623,20 @@ static void fib_reap_delete(void) {                      /* threads running agai
 static void rg_loader_print(void (*pr)(const char *fmt, ...));      /* (below) */
 /* (rb-ms 2026-11-10) SSBU_RB_CPMAIN=<load>,<capture>: main's share of the page copies of a ring load / capture against one copy
  * helper's (1 = equal shares, as before; 0 = main copies nothing and waits). Default 1,1. */
-static int g_rg_copy_ccx;                               /* (rb-8ms) rb_rollback.c rbg_pin: the copy helpers are on another L3 than main (SSBU_RB_COPYCCX) */
+/* (rb-8ms) rb_rollback.c rbg_pin: g_rg_copy_ccx 1 = the copy helpers do the LOADS on another L3 than main's (SSBU_RB_COPYCCX; masks:
+ * g_rg_cm_same = main's L3, g_rg_cm_other); captures stay on main's L3 (reading the game's pages from main's caches; on the other L3
+ * the recapture was 0.2 ms slower). rg_helpers_on(1) / (0) moves them (an affinity change of the idle helpers, only when it changes). */
+static int g_rg_copy_ccx, g_rg_cm_cur; static unsigned long long g_rg_cm_same, g_rg_cm_other;
+static void rg_helpers_on(int other) {
+    if (!g_rg_copy_ccx || other == g_rg_cm_cur) return;
+    unsigned long long m = other ? g_rg_cm_other : g_rg_cm_same; if (!m) return;
+    for (int k = 0; k < g_ncp; k++) if (g_cp_h[k]) SetThreadAffinityMask(g_cp_h[k], (DWORD_PTR)m);
+    g_rg_cm_cur = other;
+}
 static double rg_cpmain(int capture) {
     static double v[2] = {-1, -1}; static int ccx = -1;
-    if (ccx != g_rg_copy_ccx) { ccx = g_rg_copy_ccx; v[0] = -1; }      /* (rb-8ms) with the helpers on another L3, main copies nothing by default */
-    if (v[0] < 0) { v[0] = v[1] = ccx ? 0.0 : 1.0; const char *e = getenv("SSBU_RB_CPMAIN"); if (e && *e) { sscanf(e, "%lf,%lf", &v[0], &v[1]); if (v[0] < 0) v[0] = 0; if (v[1] < 0) v[1] = 0; }
+    if (ccx != g_rg_copy_ccx) { ccx = g_rg_copy_ccx; v[0] = -1; }      /* (rb-8ms) with the loads on another L3, main copies nothing in them */
+    if (v[0] < 0) { v[0] = ccx ? 0.0 : 1.0; v[1] = 1.0; const char *e = getenv("SSBU_RB_CPMAIN"); if (e && *e) { sscanf(e, "%lf,%lf", &v[0], &v[1]); if (v[0] < 0) v[0] = 0; if (v[1] < 0) v[1] = 0; }
         if (v[0] != 1.0 || v[1] != 1.0) LOG("r1: RING: main's share of the page copies (SSBU_RB_CPMAIN%s): load %.2f, capture %.2f of a helper's\n", ccx ? ", helpers on another L3" : "", v[0], v[1]); }
     return v[capture ? 1 : 0];
 }
@@ -685,6 +694,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
     s->frame = frame; s->nent = 0; s->pages = 0; s->xpages = 0;
     g_rg_cur = s; g_rg_fail_now = 0;
     static uint8_t *xdiff; static size_t xdn; if (xdn < g_rg_nx + 1) { free(xdiff); xdn = g_rg_nx + 1; xdiff = calloc(xdn, 1); }   /* (hs12: the extras can change at a rebase) */
+    rg_helpers_on(0);                                     /* (rb-8ms) captures: the helpers on main's L3 */
     rg_pww(g_rgx_q != NULL || g_rgx_qcap < g_rg_nx + 1);      /* (rb-8ms) the write-watch questions on every copy thread */
     {   /* (round 3) extras compared by main + the copy threads; (Arena perf) only those written since the last capture / load */
         if (g_rgx_qcap < g_rg_nx + 1) { free(g_rgx_q); free(g_rgx_res); g_rgx_qcap = g_rg_nx + 1; g_rgx_q = malloc(g_rgx_qcap * 4); g_rgx_res = malloc(g_rgx_qcap); if (!g_rgx_q || !g_rgx_res) { free(g_rgx_q); free(g_rgx_res); g_rgx_q = NULL; g_rgx_res = NULL; g_rgx_qcap = 0; } }
@@ -1278,6 +1288,7 @@ int r1_ring_load(long long frame, Ctx *c) {
     dc_copy_lock(1);                                      /* (crash phase) no decommit from here to the end of the copy */
     { static int lf = -1; if (lf < 0) { const char *e = getenv("SSBU_RB_LOADFAULT"); lf = !(e && e[0] == '0'); if (lf) AddVectoredExceptionHandler(1, rg_load_fault); }
       if (lf) InterlockedExchange(&g_rg_loading, 1); }
+    rg_helpers_on(1);                                     /* (rb-8ms) loads: the helpers on the other L3 (SSBU_RB_COPYCCX) */
     rg_pww(1);                                            /* (rb-8ms) the write-watch questions on every copy thread */
     rg_stack_ww(NULL);                                    /* (Arena perf) the stack pages written since the newest capture */
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */

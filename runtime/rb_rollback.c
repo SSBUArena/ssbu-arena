@@ -330,12 +330,12 @@ static int rbg_pin_topology(unsigned long long m[5]) {
     unsigned long long same = 0; for (int i = 0; i < nc; i++) if ((core[i] & l3) == core[i] && i != lastc) same |= core[i];
     rest = all & ~core[lastc]; if (all & ~l3) rest = all & ~l3;
     m[0] = core[lastc] & (~core[lastc] + 1); m[1] = same; m[2] = same; m[3] = rest; m[4] = rest;
-    /* (rb-8ms 2026-11-11) SSBU_RB_COPYCCX (default on, =0 off): with a second L3 (all & ~l3), the page copy helpers go there and main copies
-     * nothing (rg_cpmain): a load's 14 MB passing through the helpers' L2 on main's L3 (and main's own share) made the first re-run pass
+    /* (rb-8ms 2026-11-11) SSBU_RB_COPYCCX (default on, =0 off): with a second L3 (all & ~l3), the page copy helpers do the LOADS there (captures stay on main's L3) and main copies
+     * nothing in a load (rg_cpmain, r1_ring.c rg_helpers_on): a load's 14 MB passing through the helpers' L2 on main's L3 (and main's own share) made the first re-run pass
      * after it ~0.3 ms slower (test SSBU_RB_TEST_PERTURB=8: a 14 MB copy on the helpers between two re-run passes cost the second +0.7 ms
      * on main's L3, +0.15 on the other one). */
     {   static int cc = -1; if (cc < 0) { const char *e = getenv("SSBU_RB_COPYCCX"); cc = !(e && e[0] == '0'); }
-        if (cc && (all & ~l3)) { m[1] = all & ~l3; g_rg_copy_ccx = 1; } }
+        if (cc && (all & ~l3)) { g_rg_cm_same = same; g_rg_cm_other = all & ~l3; g_rg_cm_cur = 0; g_rg_copy_ccx = 1; } }
     return 1;
 }
 static void rbg_pin_apply(unsigned long long mm, unsigned long long mc, unsigned long long mw, unsigned long long md, unsigned long long mo) {
