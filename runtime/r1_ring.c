@@ -245,6 +245,11 @@ static void rg_load_page(uint32_t id, int w, size_t j) { (void)w; (void)j; rg_to
  * itself through non-temporal stores (the cache lines dropped, the values unchanged). The next pass is timed apart (r1_ring.c,
  * "first after a test reload"). */
 static void rg_test_perturb(int mask) {
+    if (mask & 12) {      /* 4: the copy threads (main + helpers) copy 3500 pages between two host buffers, non-temporal like a load; 8: the helpers only */
+        static uint8_t *sa, *sb; size_t np = 3500;
+        if (!sa) { sa = VirtualAlloc(NULL, np * PG, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); sb = VirtualAlloc(NULL, np * PG, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); }
+        if (sa && sb) { for (size_t i = 0; i < np; i++) cp_add(sb + i * PG, sa + i * PG); g_cp_nt = 1; g_cp_mw = (mask & 8) ? 0.0 : 1.0; cp_run(); g_cp_nt = 0; g_cp_mw = 1.0; }
+    }
     if (mask & 1) {
         static uint8_t *ww; static SIZE_T wwn = 4u << 20;
         if (!ww) ww = VirtualAlloc(NULL, wwn, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
@@ -618,10 +623,12 @@ static void fib_reap_delete(void) {                      /* threads running agai
 static void rg_loader_print(void (*pr)(const char *fmt, ...));      /* (below) */
 /* (rb-ms 2026-11-10) SSBU_RB_CPMAIN=<load>,<capture>: main's share of the page copies of a ring load / capture against one copy
  * helper's (1 = equal shares, as before; 0 = main copies nothing and waits). Default 1,1. */
+static int g_rg_copy_ccx;                               /* (rb-8ms) rb_rollback.c rbg_pin: the copy helpers are on another L3 than main (SSBU_RB_COPYCCX) */
 static double rg_cpmain(int capture) {
-    static double v[2] = {-1, -1};
-    if (v[0] < 0) { v[0] = v[1] = 1.0; const char *e = getenv("SSBU_RB_CPMAIN"); if (e && *e) { sscanf(e, "%lf,%lf", &v[0], &v[1]); if (v[0] < 0) v[0] = 0; if (v[1] < 0) v[1] = 0; }
-        if (v[0] != 1.0 || v[1] != 1.0) LOG("r1: RING: main's share of the page copies (SSBU_RB_CPMAIN): load %.2f, capture %.2f of a helper's\n", v[0], v[1]); }
+    static double v[2] = {-1, -1}; static int ccx = -1;
+    if (ccx != g_rg_copy_ccx) { ccx = g_rg_copy_ccx; v[0] = -1; }      /* (rb-8ms) with the helpers on another L3, main copies nothing by default */
+    if (v[0] < 0) { v[0] = v[1] = ccx ? 0.0 : 1.0; const char *e = getenv("SSBU_RB_CPMAIN"); if (e && *e) { sscanf(e, "%lf,%lf", &v[0], &v[1]); if (v[0] < 0) v[0] = 0; if (v[1] < 0) v[1] = 0; }
+        if (v[0] != 1.0 || v[1] != 1.0) LOG("r1: RING: main's share of the page copies (SSBU_RB_CPMAIN%s): load %.2f, capture %.2f of a helper's\n", ccx ? ", helpers on another L3" : "", v[0], v[1]); }
     return v[capture ? 1 : 0];
 }
 /* (rb-ms, SSBU_RB_LOADHASH bit 2) after the copy: the entries whose new buffer the helpers flagged "same as the newest value" are
@@ -1309,6 +1316,12 @@ int r1_ring_load(long long frame, Ctx *c) {
         static int lc = -1, lnt; if (lc < 0) { const char *e = getenv("SSBU_RB_LOADCMP"); lc = e && e[0] == '1' ? 1 : e && e[0] == '2' ? 2 : 0; e = getenv("SSBU_RB_LOADNT"); lnt = !(e && e[0] == '0'); }
         g_cp_cond = lc; g_cp_nt = lc != 1 && lnt; g_cp_mw = rg_cpmain(0); g_cp_hmode = g_cph && (rg_loadhash() & 1) ? 2 : 0; cp_run(); g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_cond = 0; g_cp_nt = 0; }
     InterlockedExchange(&g_rg_loading, 0);
+    {   /* (rb-8ms, TEST ONLY) SSBU_RB_TEST_TOUCH=1: main reads every line of every page the load wrote back (they come into its caches /
+         * the L3) before the first re-run pass: is that pass slow because the loaded data is cold? =2: only one line per page (the TLB) */
+        static int tt = -1; if (tt < 0) { const char *e = getenv("SSBU_RB_TEST_TOUCH"); tt = e ? atoi(e) : 0; }
+        if (tt) { volatile uint64_t acc = 0; size_t step = tt == 2 ? PG : 64;
+            for (size_t n = 0; n < pages; n++) { uint32_t id = g_rg_tl[n]; if (id < g_rg_n1 && g_dc[id]) continue; const uint8_t *a = rg_addr(id);
+                for (size_t o = 0; o < PG; o += step) acc += *(const volatile uint64_t *)(a + o); } (void)acc; } }
     { static LONG64 said; if (g_rg_loadfault != said) { said = g_rg_loadfault; LOG("r1: RING load of frame %lld: a page only reserved was written: committed and copied (%lld so far, SSBU_RB_LOADFAULT)\n", frame, (long long)said); } }
     dc_copy_lock(0);
     double t2 = now_ms();
