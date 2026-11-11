@@ -77,7 +77,7 @@ static double g_rbg_t_pre, g_rbg_t_load, g_rbg_t_rerun, g_rbg_t_recap, g_rbg_t_p
 static long long g_rbg_short_waits;
 /* (R3 pub1) a load refused at a wrong guess at frame g_rbg_pend (r1_ring_load -1): the state before it must stay in the ring
  * until the rollback is made next tick; g_rbg_refused_tick: no second try in the same tick (each try may hold for 500 ms) */
-static int g_rbg_pend, g_rbg_refused_tick, g_rbg_reloaded;
+static int g_rbg_pend, g_rbg_refused_tick, g_rbg_reloaded; static double g_rbg_drain_ms; static long long g_rbg_drains;
 /* (Arena perf) GO CHECK: the other player's pads are read once more right after the pacing wait; a wrong guess found there is
  * rolled back at once (load, re-run passes up to the newest frame), and the real pass of this tick follows them in the same
  * tick (g_rbg_gorb: no second pacing wait). Without it the wrong guess was found at the next safe point, after a real pass the
@@ -152,6 +152,10 @@ static int rbg_rollback(Ctx *c, long long i, int m) {
     if (g_rbg_refused_tick) { rbn_put_mismatch(m); return 0; }      /* (R3 pub1) refused once this tick: next tick */
     {   static int sk = -1; if (sk < 0) { const char *e = getenv("SSBU_RB_SNDKEEP"); sk = !(e && e[0] == '0'); }
         g_snd_keep = rb_feat(8, sk); }                  /* (Arena perf) the sound threads held through the re-run passes (r1_state.c unpark) */
+    {   /* (rb-8ms, TEST ONLY) SSBU_RB_TEST_DRAIN=1: the render thread's queue (the replay of the real pass just thrown away) run to its end
+             * before the load: are the load and the first re-run pass slowed by that replay running beside them? */
+        static int td = -1; if (td < 0) { const char *e = getenv("SSBU_RB_TEST_DRAIN"); td = e && atoi(e) > 0; }
+        if (td) { void nvn_r1_drain(void); double t = now_ms(); nvn_r1_drain(); g_rbg_drain_ms += now_ms() - t; g_rbg_drains++; t0 = now_ms(); } }
     rbg_fd_note("load", i);
     int lr = r1_ring_load(best, c);
     rbg_fd_note("after the load", i);
@@ -333,6 +337,13 @@ static void rbg_pin_apply(unsigned long long mm, unsigned long long mc, unsigned
         unsigned long long m = strstr(nm, "TaskWorker") ? mw : (strstr(nm, "render dispatch") || strstr(nm, "GraphicsDevice")) ? md : mo;
         if (m) SetThreadAffinityMask(h, (DWORD_PTR)m);
     }
+    /* (rb-8ms 2026-11-11) the HOST render thread (nvn_gl.c: it replays the submitted command lists, ~3-4 ms of the real pass just thrown
+     * away while the rollback runs) was not placed: Windows could put it beside main (main's SMT sibling, left free on purpose) or on
+     * the copy helpers' cores. With its queue drained before the load (test SSBU_RB_TEST_DRAIN=1) the re-run passes ran 0.6 ms and the
+     * recapture 0.2 ms faster. It goes with the render dispatch thread. SSBU_RB_PINRENDER=0: not placed. */
+    {   static int pr = -1; if (pr < 0) { const char *e = getenv("SSBU_RB_PINRENDER"); pr = !(e && e[0] == '0'); }
+        unsigned long nvn_render_tid(void); DWORD rt = (DWORD)nvn_render_tid();
+        if (pr && rt && md) { HANDLE rh = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE, rt); if (rh) { SetThreadAffinityMask(rh, (DWORD_PTR)md); CloseHandle(rh); } } }
 }
 static void rbg_pin(int on) {
     if (on) {

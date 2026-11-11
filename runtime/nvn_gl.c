@@ -315,6 +315,8 @@ static void gl_post(void (*fn)(void *), const void *arg, size_t size) {       /*
     SetEvent(g_job_event);
 }
 static void gl_barrier(void) { if (g_async_pending) gl_run(job_nop, NULL); }   /* everything queued so far has run when this returns */
+unsigned long nvn_render_tid(void) { return g_render_tid; }      /* (rb-8ms) rb_rollback.c rbg_pin: the host render thread placed too */
+void nvn_r1_drain(void) { gl_barrier(); }               /* (rb-8ms, TEST: SSBU_RB_TEST_DRAIN) the render thread's queue run to its end */
 
 /* ---------------------------------------------------------------- statistics and diagnostics */
 static struct {
