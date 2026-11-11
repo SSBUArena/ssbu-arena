@@ -125,6 +125,10 @@ static int rbg_real_skip(long long i) {      /* SSBU_RB_CAPSKIP=<n> (n >= 2): a 
     g_rbg_capskip_run = skip ? g_rbg_capskip_run + 1 : 0;
     return skip;
 }
+/* (rb-8ms) SSBU_RB_RPAUSE=<mask> (nvn_gl.c render pause): 1 = from a rollback's hold to the end of its re-run passes, 2 = also during the
+ * capture of a real pass. Default 0 (measured as an option). */
+static int g_rbg_rp = -1;
+static void rbg_rpause(int bit, int on) { if (g_rbg_rp < 0) { const char *e = getenv("SSBU_RB_RPAUSE"); g_rbg_rp = e ? atoi(e) : 0; } if (!(g_rbg_rp & bit) && on) return; void nvn_r1_render_pause(int); nvn_r1_render_pause(on); }
 static int rbg_capture(long long i, Ctx *c) { g_rg_need = rbn_confirmed(); if (g_rbg_pend > 0 && g_rbg_pend - 1 < g_rg_need) g_rg_need = g_rbg_pend - 1; return r1_ring_capture(i, c); }
 void rbn_stats(int *delay, int *last, int *maxk) { *delay = rbn_delay(); *last = (int)g_rbg_last_k; *maxk = (int)g_rbg_max_k; }   /* net_relay.c net_stats_get (F2) */
 
@@ -539,6 +543,7 @@ static void rbg_step_body(Ctx *c) {
         g_rgs_next = i + 1;
         if (--g_rgs_left > 0) { g_rbg_t_pass0 = now_ms(); return; }
         g_ra_phase = 0; g_ra_after_quiet = 1; g_rgs_left = 0;
+        rbg_rpause(1, 0);                               /* (rb-8ms) the render thread goes on */
         snd_let_go();                                   /* (Arena perf) the sound threads go on (held since the load) */
     } else if (g_rbg_noring) {                          /* (hs13) a real pass ended, no ring: nothing to capture, nothing ran on a guess */
         g_rgs_next = i + 1; g_rbg_real++;
@@ -552,15 +557,16 @@ static void rbg_step_body(Ctx *c) {
         if (m > 0 && m <= i) {
             /* captured anyway, with the threads kept held for the load that follows (R2 round 2: load hold 3.5 -> 0.2 ms);
              * SSBU_RB_NET_KEEP=0: no capture, the load holds the threads itself */
-            double tp = now_ms();
+            double tp = now_ms(); rbg_rpause(1, 1);
             if (g_rbg_keep == 1) { g_rg_keep = 1; if (!rbg_capture(i, c)) g_rbg_capfail++; g_rg_keep = 0; }
             else if (g_rbg_keep == 2) r1_ring_hold();
             g_rbg_t_pre += now_ms() - tp;
             if (rbg_rollback(c, i, m)) return;
+            rbg_rpause(1, 0);
             r1_ring_let_go();
             if (g_rbg_keep != 1 && !rbg_capture(i, c)) g_rbg_capfail++;
         } else if (rbg_real_skip(i)) g_rbg_capskip_real++;
-        else if (!rbg_capture(i, c)) g_rbg_capfail++;
+        else { rbg_rpause(2, 1); if (!rbg_capture(i, c)) g_rbg_capfail++; rbg_rpause(2, 0); }
         if (g_rbg_test_f == -2) { const char *e = getenv("SSBU_RB_NET_TEST"); g_rbg_test_f = -1; if (e && *e) { long long tf = -1; int ms = 0, k = 0; sscanf(e, "%lld,%d,%d", &tf, &ms, &k); g_rbg_test_f = tf; g_rbg_test_ms = ms; g_rbg_test_k = k; } }
         if (g_rbg_test_f > 0 && i >= g_rbg_test_f && !g_rbg_noring) {    /* (the first real pass from that frame on without a rollback of its own) */
             g_rbg_test_f = -1;                        /* test: a long stall at this safe point, then a rollback (same pads: the timeline must not change) */

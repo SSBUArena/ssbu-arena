@@ -265,8 +265,20 @@ void hitch_wait_render(int on); void hitch_frame(long long frame, double ms, int
 #define HS_IN(name, arg) const char *hs_p_ = (const char *)g_hitch_rt; uint64_t hs_a_ = g_hitch_rt_arg; g_hitch_rt_arg = (uint64_t)(arg); g_hitch_rt = (name)
 #define HS_OUT() (g_hitch_rt = hs_p_, g_hitch_rt_arg = hs_a_)
 
+/* (rb-8ms 2026-11-11) RENDER PAUSE (rb_rollback.c, SSBU_RB_RPAUSE): while a rollback (load, re-run passes, recapture) runs, the render
+ * thread does not start its next job: the replay of the real pass just thrown away then runs after it instead of beside it (DRAM and
+ * caches shared: re-run passes and recapture ran 0.8 ms faster with the queue drained first, test SSBU_RB_TEST_DRAIN). Anyone who
+ * WAITS for the render thread (gl_run) ends the pause first; a pause lasts 30 ms at most. */
+static volatile LONG g_rpause; static HANDLE g_rpause_ev; static volatile LONG64 g_rpause_n, g_rpause_broken;
+void nvn_r1_render_pause(int on) {
+    if (!g_rpause_ev) g_rpause_ev = CreateEventA(NULL, TRUE, TRUE, NULL);
+    if (on) { if (!InterlockedExchange(&g_rpause, 1)) { ResetEvent(g_rpause_ev); g_rpause_n++; } }
+    else if (InterlockedExchange(&g_rpause, 0)) SetEvent(g_rpause_ev);
+}
+long long nvn_r1_render_pause_stats(long long *broken) { *broken = g_rpause_broken; return g_rpause_n; }
 static void gl_run(void (*fn)(void *), void *arg) {
     if (GetCurrentThreadId() == g_render_tid) { fn(arg); return; }
+    if (g_rpause) { g_rpause_broken++; nvn_r1_render_pause(0); }      /* (rb-8ms) a wait for the render thread ends a pause */
     if (!t_done) t_done = CreateEventA(NULL, FALSE, FALSE, NULL);
     Job j = {fn, arg, t_done, NULL};
     LONG64 pf0 = pf_now();
@@ -3790,6 +3802,7 @@ static void render_loop(void) {
     for (;;) {
         WaitForSingleObject(g_job_event, INFINITE);
         for (;;) {
+            if (g_rpause && g_rpause_ev && WaitForSingleObject(g_rpause_ev, 30) == WAIT_TIMEOUT) nvn_r1_render_pause(0);      /* (rb-8ms) paused: wait (30 ms at most) */
             EnterCriticalSection(&g_job_lock);
             Job *j = g_job_head;
             if (j) { g_job_head = j->next; if (!g_job_head) g_job_tail = NULL; }
