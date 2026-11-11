@@ -656,6 +656,7 @@ static void rg_cap_dedup(RgSlot *s) {
     }
     s->nent = o;
 }
+static double g_cq[3]; static long long g_cqn;
 int r1_ring_capture(long long frame, Ctx *c) {
     { extern void (*g_os_wait_extra)(void (*pr)(const char *fmt, ...)); g_os_wait_extra = rg_loader_print; }
     R1_CTR("capture (frame)", frame, 0);
@@ -694,6 +695,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
     s->frame = frame; s->nent = 0; s->pages = 0; s->xpages = 0;
     g_rg_cur = s; g_rg_fail_now = 0;
     static uint8_t *xdiff; static size_t xdn; if (xdn < g_rg_nx + 1) { free(xdiff); xdn = g_rg_nx + 1; xdiff = calloc(xdn, 1); }   /* (hs12: the extras can change at a rebase) */
+    double tq0 = now_ms();                                /* (rb-8ms) the capture's sweep part timed piece by piece (report: RING capture sweep part) */
     rg_helpers_on(0);                                     /* (rb-8ms) captures: the helpers on main's L3 */
     rg_pww(g_rgx_q != NULL || g_rgx_qcap < g_rg_nx + 1);      /* (rb-8ms) the write-watch questions on every copy thread */
     {   /* (round 3) extras compared by main + the copy threads; (Arena perf) only those written since the last capture / load */
@@ -711,9 +713,12 @@ int r1_ring_capture(long long frame, Ctx *c) {
         } }
     if (g_rgpg_on < 0) g_rgpg_on = getenv("SSBU_RB_SIM_PAGES") != NULL;
     g_rgpg_kind = g_ra_phase != 2 ? 0 : g_rgs_left > 1 ? 1 : 2; g_rgpg_caps[g_rgpg_kind]++;
+    double tq1 = now_ms();
     rg_stack_ww(c);                                       /* (Arena perf) the stack pages written (no marks there) */
+    double tq2 = now_ms();
     dc_copy_lock(1);                                      /* (crash phase) no decommit from here to the end of the copy */
     if (g_ls_active) ls_capture(rg_cap_page); else rg_sweep(rg_cap_page);      /* R4: the learned set (rb_learned.c) instead of the marks */
+    double tq3 = now_ms(); g_cq[0] += tq1 - tq0; g_cq[1] += tq2 - tq1; g_cq[2] += tq3 - tq2; g_cqn++;
     for (size_t e = 0; e < g_rg_nx && !g_rg_fail_now; e++) {             /* extras: the pages that differ from their newest value */
         uint32_t id = (uint32_t)(g_rg_n1 + g_rg_n2 + e);
         if (!xdiff[e]) continue;
@@ -1964,6 +1969,7 @@ static void rgs_report(void) {
     LOG("r1: RING report: %lld captures (%lld skipped: a thread not at a wait), %lld loads, %u pool buffers made (%.1f MB), %u free; log overflows %lld\n",
         g_rg_caps, g_rg_cap_fail, g_rg_loads, g_rg_bump, g_rg_bump * (double)PG / 1048576.0, g_rg_nfree, g_rg_overflow);
     { void cxxrt_readable_report(FILE *out); if (g_log) cxxrt_readable_report(g_log); }      /* (rb-8ms) the C++ runtime's VirtualQuery count */
+    LOG("r1: RING capture sweep part (means ms): extras + write watch questions %.4f, stack write watch %.4f, sweep + undo log + queue %.4f (%lld captures)\n", g_cqn ? g_cq[0] / g_cqn : 0.0, g_cqn ? g_cq[1] / g_cqn : 0.0, g_cqn ? g_cq[2] / g_cqn : 0.0, g_cqn);
     LOG("r1: RING sweeps on the copy threads (SSBU_RB_PSWEEP): %lld, a list full (rest swept on main) %lld\n", g_psw_runs, g_psw_fallback);
     LOG("r1: RING loads right after a capture with the threads kept held: %lld (threads kept at the same wait: %lld); fibers %d (last); stale fiber-block notes refused %lld\n", g_rg_kept_n, g_rg_kept_same, g_nfib, g_r1_fls_stale);
     LOG("r1: KEEP: sound threads kept suspended from a load to the last re-run pass %lld; kept after a second try %lld; not kept (suspended outside a system call) %lld; worker wake-ups without the event lock %lld\n", g_snd_keeps, g_keep_settled, g_keep_unsafe, g_wake_nolock);

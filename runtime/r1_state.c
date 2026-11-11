@@ -2645,8 +2645,27 @@ void r1_read_retry_note(void) { InterlockedIncrement64(&g_read_retry); }      /*
 void r1_wrote(uint64_t a, uint64_t n) { lb_open(a, n); r1_mark_range(a, n); ls_range(a, n, 0); if (g_prot_on) prot_open(a, n); }          /* host code that writes guest memory (nnhid.c, nnfs.c reads: the kernel's writes do not fault) */
 /* "not simulation": pages written by audio decoding etc.: not rolled back, not checked */
 /* (rb-8ms, diagnosis) the NVN memory pools the game made (nvn_stub.c pool_initialize): SSBU_RB_SIM_PAGES counts the ring's pages in them */
-static uint64_t g_pool_a[2048], g_pool_n[2048]; static volatile LONG g_npool; static SRWLOCK g_pool_lock = SRWLOCK_INIT;
-void r1_pool_note(uint64_t a, uint64_t n) { AcquireSRWLockExclusive(&g_pool_lock); if (g_npool < 2048 && a && n) { g_pool_a[g_npool] = a; g_pool_n[g_npool] = n; g_npool++; } ReleaseSRWLockExclusive(&g_pool_lock); }
+static uint64_t g_pool_a[16384], g_pool_n[16384]; static volatile LONG g_npool; static SRWLOCK g_pool_lock = SRWLOCK_INIT; static int g_pool_ns;
+void r1_nosim(uint64_t a, uint64_t n);
+void r1_pool_note(uint64_t a, uint64_t n) {
+    if (!a || !n) return;
+    AcquireSRWLockExclusive(&g_pool_lock);
+    LONG i; for (i = 0; i < g_npool; i++) if (g_pool_a[i] == a && g_pool_n[i] == n) break;      /* (a pool made again at the same place: once) */
+    if (i == g_npool && g_npool < 16384) { g_pool_a[g_npool] = a; g_pool_n[g_npool] = n; g_npool++; }
+    ReleaseSRWLockExclusive(&g_pool_lock);
+    if (g_pool_ns) r1_nosim(a, n);
+}
+/* (rb-8ms, option) SSBU_RB_NOPOOL=1: the NVN memory pools' pages (GPU data the game writes for the render: uniform / vertex buffers,
+ * ~300 of the ~2750 pages a real pass writes, ~365 of a load's ~3500) are "not simulation": never captured, never loaded. A rollback
+ * leaves them as the newest pass wrote them (the next real pass writes its own). Applied at the match start, before the ring's base. */
+void r1_pool_nosim_all(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_NOPOOL"); on = e && atoi(e) > 0; }
+    if (!on || g_pool_ns) return;
+    uint64_t tot = 0; AcquireSRWLockShared(&g_pool_lock);
+    for (LONG i = 0; i < g_npool; i++) { r1_nosim(g_pool_a[i], g_pool_n[i]); tot += g_pool_n[i]; }
+    ReleaseSRWLockShared(&g_pool_lock);
+    g_pool_ns = 1; LOG("r1: NOPOOL: %ld NVN memory pools (%.0f MB) left out of the state" "\n", (long)g_npool, tot / 1048576.0);
+}
 static int r1_in_pool(const uint8_t *p) { uint64_t a = (uint64_t)(uintptr_t)p; for (LONG i = 0; i < g_npool; i++) if (a - g_pool_a[i] < g_pool_n[i]) return 1; return 0; }
 void r1_nosim(uint64_t a, uint64_t n) {
     if (!g_ns1 || !n) return;

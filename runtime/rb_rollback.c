@@ -77,7 +77,14 @@ static double g_rbg_t_pre, g_rbg_t_load, g_rbg_t_rerun, g_rbg_t_recap, g_rbg_t_p
 static long long g_rbg_short_waits;
 /* (R3 pub1) a load refused at a wrong guess at frame g_rbg_pend (r1_ring_load -1): the state before it must stay in the ring
  * until the rollback is made next tick; g_rbg_refused_tick: no second try in the same tick (each try may hold for 500 ms) */
-static int g_rbg_pend, g_rbg_refused_tick, g_rbg_reloaded; static double g_rbg_drain_ms; static long long g_rbg_drains;
+static int g_rbg_pend, g_rbg_refused_tick, g_rbg_reloaded;
+/* (rb-8ms 2026-11-11, option) SSBU_RB_NET_RECAP=7: the last re-run pass's state (frame i) is NOT captured at once: the capture is made
+ * in the pacing wait of the same tick (it starts SSBU_RB_NET_DEFCAP_MS, default 1.8, before the next go; at once when there is no time
+ * left), when nothing has written guest memory since but the threads let go before the wait (the preparation jobs: the state captured then
+ * has them done, as the first re-run pass after a load of it will find). The state is the same one RECAP=3 keeps (no k + 2 rollbacks as
+ * with RECAP=6); the work is the same, done in the wait: it is NOT counted in the rollback tick any more (g_rbg_dc_ms / n: the report
+ * gives it, to be added for the real cost). A rollback in the wait before it drops it (that rollback captures its own). */
+static long long g_rbg_defcap = -1, g_rbg_dc_n, g_rbg_dc_late, g_rbg_dc_drop; static double g_rbg_dc_ms, g_rbg_dc_lead = -1; static double g_rbg_drain_ms; static long long g_rbg_drains;
 /* (Arena perf) GO CHECK: the other player's pads are read once more right after the pacing wait; a wrong guess found there is
  * rolled back at once (load, re-run passes up to the newest frame), and the real pass of this tick follows them in the same
  * tick (g_rbg_gorb: no second pacing wait). Without it the wrong guess was found at the next safe point, after a real pass the
@@ -126,9 +133,9 @@ static int rbg_real_skip(long long i) {      /* SSBU_RB_CAPSKIP=<n> (n >= 2): a 
     return skip;
 }
 /* (rb-8ms) SSBU_RB_RPAUSE=<mask> (nvn_gl.c render pause): 1 = from a rollback's hold to the end of its re-run passes, 2 = also during the
- * capture of a real pass. Default 0 (measured as an option). */
+ * capture of a real pass. Default 1 (rb-8ms: n3 BF 8.59 -> 8.46, TaC 10.24 -> 10.10, FD 9.03 -> 8.80, pairs IDENTICAL); =0 off. */
 static int g_rbg_rp = -1;
-static void rbg_rpause(int bit, int on) { if (g_rbg_rp < 0) { const char *e = getenv("SSBU_RB_RPAUSE"); g_rbg_rp = e ? atoi(e) : 0; } if (!(g_rbg_rp & bit) && on) return; void nvn_r1_render_pause(int); nvn_r1_render_pause(on); }
+static void rbg_rpause(int bit, int on) { if (g_rbg_rp < 0) { const char *e = getenv("SSBU_RB_RPAUSE"); g_rbg_rp = e ? atoi(e) : 1; } if (!(g_rbg_rp & bit) && on) return; void nvn_r1_render_pause(int); nvn_r1_render_pause(on); }
 static int rbg_capture(long long i, Ctx *c) { g_rg_need = rbn_confirmed(); if (g_rbg_pend > 0 && g_rbg_pend - 1 < g_rg_need) g_rg_need = g_rbg_pend - 1; return r1_ring_capture(i, c); }
 void rbn_stats(int *delay, int *last, int *maxk) { *delay = rbn_delay(); *last = (int)g_rbg_last_k; *maxk = (int)g_rbg_max_k; }   /* net_relay.c net_stats_get (F2) */
 
@@ -167,6 +174,7 @@ static int rbg_rollback(Ctx *c, long long i, int m) {
     if (lr < 0) { g_rbg_refused_tick = 1; g_rbg_pend = m; rbn_put_mismatch(m); return 0; }      /* (R3 pub1) refused (a thread running): the wrong guess stays pending */
     if (!lr) { g_rbg_miss++; return 0; }
     g_rbg_pend = 0;
+    if (g_rbg_defcap >= 0) { g_rbg_defcap = -1; g_rbg_dc_drop++; }      /* (rb-8ms, RECAP=7) a deferred capture not made: dropped */
     g_rbg_load_ms += now_ms() - t0; g_rbg_t_load += now_ms() - t0; g_rbg_recap_first = -1; g_rbg_t_pass0 = now_ms();
     int k = (int)(i - best);
     g_rgs_left = k; g_rgs_next = best + 1; g_ra_phase = 2; g_rbg_cur_k = k; g_rgs_firstp = 1;
@@ -431,6 +439,7 @@ static void rbg_step_body(Ctx *c) {
     long long i = g_rgs_next;
     rbg_fd_note(g_ra_phase == 2 ? "safe point after a re-run pass" : "safe point after a real pass", i);
     g_rbg_refused_tick = 0;
+    if (g_rbg_defcap >= 0 && g_rbg_defcap != i) { g_rbg_defcap = -1; g_rbg_dc_drop++; }      /* (rb-8ms, RECAP=7) never made (no wait came): dropped */
     if (g_rbg_wdfix < 0) { const char *e = getenv("SSBU_RB_NET_WDFIX"); g_rbg_wdfix = !e || atoi(e) != 0; e = getenv("SSBU_RB_NET_DETAIL"); g_rbg_detail = e && atoi(e) > 0;
         e = getenv("SSBU_RB_NET_RECAP"); g_rbg_recap = e ? atoi(e) : 3; e = getenv("SSBU_RB_NET_KEEP"); g_rbg_keep = e ? atoi(e) : 2; }
     if (g_rbg_wdfix) g_ra_wd_pause = 1;                 /* (until H2 lets the workers go: r1_state.c ra_kick2) */
@@ -470,6 +479,7 @@ static void rbg_step_body(Ctx *c) {
                { static int tr = -1; if (tr < 0) { const char *e = getenv("SSBU_RB_TEST_REBASE"); tr = e ? atoi(e) : 0; }      /* (0.2.11, TEST ONLY) the base made again at once: a rebase measured in one game */
                  for (int k = 0; k < tr && g_rg_ready; k++) r1_ring_rebase(i, c); } }
         g_rbg_noring = g_rg_nomem != 0;
+        { void r1_pool_nosim_all(void); if (g_rg_ready) r1_pool_nosim_all(); }      /* (rb-8ms, option) SSBU_RB_NOPOOL */
         rbn_set_lockstep(g_rbg_noring);
         if (g_rbg_noring) {
             g_rbg_noring_matches++;
@@ -546,6 +556,7 @@ static void rbg_step_body(Ctx *c) {
         else if (g_rbg_recap == 3) want = 0;                                  /* (3: the last one only; a later rollback may load the state this one loaded) */
         else if (r4) want = i == g_rbg_recap_first;
         else want = i == g_rbg_recap_first;
+        if (want && g_rbg_recap == 7 && g_rgs_left <= 1 && g_rbg_pace) { g_rbg_defcap = i; want = 0; }      /* (rb-8ms, RECAP=7) made in the wait */
         if (want) { double tc = now_ms(); if (!rbg_capture(i, c)) g_rbg_capfail++; g_rbg_t_recap += now_ms() - tc; g_rbg_n_recap++; } else g_rbg_capskip++;
         g_rgs_next = i + 1;
         if (--g_rgs_left > 0) { g_rbg_t_pass0 = now_ms(); return; }
@@ -649,6 +660,7 @@ static void rbg_step_body(Ctx *c) {
          * kick's preparation jobs run during the wait instead of after it. SSBU_RB_NET_EARLY_GO=0: at H2 as before */
         static int eg = -1; if (eg < 0) { const char *e = getenv("SSBU_RB_NET_EARLY_GO"); eg = !e || atoi(e) != 0; }
         if (eg && g_ra_wh_on) { ra_workers_release(); SetEvent(g_ra_wd_ev); } }
+    if (gorb && g_rbg_defcap == i) { double tc = now_ms(); if (!rbg_capture(i, c)) g_rbg_capfail++; g_rbg_t_recap += now_ms() - tc; g_rbg_n_recap++; g_rbg_defcap = -1; }      /* (rb-8ms, RECAP=7) no wait in this tick: now */
     if (gorb) { g_rbg_gorb = 0; return; }              /* (Arena perf) this tick's real pass now: its safe point counts the whole tick */
     if (g_rbg_pace) {
         double extra = rbn_pace_extra(g_rgs_next), period = 1000.0 / 60.0 + extra, now = now_ms();
@@ -668,11 +680,12 @@ static void rbg_step_body(Ctx *c) {
             HANDLE ev = rbn_rx_event();
             for (;;) {
                 double t = now_ms();
-                if (t >= g_rbg_next - 0.3 - (g_rbg_gc_want == i ? 0.6 : 0.0)) break;
+                if (g_rbg_dc_lead < 0) { const char *e = getenv("SSBU_RB_NET_DEFCAP_MS"); g_rbg_dc_lead = e ? atof(e) : 1.8; }
+                if (t >= g_rbg_next - 0.3 - (g_rbg_gc_want == i ? 0.6 : 0.0) - (g_rbg_defcap == i ? g_rbg_dc_lead : 0.0)) break;
                 if (g_rbg_wpad_at > 0 && t >= g_rbg_wpad_at && g_rbg_wpad_frame == i + 1) { rbn_drain(i + 1); g_rbg_wpad_at = -1; }
                 rbn_drain(i);
                 int m = rbn_take_mismatch();
-                double wake = g_rbg_next - 0.3 - (g_rbg_gc_want == i ? 0.6 : 0.0);
+                double wake = g_rbg_next - 0.3 - (g_rbg_gc_want == i ? 0.6 : 0.0) - (g_rbg_defcap == i ? g_rbg_dc_lead : 0.0);
                 if (g_rbg_wpad_at > 0 && g_rbg_wpad_frame == i + 1 && g_rbg_wpad_at < wake) wake = g_rbg_wpad_at;
                 if (m > 0 && m <= i) {
                     if (g_rbg_wm_frame != i) { g_rbg_wm_frame = i; g_rbg_n_wmis++; g_rbg_wm_t0 = t; }      /* a wrong guess known inside this wait */
@@ -690,6 +703,11 @@ static void rbg_step_body(Ctx *c) {
             }
         }
         if (now_ms() > g_rbg_next + 0.5) { g_rbg_wrb_late++; g_rbg_wrb_late_ms += now_ms() - g_rbg_next; }      /* the tick already passed (a rollback in the wait ran past it) */
+        if (g_rbg_defcap == i) {                         /* (rb-8ms, RECAP=7) the deferred capture of the last re-run pass's state */
+            if (g_rbg_dc_lead < 0) { const char *e = getenv("SSBU_RB_NET_DEFCAP_MS"); g_rbg_dc_lead = e ? atof(e) : 1.8; }
+            rbg_wait_until(g_rbg_next - g_rbg_dc_lead); if (now_ms() > g_rbg_next - g_rbg_dc_lead + 0.5) g_rbg_dc_late++;
+            double tc = now_ms(); if (!rbg_capture(i, c)) g_rbg_capfail++; g_rbg_dc_ms += now_ms() - tc; g_rbg_dc_n++; g_rbg_defcap = -1;
+        }
         if (g_rbg_gc_want == i) { rbg_wait_until(g_rbg_next - 0.9); rbg_gc_late_run(c, i); }
         rbg_wait_until(g_rbg_next);
         g_rbg_sched = g_rbg_next;
@@ -864,6 +882,7 @@ static void rbg_report(void) {
     LOG("r1: RB NET report: stalls for the other player %lld (%.1f ms in all; %lld of them because the ring was short of memory); captures failed %lld, re-run captures not needed %lld; load mean %.3f ms; peer silent %lld\n",
         g_rbg_stalls, g_rbg_stall_ms, g_rbg_short_waits, g_rbg_capfail, g_rbg_capskip, g_rbg_rb ? g_rbg_load_ms / g_rbg_rb : 0.0, g_rbg_gone);
     LOG("r1: RB NET report: real-pass captures not needed (next frame's pads already here, SSBU_RB_CAPSKIP %d) %lld of %lld real frames\n", g_rbg_capskip_on, g_rbg_capskip_real, g_rbg_real);
+    LOG("r1: RB NET report: deferred recaptures (SSBU_RB_NET_RECAP=7) %lld, mean %.3f ms (made in the wait: not in the rollback tick), started late %lld, dropped by a rollback in the wait %lld\n", g_rbg_dc_n, g_rbg_dc_n ? g_rbg_dc_ms / g_rbg_dc_n : 0.0, g_rbg_dc_late, g_rbg_dc_drop);
     LOG("r1: RB NET report: ring memory (hs14, fix %s): captures given up %lld, old states freed early %lld, captures skipped to keep the oldest needed state %lld\n",
         g_rg_poolfix ? "on" : "OFF", g_rg_short_n, g_rg_freed_slots, g_rg_skip_full);
     LOG("r1: RB NET report: task-worker watchdog releases %lld (since the process start), rollbacks with the workers not held %lld (watchdog paused at H2: %s)\n", g_ra_wd_fired, g_rbg_rb_unheld, g_rbg_wdfix ? "yes" : "NO");
