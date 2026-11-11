@@ -1465,10 +1465,18 @@ static RgpE *rgp_slot(RgpE *t, int cap, uint64_t key) {
     for (int i = 0; i < cap; i++) { RgpE *e = &t[(h + (unsigned)i) % (unsigned)cap]; if (e->key == key) return e; if (!e->key) { e->key = key; e->dmin = 999; return e; } }
     return NULL;
 }
+/* (rb-8ms, test) SSBU_RB_PROF2_SEL: which re-run passes profile 2 counts as "re-run": 0 all, 1 only the first after a load, 2 the others */
+static int g_rgp_sel = -1;
+static int rgp_kd(void) {
+    if (g_rgp_sel < 0) { const char *e = getenv("SSBU_RB_PROF2_SEL"); g_rgp_sel = e ? atoi(e) : 0; }
+    if (g_ra_phase != 2) return 0;
+    int first = g_rgs_firstp == 1 && g_rgs_left > 1;
+    return g_rgp_sel == 1 ? (first ? 1 : -1) : g_rgp_sel == 2 ? (first ? -1 : 1) : 1;
+}
 static void rgp_tree(Ctx *c, void *user) {
     (void)user;
     if (!g_rg_ready || GetCurrentThreadId() != g_rgp_main || g_rgp_depth >= 255) { g_rgp_orig_tree(c); return; }
-    uint64_t node = c->x[0], vt = node ? rd64(node) : 0, lr = c->x[30]; int kd = g_ra_phase == 2, d = g_rgp_depth;
+    uint64_t node = c->x[0], vt = node ? rd64(node) : 0, lr = c->x[30]; int kd = rgp_kd(), d = g_rgp_depth; if (kd < 0) { g_rgp_orig_tree(c); return; }
     g_rgp_child[d + 1] = 0; g_rgp_depth++;
     double t0 = now_ms(); g_rgp_orig_tree(c); double dt = now_ms() - t0;
     g_rgp_depth--;
@@ -1480,7 +1488,7 @@ static void rgp_tree(Ctx *c, void *user) {
 static void rgp_run(Ctx *c, void *user) {          /* the job runner (task workers): x0 = the job's node */
     (void)user;
     if (!g_rg_ready) { g_rgp_orig_run(c); return; }
-    uint64_t node = c->x[0], vt = node ? rd64(node - 8) : 0; int kd = g_ra_phase == 2;
+    uint64_t node = c->x[0], vt = node ? rd64(node - 8) : 0; int kd = rgp_kd(); if (kd < 0) { g_rgp_orig_run(c); return; }
     double t0 = now_ms(); g_rgp_orig_run(c); double dt = now_ms() - t0;
     AcquireSRWLockExclusive(&g_rgpj_lock);
     RgpE *e = rgp_slot(g_rgpj, RGP_N, vt ? vt : 1); if (e) { e->n[kd]++; e->incl[kd] += dt; }
@@ -1490,14 +1498,15 @@ static void rgp_run(Ctx *c, void *user) {          /* the job runner (task worke
 #define RGP_NX 4
 static uint64_t g_rgp_xa[RGP_NX];                        /* (the running build's addresses, set by rgp_init) */
 static void rgp_x(Ctx *c, void *user) {
-    int i = (int)(intptr_t)user; int kd = g_ra_phase == 2;
-    if (!g_rg_ready || GetCurrentThreadId() != g_rgp_main) { g_rgp_orig_x[i](c); return; }
+    int i = (int)(intptr_t)user; int kd = rgp_kd();
+    if (kd < 0 || !g_rg_ready || GetCurrentThreadId() != g_rgp_main) { g_rgp_orig_x[i](c); return; }
     double t0 = now_ms(); g_rgp_orig_x[i](c); double dt = now_ms() - t0;
     RgpE *w = rgp_slot(g_rgpw, 64, g_rgp_xa[i] | (2ull << 62)); if (w) { w->n[kd]++; w->incl[kd] += dt; }
 }
 static void rgp_wait_note(uint64_t lr, double dt) {      /* from ra_kick: a job-counter wait on main */
     if (g_rgs_prof < 2 || !g_rg_ready || GetCurrentThreadId() != g_rgp_main) return;
-    RgpE *w = rgp_slot(g_rgpw, 64, lr | (3ull << 62)); if (w) { w->n[g_ra_phase == 2]++; w->incl[g_ra_phase == 2] += dt; }
+    int kd = rgp_kd(); if (kd < 0) return;
+    RgpE *w = rgp_slot(g_rgpw, 64, lr | (3ull << 62)); if (w) { w->n[kd]++; w->incl[kd] += dt; }
 }
 static void rgp_init(void) {
     g_rgp_xa[0] = GA(0x71036676e0ull); g_rgp_xa[1] = GA(0x710375ea70ull); g_rgp_xa[2] = GA(0x710355b540ull); g_rgp_xa[3] = GA(0x7103569c70ull);
@@ -1594,6 +1603,7 @@ static void rgp_report(void) {
     rgs_samp_report();
     if (g_rgs_prof != 2) return;
     long long np = g_rgs_npass[0] ? g_rgs_npass[0] : 1, nr = g_rgs_npass[1] ? g_rgs_npass[1] : 1;
+    if (g_rgp_sel == 1) nr = (long long)g_rgs_ct[0][2]; else if (g_rgp_sel == 2) nr = (long long)(g_rgs_ct[1][2] + g_rgs_ct[2][2] + g_rgs_ct[3][2]); if (nr < 1) nr = 1;
     LOG("r1: RB PROF per pass (real %lld, re-run %lld): ms per pass real / re-run\n", g_rgs_npass[0], g_rgs_npass[1]);
     memcpy(g_rgp_s, g_rgpw, sizeof g_rgpw); qsort(g_rgp_s, 64, sizeof *g_rgp_s, rgp_cmpi);
     for (int i = 0; i < 64; i++) if (g_rgp_s[i].key) { uint64_t k = g_rgp_s[i].key; int ty = (int)(k >> 62); k &= ~(3ull << 62);
