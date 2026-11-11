@@ -46,6 +46,8 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x653240, 0x653240},       /* entry set-up (debug_mode.c) */
     {0x6556b0, 0x6556b0},     /* squad element load (debug_mode.c); found on the 13.0.5 dump */
     {0x134c690, 0x134c690},     /* fight scene clean-up (debug_mode.c, room rollback), starts: 12,080 bytes in 13.0.5, 0x2f30 to the next 13.0.4 function */
+    {0x1357e20, 0x1357e20},     /* skipped in re-run passes (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11); found on the dump by its masked code (128 / 128 / 32 words) */
+    {0x1358ef0, 0x1358ef0},     /* skipped in re-run passes (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11); found on the dump by its masked code (128 / 128 / 32 words) */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
     {0x14d8620, 0x14d8620}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x14e58f0, 0x14e58f0},     /* battle builder (competitive.c), starts */
@@ -143,7 +145,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x374c398, 0x374c948}, /* render loop: logic call (r1_state.c) */
     {0x374c5b8, 0x374cb68}, /* render loop: logic call 2 (r1_state.c) */
     {0x374e000, 0x374e5b0}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
-    {0x375ea70, 0x375f020}, /* input dispatch (r1_ring.c, profile 2) */
+    {0x375ea70, 0x375f020}, /* input dispatch (r1_ring.c, profile 2; also skipped in re-run passes: rb_rollback.c g_rbg_skipf_def) */
     {0x3760cf8, 0x37612a8},     /* allocation site of the 1.4 MB blocks (rb_learned.c) */
     {0x37857f0, 0x3785da0}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x37a3ea0, 0x37a4450}, /* message text (newmodule_host.c) */
@@ -196,6 +198,8 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x653240, 0x653240},     /* entry set-up (debug_mode.c) */
     {0x6556b0, 0x6556b0},     /* squad element load (debug_mode.c) */
     {0x134c690, 0x134c690},     /* fight scene clean-up (debug_mode.c, room rollback) */
+    {0x1357e20, 0x1357e20},     /* skipped in re-run passes (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11); found on the dump by its masked code (128 / 128 / 32 words) */
+    {0x1358ef0, 0x1358ef0},     /* skipped in re-run passes (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11); found on the dump by its masked code (128 / 128 / 32 words) */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
     {0x14d8620, 0x14d8620},     /* Battle Arena squad (debug_mode.c) */
     {0x14e58f0, 0x14e58f0},     /* battle builder (competitive.c) */
@@ -293,7 +297,7 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x374c398, 0x374bf98},     /* render loop: logic call (r1_state.c) */
     {0x374c5b8, 0x374c1b8},     /* render loop: logic call 2 (r1_state.c) */
     {0x374e000, 0x374dc00},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
-    {0x375ea70, 0x375e670},     /* input dispatch (r1_ring.c, profile 2) */
+    {0x375ea70, 0x375e670},     /* input dispatch (r1_ring.c, profile 2; also skipped in re-run passes: rb_rollback.c g_rbg_skipf_def) */
     {0x3760cf8, 0x37608f8},     /* allocation site of the 1.4 MB blocks (rb_learned.c) */
     {0x37857f0, 0x37853f0},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x37a3ea0, 0x37a3aa0},     /* message text (newmodule_host.c) */
