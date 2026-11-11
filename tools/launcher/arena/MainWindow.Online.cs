@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // (0.2.48) Players online now, small in the header: the lobby server writes the count to public.lobby_status every 5 minutes
 // (arena-server tools/net/lobby_status.py); read at start and every 5 minutes. Hidden while the count is older than
-// 15 minutes (the server is not reporting) or cannot be read.
+// 15 minutes (the server is not reporting), cannot be read, or is 0 (since 0.2.49).
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -36,8 +36,8 @@ namespace Arena
             }).ContinueWith(t =>
             {
                 int n = t.Status == TaskStatus.RanToCompletion ? t.Result : -1;
-                OnlineCountBox.Visibility = n >= 0 ? Visibility.Visible : Visibility.Collapsed;
-                if (n >= 0) OnlineCountText.Text = n.ToString(CultureInfo.InvariantCulture) + " online";
+                OnlineCountBox.Visibility = n > 0 ? Visibility.Visible : Visibility.Collapsed;      // (0.2.49) nobody online: no count
+                if (n > 0) OnlineCountText.Text = n.ToString(CultureInfo.InvariantCulture) + " online";
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
     }
