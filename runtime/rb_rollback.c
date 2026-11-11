@@ -77,7 +77,7 @@ static double g_rbg_t_pre, g_rbg_t_load, g_rbg_t_rerun, g_rbg_t_recap, g_rbg_t_p
 static long long g_rbg_short_waits;
 /* (R3 pub1) a load refused at a wrong guess at frame g_rbg_pend (r1_ring_load -1): the state before it must stay in the ring
  * until the rollback is made next tick; g_rbg_refused_tick: no second try in the same tick (each try may hold for 500 ms) */
-static int g_rbg_pend, g_rbg_refused_tick;
+static int g_rbg_pend, g_rbg_refused_tick, g_rbg_reloaded;
 /* (Arena perf) GO CHECK: the other player's pads are read once more right after the pacing wait; a wrong guess found there is
  * rolled back at once (load, re-run passes up to the newest frame), and the real pass of this tick follows them in the same
  * tick (g_rbg_gorb: no second pacing wait). Without it the wrong guess was found at the next safe point, after a real pass the
@@ -161,7 +161,7 @@ static int rbg_rollback(Ctx *c, long long i, int m) {
     g_rbg_pend = 0;
     g_rbg_load_ms += now_ms() - t0; g_rbg_t_load += now_ms() - t0; g_rbg_recap_first = -1; g_rbg_t_pass0 = now_ms();
     int k = (int)(i - best);
-    g_rgs_left = k; g_rgs_next = best + 1; g_ra_phase = 2; g_rbg_cur_k = k;
+    g_rgs_left = k; g_rgs_next = best + 1; g_ra_phase = 2; g_rbg_cur_k = k; g_rgs_firstp = 1;
     g_rbg_rb++; g_rbg_k[k < RG_MAXSLOT + 1 ? k : RG_MAXSLOT + 1]++; g_rbg_rerun += k; g_rbg_tick_k += k;
     InterlockedExchange(&g_rbg_last_k, k); if (k > g_rbg_max_k) InterlockedExchange(&g_rbg_max_k, k);
     if (g_rbg_rb <= 20 || g_rbg_rb % 200 == 0 || g_rbg_detail > 0) LOG("r1: RB NET: rollback %lld at frame %lld: wrong guess at %d, state of frame %lld loaded in %.3f ms, %d frames again\n", g_rbg_rb, i, m, best, now_ms() - t0, k);
@@ -501,6 +501,19 @@ static void rbg_step_body(Ctx *c) {
         long long cf = rbn_confirmed(); int want;
         if (g_rbg_recap_first < 0 && i >= cf) g_rbg_recap_first = i;          /* the first re-run frame a later rollback may load */
         g_rbg_t_rerun += now_ms() - g_rbg_t_pass0; g_rbg_n_rerun++;
+        {   /* (rb-8ms, TEST ONLY) SSBU_RB_TEST_RELOAD=1: after the first re-run pass of a rollback of 2 or more frames the same state is
+             * loaded again and the re-run passes start over (same pads: the timeline must not change); r1_ring.c times the pass after
+             * that second load apart ("first after a test reload"): is the first re-run pass slow because of the load or of what came before? */
+            static int trl = -1; if (trl < 0) { const char *e = getenv("SSBU_RB_TEST_RELOAD"); trl = e && atoi(e) > 0; }
+            if (trl && g_rbg_cur_k >= 2 && g_rgs_left == g_rbg_cur_k && !g_rbg_reloaded) {
+                r1_ring_hold();
+                if (r1_ring_load(i - 1, c) > 0) { g_rbg_reloaded = 1; g_rgs_left = g_rbg_cur_k; g_rgs_next = i; g_rgs_firstp = 2; g_rbg_t_pass0 = now_ms(); return; }
+                r1_ring_let_go();
+            }
+            static int tpb = -1; if (tpb < 0) { const char *e = getenv("SSBU_RB_TEST_PERTURB"); tpb = e ? atoi(e) : 0; }
+            if (tpb && g_rbg_cur_k >= 2 && g_rgs_left == g_rbg_cur_k) { rg_test_perturb(tpb); g_rgs_firstp = 2; }      /* (the next pass: its own place) */
+            if (g_rgs_left <= 1) g_rbg_reloaded = 0;
+        }
         int r4 = g_rbg_recap == 4 || (g_rbg_recap == 5 && g_rbg_cur_k == 3);
         static int r1k = -1; if (r1k < 0) { const char *e = getenv("SSBU_RB_NET_RECAP1"); r1k = e ? atoi(e) != 0 : 0; }
         if (g_rgs_left <= 1 && r1k && g_rbg_cur_k == 1) want = 0;     /* (0.2.40 test, SSBU_RB_NET_RECAP1=1) a 1-frame rollback: its one re-run pass not captured (a wrong guess at the next frame loads the state before it and runs 2) */
