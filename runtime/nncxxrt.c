@@ -308,9 +308,54 @@ typedef struct {
 } ExcHeader;
 #define EXC_MAGIC 0x43584345584e4e21ull
 #define UW_CLASS 0x434c4e47432b2b00ull                   /* "CLNGC++\0"; +1 for a dependent exception */
+/* (rb-8ms 2026-11-11) THE LIVE HEADERS IN A SET. exc_header is asked several times per throw (raise, personality, begin / end catch,
+ * release) whether the bytes in front of an object are one of our headers; it asked cxxrt_readable, which for host memory (the
+ * headers are _aligned_malloc blocks) is a VirtualQuery every time: ~0.2-0.3 ms of every pass of a fight on the main thread (the
+ * scripts throw in every frame; sampled profile SSBU_RB_SIM_PROF=3, loop bench BF 2026-11-11: ZwQueryVirtualMemory under
+ * cxxrt_readable <- exc_header was the largest single entry of the re-run passes). Every header is made by cxxrt_allocate_exception
+ * and freed by exc_free: the addresses of the live ones are kept in a hash set (linear probing, deletion by backward shift, one SRW
+ * lock), so the answer needs no system call. The answer is the same: a pointer that is not in the set is not one of our headers.
+ * If the set is ever full, the headers it could not take are answered the old way. SSBU_EXC_SET=0: the old way (test). */
+#define EXH_N 8192
+static uint64_t g_exh[EXH_N]; static int g_exh_n, g_exh_on = -1; static volatile LONG g_exh_full; static SRWLOCK g_exh_lock = SRWLOCK_INIT;
+static int exh_on(void) { if (g_exh_on < 0) { const char *e = getenv("SSBU_EXC_SET"); g_exh_on = !(e && e[0] == '0'); } return g_exh_on; }
+static unsigned exh_slot(uint64_t h) { return (unsigned)(((h >> 4) * 0x9e3779b97f4a7c15ull) >> 51) & (EXH_N - 1); }
+static void exh_add(uint64_t h) {
+    AcquireSRWLockExclusive(&g_exh_lock);
+    if (g_exh_n >= EXH_N * 3 / 4) g_exh_full = 1;
+    else { unsigned i = exh_slot(h); while (g_exh[i] && g_exh[i] != h) i = (i + 1) & (EXH_N - 1); if (!g_exh[i]) { g_exh[i] = h; g_exh_n++; } }
+    ReleaseSRWLockExclusive(&g_exh_lock);
+}
+static void exh_del(uint64_t h) {
+    AcquireSRWLockExclusive(&g_exh_lock);
+    unsigned i = exh_slot(h);
+    while (g_exh[i] && g_exh[i] != h) i = (i + 1) & (EXH_N - 1);
+    if (g_exh[i]) {                                       /* backward shift: no tombstones */
+        unsigned j = i;
+        for (;;) {
+            j = (j + 1) & (EXH_N - 1);
+            if (!g_exh[j]) break;
+            unsigned k = exh_slot(g_exh[j]);
+            if (((j - k) & (EXH_N - 1)) >= ((j - i) & (EXH_N - 1))) { g_exh[i] = g_exh[j]; i = j; }
+        }
+        g_exh[i] = 0; g_exh_n--;
+    }
+    ReleaseSRWLockExclusive(&g_exh_lock);
+}
+static int exh_has(uint64_t h) {
+    AcquireSRWLockShared(&g_exh_lock);
+    unsigned i = exh_slot(h); int r = 0;
+    while (g_exh[i]) { if (g_exh[i] == h) { r = 1; break; } i = (i + 1) & (EXH_N - 1); }
+    ReleaseSRWLockShared(&g_exh_lock);
+    return r;
+}
 static ExcHeader *exc_header(uint64_t obj) {
     if (!obj) return NULL;
     ExcHeader *h = (ExcHeader *)(uintptr_t)(obj - sizeof(ExcHeader));
+    if (exh_on() && obj >= sizeof(ExcHeader)) {
+        if (exh_has(P64(h))) return h->magic == EXC_MAGIC ? h : NULL;
+        if (!g_exh_full) return NULL;
+    }
     return cxxrt_readable(P64(h), sizeof *h) && h->magic == EXC_MAGIC ? h : NULL;
 }
 static uint64_t exc_object(uint64_t obj) { ExcHeader *h = exc_header(obj); return h && h->primary ? h->primary : obj; }   /* the C++ object */
@@ -321,12 +366,13 @@ uint64_t cxxrt_allocate_exception(size_t size) {
     h->magic = EXC_MAGIC;
     h->size = size;
     h->uw_class = UW_CLASS;
+    if (exh_on()) exh_add(P64(h));
     return P64(h + 1);
 }
 uint64_t eh_allocate(size_t size) { return cxxrt_allocate_exception(size); }
 static void exc_free(uint64_t obj) {
     ExcHeader *h = exc_header(obj);
-    if (h) { h->magic = 0; _aligned_free(h); }
+    if (h) { h->magic = 0; if (exh_on()) exh_del(P64(h)); _aligned_free(h); }
 }
 void cxxrt_exception_addref(uint64_t obj) { ExcHeader *h = exc_header(obj); if (h) InterlockedIncrement64(&h->refs); }
 void cxxrt_exception_release(Ctx *c, uint64_t obj) {

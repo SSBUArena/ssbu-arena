@@ -1147,10 +1147,29 @@ static int sh_commit(uint8_t *sh, uint8_t *cmap, size_t pi) {
  * SSBU_R1_HOST_STACKS=0: the old way (test only). */
 static long long g_hs_pages, g_hs_ranges, g_hs_fibers_later;
 static int g_hs_on = -1;
+/* (rb-8ms 2026-11-11) the pages of [lo, hi) that lie in a window, set to v in g_ns1 / g_ns2; returns how many changed. A host fiber
+ * stack is a 256 MB reservation: the loops below walked its 65536 pages one by one (~0.1 ms per fiber made or deleted, on main in the
+ * passes and in the captures: sampled hs_exclude / hs_unexclude) though it is rarely inside a window; only the part inside a window
+ * is walked now. Same pages, same result. SSBU_RB_HSCLAMP=0: the old loops. */
+static int g_hs_clamp = -1;
+static long long hs_set_range(uint64_t lo, uint64_t hi, uint8_t v) {
+    long long n = 0;
+    uint64_t a = lo & ~(uint64_t)(PG - 1);
+    uint64_t w1 = (uint64_t)(uintptr_t)g_win1, ws[2] = { w1, WIN2 }, we[2] = { w1 + g_wn1, WIN2 + WN2 };
+    for (int w = 0; w < 2; w++) {
+        if (w == 0 && !g_win1) continue;
+        uint64_t s0 = a > ws[w] ? a : ws[w], s1 = hi < we[w] ? hi : we[w];
+        uint8_t *m = w ? g_ns2 : g_ns1;
+        for (uint64_t p = s0; p < s1; p += PG) { size_t i = (size_t)(p - ws[w]) >> 12; if (m[i] != v) { m[i] = v; n++; } }
+    }
+    return n;
+}
 static void hs_exclude(uint64_t lo, uint64_t hi, const char *what) {
     if (!g_ns1 || !g_ns2 || hi <= lo || hi - lo > (1ull << 32)) return;
     long long n = 0;
-    for (uint64_t p = lo & ~(uint64_t)(PG - 1); p < hi; p += PG) {
+    if (g_hs_clamp < 0) { const char *e = getenv("SSBU_RB_HSCLAMP"); g_hs_clamp = !(e && e[0] == '0'); }
+    if (g_hs_clamp) n = hs_set_range(lo, hi, 1);
+    else for (uint64_t p = lo & ~(uint64_t)(PG - 1); p < hi; p += PG) {
         if (g_win1 && p >= (uint64_t)(uintptr_t)g_win1 && p < (uint64_t)(uintptr_t)g_win1 + g_wn1) { size_t i = (size_t)(p - (uint64_t)(uintptr_t)g_win1) >> 12; if (!g_ns1[i]) { g_ns1[i] = 1; n++; } }
         else if (p >= WIN2 && p < WIN2 + WN2) { size_t i = (size_t)(p - WIN2) >> 12; if (!g_ns2[i]) { g_ns2[i] = 1; n++; } }
     }
@@ -1191,7 +1210,9 @@ static void fr_add(void *fiber) {
 static void hs_unexclude(uint64_t lo, uint64_t hi) {     /* the inverse of hs_exclude, for a host fiber stack given back */
     if (!g_ns1 || !g_ns2 || hi <= lo || hi - lo > (1ull << 32)) return;
     long long n = 0;
-    for (uint64_t p = lo & ~(uint64_t)(PG - 1); p < hi; p += PG) {
+    if (g_hs_clamp < 0) { const char *e = getenv("SSBU_RB_HSCLAMP"); g_hs_clamp = !(e && e[0] == '0'); }
+    if (g_hs_clamp) n = hs_set_range(lo, hi, 0);
+    else for (uint64_t p = lo & ~(uint64_t)(PG - 1); p < hi; p += PG) {
         if (g_win1 && p >= (uint64_t)(uintptr_t)g_win1 && p < (uint64_t)(uintptr_t)g_win1 + g_wn1) { size_t i = (size_t)(p - (uint64_t)(uintptr_t)g_win1) >> 12; if (g_ns1[i]) { g_ns1[i] = 0; n++; } }
         else if (p >= WIN2 && p < WIN2 + WN2) { size_t i = (size_t)(p - WIN2) >> 12; if (g_ns2[i]) { g_ns2[i] = 0; n++; } }
     }
