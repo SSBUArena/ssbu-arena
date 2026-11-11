@@ -553,7 +553,7 @@ static void rbg_step_body(Ctx *c) {
         else if (i < cf) want = 0;
         else if (g_rbg_recap == 0) want = 1;
         else if (g_rbg_recap == 2) want = ((i - g_rbg_recap_first) & 1) == 0;
-        else if (g_rbg_recap == 3) want = 0;                                  /* (3: the last one only; a later rollback may load the state this one loaded) */
+        else if (g_rbg_recap == 3 || g_rbg_recap == 7) want = 0;           /* (3: the last one only; a later rollback may load the state this one loaded; 7: the last one, in the wait) */
         else if (r4) want = i == g_rbg_recap_first;
         else want = i == g_rbg_recap_first;
         if (want && g_rbg_recap == 7 && g_rgs_left <= 1 && g_rbg_pace) { g_rbg_defcap = i; want = 0; }      /* (rb-8ms, RECAP=7) made in the wait */
