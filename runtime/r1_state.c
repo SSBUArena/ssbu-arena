@@ -52,6 +52,7 @@ void r1_mem_note(void *p, size_t n, int kind) { (void)p; (void)n; (void)kind; }
 void r1_wrote(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void r1_module_loaded(void *h, int fighter) { (void)h; (void)fighter; }
 void r1_nosim(uint64_t a, uint64_t n) { (void)a; (void)n; }
+void r1_pool_note(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void r1_read_retry_note(void) {}
 void r1_register_heap(void) { r1_on(); }
 #else
@@ -1588,9 +1589,11 @@ static void cp_part(int k) {
     else if (g_cp_nt) { for (size_t i = a; i < b; i++) cp_page_nt(g_cj[i].d, g_cj[i].s); _mm_sfence(); }
     else for (size_t i = a; i < b; i++) memcpy(g_cj[i].d, g_cj[i].s, PG); }
 static volatile LONG g_cp_left; static int g_cp_chain, g_cp_chain_on = -1;
+static void (*volatile g_cp_task)(int k);             /* (rb-8ms) set: the helpers run g_cp_task(k) instead of their share of the copy (cp_par) */
+static void cp_work(int k) { void (*f)(int) = g_cp_task; if (f) f(k); else cp_part(k); }
 static DWORD WINAPI cp_thread(void *p) { int k = (int)(intptr_t)p; for (;;) { WaitForSingleObject(g_cp_go[k], INFINITE);
-    if (g_cp_chain) { if (k + 1 < g_ncp) SetEvent(g_cp_go[k + 1]); cp_part(k + 1); InterlockedDecrement(&g_cp_left); }
-    else { cp_part(k + 1); SetEvent(g_cp_done[k]); } } return 0; }
+    if (g_cp_chain) { if (k + 1 < g_ncp) SetEvent(g_cp_go[k + 1]); cp_work(k + 1); InterlockedDecrement(&g_cp_left); }
+    else { cp_work(k + 1); SetEvent(g_cp_done[k]); } } return 0; }
 static void cp_init(void) {
     if (g_ncp >= 0) return;
     const char *e = getenv("SSBU_RUNAHEAD_COPY_THREADS"); g_ncp = e ? atoi(e) : rgs_wanted() ? 3 : 2;      /* (R2 round 3: the ring, 6; Arena loop bench b4c3: 3 as fast, p99 rollback tick 49 -> 37 ms, less CPU) */ if (g_ncp > 8) g_ncp = 8; if (g_ncp < 0) g_ncp = 0;
@@ -1614,6 +1617,19 @@ static void cp_run_tt(void) {                            /* every queued page, t
 }
 /* (0.2.11) the whole-memory passes (first save, shadow fill, ring rebase): every helper the CPU allows, a plain copy (or what the
  * caller set: g_cp_cmp / g_cp_cond) whatever the ring's capture settings are */
+/* (rb-8ms) fn(0) on main and fn(1 .. g_ncp) on the copy helpers (woken as for a copy); returns when all are done. 0 = no helpers. */
+static int cp_par(void (*fn)(int k)) {
+    if (g_ncp <= 0) return 0;
+    g_cp_task = fn;
+    if (g_cp_chain_on < 0) { const char *e = getenv("SSBU_RB_CPCHAIN"); g_cp_chain_on = !(e && e[0] == '0'); }
+    if (g_cp_chain_on && g_ncp <= 3) {
+        g_cp_chain = 1; g_cp_left = g_ncp; SetEvent(g_cp_go[0]); fn(0);
+        for (int spins = 0; g_cp_left > 0; spins++) { YieldProcessor(); if ((spins & 1023) == 1023) SwitchToThread(); }
+        g_cp_chain = 0;
+    } else { for (int k = 0; k < g_ncp; k++) SetEvent(g_cp_go[k]); fn(0); WaitForMultipleObjects((DWORD)g_ncp, g_cp_done, TRUE, INFINITE); }
+    g_cp_task = NULL;
+    return 1;
+}
 static void cp_run_big(void) {
     cp_init();
     int keep = g_ncp, nt = g_cp_nt; g_ncp = g_ncp_big; g_cp_nt = 0;
@@ -2628,6 +2644,10 @@ static void prot_open(uint64_t a, uint64_t n);
 void r1_read_retry_note(void) { InterlockedIncrement64(&g_read_retry); }      /* (R4) nnfs.c read_at: a read repeated after ERROR_NOACCESS */
 void r1_wrote(uint64_t a, uint64_t n) { lb_open(a, n); r1_mark_range(a, n); ls_range(a, n, 0); if (g_prot_on) prot_open(a, n); }          /* host code that writes guest memory (nnhid.c, nnfs.c reads: the kernel's writes do not fault) */
 /* "not simulation": pages written by audio decoding etc.: not rolled back, not checked */
+/* (rb-8ms, diagnosis) the NVN memory pools the game made (nvn_stub.c pool_initialize): SSBU_RB_SIM_PAGES counts the ring's pages in them */
+static uint64_t g_pool_a[2048], g_pool_n[2048]; static volatile LONG g_npool; static SRWLOCK g_pool_lock = SRWLOCK_INIT;
+void r1_pool_note(uint64_t a, uint64_t n) { AcquireSRWLockExclusive(&g_pool_lock); if (g_npool < 2048 && a && n) { g_pool_a[g_npool] = a; g_pool_n[g_npool] = n; g_npool++; } ReleaseSRWLockExclusive(&g_pool_lock); }
+static int r1_in_pool(const uint8_t *p) { uint64_t a = (uint64_t)(uintptr_t)p; for (LONG i = 0; i < g_npool; i++) if (a - g_pool_a[i] < g_pool_n[i]) return 1; return 0; }
 void r1_nosim(uint64_t a, uint64_t n) {
     if (!g_ns1 || !n) return;
     for (uint64_t p = a & ~(uint64_t)(PG - 1); p < a + n; p += PG) {

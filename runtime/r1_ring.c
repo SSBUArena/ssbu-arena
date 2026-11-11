@@ -140,10 +140,55 @@ static void rg_touch(uint32_t id) {
 }
 /* every page marked since the last sweep, in both windows (the same block lists as mark_sweep); marks cleared */
 TT_DEFV(rg_sweep, (void (*fn)(uint32_t id, int w, size_t j)), (fn), 10)
+/* (rb-8ms 2026-11-11) THE SWEEP ON EVERY COPY THREAD. The scan of the mark maps (both windows' block lists, ~0.25 ms of each capture and
+ * load on main) is cut in g_ncp + 1 parts: main and the copy helpers (idle at that moment) each scan theirs, clear the marks they find
+ * and list the page ids; then main calls fn for every id, part after part (the same pages; their order inside a capture or a load does
+ * not matter: each page is once in it). A part whose list is full stops clearing: the serial sweep after it takes what is left.
+ * SSBU_RB_PSWEEP=0: the scan on main alone. */
+#define PSW_MAX 9
+static uint32_t *g_psw_ids[PSW_MAX]; static size_t g_psw_n[PSW_MAX], g_psw_cap = 1u << 16; static volatile LONG g_psw_full;
+static size_t g_psw_nq[2]; static uint32_t *g_psw_bl[2]; static int g_psw_parts, g_psw_on = -1; static long long g_psw_runs, g_psw_fallback;
+static void rg_psweep_part(int k) {
+    size_t tot = g_psw_nq[0] + g_psw_nq[1], a = tot * (size_t)k / (size_t)g_psw_parts, b = tot * (size_t)(k + 1) / (size_t)g_psw_parts;
+    uint32_t *ids = g_psw_ids[k]; size_t n = 0;
+    for (size_t x = a; x < b; x++) {
+        int w = x >= g_psw_nq[0]; size_t qi = w ? x - g_psw_nq[0] : x;
+        uint8_t *map = w ? *pm2 : *pm1; uint64_t *q = (uint64_t *)map; uint32_t *bl = g_psw_bl[w];
+        size_t i = !bl ? qi : (size_t)bl[qi >> 3] * 8 + (qi & 7);
+        if (!q[i]) continue;
+        if (n + 8 > g_psw_cap) { g_psw_full = 1; break; }      /* (the rest stays marked: the serial sweep takes it) */
+        uint8_t *mem = w ? (uint8_t *)(uintptr_t)WIN2 : g_win1;
+        for (size_t j = i * 8; j < i * 8 + 8; j++) {
+            if (!map[j]) continue;
+            map[j] = 0;
+            if (g_audio_free && is_async(mem + j * PG)) continue;
+            if (w ? g_ns2[j] : g_ns1[j]) continue;
+            ids[n++] = (uint32_t)(w ? g_rg_n1 + j : j);
+        }
+    }
+    g_psw_n[k] = n;
+}
 static void rg_sweep_tt(void (*fn)(uint32_t id, int w, size_t j)) {
     if (g_full_sweep < 0) g_full_sweep = getenv("SSBU_R1_FULL_SWEEP") != NULL;
     if (!g_blk1 && !g_full_sweep && g_win1) blk1_init();
     if (g_blk1 && g_blk1_dirty) blk1_rebuild();
+    if (g_psw_on < 0) { const char *e = getenv("SSBU_RB_PSWEEP"); g_psw_on = !(e && e[0] == '0'); }
+    if (g_psw_on && g_ncp > 0 && g_ncp + 1 <= PSW_MAX) {
+        int ok = 1;
+        for (int k = 0; k <= g_ncp && ok; k++) if (!g_psw_ids[k]) { g_psw_ids[k] = VirtualAlloc(NULL, g_psw_cap * 4, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); ok = g_psw_ids[k] != NULL; }
+        if (ok) {
+            for (int w = 0; w < 2; w++) { size_t np = (size_t)((w ? WN2 : g_wn1) >> 12); uint32_t *bl = !g_blk1 ? NULL : w ? g_blk2_list : g_blk1_list;
+                g_psw_bl[w] = bl; g_psw_nq[w] = !bl ? np / 8 : (w ? g_blk2_n : g_blk1_n) * 8; }
+            g_psw_parts = g_ncp + 1; g_psw_full = 0;
+            if (cp_par(rg_psweep_part)) {
+                g_psw_runs++;
+                for (int k = 0; k < g_psw_parts; k++) for (size_t n = 0; n < g_psw_n[k]; n++) {
+                    uint32_t id = g_psw_ids[k][n]; int w = id >= g_rg_n1; fn(id, w, w ? id - g_rg_n1 : id); }
+                if (!g_psw_full) return;
+                g_psw_fallback++;                       /* a list was full: the marks it left go through the loop below */
+            }
+        }
+    }
     for (int w = 0; w < 2; w++) {
         uint8_t *map = w ? *pm2 : *pm1; size_t np = (size_t)((w ? WN2 : g_wn1) >> 12);
         uint8_t *mem = w ? (uint8_t *)(uintptr_t)WIN2 : g_win1;
@@ -170,7 +215,10 @@ static RgSlot *g_rg_cur; static int g_rg_fail_now; static int g_rgs_left;
 static int g_rgpg_on = -1; static int g_rgpg_kind; static long long g_rgpg_caps[3];
 #define RGPG_N 16384
 static struct { uint64_t blk; long long n[3]; } g_rgpg[RGPG_N];
+static int r1_in_pool(const uint8_t *p); static volatile LONG g_npool;      /* (r1_state.c, below) */
+static long long g_rgpg_pool[3], g_rgpg_ldn, g_rgpg_ldpool, g_rgpg_lds;
 static void rgpg_note(uint8_t *a) {
+    if (r1_in_pool(a)) g_rgpg_pool[g_rgpg_kind]++;
     uint64_t b = (uint64_t)(uintptr_t)a >> 20; unsigned h = (unsigned)((b * 0x9e3779b97f4a7c15ull) >> 50) % RGPG_N;
     for (int i = 0; i < 64; i++) { unsigned k = (h + (unsigned)i) % RGPG_N; if (g_rgpg[k].blk == b) { g_rgpg[k].n[g_rgpg_kind]++; return; } if (!g_rgpg[k].blk) { g_rgpg[k].blk = b; g_rgpg[k].n[g_rgpg_kind]++; return; } }
 }
@@ -391,6 +439,7 @@ static void rg_meta_prof_report(void) {
  * for every extras page written since the last capture / load (the OS's write watch, reset by the call; the threads are
  * held, so nothing writes in between), and for every page of a range the OS does not watch. Correct also before the
  * first reset (the OS then lists every page written since the allocation: more pages, never fewer). SSBU_RB_XWW=0: off. */
+static int g_pw_nx, g_pw_x_ready; static void **g_pw_xaddr; static ULONG_PTR *g_pw_xcnt; static int8_t *g_pw_xok;      /* (rb-8ms, rg_pww below) */
 static int g_rgx_ww = -1; static void **g_rgx_addr; static size_t g_rgx_cap, g_rgx_nq, g_rgx_qcap; static uint32_t *g_rgx_q; static uint8_t *g_rgx_res;
 static double g_rgx_ms[2]; static long long g_rgx_n[2], g_rgx_pages[2], g_rgx_fallback[2];
 static int rgx_on(void) { if (g_rgx_ww < 0) { const char *e = getenv("SSBU_RB_XWW"); g_rgx_ww = !(e && e[0] == '0'); } return g_rgx_ww > 0 && rb_feat(16, 1); }      /* (bit 16 of the A/B test) */
@@ -431,10 +480,12 @@ static void rgx_each(int kind, void (*fn)(size_t e)) {
         RgxSub *s = &g_rgx_sub[i]; size_t np = s->n / PG;
         if (s->ww != 0) {
             if (g_rgx_cap < np) { free(g_rgx_addr); g_rgx_cap = np + 256; g_rgx_addr = malloc(g_rgx_cap * sizeof *g_rgx_addr); if (!g_rgx_addr) g_rgx_cap = 0; }
-            ULONG_PTR cnt = np; ULONG gran = 0;
-            if (g_rgx_addr && GetWriteWatch(WRITE_WATCH_FLAG_RESET, s->a, s->n, g_rgx_addr, &cnt, &gran) == 0 && gran == PG && cnt <= np) {
+            ULONG_PTR cnt = np; ULONG gran = 0; void **ad = g_rgx_addr; int ok;
+            if (g_pw_x_ready && i < g_pw_nx && g_pw_xok[i] >= 0) { ok = g_pw_xok[i] == 1; cnt = g_pw_xcnt[i]; ad = g_pw_xaddr + s->e0; }      /* (rb-8ms) asked already (rg_pww) */
+            else ok = g_rgx_addr && GetWriteWatch(WRITE_WATCH_FLAG_RESET, s->a, s->n, g_rgx_addr, &cnt, &gran) == 0 && gran == PG && cnt <= np;
+            if (ok) {
                 s->ww = 1; g_rgx_nww++;
-                for (ULONG_PTR k = 0; k < cnt; k++) { size_t off = (size_t)((uint8_t *)g_rgx_addr[k] - s->a) / PG; if (off < np) fn(s->e0 + off); }
+                for (ULONG_PTR k = 0; k < cnt; k++) { size_t off = (size_t)((uint8_t *)ad[k] - s->a) / PG; if (off < np) fn(s->e0 + off); }
                 g_rgx_pages[kind] += (long long)cnt; continue;
             }
             s->ww = 0;                                    /* (not watched: never asked again) */
@@ -443,6 +494,7 @@ static void rgx_each(int kind, void (*fn)(size_t e)) {
         for (size_t p = 0; p < np; p++) fn(s->e0 + p);
         g_rgx_pages[kind] += (long long)np;
     }
+    g_pw_x_ready = 0;
     g_rgx_ms[kind] += now_ms() - t; g_rgx_n[kind]++;
 }
 static void rgx_queue(size_t e) {                       /* capture: compare page e with its newest value */
@@ -454,21 +506,63 @@ static void rgx_touch(size_t e) { rg_touch((uint32_t)(g_rg_n1 + g_rg_n2 + e)); }
  * the SP carry no mark: runtime.h wrsN). Called with every guest thread held, right before a sweep. */
 void os_r1_stacks(void (*cb)(uint64_t lo, uint64_t n));
 static void **g_sw_addr; static size_t g_sw_cap; static long long g_sw_pages, g_sw_calls, g_sw_fail, g_sw_badsp; static double g_sw_ms;
-static void rg_stack_cb(uint64_t lo, uint64_t n) {
+static void rg_stack_one(uint64_t lo, uint64_t n, void **buf, size_t cap, long long *pages, long long *fail) {      /* (rb-8ms) one stack, its own buffer */
     uint64_t w1 = (uint64_t)(uintptr_t)g_win1, a = lo & ~0xfffull, e = (lo + n + 0xfff) & ~0xfffull; uint8_t *map; uint64_t base;
     if (w1 && a >= w1 && e <= w1 + g_wn1) { map = *pm1; base = w1; } else if (a >= WIN2 && e <= WIN2 + WN2) { map = *pm2; base = WIN2; } else return;
-    size_t np = (size_t)((e - a) >> 12); if (!map) return;
-    if (g_sw_cap < np) { free(g_sw_addr); g_sw_cap = np + 256; g_sw_addr = malloc(g_sw_cap * sizeof *g_sw_addr); if (!g_sw_addr) { g_sw_cap = 0; return; } }
+    size_t np = (size_t)((e - a) >> 12); if (!map || !buf) return;
     ULONG_PTR cnt = np; ULONG gran = 0;
-    if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, (void *)(uintptr_t)a, (SIZE_T)(e - a), g_sw_addr, &cnt, &gran) != 0) {      /* not watched / not committed: every page marked */
-        g_sw_fail++;                                   /* only the committed, writable parts (a stack freed since may be decommitted) */
+    if (np > cap || GetWriteWatch(WRITE_WATCH_FLAG_RESET, (void *)(uintptr_t)a, (SIZE_T)(e - a), buf, &cnt, &gran) != 0) {      /* not watched / not committed: every page marked */
+        (*fail)++;                                     /* only the committed, writable parts (a stack freed since may be decommitted) */
         for (uint64_t q = a; q < e;) { MEMORY_BASIC_INFORMATION m; if (!VirtualQuery((void *)(uintptr_t)q, &m, sizeof m)) break;
             uint64_t qe = (uint64_t)(uintptr_t)m.BaseAddress + m.RegionSize; if (qe > e) qe = e;
             if (m.State == MEM_COMMIT && (m.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) && !(m.Protect & PAGE_GUARD)) for (uint64_t r = q; r < qe; r += 0x1000) map[(r - base) >> 12] = 1;
             q = qe; }
         return; }
-    for (ULONG_PTR k = 0; k < cnt; k++) map[((uint64_t)(uintptr_t)g_sw_addr[k] - base) >> 12] = 1;
-    g_sw_pages += (long long)cnt;
+    for (ULONG_PTR k = 0; k < cnt; k++) map[((uint64_t)(uintptr_t)buf[k] - base) >> 12] = 1;
+    *pages += (long long)cnt;
+}
+static void rg_stack_cb(uint64_t lo, uint64_t n) {
+    size_t np = (size_t)((((lo + n + 0xfff) & ~0xfffull) - (lo & ~0xfffull)) >> 12);
+    if (g_sw_cap < np) { free(g_sw_addr); g_sw_cap = np + 256; g_sw_addr = malloc(g_sw_cap * sizeof *g_sw_addr); if (!g_sw_addr) { g_sw_cap = 0; return; } }
+    rg_stack_one(lo, n, g_sw_addr, g_sw_cap, &g_sw_pages, &g_sw_fail);
+}
+/* (rb-8ms 2026-11-11) THE WRITE-WATCH QUESTIONS ON EVERY COPY THREAD. A capture / load asked the OS one stack and one extras piece at a time
+ * on main (~60 GetWriteWatch, 0.06 + 0.04 ms). rg_pww asks them all before the sweep, spread over main and the copy helpers: the stacks'
+ * pages are marked in the mark maps as rg_stack_cb does (two threads may set the same byte to 1), the extras' answers are kept per piece
+ * for the rgx_each that follows (it uses them instead of asking). Same questions, same answers. SSBU_RB_PWW=0: on main as before. */
+static uint64_t g_pw_lo[1024], g_pw_n[1024]; static int g_pw_ns, g_pw_nx, g_pw_parts, g_pw_on = -1, g_pw_stacks_done, g_pw_x_ready;
+static void **g_pw_buf[PSW_MAX]; static size_t g_pw_bufcap; static long long g_pw_pages[PSW_MAX], g_pw_fail[PSW_MAX], g_pw_runs;
+static void **g_pw_xaddr; static size_t g_pw_xcap; static ULONG_PTR *g_pw_xcnt; static int8_t *g_pw_xok; static int g_pw_xn;
+static void rg_pw_collect(uint64_t lo, uint64_t n) { if (g_pw_ns < 1024) { g_pw_lo[g_pw_ns] = lo; g_pw_n[g_pw_ns] = n; g_pw_ns++; } }
+static void rg_pw_part(int k) {
+    g_pw_pages[k] = g_pw_fail[k] = 0;
+    for (int t = k; t < g_pw_ns + g_pw_nx; t += g_pw_parts) {
+        if (t < g_pw_ns) { rg_stack_one(g_pw_lo[t], g_pw_n[t], g_pw_buf[k], g_pw_bufcap, &g_pw_pages[k], &g_pw_fail[k]); continue; }
+        int i = t - g_pw_ns; RgxSub *s = &g_rgx_sub[i]; size_t np = s->n / PG; ULONG_PTR cnt = np; ULONG gran = 0;
+        if (s->ww == 0) { g_pw_xok[i] = -1; continue; }
+        g_pw_xok[i] = GetWriteWatch(WRITE_WATCH_FLAG_RESET, s->a, s->n, g_pw_xaddr + s->e0, &cnt, &gran) == 0 && gran == PG && cnt <= np;
+        g_pw_xcnt[i] = cnt;
+    }
+}
+static void rg_pww(int extras) {                       /* extras: the extras' answers will be taken by an rgx_each of this capture / load */
+    g_pw_stacks_done = 0; g_pw_x_ready = 0;
+    if (g_pw_on < 0) { const char *e = getenv("SSBU_RB_PWW"); g_pw_on = !(e && e[0] == '0'); }
+    if (!g_pw_on || g_ncp <= 0 || g_ncp + 1 > PSW_MAX) return;
+    g_pw_ns = 0; os_r1_stacks(rg_pw_collect);
+    if (g_pw_ns >= 1024) return;                        /* (more stacks than the list holds: the old way) */
+    size_t mx = 0; for (int i = 0; i < g_pw_ns; i++) { size_t np = (size_t)((g_pw_n[i] + 0x2fff) >> 12); if (np > mx) mx = np; }
+    if (mx + 256 > g_pw_bufcap) { for (int k = 0; k < PSW_MAX; k++) { free(g_pw_buf[k]); g_pw_buf[k] = NULL; } g_pw_bufcap = mx + 256; }
+    for (int k = 0; k <= g_ncp; k++) if (!g_pw_buf[k] && !(g_pw_buf[k] = malloc(g_pw_bufcap * sizeof(void *)))) return;
+    g_pw_nx = 0;
+    if (extras && rgx_on()) { rgx_build();
+        if (g_rgx_ww > 0) {
+            if (g_pw_xcap < g_rg_nx + 1 || g_pw_xn < g_rgx_nsub) { free(g_pw_xaddr); free(g_pw_xcnt); free(g_pw_xok); g_pw_xcap = g_rg_nx + 1; g_pw_xn = g_rgx_nsub + 64;
+                g_pw_xaddr = malloc(g_pw_xcap * sizeof(void *)); g_pw_xcnt = malloc(g_pw_xn * sizeof *g_pw_xcnt); g_pw_xok = malloc((size_t)g_pw_xn); }
+            if (g_pw_xaddr && g_pw_xcnt && g_pw_xok) g_pw_nx = g_rgx_nsub; else g_pw_xcap = 0; } }
+    g_pw_parts = g_ncp + 1;
+    if (!cp_par(rg_pw_part)) return;
+    for (int k = 0; k < g_pw_parts; k++) { g_sw_pages += g_pw_pages[k]; g_sw_fail += g_pw_fail[k]; }
+    g_pw_stacks_done = 1; g_pw_x_ready = g_pw_nx > 0; g_pw_runs++;
 }
 static uint64_t g_sw_lo[1024], g_sw_hi[1024]; static int g_sw_n;
 static void rg_stack_list(uint64_t lo, uint64_t n) { if (g_sw_n < 1024) { g_sw_lo[g_sw_n] = lo; g_sw_hi[g_sw_n] = lo + n; g_sw_n++; } }
@@ -481,7 +575,8 @@ static void rg_sp_check(uint64_t sp, const char *who) {      /* an SP inside a w
 TT_DEFV(rg_stack_ww, (Ctx *main_c), (main_c), 9)
 static void rg_stack_ww_tt(Ctx *main_c) {
     double t = now_ms();
-    os_r1_stacks(rg_stack_cb); g_sw_calls++;
+    if (g_pw_stacks_done) g_pw_stacks_done = 0; else os_r1_stacks(rg_stack_cb);
+    g_sw_calls++;
     if ((g_sw_calls & 63) == 1) {                       /* every 64th call: every held thread's and main's SP checked */
         g_sw_n = 0; os_r1_stacks(rg_stack_list);
         if (main_c) rg_sp_check(main_c->x[31], "the main thread");
@@ -583,6 +678,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
     s->frame = frame; s->nent = 0; s->pages = 0; s->xpages = 0;
     g_rg_cur = s; g_rg_fail_now = 0;
     static uint8_t *xdiff; static size_t xdn; if (xdn < g_rg_nx + 1) { free(xdiff); xdn = g_rg_nx + 1; xdiff = calloc(xdn, 1); }   /* (hs12: the extras can change at a rebase) */
+    rg_pww(g_rgx_q != NULL || g_rgx_qcap < g_rg_nx + 1);      /* (rb-8ms) the write-watch questions on every copy thread */
     {   /* (round 3) extras compared by main + the copy threads; (Arena perf) only those written since the last capture / load */
         if (g_rgx_qcap < g_rg_nx + 1) { free(g_rgx_q); free(g_rgx_res); g_rgx_qcap = g_rg_nx + 1; g_rgx_q = malloc(g_rgx_qcap * 4); g_rgx_res = malloc(g_rgx_qcap); if (!g_rgx_q || !g_rgx_res) { free(g_rgx_q); free(g_rgx_res); g_rgx_q = NULL; g_rgx_res = NULL; g_rgx_qcap = 0; } }
         if (g_rgx_q && rgx_on()) {
@@ -1175,10 +1271,12 @@ int r1_ring_load(long long frame, Ctx *c) {
     dc_copy_lock(1);                                      /* (crash phase) no decommit from here to the end of the copy */
     { static int lf = -1; if (lf < 0) { const char *e = getenv("SSBU_RB_LOADFAULT"); lf = !(e && e[0] == '0'); if (lf) AddVectoredExceptionHandler(1, rg_load_fault); }
       if (lf) InterlockedExchange(&g_rg_loading, 1); }
+    rg_pww(1);                                            /* (rb-8ms) the write-watch questions on every copy thread */
     rg_stack_ww(NULL);                                    /* (Arena perf) the stack pages written since the newest capture */
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */
     rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
     size_t pages = g_rg_ntl; g_rg_ldpg += (long long)pages;
+    if (g_rgpg_on > 0) { g_rgpg_lds++; for (size_t n = 0; n < g_rg_ntl; n++) { g_rgpg_ldn++; if (r1_in_pool(rg_addr(g_rg_tl[n]))) g_rgpg_ldpool++; } }      /* (rb-8ms, diagnosis) */
     for (size_t n = 0; n < g_rg_ntl; n++) {               /* each page once, from its value at `frame` */
         uint32_t id = g_rg_tl[n]; g_rg_touch[id] = 0;
         uint8_t *a = rg_addr(id), *src = rg_src(id);
@@ -1453,7 +1551,7 @@ static void rgs_samp_report(void) {
     LOG("r1: RB PROF 3 samples last re-run: start->poll %lld, logic %lld, frame end->safe point %lld; host code in the logic %lld; passes %lld\n", g_rgss_tot[2][1], g_rgss_tot[2][2], g_rgss_tot[2][3], g_rgss_host[2][2], nl);
     for (int sg = 1; sg <= 5; sg++) for (int kd = 0; kd < 3; kd++) for (int inc = 1; inc >= 0; inc--) {
         if (sg >= 4 && kd >= 1) continue;                    /* captures / loads: one list (real + re-run passes together) */
-        if (sg != 2 && kd == 0 && sg < 4) continue;          /* start->poll / tail: the re-run passes only */
+        /* (rb-8ms) start->poll and the tail of the real passes too */
         g_rgss_k[0] = kd; g_rgss_k[1] = inc; g_rgss_k[2] = sg;
         if (sg >= 4) for (int i = 0; i < RGS_SN; i++) { g_rgss_c[i].self[0][sg] += g_rgss[i].self[1][sg]; g_rgss_c[i].incl[0][sg] += g_rgss[i].incl[1][sg]; }
         qsort(g_rgss_c, RGS_SN, sizeof *g_rgss_c, rgss_cmp);
@@ -1831,6 +1929,8 @@ static void rgs_report(void) {
         g_sw_calls, g_sw_calls ? g_sw_ms / g_sw_calls : 0.0, g_sw_calls ? (double)g_sw_pages / g_sw_calls : 0.0, g_sw_fail, g_sw_badsp);
     LOG("r1: RING report: %lld captures (%lld skipped: a thread not at a wait), %lld loads, %u pool buffers made (%.1f MB), %u free; log overflows %lld\n",
         g_rg_caps, g_rg_cap_fail, g_rg_loads, g_rg_bump, g_rg_bump * (double)PG / 1048576.0, g_rg_nfree, g_rg_overflow);
+    { void cxxrt_readable_report(FILE *out); if (g_log) cxxrt_readable_report(g_log); }      /* (rb-8ms) the C++ runtime's VirtualQuery count */
+    LOG("r1: RING sweeps on the copy threads (SSBU_RB_PSWEEP): %lld, a list full (rest swept on main) %lld\n", g_psw_runs, g_psw_fallback);
     LOG("r1: RING loads right after a capture with the threads kept held: %lld (threads kept at the same wait: %lld); fibers %d (last); stale fiber-block notes refused %lld\n", g_rg_kept_n, g_rg_kept_same, g_nfib, g_r1_fls_stale);
     LOG("r1: KEEP: sound threads kept suspended from a load to the last re-run pass %lld; kept after a second try %lld; not kept (suspended outside a system call) %lld; worker wake-ups without the event lock %lld\n", g_snd_keeps, g_keep_settled, g_keep_unsafe, g_wake_nolock);
     LOG("r1: RING capture: median %.3f mean %.3f p99 %.3f ms; parts (means): hold %.3f, sweep + undo log %.3f, page copy (parallel) %.3f, fibers + threads + command buffers + let go %.3f; pages %.0f + extras %.0f mean (%.1f MB)\n",
@@ -1861,6 +1961,7 @@ static void rgs_report(void) {
             static struct { uint64_t blk; long long n[3]; } c[RGPG_N]; memcpy(c, g_rgpg, sizeof c);
             for (int i = 0; i < RGPG_N; i++) for (int j = i + 1; j < RGPG_N; j++) if (c[j].n[0] > c[i].n[0]) { uint64_t b = c[i].blk; long long n0 = c[i].n[0], n1 = c[i].n[1], n2 = c[i].n[2]; c[i] = c[j]; c[j].blk = b; c[j].n[0] = n0; c[j].n[1] = n1; c[j].n[2] = n2; }
             double t0 = 0, t1 = 0; for (int i = 0; i < RGPG_N; i++) { t0 += c[i].n[0]; t1 += c[i].n[1]; }
+            LOG("r1: RB PAGES in NVN memory pools (%d pools): per capture real %.0f, last re-run %.0f; per load %.0f of %.0f\n", (int)g_npool, g_rgpg_pool[0] / (double)(g_rgpg_caps[0] ? g_rgpg_caps[0] : 1), g_rgpg_pool[2] / (double)(g_rgpg_caps[2] ? g_rgpg_caps[2] : 1), g_rgpg_ldpool / (double)(g_rgpg_lds ? g_rgpg_lds : 1), g_rgpg_ldn / (double)(g_rgpg_lds ? g_rgpg_lds : 1));
             LOG("r1: RB PAGES captures real %lld / re-run skipped %lld / last re-run %lld; pages per capture real %.0f, re-run skipped %.0f\n", g_rgpg_caps[0], g_rgpg_caps[1], g_rgpg_caps[2], t0 / (g_rgpg_caps[0] ? g_rgpg_caps[0] : 1), t1 / (g_rgpg_caps[1] ? g_rgpg_caps[1] : 1));
             for (int i = 0; i < 60 && c[i].n[0]; i++) LOG("r1: RB PAGES block %s (1 MB): per capture real %.1f, re-run skipped %.1f, last re-run %.1f\n", where((uint8_t *)(uintptr_t)(c[i].blk << 20)),
                 c[i].n[0] / (double)(g_rgpg_caps[0] ? g_rgpg_caps[0] : 1), c[i].n[1] / (double)(g_rgpg_caps[1] ? g_rgpg_caps[1] : 1), c[i].n[2] / (double)(g_rgpg_caps[2] ? g_rgpg_caps[2] : 1));

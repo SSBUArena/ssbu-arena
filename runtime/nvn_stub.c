@@ -123,7 +123,8 @@ static void obj_debug_id(Ctx *c) { RET(A0); }
 static void pool_builder_storage(Ctx *c) { log_call(c); NvnObj *b = nobj(A0); b->memory = A1; b->size = A2; }   /* (builder, memory, size) */
 static void pool_builder_flags(Ctx *c) { nobj(A0)->flags = A1; }                                               /* (builder, flags) */
 void nvn_front_pool_made(uint64_t memory, uint64_t size);      /* nvn_gl.c: V1 session 6, a pool laid over the code section of a shader container announces the container */
-static void pool_initialize(Ctx *c) { log_call(c); NvnObj *p = nobj(A0), *b = nobj(A1); p->memory = b->memory; p->size = b->size; p->flags = b->flags; nvn_front_pool_made((uint64_t)p->memory, (uint64_t)p->size); RET(1); }
+void r1_pool_note(uint64_t a, uint64_t n);             /* r1_state.c (rb-8ms, diagnosis) */
+static void pool_initialize(Ctx *c) { log_call(c); NvnObj *p = nobj(A0), *b = nobj(A1); p->memory = b->memory; p->size = b->size; p->flags = b->flags; nvn_front_pool_made((uint64_t)p->memory, (uint64_t)p->size); r1_pool_note((uint64_t)p->memory, (uint64_t)p->size); RET(1); }
 static void pool_flags(Ctx *c) { RET(nobj(A0)->flags); }
 /* nvnMemoryPoolMapVirtual(pool, numRequests, const NVNmappingRequest *requests) [sdk 0x41ec70]: takes the NVN lock and calls the
  * pool's method +0x60. Which class a pool is, is decided at nvnMemoryPoolInitialize by flag bit 9 (0x200, "virtual")
