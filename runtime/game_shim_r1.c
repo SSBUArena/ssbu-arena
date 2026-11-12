@@ -6,7 +6,7 @@ __declspec(dllexport) uint8_t *r1_m1, *r1_m2;
 __declspec(dllexport) uint64_t r1_lo1, r1_n1, r1_n2;
 #ifdef R1_GAMEDLL
 /* (rb-8ms) set by the runtime (r1_state.c mark_bind): runtime.h rt_fmaf's exact-zero path (SSBU_FMAZERO, default 1) and the
- * vector copies of the hottest NEON functions (neon_fast.h, tu_prepare.py RECOMP_NF_FNS; SSBU_FASTNEON, default 0) */
+ * vector copies of the hottest NEON functions (neon_fast.h, tu_prepare.py RECOMP_NF_FNS; SSBU_FASTNEON, the runtime sets 1 by default; 0 here until it does) */
 __declspec(dllexport) int r1_fmazero = 1;
 __declspec(dllexport) int r1_fastneon;
 #endif
