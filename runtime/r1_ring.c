@@ -1407,10 +1407,34 @@ static DWORD g_rgp_main; static int g_rgs_prof; extern volatile int g_rgp_seg; s
  * thread only, after SSBU_RB_UNSTICK ms of yields from one place, default 50; 0 = off): the H1 hold let go if it is on, then every
  * other guest thread still suspended (not a sound thread kept on purpose, not a thread born after the loaded frame) resumed; logged. */
 static int g_unstick_ms = -1; static long long g_unstick_n, g_unstick_res;
-void r1_unstick(double spun_ms, uint64_t lr) {
+/* (rb-8ms 12/11 notte, BF pair r8_fzpbf: UNSTICK let go of H1 and main still spun for 15 min: H1 was not the only cause) a guest
+ * u64 read for the report, 0 when the page is not readable */
+static uint64_t us_rd64(uint64_t a) {
+    MEMORY_BASIC_INFORMATION mi;
+    if (!a || (a & 7) || !VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return 0;
+    return *(volatile uint64_t *)(uintptr_t)a;
+}
+static long long g_unstick2_n, g_unstick2_w, g_unstick2_cv;
+void r1_unstick(double spun_ms, uint64_t lr, Ctx *c) {
     if (g_unstick_ms < 0) { const char *e = getenv("SSBU_RB_UNSTICK"); g_unstick_ms = e ? atoi(e) : 50; }
     if (!g_unstick_ms || spun_ms < g_unstick_ms || !g_rg_ready || GetCurrentThreadId() != g_rgp_main) return;
     g_unstick_n++;
+    {   /* (rb-8ms 12/11 notte) SSBU_RB_UNSTICK2 (default 1, 0 = off): from the second call of one streak (main still spinning a
+         * second after the first, so H1 was not the cause, or not the only one) the task workers' idle waits (710354a5ac) are woken
+         * again as after a load, and every guest condition wait (the render dispatch threads, nu::GraphicsDevice::Update): a job in
+         * the queue whose wake-up was lost gets its worker. In the submission loop (lr 710384f4c8) the log gives the two counters
+         * main compares (x22 -> submitted, x21 -> done, f_710384f460): equal again after the wake = it was a lost wake-up. */
+        static int u2 = -1; if (u2 < 0) { const char *e = getenv("SSBU_RB_UNSTICK2"); u2 = !(e && e[0] == '0'); }
+        uint64_t sub = 0, done = 0; int sp = lr == 0x710384f4c8ull && c;
+        if (sp) { sub = us_rd64(c->x[22]); done = us_rd64(c->x[21]); }
+        if (u2 && spun_ms >= 1000) {
+            int os_r1_wake_waits_from(uint64_t lr); int os_r1_wake_cv_waits(int mode);
+            int w = os_r1_wake_waits_from(GA(0x710354a5acull)), cv = os_r1_wake_cv_waits(2);
+            g_unstick2_n++; g_unstick2_w += w; g_unstick2_cv += cv;
+            if (g_unstick2_n <= 30) LOG("r1: UNSTICK2 %lld: main still spinning (%.0f ms at %llx): task worker waits woken again %d, condition waits woken %d%s", g_unstick2_n, spun_ms, (unsigned long long)lr, w, cv, sp ? "" : "\n");
+            if (g_unstick2_n <= 30 && sp) LOG("; submission counters: submitted %llu, done %llu\n", (unsigned long long)sub, (unsigned long long)done);
+        } else if (sp && g_unstick_n <= 30) LOG("r1: UNSTICK: submission counters: submitted %llu, done %llu\n", (unsigned long long)sub, (unsigned long long)done);
+    }
     int wh = (int)g_ra_wh_on, nwh = g_ra_nwh, pause = g_ra_wd_pause, res = 0;
     if (wh) ra_workers_release();
     char buf[1200]; int at = 0; buf[0] = 0;

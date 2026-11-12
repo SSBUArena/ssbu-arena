@@ -67,6 +67,11 @@ RT_DEFS = (([] if os.environ.get('RECOMP_LANES', '1') not in ('', '0') else ['-D
            ([] if os.environ.get('RECOMP_FAST_FMAF', '1') not in ('', '0') else ['-DRECOMP_FMAF_LIBM']))
 EXTRA += RT_DEFS                                  # every unit, the script modules' too (they include the same headers)
 GAME_DEFS = RT_DEFS + (['-DRECOMP_ICACHE'] if os.environ.get('RECOMP_ICACHE', '1') not in ('', '0') else [])
+# (rb-8ms 2026-11-12) RECOMP_R1_GAMEDLL=1 (scripts/setup.py, Windows rollback build): the game's units get -DR1_GAMEDLL (runtime.h rt_fmaf's
+# exact zero without the library, SSBU_FMAZERO; neon.h includes neon_fast.h for the copies of RECOMP_NF_FNS). Not the script
+# modules (EXTRA): r1_fmazero / r1_fastneon live in the game DLL's shim (game_shim_r1.c, which needs -DR1_GAMEDLL in RECOMP_DATA_CFLAGS).
+if os.environ.get('RECOMP_R1_GAMEDLL', '') not in ('', '0'):
+    GAME_DEFS = GAME_DEFS + ['-DR1_GAMEDLL']
 # RECOMP_INLINE=1: the helpers of runtime.h / neon.h / fpexact.h (every guest load / store, flag, NEON op) inlined into the
 # lifted code. clang 9 at -O1 runs only the always-inline inliner, so without this each helper is a real call: measured
 # 2026-10-13 (private round 15): main thread -25-30 %, audio update 9-17 -> 2-4 ms, per-frame hash identical. Same

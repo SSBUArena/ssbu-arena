@@ -1053,10 +1053,11 @@ def build_env(cx):
                       RECOMP_LIFT_JOBS=str(cx.lift_jobs))
     # FFMPEG_ROOT: build.py compiles the movie fallback (mf_ffmpeg.c) with the headers install.py put in deps\ffmpeg
     # (Arena) one build: the game DLL and the script modules with the rollback page marks (R1_MARK), the exe with the
-    # marked C++ runtime (RECOMP_R1); the generated sources are the same (gen_eh_o2, gen_nro_eh_o2)
+    # marked C++ runtime (RECOMP_R1); the generated sources are the same (gen_eh_o2, gen_nro_eh_o2). (rb-8ms) RECOMP_R1_GAMEDLL: the game's
+    # units and its shim with -DR1_GAMEDLL (rt_fmaf exact zero, SSBU_FMAZERO); RECOMP_NF_FNS not set: no vector copies (SSBU_FASTNEON off)
     return cx.env(RECOMP_GEN='gen_eh_o2', RECOMP_OBJ='obj_r1', RECOMP_DLL='ssbu_game_r1.dll', RECOMP_NRO_SUFFIX='_eh_o2r1',
-                  RECOMP_NRO_GEN_SUFFIX='_eh_o2', RECOMP_SHIM='game_shim_r1.c', RECOMP_CFLAGS='-DR1_MARK', RECOMP_DATA_CFLAGS='-DR1_MARK',
-                  RECOMP_R1='1', RECOMP_INLINE=inline_flag(cx),
+                  RECOMP_NRO_GEN_SUFFIX='_eh_o2', RECOMP_SHIM='game_shim_r1.c', RECOMP_CFLAGS='-DR1_MARK', RECOMP_DATA_CFLAGS='-DR1_MARK -DR1_GAMEDLL',
+                  RECOMP_R1='1', RECOMP_R1_GAMEDLL='1', RECOMP_INLINE=inline_flag(cx),
                   FFMPEG_ROOT=os.environ.get('FFMPEG_ROOT') or os.path.join(REPO, 'deps', 'ffmpeg'))
 
 

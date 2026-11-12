@@ -449,13 +449,13 @@ static void os_ChangeThreadPriority(Ctx *c) {
     RET((int64_t)old);
 }
 static void os_GetThreadId(Ctx *c) { Obj *o = obj(A0); RET(o->thread ? GetThreadId(o->thread) : GetCurrentThreadId()); }
-void r1_unstick(double spun_ms, uint64_t lr);      /* (rb-8ms) r1_ring.c */
+void r1_unstick(double spun_ms, uint64_t lr, Ctx *c);      /* (rb-8ms) r1_ring.c */
 static void os_YieldThread(Ctx *c) {
     static __declspec(thread) uint64_t y_lr; static __declspec(thread) ULONGLONG y_t0, y_last; static __declspec(thread) ULONGLONG y_done;
     ULONGLONG now = GetTickCount64();
     if (c->x[30] != y_lr || now - y_last > 20) { y_lr = c->x[30]; y_t0 = now; y_done = 0; }      /* a new streak of yields from one place */
     y_last = now;
-    if (now - y_t0 >= 50 && (!y_done || now - y_done >= 1000)) { y_done = now; r1_unstick((double)(now - y_t0), y_lr); }      /* (and again each second while it lasts) */
+    if (now - y_t0 >= 50 && (!y_done || now - y_done >= 1000)) { y_done = now; r1_unstick((double)(now - y_t0), y_lr, c); }      /* (and again each second while it lasts) */
     SwitchToThread();
 }
 /* SSBU_MOVIE_LOG: the movie player's pre-roll loop [game 0x71036f27b4] sleeps 10 ms up to 125 times until its video
