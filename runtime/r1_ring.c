@@ -374,7 +374,10 @@ static void rg_free_all(void) {                         /* (hs13) a ring that co
     g_rg_pcom = 0; g_rg_bump = 0; g_rg_nfree = 0;
 }
 /* (rb-ms 2026-11-10) SSBU_RB_LOADHASH=1: captures hash the pages they copy, loads skip the pages already holding the value (r1_state.c cp_part_hash) */
-static int rg_loadhash(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RB_LOADHASH"); v = e && *e ? atoi(e) : 0; } return v; }
+/* (rb-8ms 2026-11-12) default 6 = bits 2 + 4: a capture does not keep a page written with the same bytes as its newest value (~63% of
+ * them: capture 1.45 -> 1.27 ms, ~1100 pages kept of ~2950), a load hashes only the pages that were "the same" at their newest capture and
+ * skips those that still are (~54%; the others are copied at once): load 1.95 -> 1.67 ms (TaC). SSBU_RB_LOADHASH=0: off (as before). */
+static int rg_loadhash(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RB_LOADHASH"); v = e && *e ? atoi(e) : 6; } return v; }
 static int rg_init(void) {
     g_rg_n1 = g_win1 ? (size_t)(g_wn1 >> 12) : 0; g_rg_n2 = (size_t)(WN2 >> 12);
     g_rg_nx = 0; for (int i = 0; i < g_nx; i++) g_rg_nx += g_x[i].n / PG;
@@ -651,19 +654,26 @@ static double rg_cpmain(int capture) {
 /* (rb-ms, SSBU_RB_LOADHASH bit 2) after the copy: the entries whose new buffer the helpers flagged "same as the newest value" are
  * dropped (buffer back to the pool, the newest value stays the old one), the slot's undo log compacted */
 static long long g_rg_dedup_n, g_rg_dedup_kept;
+/* (rb-8ms, SSBU_RB_LOADHASH bit 4) per page id: 1 = its newest capture found the same bytes (not kept), 0 = kept (changed). A load
+ * hashes only those pages before copying (the others are copied at once): ~60% of the pages of a load are written each frame with the
+ * same bytes and mostly stay so; a page skipped this way is read once instead of read twice and written. */
+static uint8_t *g_rg_same; static size_t g_rg_same_n;
 static void rg_cap_dedup(RgSlot *s) {
     size_t o = 0;
+    size_t nid = (size_t)g_rg_n1 + g_rg_n2 + g_rg_nx + 1;
+    if ((rg_loadhash() & 4) && g_rg_same_n < nid) { uint8_t *b = realloc(g_rg_same, nid); if (b) { memset(b + g_rg_same_n, 0, nid - g_rg_same_n); g_rg_same = b; g_rg_same_n = nid; } }
     for (size_t n = 0; n < s->nent; n++) {
         uint32_t id = s->ent[2 * n], old = s->ent[2 * n + 1], nb = g_rg_idx[id];
         if (nb >= 2 && g_cph_same[nb - 2]) {
-            g_cph_same[nb - 2] = 0; rg_pool_put(nb); g_rg_idx[id] = old; g_rg_dedup_n++;
+            g_cph_same[nb - 2] = 0; rg_pool_put(nb); g_rg_idx[id] = old; g_rg_dedup_n++; if (id < g_rg_same_n) g_rg_same[id] = 1;
             if (id >= g_rg_n1 + g_rg_n2) { if (s->xpages) s->xpages--; } else if (s->pages) s->pages--;
             continue;
         }
-        s->ent[2 * o] = id; s->ent[2 * o + 1] = old; o++; g_rg_dedup_kept++;
+        s->ent[2 * o] = id; s->ent[2 * o + 1] = old; o++; g_rg_dedup_kept++; if (id < g_rg_same_n) g_rg_same[id] = 0;
     }
     s->nent = o;
 }
+static volatile LONG g_rg_loading; static volatile LONG64 g_rg_loadfault, g_rg_capfault; static int rg_fault_on(void);      /* (below: rg_load_fault) */
 static double g_cq[3]; static long long g_cqn; static double g_ldp[3]; static long long g_ldp_n;      /* (rb-8ms) load parts: sweep (write watch, marks, extras), page list, copy */
 int r1_ring_capture(long long frame, Ctx *c) {
     { extern void (*g_os_wait_extra)(void (*pr)(const char *fmt, ...)); g_os_wait_extra = rg_loader_print; }
@@ -737,7 +747,10 @@ int r1_ring_capture(long long frame, Ctx *c) {
     }
     double t2 = now_ms();
     {   static int nt = -1; if (nt < 0) { const char *e = getenv("SSBU_RB_NT"); nt = !e || atoi(e) != 0; }      /* (Arena perf) non-temporal stores into the pool (r1_state.c cp_page_nt) */
-        g_cp_nt = rb_feat(2, nt); g_cp_mw = g_rg_cap_far && g_rg_copy_ccx ? 0.0 : rg_cpmain(1); g_cp_hmode = g_cph ? 1 : 0; cp_run(); g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_nt = 0; }
+        int cf = rg_fault_on(); LONG64 cf0 = g_rg_capfault; if (cf) InterlockedExchange(&g_rg_loading, 2);      /* (rb-8ms) a read of a page only reserved: see rg_load_fault */
+        g_cp_nt = rb_feat(2, nt); g_cp_mw = g_rg_cap_far && g_rg_copy_ccx ? 0.0 : rg_cpmain(1); g_cp_hmode = g_cph ? 1 : 0; cp_run(); g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_nt = 0;
+        if (cf) InterlockedExchange(&g_rg_loading, 0);
+        if (g_rg_capfault != cf0) LOG("r1: RING capture of frame %lld: a page only reserved was read (the copy / hash): committed (zeros) and copied (%lld so far, SSBU_RB_LOADFAULT)\n", frame, (long long)g_rg_capfault); }
     dc_copy_lock(0);
     if (g_rg_fail_now && g_rg_poolfix) {                    /* (hs14) given up: this capture's pages back to their previous values, marked again */
         size_t undone = s->nent;
@@ -1221,11 +1234,14 @@ void dm_alloc_check(const char *when, long long frame);    /* debug_mode.c */
  * only reserved now (state MEM_RESERVE, no game decommit of it in the history, g_dc not set): the load's memset / page copy
  * faulted. While a load copies, a write fault on a reserved page of the guest windows commits that page and the copy goes on:
  * the copy writes the page whole, so a fresh commit gives the same value. SSBU_RB_LOADFAULT=0: off (the crash as before). */
-static volatile LONG g_rg_loading; static volatile LONG64 g_rg_loadfault;
+/* (rb-8ms, 2026-11-12, run r8_dhb_1_1) g_rg_loading 2 = a CAPTURE copies: a READ fault on a page only reserved (a page in the capture's
+ * list that is not committed any more: a decommit the decommit tracking missed; crash in the capture's copy + hash) commits it (zeros:
+ * what a fresh commit gives; the game has given that page up, it does not read it) and the copy goes on. */
 static LONG CALLBACK rg_load_fault(EXCEPTION_POINTERS *ep) {
-    if (!g_rg_loading || ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || ep->ExceptionRecord->NumberParameters < 2
-        || (ep->ExceptionRecord->ExceptionInformation[0] != 1 && !(ep->ExceptionRecord->ExceptionInformation[0] == 0 && g_cph)))      /* (rb-ms) LOADHASH reads the page first: a read too */
+    if (!g_rg_loading || ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || ep->ExceptionRecord->NumberParameters < 2)
         return EXCEPTION_CONTINUE_SEARCH;
+    { ULONG_PTR rw = ep->ExceptionRecord->ExceptionInformation[0];
+      if (g_rg_loading == 2 ? rw != 0 : (rw != 1 && !(rw == 0 && g_cph))) return EXCEPTION_CONTINUE_SEARCH; }      /* (rb-ms) LOADHASH reads the page first: a read too */
     uint8_t *a = (uint8_t *)(uintptr_t)(ep->ExceptionRecord->ExceptionInformation[1] & ~(uintptr_t)(PG - 1));
     int in1 = g_win1 && a >= g_win1 && a < g_win1 + g_wn1, in2 = (uintptr_t)a >= WIN2 && (uintptr_t)a < WIN2 + WN2;
     if (!in1 && !in2) return EXCEPTION_CONTINUE_SEARCH;
@@ -1233,9 +1249,10 @@ static LONG CALLBACK rg_load_fault(EXCEPTION_POINTERS *ep) {
     if (!VirtualQuery(a, &mi, sizeof mi) || mi.State != MEM_RESERVE) return EXCEPTION_CONTINUE_SEARCH;
     if (!VirtualAlloc(a, PG, MEM_COMMIT, PAGE_READWRITE)) return EXCEPTION_CONTINUE_SEARCH;
     if (in1) g_dc[(size_t)(a - g_win1) / PG] = 0;
-    InterlockedIncrement64(&g_rg_loadfault);
+    InterlockedIncrement64(g_rg_loading == 2 ? &g_rg_capfault : &g_rg_loadfault);
     return EXCEPTION_CONTINUE_EXECUTION;
 }
+static int rg_fault_on(void) { static int lf = -1; if (lf < 0) { const char *e = getenv("SSBU_RB_LOADFAULT"); lf = !(e && e[0] == '0'); if (lf) AddVectoredExceptionHandler(1, rg_load_fault); } return lf; }
 int r1_ring_load(long long frame, Ctx *c) {
     int si = -1;
     for (int i = 0; i < g_rg_count; i++) if (rg_slot(i)->frame == frame) si = i;
@@ -1299,8 +1316,7 @@ int r1_ring_load(long long frame, Ctx *c) {
     }
     g_rg_count = si + 1;
     dc_copy_lock(1);                                      /* (crash phase) no decommit from here to the end of the copy */
-    { static int lf = -1; if (lf < 0) { const char *e = getenv("SSBU_RB_LOADFAULT"); lf = !(e && e[0] == '0'); if (lf) AddVectoredExceptionHandler(1, rg_load_fault); }
-      if (lf) InterlockedExchange(&g_rg_loading, 1); }
+    if (rg_fault_on()) InterlockedExchange(&g_rg_loading, 1);
     double tl0 = now_ms();                                /* (rb-8ms) the load's parts timed (report: RING load parts) */
     rg_helpers_on(1);                                     /* (rb-8ms) loads: the helpers on the other L3 (SSBU_RB_COPYCCX) */
     rg_pww(1);                                            /* (rb-8ms) the write-watch questions on every copy thread */
@@ -1333,14 +1349,14 @@ int r1_ring_load(long long frame, Ctx *c) {
          * there was all zeros (a fresh commit is zero). (Arena) it was left decommitted for zeros: a fiber stack page
          * freed after the capture, the fiber taken back by the load, its next write deeper on the stack crashed (c0000005) */
         if (id < g_rg_n1 && g_dc[id]) { VirtualAlloc(a, PG, MEM_COMMIT, PAGE_READWRITE); g_dc[id] = 0; g_rg_recommit++; if (!src) continue; }
-        if (!src) memset(a, 0, PG); else cp_add(a, src);
+        if (!src) memset(a, 0, PG); else { cp_add(a, src); if (g_rg_same) cp_set_try(id < g_rg_same_n ? g_rg_same[id] : 0); }
     }
     {   /* (R3 net3) SSBU_RB_LOADCMP=1 (option, default off: measured no faster, na0 / na1): a page is written only if it differs from the value loaded;
          * (rb-ms) =2: each 64-byte line written only if it differs (r1_state.c cp_page_lines). SSBU_RB_LOADNT (default ON since rb-ms
          * 2026-11-11, =0 the old way): the load writes with non-temporal stores (no read for ownership of ~14 MB, the loaded lines
          * do not push the game's data out of the caches): loop bench BF -0.6..-0.9 ms, load 2.37 -> 1.9 ms. SSBU_RB_CPMAIN: main's share of the copies (rg_cpmain) */
         static int lc = -1, lnt; if (lc < 0) { const char *e = getenv("SSBU_RB_LOADCMP"); lc = e && e[0] == '1' ? 1 : e && e[0] == '2' ? 2 : 0; e = getenv("SSBU_RB_LOADNT"); lnt = !(e && e[0] == '0'); }
-        g_cp_cond = lc; g_cp_nt = lc != 1 && lnt; g_cp_mw = rg_cpmain(0); g_cp_hmode = g_cph && (rg_loadhash() & 1) ? 2 : 0;
+        g_cp_cond = lc; g_cp_nt = lc != 1 && lnt; g_cp_mw = rg_cpmain(0); g_cp_hmode = g_cph && (rg_loadhash() & 1) ? 2 : g_cph && (rg_loadhash() & 4) && g_rg_same ? 3 : 0;      /* (rb-8ms) 3: only the pages same at their newest capture */
         double tl2 = now_ms();
         if (!(g_rg_copy_ccx && cp_run_lh())) cp_run();      /* (rb-8ms, option SSBU_RB_LHMAIN: main hashes, the helpers copy what differs) */
         g_ldp[0] += tl1 - tl0; g_ldp[1] += tl2 - tl1; g_ldp[2] += now_ms() - tl2; g_ldp_n++;

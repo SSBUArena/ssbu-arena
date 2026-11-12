@@ -1401,6 +1401,10 @@ static CopyJob *g_cj; static size_t g_ncj, g_cjcap;
 static int g_ncp = -1, g_ncp_big;                    /* (0.2.11) g_ncp_big: the helpers of the whole-memory passes (cp_run_big) */
 static HANDLE g_cp_go[8], g_cp_done[8], g_cp_h[8];
 static void cp_add(uint8_t *d, const uint8_t *s) { if (g_ncj >= g_cjcap) { g_cjcap = g_cjcap ? g_cjcap * 2 : 65536; g_cj = realloc(g_cj, g_cjcap * sizeof *g_cj); } g_cj[g_ncj].d = d; g_cj[g_ncj].s = s; g_ncj++; }
+/* (rb-8ms, SSBU_RB_LOADHASH bit 4) per queued job of a load: 1 = hash the page first (it held the same bytes at its newest capture,
+ * LOADHASH bit 2), 0 = copy it at once. g_cp_hmode 3 = a load that hashes only those. */
+static uint8_t *g_cj_try; static size_t g_cj_trycap;
+static void cp_set_try(uint8_t v) { size_t i = g_ncj - 1; if (i >= g_cj_trycap) { size_t n = g_cjcap > i + 1 ? g_cjcap : i + 65536; uint8_t *b = realloc(g_cj_try, n); if (!b) return; g_cj_try = b; g_cj_trycap = n; } g_cj_try[i] = v; }
 static void cp_add_range(uint8_t *d, const uint8_t *s, size_t n) { for (size_t o = 0; o < n; o += PG) cp_add(d + o, s + o); }
 static uint8_t *g_cp_cmp;                             /* (R2 round 3) set: the queued jobs are COMPARED (g_cp_cmp[i] = 1 if they differ), not copied */
 /* (R3 net3) g_cp_cond set: each queued page is copied only if it differs from its source (a ring load: most learned pages
@@ -1568,7 +1572,7 @@ static void cp_part_hash(size_t a, size_t b, int k) {
     long long sk = 0, ck = 0, l = 0, w = 0;                 /* load: source = pool buffer with a hash -> skip when the page hashes the same */
     for (size_t i = a; i < b; i++) {
         long long x = cph_index(g_cj[i].s);
-        if (x >= 0 && g_cph_ok[x]) { uint64_t h[2]; g_ph(g_cj[i].d, h); ck++;
+        if (x >= 0 && g_cph_ok[x] && (g_cp_hmode != 3 || (i < g_cj_trycap && g_cj_try[i]))) { uint64_t h[2]; g_ph(g_cj[i].d, h); ck++;
             if (h[0] == g_cph[2 * x] && h[1] == g_cph[2 * x + 1]) { sk++; continue; } }
         if (g_cp_cond == 2) { long long n = cp_page_lines(g_cj[i].d, g_cj[i].s); l += n; w += n != 0; }
         else if (g_cp_nt) cp_page_nt(g_cj[i].d, g_cj[i].s);
