@@ -1630,6 +1630,45 @@ static int cp_par(void (*fn)(int k)) {
     g_cp_task = NULL;
     return 1;
 }
+/* (rb-8ms, option) SSBU_RB_LHMAIN=1 (with SSBU_RB_LOADHASH=1 and the loads on the other L3, COPYCCX): MAIN hashes the game's pages of
+ * a load (they are in its own caches: written in the passes just thrown away) and the helpers on the other L3 copy only the pages
+ * whose hash differs from the value loaded (~40%), in chunks of 8 behind main (g_lh_done). The pages that already hold the value
+ * (~60%) are not written: they stay in main's caches for the re-run passes (an NT store from the other L3 took every loaded line out
+ * of them), and the copy is ~40% of the bytes. When main has hashed everything it copies too. The helpers do not read the game's
+ * pages (LOADCMP=2 / LOADHASH from the other L3: shared lines that main's next write has to take back, load +0.27). */
+static uint8_t *g_lh_skip; static size_t g_lh_cap; static volatile LONG g_lh_done, g_lh_next; static volatile long long g_lh_hash_ms_x1000;
+static void cp_lh_copy(void) {
+    LONG n = (LONG)g_ncj;
+    for (;;) {
+        LONG c = InterlockedExchangeAdd(&g_lh_next, 8); if (c >= n) break;
+        LONG e = c + 8 < n ? c + 8 : n;
+        while (g_lh_done < e) YieldProcessor();
+        for (LONG i = c; i < e; i++) if (!g_lh_skip[i]) cp_page_nt(g_cj[i].d, g_cj[i].s);
+    }
+    _mm_sfence();
+}
+static void cp_lh_task(int k) {
+    if (k) { cp_lh_copy(); return; }
+    LONG n = (LONG)g_ncj; long long sk = 0, ck = 0; double t0 = now_ms();
+    for (LONG i = 0; i < n; i++) {
+        long long x = cph_index(g_cj[i].s); uint8_t s = 0;
+        if (x >= 0 && g_cph_ok[x]) { uint64_t h[2]; g_ph(g_cj[i].d, h); ck++; if (h[0] == g_cph[2 * x] && h[1] == g_cph[2 * x + 1]) { s = 1; sk++; } }
+        g_lh_skip[i] = s;
+        if ((i & 7) == 7) { _ReadWriteBarrier(); InterlockedExchange(&g_lh_done, i + 1); }
+    }
+    InterlockedExchange(&g_lh_done, n);
+    g_lh_hash_ms_x1000 += (long long)((now_ms() - t0) * 1000.0);
+    g_cph_skip[0] += sk; g_cph_chk[0] += ck;
+    cp_lh_copy();
+}
+static int cp_run_lh(void) {                          /* 1 = done (the queue is empty), 0 = not this way */
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_LHMAIN"); on = e && atoi(e) > 0; }
+    if (!on || g_cp_hmode != 2 || g_ncp <= 0 || g_ncj < 64 || g_cp_cond) return 0;
+    if (g_lh_cap < g_ncj) { uint8_t *b = realloc(g_lh_skip, g_ncj + 4096); if (!b) return 0; g_lh_skip = b; g_lh_cap = g_ncj + 4096; }
+    g_lh_done = 0; g_lh_next = 0;
+    if (!cp_par(cp_lh_task)) return 0;
+    g_ncj = 0; return 1;
+}
 static void cp_run_big(void) {
     cp_init();
     int keep = g_ncp, nt = g_cp_nt; g_ncp = g_ncp_big; g_cp_nt = 0;

@@ -219,6 +219,9 @@ static void rbg_gc_hook(Ctx *c, void *user) {
  * pacing wait: the jobs of this tick are done (checked: every task worker at its wait, no job fiber running; otherwise skipped this tick), the next
  * kick comes after it, as in the game. SSBU_RB_GC_LATE=0: at H2 (test). */
 static int g_rbg_gc_late = -1; static long long g_rbg_gc_want = -1, g_rbg_gc_busy;
+/* (rb-8ms, option) SSBU_RB_GC_LEAD=<ms>: how long before the next go the late collector runs (default 0.9 as before); its jobs-done check
+ * and the time it may take (to 0.25 ms before the go) are the same. Earlier: its work does not come right before the real pass. */
+static double rbg_gc_lead(void) { static double v = -1; if (v < 0) { const char *e = getenv("SSBU_RB_GC_LEAD"); v = e ? atof(e) : 0.9; if (v < 0.3) v = 0.3; } return v; }
 /* (crash phase, TEST) SSBU_RB_FONTDIAG=1 */
 static ImportFn g_fd_orig; static volatile LONG g_fd_in; static uint64_t g_fd_obj; static long long g_fd_runs, g_fd_bad, g_fd_atload, g_fd_atgc, g_fd_atcap; static int g_fd_on = -1;
 static void rbg_fd_hook(Ctx *c, void *user) {
@@ -690,11 +693,11 @@ static void rbg_step_body(Ctx *c) {
             for (;;) {
                 double t = now_ms();
                 if (g_rbg_dc_lead < 0) { const char *e = getenv("SSBU_RB_NET_DEFCAP_MS"); g_rbg_dc_lead = e ? atof(e) : 1.8; }
-                if (t >= g_rbg_next - 0.3 - (g_rbg_gc_want == i ? 0.6 : 0.0) - (g_rbg_defcap == i ? g_rbg_dc_lead : 0.0)) break;
+                if (t >= g_rbg_next - 0.3 - (g_rbg_gc_want == i ? rbg_gc_lead() - 0.3 : 0.0) - (g_rbg_defcap == i ? g_rbg_dc_lead : 0.0)) break;
                 if (g_rbg_wpad_at > 0 && t >= g_rbg_wpad_at && g_rbg_wpad_frame == i + 1) { rbn_drain(i + 1); g_rbg_wpad_at = -1; }
                 rbn_drain(i);
                 int m = rbn_take_mismatch();
-                double wake = g_rbg_next - 0.3 - (g_rbg_gc_want == i ? 0.6 : 0.0) - (g_rbg_defcap == i ? g_rbg_dc_lead : 0.0);
+                double wake = g_rbg_next - 0.3 - (g_rbg_gc_want == i ? rbg_gc_lead() - 0.3 : 0.0) - (g_rbg_defcap == i ? g_rbg_dc_lead : 0.0);
                 if (g_rbg_wpad_at > 0 && g_rbg_wpad_frame == i + 1 && g_rbg_wpad_at < wake) wake = g_rbg_wpad_at;
                 if (m > 0 && m <= i) {
                     if (g_rbg_wm_frame != i) { g_rbg_wm_frame = i; g_rbg_n_wmis++; g_rbg_wm_t0 = t; }      /* a wrong guess known inside this wait */
@@ -715,9 +718,12 @@ static void rbg_step_body(Ctx *c) {
         if (g_rbg_defcap == i) {                         /* (rb-8ms, RECAP=7) the deferred capture of the last re-run pass's state */
             if (g_rbg_dc_lead < 0) { const char *e = getenv("SSBU_RB_NET_DEFCAP_MS"); g_rbg_dc_lead = e ? atof(e) : 1.8; }
             rbg_wait_until(g_rbg_next - g_rbg_dc_lead); if (now_ms() > g_rbg_next - g_rbg_dc_lead + 0.5) g_rbg_dc_late++;
+            static int dcfar = -1; if (dcfar < 0) { const char *e = getenv("SSBU_RB_DCFAR"); dcfar = e && atoi(e) > 0; }      /* (rb-8ms, option: r1_ring.c g_rg_cap_far) */
+            g_rg_cap_far = dcfar;
             double tc = now_ms(); if (!rbg_capture(i, c)) g_rbg_capfail++; g_rbg_dc_ms += now_ms() - tc; g_rbg_dc_n++; g_rbg_defcap = -1;
+            g_rg_cap_far = 0;
         }
-        if (g_rbg_gc_want == i) { rbg_wait_until(g_rbg_next - 0.9); rbg_gc_late_run(c, i); }
+        if (g_rbg_gc_want == i) { rbg_wait_until(g_rbg_next - rbg_gc_lead()); rbg_gc_late_run(c, i); }
         rbg_wait_until(g_rbg_next);
         g_rbg_sched = g_rbg_next;
         g_rbg_next += period;

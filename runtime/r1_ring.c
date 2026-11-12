@@ -627,6 +627,10 @@ static void rg_loader_print(void (*pr)(const char *fmt, ...));      /* (below) *
  * g_rg_cm_same = main's L3, g_rg_cm_other); captures stay on main's L3 (reading the game's pages from main's caches; on the other L3
  * the recapture was 0.2 ms slower). rg_helpers_on(1) / (0) moves them (an affinity change of the idle helpers, only when it changes). */
 static int g_rg_copy_ccx, g_rg_cm_cur; static unsigned long long g_rg_cm_same, g_rg_cm_other;
+/* (rb-8ms, option) SSBU_RB_DCFAR=1: a capture made in the pacing wait (RECAP=7 / CAPDEFER: g_rg_cap_far set by rb_rollback.c) copies
+ * on the other L3 and main copies nothing in it: its time does not count (it is in the wait), and the helpers' / main's L2 and main's
+ * L3 keep the game's data for the real pass that follows the go (CAPDEFER: that pass was slower after a capture right before it). */
+static int g_rg_cap_far;
 static int g_rg_ncp_all = -1, g_rg_cap_helpers = -1;      /* (rb-8ms, option) SSBU_RB_CAPHELPERS=<n>: with COPYCCX, captures use n of the helpers (loads all) */
 static void rg_helpers_on(int other) {
     if (!g_rg_copy_ccx) return;
@@ -660,7 +664,7 @@ static void rg_cap_dedup(RgSlot *s) {
     }
     s->nent = o;
 }
-static double g_cq[3]; static long long g_cqn;
+static double g_cq[3]; static long long g_cqn; static double g_ldp[3]; static long long g_ldp_n;      /* (rb-8ms) load parts: sweep (write watch, marks, extras), page list, copy */
 int r1_ring_capture(long long frame, Ctx *c) {
     { extern void (*g_os_wait_extra)(void (*pr)(const char *fmt, ...)); g_os_wait_extra = rg_loader_print; }
     R1_CTR("capture (frame)", frame, 0);
@@ -700,7 +704,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
     g_rg_cur = s; g_rg_fail_now = 0;
     static uint8_t *xdiff; static size_t xdn; if (xdn < g_rg_nx + 1) { free(xdiff); xdn = g_rg_nx + 1; xdiff = calloc(xdn, 1); }   /* (hs12: the extras can change at a rebase) */
     double tq0 = now_ms();                                /* (rb-8ms) the capture's sweep part timed piece by piece (report: RING capture sweep part) */
-    rg_helpers_on(0);                                     /* (rb-8ms) captures: the helpers on main's L3 */
+    rg_helpers_on(g_rg_cap_far ? 1 : 0);                  /* (rb-8ms) captures: the helpers on main's L3 (DCFAR: a capture in the wait on the other) */
     rg_pww(g_rgx_q != NULL || g_rgx_qcap < g_rg_nx + 1);      /* (rb-8ms) the write-watch questions on every copy thread */
     {   /* (round 3) extras compared by main + the copy threads; (Arena perf) only those written since the last capture / load */
         if (g_rgx_qcap < g_rg_nx + 1) { free(g_rgx_q); free(g_rgx_res); g_rgx_qcap = g_rg_nx + 1; g_rgx_q = malloc(g_rgx_qcap * 4); g_rgx_res = malloc(g_rgx_qcap); if (!g_rgx_q || !g_rgx_res) { free(g_rgx_q); free(g_rgx_res); g_rgx_q = NULL; g_rgx_res = NULL; g_rgx_qcap = 0; } }
@@ -733,7 +737,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
     }
     double t2 = now_ms();
     {   static int nt = -1; if (nt < 0) { const char *e = getenv("SSBU_RB_NT"); nt = !e || atoi(e) != 0; }      /* (Arena perf) non-temporal stores into the pool (r1_state.c cp_page_nt) */
-        g_cp_nt = rb_feat(2, nt); g_cp_mw = rg_cpmain(1); g_cp_hmode = g_cph ? 1 : 0; cp_run(); g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_nt = 0; }
+        g_cp_nt = rb_feat(2, nt); g_cp_mw = g_rg_cap_far && g_rg_copy_ccx ? 0.0 : rg_cpmain(1); g_cp_hmode = g_cph ? 1 : 0; cp_run(); g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_nt = 0; }
     dc_copy_lock(0);
     if (g_rg_fail_now && g_rg_poolfix) {                    /* (hs14) given up: this capture's pages back to their previous values, marked again */
         size_t undone = s->nent;
@@ -1297,12 +1301,14 @@ int r1_ring_load(long long frame, Ctx *c) {
     dc_copy_lock(1);                                      /* (crash phase) no decommit from here to the end of the copy */
     { static int lf = -1; if (lf < 0) { const char *e = getenv("SSBU_RB_LOADFAULT"); lf = !(e && e[0] == '0'); if (lf) AddVectoredExceptionHandler(1, rg_load_fault); }
       if (lf) InterlockedExchange(&g_rg_loading, 1); }
+    double tl0 = now_ms();                                /* (rb-8ms) the load's parts timed (report: RING load parts) */
     rg_helpers_on(1);                                     /* (rb-8ms) loads: the helpers on the other L3 (SSBU_RB_COPYCCX) */
     rg_pww(1);                                            /* (rb-8ms) the write-watch questions on every copy thread */
     rg_stack_ww(NULL);                                    /* (Arena perf) the stack pages written since the newest capture */
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */
     rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
     size_t pages = g_rg_ntl; g_rg_ldpg += (long long)pages;
+    double tl1 = now_ms();
     if (g_rgpg_on > 0) { g_rgpg_lds++; for (size_t n = 0; n < g_rg_ntl; n++) { g_rgpg_ldn++; if (r1_in_pool(rg_addr(g_rg_tl[n]))) g_rgpg_ldpool++; } }      /* (rb-8ms, diagnosis) */
     for (size_t n = 0; n < g_rg_ntl; n++) {               /* each page once, from its value at `frame` */
         uint32_t id = g_rg_tl[n]; g_rg_touch[id] = 0;
@@ -1334,7 +1340,11 @@ int r1_ring_load(long long frame, Ctx *c) {
          * 2026-11-11, =0 the old way): the load writes with non-temporal stores (no read for ownership of ~14 MB, the loaded lines
          * do not push the game's data out of the caches): loop bench BF -0.6..-0.9 ms, load 2.37 -> 1.9 ms. SSBU_RB_CPMAIN: main's share of the copies (rg_cpmain) */
         static int lc = -1, lnt; if (lc < 0) { const char *e = getenv("SSBU_RB_LOADCMP"); lc = e && e[0] == '1' ? 1 : e && e[0] == '2' ? 2 : 0; e = getenv("SSBU_RB_LOADNT"); lnt = !(e && e[0] == '0'); }
-        g_cp_cond = lc; g_cp_nt = lc != 1 && lnt; g_cp_mw = rg_cpmain(0); g_cp_hmode = g_cph && (rg_loadhash() & 1) ? 2 : 0; cp_run(); g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_cond = 0; g_cp_nt = 0; }
+        g_cp_cond = lc; g_cp_nt = lc != 1 && lnt; g_cp_mw = rg_cpmain(0); g_cp_hmode = g_cph && (rg_loadhash() & 1) ? 2 : 0;
+        double tl2 = now_ms();
+        if (!(g_rg_copy_ccx && cp_run_lh())) cp_run();      /* (rb-8ms, option SSBU_RB_LHMAIN: main hashes, the helpers copy what differs) */
+        g_ldp[0] += tl1 - tl0; g_ldp[1] += tl2 - tl1; g_ldp[2] += now_ms() - tl2; g_ldp_n++;
+        g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_cond = 0; g_cp_nt = 0; }
     InterlockedExchange(&g_rg_loading, 0);
     {   /* (rb-8ms, TEST ONLY) SSBU_RB_TEST_TOUCH=1: main reads every line of every page the load wrote back (they come into its caches /
          * the L3) before the first re-run pass: is that pass slow because the loaded data is cold? =2: only one line per page (the TLB) */
@@ -1988,8 +1998,10 @@ static void rgs_report(void) {
             l, g_rg_ldpg ? 100.0 * (double)l / (double)(g_rg_ldpg * 64) : 0.0, w ? (double)l / (double)w : 0.0); }
     if (g_cph) { long long sk = 0, ck = 0; for (int q = 0; q < 9; q++) { sk += g_cph_skip[q]; ck += g_cph_chk[q]; }
         LOG("r1: RING loads (SSBU_RB_LOADHASH): pages to load %lld, hashed %lld (%.1f%%), skipped as already holding the value %lld (%.1f%% of the pages to load)\n", g_rg_ldpg, ck, g_rg_ldpg ? 100.0 * (double)ck / (double)g_rg_ldpg : 0.0, sk, g_rg_ldpg ? 100.0 * (double)sk / (double)g_rg_ldpg : 0.0);
+        if (g_lh_hash_ms_x1000) LOG("r1: RING loads (SSBU_RB_LHMAIN): main's hashing %.3f ms per load\n", g_rg_loads ? g_lh_hash_ms_x1000 / 1000.0 / (double)g_rg_loads : 0.0);
         if (g_cph_dedup) LOG("r1: RING captures (SSBU_RB_LOADHASH bit 2): pages written with the same bytes, not kept %lld; kept %lld (%.1f%% not kept)\n", g_rg_dedup_n, g_rg_dedup_kept, g_rg_dedup_n + g_rg_dedup_kept ? 100.0 * (double)g_rg_dedup_n / (double)(g_rg_dedup_n + g_rg_dedup_kept) : 0.0); }
     LOG("r1: RING loads: pages committed again (freed by the game after the loaded frame) %lld; pages decommitted at the loaded frame and committed since, zeroed %lld; task worker wake-ups given again %lld; resource loader / inflater woken after a load (SSBU_RB_LOADERWAKE) %lld / %lld\n", g_rg_recommit, g_rg_rezero, g_rg_rewake, g_rg_ldwake[0], g_rg_ldwake[1]);
+    if (g_ldp_n) LOG("r1: RING load parts (means ms): sweep (write watch questions, marks, extras) %.3f, page list %.3f, copy %.3f (%lld loads)\n", g_ldp[0] / g_ldp_n, g_ldp[1] / g_ldp_n, g_ldp[2] / g_ldp_n, g_ldp_n);
     for (int k = 0; k < RG_MAXSLOT; k++) {
         int m = g_rgl_n[k]; if (!m) continue;
         static double v[RG_NL], h[RG_NL], cpy[RG_NL]; double p = 0;
