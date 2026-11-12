@@ -17,7 +17,10 @@
 #define A3 (c->x[3])
 #define RET(v) (c->x[0] = (uint64_t)(v))
 
-static int64_t now_posix(void) { return (int64_t)_time64(NULL); }
+/* (rb-8ms 2026-11-12, TEST) SSBU_FIXED_TIME=<posix seconds>: the game's wall clock (nn::time) gives that constant. Smashville
+ * shows the PC's time of day (its background work changes with it: loop bench re-run passes 1.68 -> 2.07 ms between two runs five
+ * minutes apart): measurements and sync checks with a fixed time of day. */
+static int64_t now_posix(void) { static int64_t fx = -2; if (fx == -2) { const char *e = getenv("SSBU_FIXED_TIME"); fx = e && *e ? _strtoi64(e, NULL, 10) : -1; } return fx >= 0 ? fx : (int64_t)_time64(NULL); }
 
 static void write_calendar(uint64_t out, const struct tm *t) {
     wr16(out, (uint16_t)(t->tm_year + 1900));

@@ -293,11 +293,11 @@ static void rbg_gc_late_run(Ctx *c, long long i) {      /* at the end of the pac
 }
 /* (rollback 8 ms) SSBU_RB_SKIPF=<hex guest addresses>: functions that do nothing in re-run passes (each entry is one decision, removable at will);
  * SSBU_RB_SKIPF_LAST=0: they run in the last re-run pass. Default list: g_rbg_skipf_def. */
-typedef struct { uint64_t a; ImportFn orig; long long n; } RbgSkipF;
+typedef struct { uint64_t a; ImportFn orig; long long n; int nonlast; } RbgSkipF;      /* (rb-8ms) nonlast: an entry written "~<addr>" runs in the last re-run pass */
 static RbgSkipF g_rbg_skf[32]; static int g_rbg_nskf, g_rbg_skf_last = 1;
 static void rbg_skipf_hook(Ctx *c, void *user) {
     RbgSkipF *s = user;
-    if (g_ra_phase == 2 && (g_rgs_left > 1 || g_rbg_skf_last)) { s->n++; return; }
+    if (g_ra_phase == 2 && (g_rgs_left > 1 || (g_rbg_skf_last && !s->nonlast))) { s->n++; return; }
     s->orig(c);
 }
 static const char *g_rbg_skipf_def = "71022df110,71022dec30,71022dc3d0,7101357e20,7101358ef0,710375ea70";      /* (2026-11-02: the first three, -0.35 ms, pair IDENTICAL;
@@ -311,10 +311,11 @@ static void rbg_skipf_init(void) {
     { const char *l = getenv("SSBU_RB_SKIPF_LAST"); if (l && l[0] == '0') g_rbg_skf_last = 0; }
     int def = e == g_rbg_skipf_def, di = 0;
     while (e && *e && g_rbg_nskf < 32) {
+        int nl = !def && *e == '~'; if (nl) e++;
         uint64_t a = def ? (di < (int)(sizeof g_rbg_skipf_def_a / sizeof *g_rbg_skipf_def_a) ? g_rbg_skipf_def_a[di++] : 0) : strtoull(e, NULL, 16); if (!a) break;
-        RbgSkipF *s = &g_rbg_skf[g_rbg_nskf]; s->a = a;
+        RbgSkipF *s = &g_rbg_skf[g_rbg_nskf]; s->a = a; s->nonlast = nl;
         if (hook_install(GA(a), rbg_skipf_hook, s, &s->orig)) g_rbg_nskf++;
-        LOG("r1: RB NET: skipped in re-run passes: %llx\n", (unsigned long long)a);
+        LOG("r1: RB NET: skipped in re-run passes%s: %llx\n", nl ? " but the last" : "", (unsigned long long)a);
         e = strchr(e, ','); if (e) e++;
     }
 }
