@@ -4,3 +4,4 @@
 #include "game_shim_eh.c"
 __declspec(dllexport) uint8_t *r1_m1, *r1_m2;
 __declspec(dllexport) uint64_t r1_lo1, r1_n1, r1_n2;
+__declspec(dllexport) int r1_fastneon;      /* (rb-8ms) neon_fast.h: 0 until the runtime sets it (SSBU_FASTNEON) */

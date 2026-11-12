@@ -1109,6 +1109,9 @@ static int mark_bind(void) {
     pm1 = (uint8_t **)GetProcAddress(m, "r1_m1"); pm2 = (uint8_t **)GetProcAddress(m, "r1_m2");
     plo1 = (uint64_t *)GetProcAddress(m, "r1_lo1"); pn1 = (uint64_t *)GetProcAddress(m, "r1_n1"); pn2 = (uint64_t *)GetProcAddress(m, "r1_n2");
     if (!pm1 || !pm2 || !plo1 || !pn1 || !pn2) { LOG("r1: MARK: the DLL has no r1_m1.. exports: off\n"); return 0; }
+    {   int *fn = (int *)GetProcAddress(m, "r1_fastneon");      /* (rb-8ms) neon_fast.h: SSBU_FASTNEON (default 0) */
+        const char *e = getenv("SSBU_FASTNEON"); int v = e ? atoi(e) : 0;
+        if (fn) { *fn = v; LOG("r1: NEON vector forms (SSBU_FASTNEON) %s\n", v ? "ON" : "off"); } else if (v) LOG("r1: NEON vector forms asked (SSBU_FASTNEON) but the game DLL has none\n"); }
     return 1;
 }
 static uint8_t *in_shadow(uint8_t *a, uint8_t **cmap, size_t *pi) {
@@ -2113,12 +2116,20 @@ static long long g_ra_fiber_waits, g_ra_fiber_skips; static double g_ra_fiber_wa
  * frames after it run again, crashed it (f_710007f870 walking a freed request node, ~1 Battlefield loop run in 5 at a KO; every crash run showed the
  * job in progress at a load, no clean run did). A hold now also waits for that job to end (rb_rollback.c counts it). SSBU_RB_FONTWAIT=0: off. */
 volatile LONG g_font_job_in; static int g_fontwait = -1; static long long g_fontwait_n, g_fontwait_reset;
+/* (rb-8ms 2026-11-12, Smashville r8_svf_0_5: font job crash after "1 fibers not restored" at a load of k 1) H1 lets the font job end, but
+ * the holds of a rollback made in the pacing wait / right after it (the workers were let go before the wait: EARLY_GO) found it half done
+ * and quiet (its fiber waits for its own jobs inside a waiting import): the load then restored memory under it. SSBU_RB_FONTHOLD=1
+ * (default): every hold treats the font job in progress as not quiet (tried again until its limit; then that hold fails: a capture is
+ * skipped, a rollback waits for the next safe point). 0: as before. */
+static int g_fonthold = -1; static long long g_fonthold_n;
 TT_DEF(int, ra_hold_quiet, (double limit), (limit), 2)
 static int ra_hold_quiet_tt(double limit) {
     double t0 = now_ms(); int tries = 0;
     for (;;) {
         if (ra_hold_save()) {
-            double tf = g_hp_on > 0 ? now_ms() : 0; int fq = ra_fibers_quiet(); if (fq && g_fontwait == 2 && g_font_job_in > 0) { if (now_ms() - t0 > limit * 0.5) { g_font_job_in = 0; g_fontwait_reset++; } else { fq = 0; g_fontwait_n++; } }      /* (a job that never came back through the hook: a throw, or a load that brought back its fiber from before its start: counted no more) */ if (g_hp_on > 0) { g_hp_fib_ms += now_ms() - tf; g_hp_fib_n++; }
+            double tf = g_hp_on > 0 ? now_ms() : 0; int fq = ra_fibers_quiet();
+            if (g_fonthold < 0) { const char *e = getenv("SSBU_RB_FONTHOLD"); g_fonthold = !(e && e[0] == '0'); }
+            if (fq && g_fonthold && g_font_job_in > 0) { fq = 0; g_fonthold_n++; } if (fq && g_fontwait == 2 && g_font_job_in > 0) { if (now_ms() - t0 > limit * 0.5) { g_font_job_in = 0; g_fontwait_reset++; } else { fq = 0; g_fontwait_n++; } }      /* (a job that never came back through the hook: a throw, or a load that brought back its fiber from before its start: counted no more) */ if (g_hp_on > 0) { g_hp_fib_ms += now_ms() - tf; g_hp_fib_n++; }
             if (fq) { if (tries) { g_ra_fiber_waits++; g_ra_fiber_wait_ms += now_ms() - t0; } return 1; }
             for (int i = 0; i < g_nth; i++) if (g_th[i].held) { if (!(g_snd_keep && snd_kept_at(g_th[i].h) >= 0)) ResumeThread(g_th[i].h); g_th[i].held = 0; }
             g_ra_busy = "a job fiber (task worker)"; g_ra_skip_why[3]++;
@@ -2266,7 +2277,7 @@ static void ra_kick(Ctx *c, void *user) {            /* hook on FUN 0x710354c720
  * submission (H2), in every pass: at H2 they are always in the same state (blocked at their idle wait, the kick's jobs
  * queued and not started, its event signaled and not consumed), which is what a save / restore needs. Cost: the kick's
  * jobs start after the submission instead of during it. A watchdog lets them go if H2 does not come within 200 ms. */
-static HANDLE g_ra_wh[16]; static int g_ra_nwh; static volatile LONG g_ra_wh_on; static HANDLE g_ra_wd_ev; static long long g_ra_wh_fail, g_ra_wd_fired;
+static HANDLE g_ra_wh[16]; static int g_ra_nwh; static volatile LONG g_ra_wh_on; static HANDLE g_ra_wd_ev; static long long g_ra_wh_fail, g_ra_wd_fired, g_ra_wh_double;
 static void ra_workers_release(void) { if (InterlockedExchange(&g_ra_wh_on, 0)) for (int i = 0; i < g_ra_nwh; i++) ResumeThread(g_ra_wh[i]); g_ra_nwh = 0; }
 static DWORD WINAPI ra_watchdog(void *p) {
     (void)p;
@@ -2291,6 +2302,10 @@ static void ra_workers_hold_tt(void) {
      * 0x710007f870 in rb_rollback.c): a cost only in passes where the HUD draws new glyphs. SSBU_RB_FONTWAIT=0: off; 2: the old hold-side wait. */
     if (g_fontwait == 1 && g_font_job_in > 0) { double t0 = now_ms(); g_fontwait_h1++; while (g_font_job_in > 0 && now_ms() - t0 < 3.0) SwitchToThread(); g_fontwait_h1_ms += now_ms() - t0; if (g_font_job_in > 0) g_font_job_in = 0; }
     Ctx *tc; const char *nm; HANDLE h; DWORD me = GetCurrentThreadId();
+    /* (rb-8ms 2026-11-12, Smashville freezes: a TaskWorker asleep with its event signalled) H1 again while the previous H1's workers
+     * are still held (no H2 between): the list was overwritten and those threads were never resumed. Now let go first, counted.
+     * SSBU_RB_WHGUARD=0: as before. */
+    { static int wg = -1; if (wg < 0) { const char *e = getenv("SSBU_RB_WHGUARD"); wg = !(e && e[0] == '0'); } if (wg && g_ra_wh_on) { g_ra_wh_double++; ra_workers_release(); } }
     g_ra_nwh = 0;
     for (int i = 0; guest_thread_info(i, &tc, &nm, &h) && g_ra_nwh < 16; i++) {
         if (!h || GetThreadId(h) == me || !nm || !strstr(nm, "TaskWorker")) continue;

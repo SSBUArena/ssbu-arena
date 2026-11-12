@@ -449,7 +449,15 @@ static void os_ChangeThreadPriority(Ctx *c) {
     RET((int64_t)old);
 }
 static void os_GetThreadId(Ctx *c) { Obj *o = obj(A0); RET(o->thread ? GetThreadId(o->thread) : GetCurrentThreadId()); }
-static void os_YieldThread(Ctx *c) { (void)c; SwitchToThread(); }
+void r1_unstick(double spun_ms, uint64_t lr);      /* (rb-8ms) r1_ring.c */
+static void os_YieldThread(Ctx *c) {
+    static __declspec(thread) uint64_t y_lr; static __declspec(thread) ULONGLONG y_t0, y_last; static __declspec(thread) ULONGLONG y_done;
+    ULONGLONG now = GetTickCount64();
+    if (c->x[30] != y_lr || now - y_last > 20) { y_lr = c->x[30]; y_t0 = now; y_done = 0; }      /* a new streak of yields from one place */
+    y_last = now;
+    if (now - y_t0 >= 50 && (!y_done || now - y_done >= 1000)) { y_done = now; r1_unstick((double)(now - y_t0), y_lr); }      /* (and again each second while it lasts) */
+    SwitchToThread();
+}
 /* SSBU_MOVIE_LOG: the movie player's pre-roll loop [game 0x71036f27b4] sleeps 10 ms up to 125 times until its video
  * renderer holds more than 1 frame (+0xb0) and its audio renderer has filled more than 8 / 16 buffers (+0x110). */
 static void movie_preroll_diag(Ctx *c) {
@@ -684,6 +692,25 @@ int os_r1_wake_waits_from(uint64_t lr) {
     }
     return k;
 }
+/* (rb-8ms 2026-11-12, Smashville freezes r8_svt_3_1 / r8_svs2) the same for CONDITION VARIABLES: the render dispatch threads wait on a
+ * condition variable (75004b1184) for the main thread's submissions (f_710384f460: main then spins with YieldThread until the
+ * dispatch's done counter reaches its submitted counter). A state captured while a dispatch thread had been signalled but not yet
+ * left its wait holds "work pending"; loaded later, the thread sleeps in the wait with no signal coming: main spins for good. The
+ * load wakes those waiters again (a condition variable may always wake spuriously: the guest re-checks its predicate and waits
+ * again). mode 1: the threads named "render dispatch"; 2: every guest thread in a condition wait. Returns how many. */
+const char *guest_thread_name_of(DWORD tid);
+int os_r1_wake_cv_waits(int mode) {
+    int n = g_osw_n < 512 ? (int)g_osw_n : 512, k = 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t key = g_osw[i].key; const char *w = g_osw[i].what;
+        if (!key || !w || strcmp(w, "condition wait")) continue;
+        if (mode == 1) { const char *nm = guest_thread_name_of(g_osw[i].tid); if (!nm || !strstr(nm, "render dispatch")) continue; }
+        Obj *o = obj_peek(key);
+        if (!o) continue;
+        WakeAllConditionVariable(&o->cv); k++;
+    }
+    return k;
+}
 /* (Battle Arena squad, run csh2: main waited for good on a file load) a guest thread in an event wait called from `lr` (the
  * resource loader's or inflater's idle wait): its event's key, 0 when none; *sig = that event is signalled already. No lock. */
 uint64_t os_r1_event_waiter(uint64_t lr, int *sig) {
@@ -698,10 +725,21 @@ uint64_t os_r1_event_waiter(uint64_t lr, int *sig) {
     return 0;
 }
 static void ev_clear(Ctx *c) { Obj *o = obj(A0); EnterCriticalSection(&o->cs); o->signaled = 0; LeaveCriticalSection(&o->cs); }
+/* (rb-8ms 2026-11-12, Smashville freezes r8_svt_3_1 / r8_svs2 / r8_fx27) the freeze reports show a TaskWorker asleep in its event wait for
+ * seconds with the event SIGNALLED ("signaled 1"): a wake-up lost on the way (the rollback suspends and resumes threads that sleep in
+ * these waits), main then spins for good in the submission. SSBU_OS_WAITSLICE=<ms> (default 50; 0 = off): an untimed event or
+ * condition wait sleeps in slices of that length; an event wait looks at its flag again after each slice (a lost wake-up costs at most
+ * one slice, counted: os_lost_wakeups), a condition wait returns after a slice as a spurious wake-up (allowed: the guest checks its
+ * condition again and waits again). */
+static int g_os_slice = -1; volatile LONG64 g_os_lost_ev, g_os_cv_slices;
+static DWORD os_slice(void) { if (g_os_slice < 0) { const char *e = getenv("SSBU_OS_WAITSLICE"); g_os_slice = e ? atoi(e) : 50; if (g_os_slice < 0) g_os_slice = 0; } return (DWORD)g_os_slice; }
+long long os_lost_wakeups(long long *cv_slices) { if (cv_slices) *cv_slices = g_os_cv_slices; return g_os_lost_ev; }
 static int ev_wait_ms(Obj *o, DWORD ms) {
     int ok = 1;
+    DWORD sl = ms == INFINITE ? os_slice() : 0;
     EnterCriticalSection(&o->cs);
     while (!o->signaled) {
+        if (sl) { if (!SleepConditionVariableCS(&o->cv, &o->cs, sl) && o->signaled) InterlockedIncrement64(&g_os_lost_ev); continue; }      /* (a slice ended with the flag set: that wake-up was lost) */
         if (!SleepConditionVariableCS(&o->cv, &o->cs, ms)) { ok = o->signaled; break; }
     }
     if (ok && o->autoclear) o->signaled = 0;
@@ -713,7 +751,8 @@ static void ev_trywait(Ctx *c) { RET(ev_wait_ms(obj(A0), 0)); }
 static void ev_timedwait(Ctx *c) { uint64_t k_ = A0; L1O("event timedwait >", k_); osw_enter("event timed wait", k_, c->x[30]); RET(ev_wait_ms(obj(A0), ns_to_ms((int64_t)A1))); osw_leave(); L1O("event timedwait <", k_); }
 
 /* ---------------------------------------------------------------- condition variables */
-static void cv_wait(Ctx *c) { uint64_t k_ = A0; L1O("cv wait >", k_); osw_enter("condition wait", k_, c->x[30]); SleepConditionVariableCS(&obj(A0)->cv, &obj(A1)->cs, INFINITE); osw_leave(); L1O("cv wait <", k_); }
+static int g_os_slice_cv = -1;      /* (rb-8ms) SSBU_OS_WAITSLICE_CV=1: condition waits in slices too (off: a spurious return of nn::os::WaitConditionVariable ended in an SDK system_error at a match end, pair r8_g27) */
+static void cv_wait(Ctx *c) { uint64_t k_ = A0; L1O("cv wait >", k_); osw_enter("condition wait", k_, c->x[30]); if (g_os_slice_cv < 0) { const char *e = getenv("SSBU_OS_WAITSLICE_CV"); g_os_slice_cv = e && atoi(e) > 0; } DWORD sl = g_os_slice_cv ? os_slice() : 0; if (!SleepConditionVariableCS(&obj(A0)->cv, &obj(A1)->cs, sl ? sl : INFINITE)) InterlockedIncrement64(&g_os_cv_slices); osw_leave(); L1O("cv wait <", k_); }
 static void cv_timedwait(Ctx *c) {                    /* returns ConditionVariableStatus: 0 timeout, 1 signalled */
     RET(SleepConditionVariableCS(&obj(A0)->cv, &obj(A1)->cs, ns_to_ms((int64_t)A2)) ? 1 : 0);
 }

@@ -6,6 +6,13 @@
  * store per lane and a 16-byte load after them that the CPU cannot forward). The same operations in the same order. */
 #ifndef RECOMP_NEON_H
 #define RECOMP_NEON_H
+#ifdef R1_MARK
+extern __declspec(dllexport) int r1_fastneon;      /* (rb-8ms) game_shim_r1.c: 1 = the vector forms of neon_fast.h */
+#include "neon_fast.h"
+#define NF_ON r1_fastneon
+#else
+#define NF_ON 0
+#endif
 
 static inline uint64_t vget(const V128 *v, int sz, int i) {
     switch (sz) {
@@ -84,6 +91,21 @@ static inline double f3d(int op, double acc, double a, double b, uint64_t *mask,
 static inline void v_f3v(V128 *d, const V128 *pn, const V128 *pm, int op, int dbl, int n) {
     V128 a = *pn, b = *pm, acc = *d, r;
     r.d[0] = 0; r.d[1] = 0;
+#ifdef R1_MARK
+    if (NF_ON && !dbl && (n == 4 || n == 2)) {          /* (rb-8ms) neon_fast.h */
+        __m128 x = _mm_loadu_ps(a.f), y = _mm_loadu_ps(b.f), z; int done = 1;
+        switch (op) {
+        case F_ADD: z = nf_fnan(_mm_add_ps(x, y)); break;
+        case F_SUB: z = nf_fnan(_mm_sub_ps(x, y)); break;
+        case F_MUL: z = nf_fnan(_mm_mul_ps(x, y)); break;
+        case F_DIV: z = nf_fnan(_mm_div_ps(x, y)); break;
+        case F_MLA: case F_MLS: done = nf_fma(&r, &acc, &a, &b, n, op == F_MLS); z = _mm_loadu_ps(r.f); break;
+        default: done = 0; z = x; break;
+        }
+        if (done) { if (n == 2) z = _mm_movelh_ps(z, _mm_setzero_ps()); _mm_storeu_ps(r.f, z); *d = r; return; }
+        r.d[0] = 0; r.d[1] = 0;
+    }
+#endif
     if (op == F_ADDP) {
         if (dbl) { r.df[0] = a.df[0] + a.df[1]; if (n == 2) r.df[1] = b.df[0] + b.df[1]; }
         else {

@@ -861,6 +861,7 @@ static void rbg_fight_off(void) {
     rbg_pin(0);
     LOG("r1: RB NET: match %d over: ring emptied, session reset for the next match\n", rbn_match_number());
     { char mk[24]; snprintf(mk, sizeof mk, "match%dover", g_rbg_in_match == 1 ? rbn_match_number() : 0); if (g_rbg_in_match == 1) input_mark(mk); else input_mark("localmatchover"); }
+    LOG("r1: RB NET report: holds refused while the font job runs (SSBU_RB_FONTHOLD) %lld, H1 over an H1 not let go (SSBU_RB_WHGUARD) %lld, main stuck in yields with threads held (SSBU_RB_UNSTICK) %lld (threads resumed %lld)\n", g_fonthold_n, g_ra_wh_double, g_unstick_n, g_unstick_res);
     LOG("r1: RB NET report: holds that waited for the font job %lld, count reset %lld; H1 waits for it %lld (%.3f ms each)\n", g_fontwait_n, g_fontwait_reset, g_fontwait_h1, g_fontwait_h1 ? g_fontwait_h1_ms / (double)g_fontwait_h1 : 0.0);
     if (g_fd_on > 0) LOG("r1: FONTDIAG: font job runs %lld, in progress at loads %lld, at the idle collector %lld, at other safe points %lld; list broken %lld times\n", g_fd_runs, g_fd_atload, g_fd_atgc, g_fd_atcap, g_fd_bad);
     g_rbg_gc_L = 0; g_rbg_gc_frame = -1;

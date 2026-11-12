@@ -145,7 +145,7 @@ static void wd_owner(const char *name, CRITICAL_SECTION *cs) {
 }
 unsigned long nvn_front_present_tid(void);         /* nvn_gl.c */
 static void wd_dump(double stall_s, LONG64 tries_since) {
-    static struct { DWORD tid; ULONGLONG cpu0, cpu1, born; int prio, nfr; uint64_t pc[28]; } th[400];
+    static struct { DWORD tid; ULONGLONG cpu0, cpu1, born; int prio, nfr, susp; uint64_t pc[28]; } th[400];      /* (rb-8ms) susp: suspend count before the report's own */
     char path[2 * MAX_PATH], tb[48], ab[400];
     LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
     SYSTEMTIME st; GetLocalTime(&st);
@@ -183,7 +183,7 @@ static void wd_dump(double stall_s, LONG64 tries_since) {
             if (te.th32OwnerProcessID != pid || te.th32ThreadID == me) continue;
             int i;
             for (i = 0; i < nt && th[i].tid != te.th32ThreadID; i++) {}
-            if (i == nt) { if (pass || nt == 400) continue; th[nt].tid = te.th32ThreadID; th[nt].cpu0 = th[nt].cpu1 = 0; th[nt].nfr = 0; th[nt].prio = 0; th[nt].born = ~0ull; nt++; }
+            if (i == nt) { if (pass || nt == 400) continue; th[nt].tid = te.th32ThreadID; th[nt].cpu0 = th[nt].cpu1 = 0; th[nt].nfr = 0; th[nt].susp = 0; th[nt].prio = 0; th[nt].born = ~0ull; nt++; }
             HANDLE h = OpenThread(THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
             FILETIME c, e, k, u;
             if (!h) continue;
@@ -198,7 +198,8 @@ static void wd_dump(double stall_s, LONG64 tries_since) {
         HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, th[i].tid);
         static CONTEXT ctx;
         if (!h) continue;
-        if (SuspendThread(h) != (DWORD)-1) {
+        DWORD sc_ = SuspendThread(h); th[i].susp = sc_ == (DWORD)-1 ? -1 : (int)sc_;
+        if (sc_ != (DWORD)-1) {
             memset(&ctx, 0, sizeof ctx);
             ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
             if (GetThreadContext(h, &ctx)) th[i].nfr = wd_walk(&ctx, th[i].pc, 28);
@@ -209,7 +210,7 @@ static void wd_dump(double stall_s, LONG64 tries_since) {
     { ULONGLONG first = ~0ull; for (int i = 0; i < nt; i++) if (th[i].born < first) { first = th[i].born; g_wd_main_tid = th[i].tid; } }      /* the process's first thread runs the guest's main thread (boot.c) */
     wdp("  threads: %d (the watchdog's own not listed); \"cpu\" = CPU time used in 300 ms: 0.0 means blocked or idle\n", nt);
     for (int i = 0; i < nt; i++) {
-        wdp("  thread %lu  %s  priority %d  cpu %.1f ms of 300\n", (unsigned long)th[i].tid, wd_tname(th[i].tid, tb, sizeof tb), th[i].prio, (double)(th[i].cpu1 - th[i].cpu0) / 10000.0);
+        wdp("  thread %lu  %s  priority %d  cpu %.1f ms of 300%s\n", (unsigned long)th[i].tid, wd_tname(th[i].tid, tb, sizeof tb), th[i].prio, (double)(th[i].cpu1 - th[i].cpu0) / 10000.0, th[i].susp > 0 ? "  SUSPENDED (by someone else)" : "");
         for (int f = 0; f < th[i].nfr; f++) { wd_addr(th[i].pc[f], ab, sizeof ab); wdp("      %2d  %s\n", f, ab); }
     }
     {   /* session 14: the game's thread again, 12 samples 50 ms apart (8 frames each): a thread that is in the SAME innermost

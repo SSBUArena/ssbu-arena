@@ -1185,7 +1185,7 @@ static void rgc_after_tt(void) {                           /* after the copies a
 }
 static long long g_rg_refused;                        /* (R3 pub1) loads refused: a thread still running after the hold */
 static long long g_rg_rezero;                         /* (Arena) pages decommitted at the loaded frame, committed since: zeroed by the load */
-static long long g_rg_ldpg, g_rg_recommit, g_rg_rewake;           /* (R3 net3) pages to load, all loads (the written ones: g_cp_wrote); pages committed again by a load */
+static long long g_rg_ldpg, g_rg_recommit, g_rg_rewake, g_rg_cvwake;           /* (R3 net3) pages to load, all loads (the written ones: g_cp_wrote); pages committed again by a load */
 /* (Battle Arena squad, run csh2, 2026-11-10: main waited > 5 min in the game's release of a weapon's resource handle, 0x7103737a10
  * polling its job; ResLoadingThread / ResInflateThread asleep at their events, last woken 43 s before, at the last change of fighter)
  * The resource service (*(0x7105331f28)) keeps its threads' hand-shake in guest memory: + 0xe0 = 2 "the loader is awake" (written by
@@ -1382,6 +1382,8 @@ int r1_ring_load(long long frame, Ctx *c) {
     double t3 = now_ms();
     {   int os_r1_wake_waits_from(uint64_t lr);      /* (Arena: the 6700K hang) the task workers' idle wait: woken again (os_threads.c) */
         g_rg_rewake += os_r1_wake_waits_from(GA(0x710354a5acull));
+        {   int os_r1_wake_cv_waits(int mode); static int cw = -1; if (cw < 0) { const char *e = getenv("SSBU_RB_CVWAKE"); cw = e ? atoi(e) : 1; }      /* (rb-8ms) os_threads.c */
+            if (cw > 0) g_rg_cvwake += os_r1_wake_cv_waits(cw); }
         {   extern long long g_wake_nolock; static long long seen; static int said;      /* (crash phase) a wake-up done without the event's lock */
             if (g_wake_nolock != seen) { seen = g_wake_nolock; if (said++ < 10) LOG("r1: RING: load at frame %lld: a worker's event was locked by a suspended thread: woken without its lock (%lld so far)\n", (long long)frame, seen); } } }
     rg_loader_wake(frame);
@@ -1399,6 +1401,31 @@ int r1_ring_load(long long frame, Ctx *c) {
 
 /* ---------------------------------------------------------------- the rollback simulation (SSBU_RB_SIM) */
 static DWORD g_rgp_main; static int g_rgs_prof; extern volatile int g_rgp_seg; static void rgs_samp_start(void);
+/* (rb-8ms 2026-11-12, Smashville freeze, pair r8_gmix game B, exe r8m42) the freeze report now shows it: every TaskWorker SUSPENDED by
+ * us, main spinning with nn::os::YieldThread in the submission (f_710384f460) for the render dispatch, which needs those workers. A
+ * guest thread left suspended while main runs guest code is a hold not given back. r1_unstick (os_threads.c os_YieldThread, main
+ * thread only, after SSBU_RB_UNSTICK ms of yields from one place, default 50; 0 = off): the H1 hold let go if it is on, then every
+ * other guest thread still suspended (not a sound thread kept on purpose, not a thread born after the loaded frame) resumed; logged. */
+static int g_unstick_ms = -1; static long long g_unstick_n, g_unstick_res;
+void r1_unstick(double spun_ms, uint64_t lr) {
+    if (g_unstick_ms < 0) { const char *e = getenv("SSBU_RB_UNSTICK"); g_unstick_ms = e ? atoi(e) : 50; }
+    if (!g_unstick_ms || spun_ms < g_unstick_ms || !g_rg_ready || GetCurrentThreadId() != g_rgp_main) return;
+    g_unstick_n++;
+    int wh = (int)g_ra_wh_on, nwh = g_ra_nwh, pause = g_ra_wd_pause, res = 0;
+    if (wh) ra_workers_release();
+    char buf[1200]; int at = 0; buf[0] = 0;
+    Ctx *tc; const char *nm; HANDLE h; DWORD me = GetCurrentThreadId();
+    for (int i = 0; i < g_ninfo && guest_thread_info(i, &tc, &nm, &h); i++) {      /* (threads born after the loaded frame stay held: stop_born_threads) */
+        if (!h || GetThreadId(h) == me || (g_snd_keep && snd_kept_at(h) >= 0)) continue;
+        DWORD c = SuspendThread(h); if (c == (DWORD)-1) continue;
+        ResumeThread(h);
+        if (c > 0) { for (DWORD k = 0; k < c; k++) ResumeThread(h); res++; if (at < 1100) at += snprintf(buf + at, sizeof buf - at, " %s(%lu)", nm ? nm : "?", (unsigned long)c); }
+    }
+    g_unstick_res += res;
+    if (g_unstick_n <= 30) LOG("r1: UNSTICK %lld: main spun %.0f ms in yields at %llx; H1 hold was %s (%d workers, watchdog pause %d); other guest threads found suspended and resumed: %d:%s\n",
+        g_unstick_n, spun_ms, (unsigned long long)lr, wh ? "ON: let go" : "off", nwh, pause, res, buf);
+}
+
 static int g_rgs_lastlite;                              /* R3 (SSBU_RB_NET_LASTLITE=1): the last re-run pass skips like the others (the real pass after it runs everything) */
 static int g_rgs_on = -1, g_rgs_n = 10, g_rgs_k = 7, g_rgs_warm = 30, g_rgs_skip, g_rgs_left, g_rgs_ki;
 static long long g_rgs_next, g_rgs_real_since, g_rgs_done, g_rgs_nocap, g_rgs_padmiss, g_rgs_ksum[RG_MAXSLOT];
@@ -2017,6 +2044,8 @@ static void rgs_report(void) {
         if (g_lh_hash_ms_x1000) LOG("r1: RING loads (SSBU_RB_LHMAIN): main's hashing %.3f ms per load\n", g_rg_loads ? g_lh_hash_ms_x1000 / 1000.0 / (double)g_rg_loads : 0.0);
         if (g_cph_dedup) LOG("r1: RING captures (SSBU_RB_LOADHASH bit 2): pages written with the same bytes, not kept %lld; kept %lld (%.1f%% not kept)\n", g_rg_dedup_n, g_rg_dedup_kept, g_rg_dedup_n + g_rg_dedup_kept ? 100.0 * (double)g_rg_dedup_n / (double)(g_rg_dedup_n + g_rg_dedup_kept) : 0.0); }
     LOG("r1: RING loads: pages committed again (freed by the game after the loaded frame) %lld; pages decommitted at the loaded frame and committed since, zeroed %lld; task worker wake-ups given again %lld; resource loader / inflater woken after a load (SSBU_RB_LOADERWAKE) %lld / %lld\n", g_rg_recommit, g_rg_rezero, g_rg_rewake, g_rg_ldwake[0], g_rg_ldwake[1]);
+    LOG("r1: RING loads: render dispatch condition waits woken again (SSBU_RB_CVWAKE) %lld\n", g_rg_cvwake);
+    { long long os_lost_wakeups(long long *cv_slices); long long cs = 0, le = os_lost_wakeups(&cs); LOG("r1: OS waits (SSBU_OS_WAITSLICE): event wake-ups lost and found again after a slice %lld; condition waits ended by a slice %lld\n", le, cs); }
     if (g_ldp_n) LOG("r1: RING load parts (means ms): sweep (write watch questions, marks, extras) %.3f, page list %.3f, copy %.3f (%lld loads)\n", g_ldp[0] / g_ldp_n, g_ldp[1] / g_ldp_n, g_ldp[2] / g_ldp_n, g_ldp_n);
     for (int k = 0; k < RG_MAXSLOT; k++) {
         int m = g_rgl_n[k]; if (!m) continue;
