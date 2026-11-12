@@ -344,6 +344,8 @@ static int rbg_pin_topology(unsigned long long m[5]) {
      * on main's L3, +0.15 on the other one). */
     {   static int cc = -1; if (cc < 0) { const char *e = getenv("SSBU_RB_COPYCCX"); cc = !(e && e[0] == '0'); }
         if (cc && (all & ~l3)) { g_rg_cm_same = same; g_rg_cm_other = all & ~l3; g_rg_cm_cur = 0; g_rg_copy_ccx = 1; } }
+    {   const char *e = getenv("SSBU_RB_CAPMASK"); unsigned long long cm = e ? strtoull(e, NULL, 16) : 0;      /* (rb-8ms, test) the copy helpers' mask for captures */
+        if (cm && g_rg_copy_ccx) { g_rg_cm_same = cm; m[1] = cm; } }
     return 1;
 }
 static void rbg_pin_apply(unsigned long long mm, unsigned long long mc, unsigned long long mw, unsigned long long md, unsigned long long mo) {
@@ -441,7 +443,7 @@ static void rbg_step_body(Ctx *c) {
     g_rbg_refused_tick = 0;
     if (g_rbg_defcap >= 0 && g_rbg_defcap != i) { g_rbg_defcap = -1; g_rbg_dc_drop++; }      /* (rb-8ms, RECAP=7) never made (no wait came): dropped */
     if (g_rbg_wdfix < 0) { const char *e = getenv("SSBU_RB_NET_WDFIX"); g_rbg_wdfix = !e || atoi(e) != 0; e = getenv("SSBU_RB_NET_DETAIL"); g_rbg_detail = e && atoi(e) > 0;
-        e = getenv("SSBU_RB_NET_RECAP"); g_rbg_recap = e ? atoi(e) : 3; e = getenv("SSBU_RB_NET_KEEP"); g_rbg_keep = e ? atoi(e) : 2; }
+        e = getenv("SSBU_RB_NET_RECAP"); g_rbg_recap = e ? atoi(e) : 7;      /* (rb-8ms: 7, the last re-run pass captured in the wait; =3 at once as before) */ e = getenv("SSBU_RB_NET_KEEP"); g_rbg_keep = e ? atoi(e) : 2; }
     if (g_rbg_wdfix) g_ra_wd_pause = 1;                 /* (until H2 lets the workers go: r1_state.c ra_kick2) */
     if (g_rbg_wd_before != g_ra_wd_fired) { if (g_rg_ready) LOG("r1: RB NET: the task-worker watchdog let them go before the safe point of frame %lld (%lld times so far)\n", i, g_ra_wd_fired); g_rbg_wd_before = g_ra_wd_fired; }
     if (g_rbg_in_match == 3) return;                    /* (R3 lwr, run lwr2: both games crashed here) a room fight already running stays one until its fight-off:
@@ -584,7 +586,14 @@ static void rbg_step_body(Ctx *c) {
             r1_ring_let_go();
             if (g_rbg_keep != 1 && !rbg_capture(i, c)) g_rbg_capfail++;
         } else if (rbg_real_skip(i)) g_rbg_capskip_real++;
-        else { rbg_rpause(2, 1); if (!rbg_capture(i, c)) g_rbg_capfail++; rbg_rpause(2, 0); }
+        else {
+            /* (rb-8ms, option) SSBU_RB_CAPDEFER=1: the real pass's capture made in the pacing wait (as RECAP=7 does for the last re-run
+             * pass): the state it keeps has the preparation jobs done (the first re-run pass after a load of it does not wait for them,
+             * 0.17-0.24 ms); the capture's time leaves the normal tick (same work per period, done in the wait) */
+            static int cd = -1; if (cd < 0) { const char *e = getenv("SSBU_RB_CAPDEFER"); cd = e && atoi(e) > 0; }
+            if (cd && g_rbg_pace) g_rbg_defcap = i;
+            else { rbg_rpause(2, 1); if (!rbg_capture(i, c)) g_rbg_capfail++; rbg_rpause(2, 0); }
+        }
         if (g_rbg_test_f == -2) { const char *e = getenv("SSBU_RB_NET_TEST"); g_rbg_test_f = -1; if (e && *e) { long long tf = -1; int ms = 0, k = 0; sscanf(e, "%lld,%d,%d", &tf, &ms, &k); g_rbg_test_f = tf; g_rbg_test_ms = ms; g_rbg_test_k = k; } }
         if (g_rbg_test_f > 0 && i >= g_rbg_test_f && !g_rbg_noring) {    /* (the first real pass from that frame on without a rollback of its own) */
             g_rbg_test_f = -1;                        /* test: a long stall at this safe point, then a rollback (same pads: the timeline must not change) */

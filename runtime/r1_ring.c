@@ -627,10 +627,14 @@ static void rg_loader_print(void (*pr)(const char *fmt, ...));      /* (below) *
  * g_rg_cm_same = main's L3, g_rg_cm_other); captures stay on main's L3 (reading the game's pages from main's caches; on the other L3
  * the recapture was 0.2 ms slower). rg_helpers_on(1) / (0) moves them (an affinity change of the idle helpers, only when it changes). */
 static int g_rg_copy_ccx, g_rg_cm_cur; static unsigned long long g_rg_cm_same, g_rg_cm_other;
+static int g_rg_ncp_all = -1, g_rg_cap_helpers = -1;      /* (rb-8ms, option) SSBU_RB_CAPHELPERS=<n>: with COPYCCX, captures use n of the helpers (loads all) */
 static void rg_helpers_on(int other) {
-    if (!g_rg_copy_ccx || other == g_rg_cm_cur) return;
+    if (!g_rg_copy_ccx) return;
+    if (g_rg_ncp_all < 0) { g_rg_ncp_all = g_ncp; const char *e = getenv("SSBU_RB_CAPHELPERS"); g_rg_cap_helpers = e ? atoi(e) : g_ncp; if (g_rg_cap_helpers < 0 || g_rg_cap_helpers > g_ncp) g_rg_cap_helpers = g_ncp; }
+    g_ncp = other ? g_rg_ncp_all : g_rg_cap_helpers;
+    if (other == g_rg_cm_cur) return;
     unsigned long long m = other ? g_rg_cm_other : g_rg_cm_same; if (!m) return;
-    for (int k = 0; k < g_ncp; k++) if (g_cp_h[k]) SetThreadAffinityMask(g_cp_h[k], (DWORD_PTR)m);
+    for (int k = 0; k < g_rg_ncp_all; k++) if (g_cp_h[k]) SetThreadAffinityMask(g_cp_h[k], (DWORD_PTR)m);
     g_rg_cm_cur = other;
 }
 static double rg_cpmain(int capture) {
