@@ -1109,8 +1109,8 @@ static int mark_bind(void) {
     pm1 = (uint8_t **)GetProcAddress(m, "r1_m1"); pm2 = (uint8_t **)GetProcAddress(m, "r1_m2");
     plo1 = (uint64_t *)GetProcAddress(m, "r1_lo1"); pn1 = (uint64_t *)GetProcAddress(m, "r1_n1"); pn2 = (uint64_t *)GetProcAddress(m, "r1_n2");
     if (!pm1 || !pm2 || !plo1 || !pn1 || !pn2) { LOG("r1: MARK: the DLL has no r1_m1.. exports: off\n"); return 0; }
-    {   int *fn = (int *)GetProcAddress(m, "r1_fastneon");      /* (rb-8ms) neon_fast.h copies: SSBU_FASTNEON (default 1 since 12/11 sera: Smashville heavy -0.31 ms, r8_fz4) */
-        const char *e = getenv("SSBU_FASTNEON"); int v = e ? atoi(e) : 1;
+    {   int *fn = (int *)GetProcAddress(m, "r1_fastneon");      /* (rb-8ms) neon_fast.h copies: SSBU_FASTNEON (default 0: alone -0.12 ms on Smashville heavy, 2 rounds of 3, r8_fz5) */
+        const char *e = getenv("SSBU_FASTNEON"); int v = e ? atoi(e) : 0;
         if (fn) { *fn = v; LOG("r1: NEON vector forms (SSBU_FASTNEON) %s\n", v ? "ON" : "off"); } else if (v) LOG("r1: NEON vector forms asked (SSBU_FASTNEON) but the game DLL has none\n"); }
     {   int *fz = (int *)GetProcAddress(m, "r1_fmazero");       /* (rb-8ms) runtime.h rt_fmaf: an exact zero without the library (SSBU_FMAZERO, default 1) */
         const char *e = getenv("SSBU_FMAZERO"); int v = !(e && e[0] == '0');
