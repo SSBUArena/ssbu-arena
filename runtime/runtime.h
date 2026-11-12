@@ -235,11 +235,25 @@ static inline uint64_t f2u64(double v) { if (v != v || v <= 0) return 0; if (v >
  * (subnormal: the halfway bits are elsewhere; NaN / infinity: the library's NaN). Those few go to the library: the result
  * is bit for bit the library's. -DRECOMP_FMAF_LIBM (build_opt.py RECOMP_FAST_FMAF=0): the library for every call. */
 #if !defined(RECOMP_FMAF_LIBM) && !defined(__cplusplus)
+#ifdef R1_GAMEDLL
+/* (rb-8ms) the game DLL of the rollback build (rb8ms build_dll8.sh: -DR1_GAMEDLL): an exact zero no longer goes to the library.
+ * x * y is exact in a double (24 + 24 bits, exponents far inside the double range) and the double sum of it and z is 0 only
+ * when the exact x * y + z is 0 (a nonzero exact sum is a multiple of 2^-298, far above the double's smallest subnormal, so
+ * it cannot round to 0); the sign of that zero follows the same IEEE rule in double as in fmaf (the product's sign is the
+ * exact product's, then the sum rule: -0 only when both are -0 in round to nearest): (float)r is fmaf's result bit for bit.
+ * Matrix compositions make many exact zeros (0 * x + 0): Smashville's stage animation f_710389a390 spent ~12% of its time in
+ * the library's fmaf (rb8ms profile st_off3). Tested only on the slow path, so the fast path is as before. r1_fmazero
+ * (game_shim_r1.c, SSBU_FMAZERO=0: off) */
+extern __declspec(dllexport) int r1_fmazero;
+#endif
 static inline float rt_fmaf(float x, float y, float z) {
     double r = (double)x * (double)y + (double)z;
     uint64_t u; memcpy(&u, &r, sizeof u);
     uint32_t e = (uint32_t)(u >> 52) & 0x7ff;
     if ((u & 0x1fffffffull) != 0x10000000ull && e >= 0x3ff - 126 && e <= 0x3ff + 127) return (float)r;
+#ifdef R1_GAMEDLL
+    if ((u << 1) == 0 && r1_fmazero) return (float)r;
+#endif
     return fmaf(x, y, z);
 }
 #define fmaf rt_fmaf

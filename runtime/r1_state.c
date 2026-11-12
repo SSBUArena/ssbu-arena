@@ -1112,6 +1112,9 @@ static int mark_bind(void) {
     {   int *fn = (int *)GetProcAddress(m, "r1_fastneon");      /* (rb-8ms) neon_fast.h: SSBU_FASTNEON (default 0) */
         const char *e = getenv("SSBU_FASTNEON"); int v = e ? atoi(e) : 0;
         if (fn) { *fn = v; LOG("r1: NEON vector forms (SSBU_FASTNEON) %s\n", v ? "ON" : "off"); } else if (v) LOG("r1: NEON vector forms asked (SSBU_FASTNEON) but the game DLL has none\n"); }
+    {   int *fz = (int *)GetProcAddress(m, "r1_fmazero");       /* (rb-8ms) runtime.h rt_fmaf: an exact zero without the library (SSBU_FMAZERO, default 1) */
+        const char *e = getenv("SSBU_FMAZERO"); int v = !(e && e[0] == '0');
+        if (fz) { *fz = v; LOG("r1: fmaf exact zero without the library (SSBU_FMAZERO) %s\n", v ? "ON" : "off"); } }
     return 1;
 }
 static uint8_t *in_shadow(uint8_t *a, uint8_t **cmap, size_t *pi) {

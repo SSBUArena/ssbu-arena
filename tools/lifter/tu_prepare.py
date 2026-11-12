@@ -57,6 +57,20 @@ def decls(gen_dir):
         return _decls[gen_dir]
 
 
+# (rb-8ms 2026-11-12) RECOMP_NF_FNS=<addr>,<addr>..: these functions (plain `void f_<addr>(Ctx *c) {`, in the optimised part) get
+# a copy f_<addr>ff (a hex suffix: ctxscope.py's alias information needs [fu]_<hex>) with the vector forms of neon_fast.h (v_tbl / v_f3v / v_f3e -> nf_v_*), entered at their start when
+# r1_fastneon is set (SSBU_FASTNEON). Only for builds with -DR1_GAMEDLL (neon.h includes neon_fast.h there).
+NF_FNS = {'f_' + a.strip().lower() for a in (os.environ.get('RECOMP_NF_FNS') or '').split(',') if a.strip()}
+NF_SUB = re.compile(r'\bv_(tbl|f3v|f3e)\(')
+
+
+def nf_copy(name, cur):
+    """the function's lines -> its vector copy (static) followed by the function with the switch at its start"""
+    body = cur[1:]
+    copy = ['static void %sff(Ctx *c) {' % name] + [NF_SUB.sub(r'nf_v_\1(', l) for l in body]
+    return copy + [cur[0], '  if (r1_fastneon) { %sff(c); return; }' % name] + body
+
+
 def _write_if_changed(path, text):
     try:
         with open(path, encoding='latin-1', newline='') as f:
@@ -98,6 +112,8 @@ def prepare(src, out_dir, split_lines, cold=None, own_decls=True, stats=None):
             if line.startswith('}'):
                 n = len(cur) - 2
                 why = 'long' if split_lines and n > split_lines else 'cold' if cold is not None and cold(name) else None
+                if not why and name in NF_FNS and cur[0] == 'void %s(Ctx *c) {' % name:
+                    cur = nf_copy(name, cur)
                 (big if why else small).extend(cur)
                 if why and stats is not None:
                     s = stats.setdefault(why, [0, 0])
