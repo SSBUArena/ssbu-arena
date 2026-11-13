@@ -176,7 +176,7 @@ int rbn_bot_on(void) { return g_bot; }
  * (seconds, default 120). No agreement = this match is played locally (Final Destination, one stock) and left at once
  * (rb_rollback.c: player 1 walks off the stage), back to the menus; the other game is told (REFUSE) so that it stops waiting. */
 #include "rb_hs.h"
-#define RBH_PROTO 5                                     /* 3 (hs12): RbhMatch carries the stage set-up context; 4 (hs14): PADS end with a mode byte, the stage is drawn from both picks; 5 (R3 lwr): Local Wireless room matches, LAYOUT */
+#define RBH_PROTO 6                                     /* 6 (rb-8ms 13/11, release requirement): Smashville at a fixed hour + light villagers, never with 5 and older; 3 (hs12): RbhMatch carries the stage set-up context; 4 (hs14): PADS end with a mode byte, the stage is drawn from both picks; 5 (R3 lwr): Local Wireless room matches, LAYOUT */
 enum { RBH_CHOICE = 0x48, RBH_PROPOSE = 0x49, RBH_ACCEPT = 0x4a, RBH_REFUSE = 0x4b, RBH_BLOCK = 0x4c, RBH_LAYOUT = 0x4d };      /* (R3 lwr) LAYOUT: a room match, each game's own player's control layout */
 #pragma pack(push, 1)
 typedef struct { uint8_t type, proto; int16_t game_build; uint32_t exe_stamp; uint32_t nonce, echo; RbhMatch m; } RbhMsg;
@@ -258,12 +258,9 @@ int rbn_match_cancelled(void) { return g_hs_room ? 2 : (int)g_hs_cancelled; }   
 static int g_setup_waiting, g_hs_lwr;
 void rbn_set_setup_waiting(int waiting) { g_setup_waiting = waiting; }
 int rbn_room_rollback(void) { return g_hs_lwr; }       /* (R3 lwr) the last agreed match is a Local Wireless room's match played with rollback */
-/* (rb-8ms 2026-11-13) nntime.c SSBU_RB_FIXCLOCK: a rollback match (online / room, agreed by the handshake) from its agreement to
- * its end (rbn_match_reset), the whole time this game is in a Local Wireless room (run r8_lvx1: a room match's stage got its hour
- * before the agreement, from the host's stage block of the room's flow), or any fight of the loop test; offline fights and menus
- * keep the PC's clock. rbn_rb_agreed (SSBU_RB_LIGHTVILL): only the agreed rollback match (or the loop test). */
+/* (rb-8ms 2026-11-13) rb_rollback.c SSBU_RB_LIGHTVILL: an agreed rollback match (online / room) from its agreement to its end
+ * (rbn_match_reset), or any fight of the loop test */
 static volatile LONG g_clk_match;
-int rbn_clock_match(void) { int nnldn_role(void); return rbn_on() > 0 && (g_loop || g_clk_match || nnldn_role() != 0); }
 int rbn_rb_agreed(void) { return rbn_on() > 0 && (g_loop || g_clk_match); }
 /* (Arena) a rollback match was agreed and has not started yet (its base state not made): the fight's entry and countdown run
  * on both games before it; a button held there (a real player's, or a test's input sequence) changed one game's fighter
