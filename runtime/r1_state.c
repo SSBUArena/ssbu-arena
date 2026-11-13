@@ -501,6 +501,7 @@ void os_r1_fibers(void (*cb)(uint64_t key, Ctx *c, uint64_t stack, uint64_t stac
  * CONTEXT at +0x30, StackBase +0x10, StackLimit +0x18) and its host stack from the saved RSP to StackBase. Both are
  * copied with its guest context (Ctx); a restore puts all three back when the fiber is switched away then too. */
 #define FIB_BLOCK 0x500
+static long long g_fib_limkept;                           /* (rb-8ms 13/11) SSBU_RB_FIBLIMIT: restores that kept the lower StackLimit */
 typedef struct { uint64_t key; uint64_t obj[6]; void *fls; uint8_t flsb[392]; Ctx *c; void *fiber; Ctx regs; const char *imp; uint64_t from, sp; int susp; uint8_t blk[FIB_BLOCK]; uint8_t *stk; size_t n; uint64_t rsp; } Fib;
 static Fib g_fib[1024]; static int g_fib_running, g_nfib, g_fib_mode, g_fib_same, g_fib_diff, g_fib_new, g_fib_bad;
 void os_r1_fiber_set(uint64_t key, void *fiber, Ctx *fctx, int fresh);
@@ -679,7 +680,16 @@ static void fibers_restore_all_tt(void) {
             if (g_nrest < 1024) { g_rest_lo[g_nrest] = *(uint64_t *)(f->blk + 0x20); g_rest_hi[g_nrest] = *(uint64_t *)(f->blk + 0x10); g_nrest++; }
             R1_CTR("restore: fiber stack copied back (key, lo)", f->key, *(uint64_t *)(f->blk + 0x20));
             memcpy((void *)(uintptr_t)f->rsp, f->stk, f->n);
-            memcpy(f->fiber, f->blk, FIB_BLOCK);
+            {   /* (rb-8ms 13/11, OpenSmash 2348216) SSBU_RB_FIBLIMIT (default 1, 0 = the whole block as before): the fiber block's StackLimit
+                 * (+0x18, the lowest committed stack address the host knows) is kept when it is LOWER now than at the save: the stack grew
+                 * after the save and those pages stay committed; putting back the saved, higher limit made the next large frame's
+                 * __chkstk probe (read-modify-write) pages below it that live frames of the restored stack may use */
+                static int fl = -1; if (fl < 0) { const char *e = getenv("SSBU_RB_FIBLIMIT"); fl = !(e && e[0] == '0'); }
+                uint64_t lim_now = *(uint64_t *)((uint8_t *)f->fiber + 0x18);
+                memcpy(f->fiber, f->blk, FIB_BLOCK);
+                if (fl && lim_now && lim_now < *(uint64_t *)((uint8_t *)f->fiber + 0x18)) { *(uint64_t *)((uint8_t *)f->fiber + 0x18) = lim_now; g_fib_limkept++;
+                    if (g_fib_limkept <= 5 || g_fib_limkept % 1000 == 0) LOG("r1: fiber %llx restored with its current, lower StackLimit %llx (SSBU_RB_FIBLIMIT; %lld so far)\n", (unsigned long long)f->key, (unsigned long long)lim_now, g_fib_limkept); }
+            }
             if (f->fls) memcpy(f->fls, f->flsb, sizeof f->flsb);
             *f->c = f->regs;
             g_fib_same++;
