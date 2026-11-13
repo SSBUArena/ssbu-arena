@@ -60,6 +60,7 @@ int host_fixed_clock(uint64_t lr) {
  * 710366d388: the game's Mersenne-twister generators at 710366d12c / d418) come AFTER the handshake, so they give a value made
  * from the agreed match seed, the same on both PCs. Read from each PC's own clock they made the two games differ from the
  * match's first frame (run lw18: 1519 of 1664 frames; with the clock fixed, run lw19: 4 of 1216). 0 = not such a match. */
+int host_seed_clock_site(uint64_t lr) { return lr == GA(0x710366d1f0ULL) || lr == GA(0x710366d388ULL); }   /* (rb-8ms) the two wall-clock seed reads */
 uint64_t host_match_clock(uint64_t lr) {
     int rbn_room_rollback(void); uint64_t rbn_match_seed(void);
     if (lr != GA(0x710366d1f0ULL) && lr != GA(0x710366d388ULL)) return 0;

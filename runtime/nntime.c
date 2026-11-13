@@ -45,10 +45,13 @@ static void read_calendar(uint64_t in, struct tm *t) {
 void host_clock_caller(const char *what, uint64_t lr);       /* nnsdk.c: SSBU_TICK_CALLERS */
 int host_fixed_clock(uint64_t lr);                            /* nnsdk.c: SSBU_FIXED_SEED */
 uint64_t host_match_clock(uint64_t lr);                       /* nnsdk.c: a room's rollback match */
+int host_seed_clock_site(uint64_t lr);                        /* nnsdk.c: the two wall-clock reads that seed generators */
+static int64_t fixclock_now(uint64_t lr);
 static void time_GetCurrentTime(Ctx *c) {
     host_clock_caller("GetCurrentTime", c->x[30]);
     uint64_t m = host_match_clock(c->x[30]);
-    wr64(A0, host_fixed_clock(c->x[30]) ? 1700000000ULL : m ? m : (uint64_t)now_posix());
+    int64_t f = m ? -1 : fixclock_now(c->x[30]);
+    wr64(A0, host_fixed_clock(c->x[30]) ? 1700000000ULL : m ? m : f >= 0 ? (uint64_t)f : (uint64_t)now_posix());
     RET(0);
 }
 /* ------------------------------------------------------------------------------------------------------------------
@@ -520,6 +523,39 @@ static int tz_to_posix(const TzRule *r, int year, int mon, int mday, int hour, i
     if (n == 2 && out[0] > out[1]) { int64_t s = out[0]; out[0] = out[1]; out[1] = s; }
     return n;
 }
+/* (rb-8ms 2026-11-13) SSBU_RB_FIXCLOCK: in a rollback match (rb_net.c rbn_clock_match: an online / room match agreed by the
+ * handshake, until its end; all the time in a Local Wireless room; every fight of the loop test) the game's wall clock reads a fixed LOCAL time, the same calendar time on
+ * both PCs whatever their time zones. Smashville turns the clock into hour, minute and day of the week at the stage's set-up
+ * (f_710177a... stores them at +0x95..0x97; its clock face reads it again at 71026aee28) and its background work depends on it:
+ * loop bench tick with rollback from ~8.5 (morning) to ~10.1 ms (Saturday 20:00-24:00). The two seed reads (710366d1f0 / d388,
+ * nnsdk.c host_match_clock in rooms) are left alone: the stage's random choices still change from match to match. Sync does not
+ * depend on the clock (pair r8_tz1, two different clocks: IDENTICAL); offline fights and menus keep the PC's clock.
+ * Value: unset or 1 = the default below, 0 = off, YYYYMMDDHHMM = that local calendar time, HHMM = that time on the default's day. */
+#define FIXCLOCK_DEFAULT "202611121300"
+static int64_t fixclock_now(uint64_t lr) {
+    static int64_t v = -2;
+    int rbn_clock_match(void);
+    if (v == -2) {
+        const char *e = getenv("SSBU_RB_FIXCLOCK"), *s = FIXCLOCK_DEFAULT;
+        char buf[16];
+        if (e && e[0] == '0' && !e[1]) v = -1;
+        else {
+            if (e && strlen(e) == 12) s = e;
+            else if (e && strlen(e) == 4) { memcpy(buf, FIXCLOCK_DEFAULT, 8); memcpy(buf + 8, e, 4); buf[12] = 0; s = buf; }
+            int f[5], ok = 1; const int at[5] = {0, 4, 6, 8, 10}, len[5] = {4, 2, 2, 2, 2};
+            for (int k = 0; k < 5; k++) { f[k] = 0; for (int j = 0; j < len[k]; j++) { char ch = s[at[k] + j]; if (ch < '0' || ch > '9') ok = 0; f[k] = f[k] * 10 + (ch - '0'); } }
+            int64_t t[2];
+            if (!ok || f[1] < 1 || f[1] > 12 || f[2] < 1 || f[2] > 31 || f[3] > 23 || f[4] > 59) { printf("fixed clock: SSBU_RB_FIXCLOCK=%s not understood: the default %s\n", e, FIXCLOCK_DEFAULT); fflush(stdout); s = FIXCLOCK_DEFAULT;
+                for (int k = 0; k < 5; k++) { f[k] = 0; for (int j = 0; j < len[k]; j++) f[k] = f[k] * 10 + (s[at[k] + j] - '0'); } }
+            if (tz_to_posix(my_rule(), f[0], f[1], f[2], f[3], f[4], 0, t) >= 1) v = t[0];
+            else v = days_from_civil(f[0], f[1], f[2]) * 86400 + f[3] * 3600 + f[4] * 60 + 3600;      /* inside a spring-forward gap: an hour later is valid */
+            printf("fixed clock: in rollback matches the game's wall clock reads %04d-%02d-%02d %02d:%02d local time (posix %lld; SSBU_RB_FIXCLOCK, 0 = off)\n", f[0], f[1], f[2], f[3], f[4], (long long)v);
+            fflush(stdout);
+        }
+    }
+    if (v < 0 || host_seed_clock_site(lr) || !rbn_clock_match()) return -1;
+    return v;
+}
 static void time_ToCalendarTimeInUtc(Ctx *c) {            /* returns CalendarTime (8 bytes) in x0 */
     __time64_t t = (__time64_t)rd64(A0);
     struct tm utc;
@@ -650,7 +686,8 @@ static int auto_correction(void) {
 static void time_ToCalendarTime(Ctx *c);
 static void time_Snapshot_create(Ctx *c) {                /* (ClockSnapshot *out) */
     uint64_t s = A0;
-    int64_t now = now_posix(), tp;
+    int64_t now = fixclock_now(c->x[30]), tp;
+    if (now < 0) now = now_posix();
     uint8_t id[16];
     steady_now(&tp, id);
     memset((void *)(uintptr_t)s, 0, 0xd0);

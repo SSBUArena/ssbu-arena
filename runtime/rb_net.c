@@ -258,6 +258,13 @@ int rbn_match_cancelled(void) { return g_hs_room ? 2 : (int)g_hs_cancelled; }   
 static int g_setup_waiting, g_hs_lwr;
 void rbn_set_setup_waiting(int waiting) { g_setup_waiting = waiting; }
 int rbn_room_rollback(void) { return g_hs_lwr; }       /* (R3 lwr) the last agreed match is a Local Wireless room's match played with rollback */
+/* (rb-8ms 2026-11-13) nntime.c SSBU_RB_FIXCLOCK: a rollback match (online / room, agreed by the handshake) from its agreement to
+ * its end (rbn_match_reset), the whole time this game is in a Local Wireless room (run r8_lvx1: a room match's stage got its hour
+ * before the agreement, from the host's stage block of the room's flow), or any fight of the loop test; offline fights and menus
+ * keep the PC's clock. rbn_rb_agreed (SSBU_RB_LIGHTVILL): only the agreed rollback match (or the loop test). */
+static volatile LONG g_clk_match;
+int rbn_clock_match(void) { int nnldn_role(void); return rbn_on() > 0 && (g_loop || g_clk_match || nnldn_role() != 0); }
+int rbn_rb_agreed(void) { return rbn_on() > 0 && (g_loop || g_clk_match); }
 /* (Arena) a rollback match was agreed and has not started yet (its base state not made): the fight's entry and countdown run
  * on both games before it; a button held there (a real player's, or a test's input sequence) changed one game's fighter
  * and not the other's (a different base state: in sync again only by chance, and not at all with 4 frames of delay) */
@@ -467,7 +474,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
      * here stopped its traffic: the other game waited on its loading screen for it, then left the room. So no handshake and no
      * rollback for these fights: they are played exactly as without rollback, whatever the other game's setting; a box says so
      * once. Rollback matches: Smash (versus) with a room code (host / join modes). SSBU_RB_NET_ROOM_MATCH=1: the old way (test). */
-    InterlockedExchange(&g_hs_room, 0); InterlockedExchange(&g_hs_local, 0);
+    InterlockedExchange(&g_hs_room, 0); InterlockedExchange(&g_hs_local, 0); InterlockedExchange(&g_clk_match, 0);
     /* (R3 lwr, owner 2026-10-21: "il rollback deve essere attivo anche nel local wireless con le stanze") the room's MATCH (not its
      * waiting-stage fight) with rollback on both games: the room has already agreed fighters, stage and rules on both PCs, so the
      * handshake here only checks that and agrees on a seed (no menus to wait for: both games reach this set-up together when the
@@ -638,6 +645,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
     }
     menu_notice(NULL);
     g_hs_lwr = lwr;
+    InterlockedExchange(&g_clk_match, 1);
     g_sq_agreed = lwr && (out->pad0 & 1);
     if (lwr && (g_sq_agreed || rbn_ba_mode())) { printf("[squad] room match: %s (room maker's Battle Arena mode %s, this game's %d)\n", g_sq_agreed ? "a Battle Arena squad match (Squad Strike, Tag Team, 3 fighters each, 1 stock each)" : "a 1-on-1 match: the room maker is not in Battle Arena", g_sq_agreed ? "on" : "off", rbn_ba_mode()); fflush(stdout); }
     g_hs_pending = 1; g_hs_pending_t = GetTickCount64();      /* (Arena) agreed: the fight's pads are the session's from now on (rbn_fight_pending) */
@@ -1104,6 +1112,7 @@ double rbn_offset_ms(void) { return rb_ts_offset() / 1000.0; }
  * belongs to one match starts over (input queues and frames at the next rbn_start, checksums, counters, the block check,
  * received messages not drained yet); the round trip, the pings and the transport stay. */
 void rbn_match_reset(void) {
+    if (g_started) InterlockedExchange(&g_clk_match, 0);      /* (only a rollback match's end: a room's waiting-stage fight ends AFTER the room match's agreement, run r8_lvab2) */
     g_started = 0; g_peer_started = 0; g_f0 = 0; InterlockedExchange(&g_peer_mode, -1); g_peer_ack = 0; g_sent_newest = 0;
     g_stat_pred = g_stat_padget = g_stat_mis = 0; g_ts_n = 0; g_ts_extra = 0; g_ts_left = 0;
     g_hacc = 0xcbf29ce484222325ull; g_hlines = 0; g_lacc_n = 0;

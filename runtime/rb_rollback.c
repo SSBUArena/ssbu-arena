@@ -345,8 +345,47 @@ static void rbg_cbg_init(void) {
     const char *e = getenv("SSBU_RB_CBGUARD"); if (e && e[0] == '0') return;
     LOG("r1: RB NET: render dispatch command buffer guard (SSBU_RB_CBGUARD): %s\n", hook_install(GA(0x71037f5160ull), rbg_cbg_hook, NULL, &g_rbg_cbg_orig) && hook_install(GA(0x71038514f0ull), rbg_cbg_phook, NULL, &g_rbg_cbg_porig) ? "on" : "hook FAILED");
 }
+/* (rb-8ms 2026-11-13, the owner's decision) SSBU_RB_LIGHTVILL: Smashville's villagers. The stage's villager manager (made at
+ * 71026abe48: + 0x30 = the time-of-day group of stage + 0x870, from the hour / minute / day of week the stage set-up read: 4-7, 8-15,
+ * 16-18, 19-22 and Saturday 19:30-24, 23-3) is filled by f_71026b3980(manager, sub): sub = stage + 0x9b, the stage variation byte the
+ * set-up drew (match block stage area, the host's in a rollback match); row group * 5 + sub of a table of 8 villager ids picks which
+ * villagers walk the town (f_71026b4b30, one per slot). The walking ones (update 71026b0410 -> skeleton animation 71026b1500) are
+ * the heavy part of Smashville's re-run passes (~1 ms of the rollback tick). In a rollback match (rbn_rb_agreed: agreed online /
+ * room match, or the loop test) the sub passed here is replaced by a light one; the stage's own byte, every draw of every generator
+ * and the stage set-up are untouched (only the argument of this call changes). Value: unset / 1 = LV_DEFAULT, 0 = off, s<k> = sub k
+ * (test). SSBU_RB_LIGHTVILL_LOG=1: the row's ids at every call. */
+#define LV_DEFAULT 0
+static ImportFn g_rbg_lv_orig; static int g_rbg_lv = -2;
+static void rbg_lv_hook(Ctx *c, void *user) {
+    (void)user;
+    uint64_t m = c->x[0]; int sub = (int)(int8_t)c->x[1], grp = (int)(int8_t)rd8(m + 0x30), to = sub;
+    int rbn_rb_agreed(void);
+    if (g_rbg_lv >= 0 && rbn_rb_agreed()) to = g_rbg_lv;
+    {   uint64_t t = rd64(m + 0x10), tb = t ? rd64(t + 0xb8) : 0, te = t ? rd64(t + 0xc0) : 0; long long rows = tb && te > tb ? (long long)((te - tb) / 32) : 0;
+        char ids[2][96]; for (int k = 0; k < 2; k++) { int r = grp * 5 + (k ? to : sub), at = 0; ids[k][0] = 0;
+            for (int s = 0; s < 8 && r >= 0 && r < rows; s++) at += snprintf(ids[k] + at, sizeof ids[k] - at, " %d", (int)rd32(tb + (uint64_t)r * 32 + (uint64_t)s * 4)); }
+        LOG("r1: LIGHTVILL: Smashville villagers: time group %d, stage variation %d%s (ids%s)%s%s%s\n", grp, sub, to != sub ? " -> forced" : "", ids[0],
+            to != sub ? " -> " : "", to != sub ? "" : "", to != sub ? ids[1] : ""); }
+    c->x[1] = (uint64_t)(int64_t)to;
+    g_rbg_lv_orig(c);
+}
+static void rbg_lv_init(void) {
+    const char *e = getenv("SSBU_RB_LIGHTVILL");
+    g_rbg_lv = !e || !e[0] || !strcmp(e, "1") ? LV_DEFAULT : (e[0] == 's' && e[1] >= '0' && e[1] <= '4') ? e[1] - '0' : -1;
+    LOG("r1: RB NET: Smashville light villagers in rollback matches (SSBU_RB_LIGHTVILL): %s, hook %s\n", g_rbg_lv >= 0 ? "on" : "off", hook_install(GA(0x71026b3980ull), rbg_lv_hook, NULL, &g_rbg_lv_orig) ? "on" : "FAILED");
+}
+/* (rb-8ms 2026-11-13, test) SSBU_RB_GENLOG=<n>: the game's global generators (0x71052381b0 .. + 0x20) at the safe point of every
+ * n-th frame, real and re-run passes (the last line of a frame is its final value): forced / not forced runs compared */
+static int g_rbg_genlog = -1;
+static void rbg_genlog(long long i) {
+    if (g_rbg_genlog < 0) { const char *e = getenv("SSBU_RB_GENLOG"); g_rbg_genlog = e ? atoi(e) : 0; }
+    if (g_rbg_genlog <= 0 || i % g_rbg_genlog) return;
+    uint64_t g = GA(0x71052381b0ull);
+    LOG("r1: GENLOG frame %lld %s: %08x %08x %08x %08x | %08x %08x %08x %08x\n", i, g_ra_phase == 2 ? "rerun" : "real", rd32(g), rd32(g + 4), rd32(g + 8), rd32(g + 12), rd32(g + 16), rd32(g + 20), rd32(g + 24), rd32(g + 28));
+}
 static void rbg_skipf_init(void) {
     rbg_cbg_init();
+    rbg_lv_init();
     const char *e = getenv("SSBU_RB_SKIPF"); if (!e) e = g_rbg_skipf_def;
     { const char *l = getenv("SSBU_RB_SKIPF_LAST"); if (l && l[0] == '0') g_rbg_skf_last = 0; }
     int def = e == g_rbg_skipf_def, di = 0;
@@ -483,6 +522,7 @@ static void rbg_squad_settle(long long i) {
 /* at the safe point (H2) of every pass while the fight runs (r1_ring.c rgs_step) */
 static void rbg_step_body(Ctx *c) {
     long long i = g_rgs_next;
+    rbg_genlog(i);
     rbg_fd_note(g_ra_phase == 2 ? "safe point after a re-run pass" : "safe point after a real pass", i);
     g_rbg_refused_tick = 0;
     if (g_rbg_defcap >= 0 && g_rbg_defcap != i) { g_rbg_defcap = -1; g_rbg_dc_drop++; }      /* (rb-8ms, RECAP=7) never made (no wait came): dropped */
