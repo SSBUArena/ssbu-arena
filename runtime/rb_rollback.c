@@ -136,7 +136,11 @@ static int rbg_real_skip(long long i) {      /* SSBU_RB_CAPSKIP=<n> (n >= 2): a 
  * capture of a real pass. Default 1 (rb-8ms: n3 BF 8.59 -> 8.46, TaC 10.24 -> 10.10, FD 9.03 -> 8.80, pairs IDENTICAL); =0 off. */
 static int g_rbg_rp = -1;
 static void rbg_rpause(int bit, int on) { if (g_rbg_rp < 0) { const char *e = getenv("SSBU_RB_RPAUSE"); g_rbg_rp = e ? atoi(e) : 1; } if (!(g_rbg_rp & bit) && on) return; void nvn_r1_render_pause(int); nvn_r1_render_pause(on); }
-static int rbg_capture(long long i, Ctx *c) { g_rg_need = rbn_confirmed(); if (g_rbg_pend > 0 && g_rbg_pend - 1 < g_rg_need) g_rg_need = g_rbg_pend - 1; return r1_ring_capture(i, c); }
+static int rbg_capture(long long i, Ctx *c) { g_rg_need = rbn_confirmed(); if (g_rbg_pend > 0 && g_rbg_pend - 1 < g_rg_need) g_rg_need = g_rbg_pend - 1;
+    int ok = r1_ring_capture(i, c);
+    { static int said; if (g_rgv_target > 100 && said++ < 12) LOG("r1: RB VERIFY capture %lld (target %lld, ok %d)\n", i, g_rgv_target, ok); }
+    if (g_rgv_target >= 0 && i == g_rgv_target) { if (ok) rgv_after(); else g_rgv_target = -1; }      /* (rb-8ms, TEST) SSBU_RB_SIM_VERIFY in online / loop rollbacks too (same pads: SSBU_RB_NET_TEST_SCHED) */
+    return ok; }
 void rbn_stats(int *delay, int *last, int *maxk) { *delay = rbn_delay(); *last = (int)g_rbg_last_k; *maxk = (int)g_rbg_max_k; }   /* net_relay.c net_stats_get (F2) */
 
 static void rbg_wait_until(double t) {                  /* a high-resolution timer for the long part, a spin for the last 0.3 ms */
@@ -599,6 +603,7 @@ static void rbg_step_body(Ctx *c) {
         else if (r4) want = i == g_rbg_recap_first;
         else want = i == g_rbg_recap_first;
         if (want && g_rbg_recap == 7 && g_rgs_left <= 1 && g_rbg_pace) { g_rbg_defcap = i; want = 0; }      /* (rb-8ms, RECAP=7) made in the wait */
+        if (g_rgv_target >= 0 && i == g_rgv_target) { want = 1; if (g_rbg_defcap == i) g_rbg_defcap = -1; }      /* (TEST, SSBU_RB_SIM_VERIFY) the re-run pass the check waits for is captured */
         if (want) { double tc = now_ms(); if (!rbg_capture(i, c)) g_rbg_capfail++; g_rbg_t_recap += now_ms() - tc; g_rbg_n_recap++; } else g_rbg_capskip++;
         g_rgs_next = i + 1;
         if (--g_rgs_left > 0) { g_rbg_t_pass0 = now_ms(); return; }

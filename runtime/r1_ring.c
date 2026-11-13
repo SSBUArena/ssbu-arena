@@ -1997,6 +1997,7 @@ static void rgv_before(int si, long long target) {        /* in r1_ring_load, be
         }
     }
     g_rgv_target = target; g_rgv_from = rg_slot(si)->frame;
+    { static int said; if (said++ < 5) LOG("r1: RB VERIFY armed: from %lld to %lld, %zu pages\n", g_rgv_from, target, g_rgv_n); }
 }
 /* (R2 round 3) SSBU_RB_SIM_VERIFY=2: for the first 12 rollbacks the original bytes of the compared pages are kept and every
  * differing page is printed: its address (where()), the number of differing 8-byte words, the first 4 (offset, original, re-run). */
