@@ -47,7 +47,7 @@ unsigned gca_seq(void) { return 0; }
 #define MAX_ADAPTERS 2
 #define DEPTH 4
 #define REPORT_LEN 37
-#define EP_IN 0x81
+#define EP_IN 0x81                            /* the official adapter's pipes: the fallback when the descriptors cannot be read (gca_pipes) */
 #define EP_OUT 0x02
 #define STICK_RANGE 88.0f                     /* counts from the origin to full deflection (SDL's own base range for this adapter; this pad's gate measured ~94) */
 #define TRIG_FULL 255                         /* raw trigger value taken as fully pressed */
@@ -62,6 +62,13 @@ static BOOL (WINAPI *pWrite)(WUSB, UCHAR, PUCHAR, ULONG, PULONG, LPOVERLAPPED);
 static BOOL (WINAPI *pOverlapped)(WUSB, LPOVERLAPPED, PULONG, BOOL);
 static BOOL (WINAPI *pAbort)(WUSB, UCHAR);
 #define RAW_IO 0x07
+/* (rb-8ms 2026-11-13, OpenSmash E1 9f88965 / the idea of ssbu-recomp#139) the pipes from the interface's descriptors: third-party
+ * adapters (GC Pocket+, RP2040 ones) use 0x82 in / 0x01 out, or have no output pipe. Local copies of winusb.h's structures. */
+typedef struct { UCHAR bLength, bDescriptorType, bInterfaceNumber, bAlternateSetting, bNumEndpoints, bInterfaceClass, bInterfaceSubClass, bInterfaceProtocol, iInterface; } GcaIfDesc;
+typedef struct { int PipeType; UCHAR PipeId; USHORT MaximumPacketSize; UCHAR Interval; } GcaPipeInfo;      /* PipeType: 2 bulk, 3 interrupt */
+static BOOL (WINAPI *pQueryIf)(WUSB, UCHAR, GcaIfDesc *);
+static BOOL (WINAPI *pQueryPipe)(WUSB, UCHAR, UCHAR, GcaPipeInfo *);
+#define READ_MAX 64
 
 typedef struct {
     SDL_JoystickID id;
@@ -209,7 +216,35 @@ static void port_apply(Adapter *a, int p, const unsigned char *s, LONG64 t_done)
 }
 
 /* ================================================================ one adapter's thread */
+/* SSBU_GCA_PIPES (default 1; 0 = always 0x81 / 0x02 as before): the first interrupt pipe each way (bulk if there is none), read
+ * size = the input pipe's packet size when it holds a report (37..64), else 37; no output pipe = no start command, no rumble (the
+ * adapter is read as it streams). Nothing usable found in the descriptors: the official addresses. NOT TESTED with hardware. */
+static int g_gca_pipes = -1;
+static void gca_pipes(Adapter *a, WUSB w, UCHAR *in, UCHAR *out, ULONG *in_len) {
+    *in = EP_IN; *out = EP_OUT; *in_len = REPORT_LEN;
+    if (g_gca_pipes < 0) { const char *e = getenv("SSBU_GCA_PIPES"); g_gca_pipes = !(e && e[0] == '0'); }
+    GcaIfDesc d;
+    memset(&d, 0, sizeof d);
+    if (!g_gca_pipes || !pQueryIf || !pQueryPipe || !pQueryIf(w, 0, &d)) return;
+    UCHAR fin = 0, fout = 0; int tin = 0, tout = 0; USHORT szin = 0;
+    for (UCHAR e = 0; e < d.bNumEndpoints && e < 16; e++) {
+        GcaPipeInfo p; memset(&p, 0, sizeof p);
+        if (!pQueryPipe(w, 0, e, &p) || (p.PipeType != 3 && p.PipeType != 2)) continue;
+        if (p.PipeId & 0x80) { if (!fin || (p.PipeType == 3 && tin != 3)) { fin = p.PipeId; tin = p.PipeType; szin = p.MaximumPacketSize; } }
+        else if (!fout || (p.PipeType == 3 && tout != 3)) { fout = p.PipeId; tout = p.PipeType; }
+    }
+    if (!fin) { printf("nn::gca: adapter %d: no input pipe in its descriptors (%d endpoints): the official 0x81 / 0x02\n", a->index + 1, d.bNumEndpoints); return; }
+    *in = fin; *out = fout; *in_len = szin >= REPORT_LEN && szin <= READ_MAX ? szin : REPORT_LEN;
+    if (fin != EP_IN || fout != EP_OUT || *in_len != REPORT_LEN) {
+        printf("nn::gca: adapter %d: pipes from its descriptors: in 0x%02x (%s, reads of %lu bytes), ", a->index + 1, fin, tin == 3 ? "interrupt" : "bulk", *in_len);
+        if (fout) printf("out 0x%02x (%s)\n", fout, tout == 3 ? "interrupt" : "bulk");
+        else printf("no output pipe: no start command and no rumble, read as it streams\n");
+        fflush(stdout);
+    }
+}
+static UCHAR g_ep_out_of[MAX_ADAPTERS];                      /* each adapter's output pipe (0 = none) for send_rumble */
 static void send_rumble(Adapter *a, WUSB w, unsigned char *last, int *last_valid, const unsigned char *rep) {
+    if (!g_ep_out_of[a->index]) return;
     unsigned char cmd[5] = {0x11, 0, 0, 0, 0};
     int changed = !*last_valid;
     for (int p = 0; p < 4; p++) {
@@ -219,7 +254,7 @@ static void send_rumble(Adapter *a, WUSB w, unsigned char *last, int *last_valid
     }
     if (!changed) return;
     ULONG n = 0;
-    if (pWrite(w, EP_OUT, cmd, sizeof cmd, &n, NULL)) {
+    if (pWrite(w, g_ep_out_of[a->index], cmd, sizeof cmd, &n, NULL)) {
         memcpy(last, cmd + 1, 4); *last_valid = 1;
     } else {
         static volatile LONG werr;
@@ -248,19 +283,22 @@ static DWORD WINAPI adapter_thread(LPVOID arg) {
     {
         unsigned char raw = 1, start = 0x13, last[4] = {0}, rep_last[REPORT_LEN] = {0};
         int last_valid = 0, have_rep = 0, reports = 0, i, next = 0;
-        ULONG n = 0;
+        ULONG n = 0, in_len = REPORT_LEN;
+        UCHAR ep_in = EP_IN, ep_out = EP_OUT;
         OVERLAPPED ov[DEPTH];
-        unsigned char buf[DEPTH][REPORT_LEN];
+        unsigned char buf[DEPTH][READ_MAX];
         LONG64 t_prev = 0, t_win = now_ticks();
         double imin = 1e9, isum = 0, imax = 0, ap_sum = 0, ap_max = 0;
         int dead = 0;
-        pSetPipePolicy(w, EP_IN, RAW_IO, 1, &raw);
-        if (!pWrite(w, EP_OUT, &start, 1, &n, NULL)) { printf("nn::gca: the adapter does not accept the start command (error %lu)\n", GetLastError()); goto done_wusb; }
+        gca_pipes(a, w, &ep_in, &ep_out, &in_len);
+        g_ep_out_of[a->index] = ep_out;
+        pSetPipePolicy(w, ep_in, RAW_IO, 1, &raw);
+        if (ep_out && !pWrite(w, ep_out, &start, 1, &n, NULL)) { printf("nn::gca: the adapter does not accept the start command (error %lu)\n", GetLastError()); goto done_wusb; }
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
         memset(ov, 0, sizeof ov);
         for (i = 0; i < DEPTH; i++) ov[i].hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
         for (i = 0; i < DEPTH; i++) {
-            if (!pRead(w, EP_IN, buf[i], REPORT_LEN, NULL, &ov[i]) && GetLastError() != ERROR_IO_PENDING) dead = 1;
+            if (!pRead(w, ep_in, buf[i], in_len, NULL, &ov[i]) && GetLastError() != ERROR_IO_PENDING) dead = 1;
         }
         printf("nn::gca: adapter %d opened (%d reads queued, RAW_IO)\n", a->index + 1, DEPTH);
         fflush(stdout);
@@ -270,7 +308,7 @@ static DWORD WINAPI adapter_thread(LPVOID arg) {
             ULONG got = 0;
             LONG64 t_done = now_ticks();
             if (!pOverlapped(w, &ov[next], &got, FALSE)) { dead = 1; break; }
-            if (got == REPORT_LEN && buf[next][0] == 0x21) {
+            if (got >= REPORT_LEN && buf[next][0] == 0x21) {      /* (E1: a larger packet holds the report in its first 37 bytes) */
                 for (int p = 0; p < 4; p++) port_apply(a, p, &buf[next][1 + 9 * p], t_done);
                 memcpy(rep_last, buf[next], REPORT_LEN); have_rep = 1;
                 if (stats_on()) {
@@ -283,11 +321,11 @@ static DWORD WINAPI adapter_thread(LPVOID arg) {
                 }
             }
             ResetEvent(ov[next].hEvent);
-            if (!pRead(w, EP_IN, buf[next], REPORT_LEN, NULL, &ov[next]) && GetLastError() != ERROR_IO_PENDING) { dead = 1; break; }
+            if (!pRead(w, ep_in, buf[next], in_len, NULL, &ov[next]) && GetLastError() != ERROR_IO_PENDING) { dead = 1; break; }
             next = (next + 1) % DEPTH;
             send_rumble(a, w, last, &last_valid, have_rep ? rep_last : NULL);
         }
-        pAbort(w, EP_IN);
+        pAbort(w, ep_in);
         for (i = 0; i < DEPTH; i++) { ULONG g; pOverlapped(w, &ov[i], &g, TRUE); CloseHandle(ov[i].hEvent); }
     }
 done_wusb:
@@ -387,6 +425,8 @@ int gca_start(void) {
     pWrite = (void *)GetProcAddress(wu, "WinUsb_WritePipe");
     pOverlapped = (void *)GetProcAddress(wu, "WinUsb_GetOverlappedResult");
     pAbort = (void *)GetProcAddress(wu, "WinUsb_AbortPipe");
+    pQueryIf = (void *)GetProcAddress(wu, "WinUsb_QueryInterfaceSettings");      /* (rb-8ms, E1) optional: without them the official pipes */
+    pQueryPipe = (void *)GetProcAddress(wu, "WinUsb_QueryPipe");
     if (!pInit || !pFree || !pSetPipePolicy || !pRead || !pWrite || !pOverlapped || !pAbort) return 0;
     QueryPerformanceFrequency(&g_qpf);
     g_started = 1;
