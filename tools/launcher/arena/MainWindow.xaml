@@ -751,9 +751,10 @@
                     <ComboBoxItem Content="3 frames"/>
                     <ComboBoxItem Content="4 frames"/>
                     <ComboBoxItem Content="5 frames"/>
+                    <ComboBoxItem Content="Auto (from the ping, the same for both players)"/>
                   </ComboBox>
                   <TextBlock Style="{StaticResource Small}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left"
-                             Text="How many frames your own inputs wait in online rollback matches (2 to start with). Fewer: more responsive, more rollbacks. More: fewer rollbacks, a little more lag. The picture is also shown one frame later, so that a slow rollback frame does not show as a stutter."/>
+                             Text="How many frames your own inputs wait in online rollback matches (2 to start with). Fewer: more responsive, more rollbacks. More: fewer rollbacks, a little more lag. Auto: chosen from the ping at the start of each match (1 frame on a home network, up to 5 on a slow one) and agreed with the other player, so that both use the same delay. The picture is also shown one frame later, so that a slow rollback frame does not show as a stutter."/>
                   <TextBlock Text="SERVER" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
                   <ComboBox x:Name="ServerBox" Width="300" HorizontalAlignment="Left" SelectionChanged="Server_Changed"/>
                 </StackPanel>

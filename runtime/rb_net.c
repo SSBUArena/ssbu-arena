@@ -39,6 +39,7 @@ int net_mode(void);
 int net_online(void);
 
 static int g_on = -1, g_loop, g_loop_lat = 4, g_local, g_delay_cfg = -1, g_ahead = 7, g_started, g_peer_started;
+static int g_delay_auto, g_delay_agreed;               /* (rb-8ms) SSBU_RB_NET_DELAY=auto; the delay both games agreed in the handshake (0 = none) */
 static unsigned g_bot_seed; static int g_bot;
 static FILE *g_hlog;
 static volatile LONG64 g_cur;                          /* the frame this game is on (read by the receive thread for PONGs) */
@@ -56,11 +57,11 @@ int rbn_on(void) {
     g_local = 0;
     if (!g_loop && net_online() && net_mode() == 3) g_local = 1;      /* NET_MODE_JOIN */
     if ((e = getenv("SSBU_RB_NET_PLAYER"))) g_local = atoi(e) ? 1 : 0;
-    if ((e = getenv("SSBU_RB_NET_DELAY"))) g_delay_cfg = atoi(e);
+    if ((e = getenv("SSBU_RB_NET_DELAY"))) { if (!_stricmp(e, "auto")) g_delay_auto = 1; else g_delay_cfg = atoi(e); }      /* (rb-8ms) "auto": hs_delay_agree */
     if ((e = getenv("SSBU_RB_NET_BOT")) && *e) { g_bot = 1; g_bot_seed = (unsigned)strtoul(e, NULL, 0); }
     if ((e = getenv("SSBU_RB_NET_AHEAD")) && atoi(e) > 0) g_ahead = atoi(e);
     if ((e = getenv("SSBU_RB_NET_LOG")) && *e) g_hlog = fopen(e, "w");
-    printf("[rbnet] on: %s, local player %d, delay %s, ahead at most %d, bot %s\n", g_loop ? "loop test (no network)" : "over net_relay", g_local + 1, g_delay_cfg >= 0 ? "fixed" : "from the round trip", g_ahead, g_bot ? "on" : "off");
+    printf("[rbnet] on: %s, local player %d, delay %s, ahead at most %d, bot %s\n", g_loop ? "loop test (no network)" : "over net_relay", g_local + 1, g_delay_cfg >= 0 ? "fixed" : g_delay_auto ? "auto (from the round trip, agreed with the other game)" : "from the round trip", g_ahead, g_bot ? "on" : "off");
     if (g_loop) printf("[rbnet] loop: remote pads arrive %d frames after the frame that would send them\n", g_loop_lat);
     fflush(stdout);
     return g_on;
@@ -461,6 +462,29 @@ static void hs_stage_rule(RbhMatch *m, const RbhMatch *peer) {
            (unsigned long long)js, *(const uint32_t *)(peer->stage + 8), e && *e ? e : "random", joiner ? "joiner" : "host", valid ? "" : " (the joiner's is not a stage entry)");
     fflush(stdout);
 }
+/* (rb-8ms 2026-11-13, OpenSmash A1: b57792a / bddea41 / cdcd591 rbn_online_delay_for_rtt) SSBU_RB_NET_DELAY=auto (launcher
+ * "Auto"): the input delay from the least round trip measured by the pings: 1 under 15 ms (a home network), else the one-way trip
+ * in frames rounded, less one below 100 ms one way, at least 2, at most SSBU_RB_NET_DELAY_MAX (default 5, 1..9). Both games use
+ * ONE delay: RbhMatch.pad0 bits 4..7 = a delay, bit 3 = "auto". The joiner's CHOICE carries its own (its auto value, or its fixed
+ * choice); the host's PROPOSE carries the agreed one when either side is auto: the larger of the two (a fixed player next to an
+ * auto one is raised to the connection's value, never lowered); both fixed: nothing agreed, each keeps its own as before. A game
+ * without this (0.2.49) sends and reads 0 there: it keeps its own delay and the other game its own (in sync either way: each
+ * game's pads go out for every frame, the empty first ones too). -1 = no round trip measured yet. */
+static int auto_rule_delay(void);
+static void hs_delay_want(RbhMatch *m) {                 /* this game's own wish into pad0 (CHOICE and the host's proposal) */
+    int w = g_delay_auto ? auto_rule_delay() : g_delay_cfg;
+    if (g_delay_auto && w < 1) w = 2;
+    m->pad0 = (uint8_t)((m->pad0 & 0x07) | (g_delay_auto ? 0x08 : 0) | ((w > 0 ? (w > 15 ? 15 : w) : 0) << 4));
+}
+static void hs_delay_agree(RbhMatch *m, const RbhMatch *peer) {      /* host: m = the proposal (pad0 has the host's wish) */
+    int mw = m->pad0 >> 4, ma = (m->pad0 & 0x08) != 0, pw = peer->pad0 >> 4, pa = (peer->pad0 & 0x08) != 0;
+    int d = mw > pw ? mw : pw;
+    m->pad0 &= 0x07;
+    if ((ma || pa) && d > 0) m->pad0 |= (uint8_t)(0x08 | (d << 4));
+    printf("[rbnet] handshake: input delay: here %d%s, there %d%s -> %s%d\n", mw, ma ? " (auto)" : "", pw, pa ? " (auto)" : pw ? "" : " (none sent)",
+           (m->pad0 & 0x08) ? "both games use " : "not agreed, each game its own; here ", (m->pad0 & 0x08) ? d : mw);
+    fflush(stdout);
+}
 int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
     if (!rbn_handshake_wanted() || rbn_on() <= 0 || g_loop) return 0;
     LONG round = InterlockedIncrement(&g_hs_round);
@@ -471,7 +495,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
      * here stopped its traffic: the other game waited on its loading screen for it, then left the room. So no handshake and no
      * rollback for these fights: they are played exactly as without rollback, whatever the other game's setting; a box says so
      * once. Rollback matches: Smash (versus) with a room code (host / join modes). SSBU_RB_NET_ROOM_MATCH=1: the old way (test). */
-    InterlockedExchange(&g_hs_room, 0); InterlockedExchange(&g_hs_local, 0); InterlockedExchange(&g_clk_match, 0);
+    InterlockedExchange(&g_hs_room, 0); InterlockedExchange(&g_hs_local, 0); InterlockedExchange(&g_clk_match, 0); g_delay_agreed = 0;
     /* (R3 lwr, owner 2026-10-21: "il rollback deve essere attivo anche nel local wireless con le stanze") the room's MATCH (not its
      * waiting-stage fight) with rollback on both games: the room has already agreed fighters, stage and rules on both PCs, so the
      * handshake here only checks that and agrees on a seed (no menus to wait for: both games reach this set-up together when the
@@ -573,17 +597,19 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
         AcquireSRWLockExclusive(&g_hs_lock);
         if (phase == 0) { /* searching: nothing to send yet */ }
         else if (g_local == 0) {                             /* host: proposal = our choice + the joiner's */
-            if (!g_hs_have_prop && g_hs_have_peer && lwr) {      /* (R3 lwr) the room's match: both games built it from the room; only the seed is new */
+            int rtt_wait = g_delay_auto && auto_rule_delay() < 0 && now - t0 < 3000;      /* (rb-8ms, delay auto) a round trip first, at most 3 s */
+            if (!g_hs_have_prop && g_hs_have_peer && lwr && !rtt_wait) {      /* (R3 lwr) the room's match: both games built it from the room; only the seed is new */
                 if (g_hs_peer.exe_stamp != exe_stamp()) printf("[rbnet] handshake: NOTE the other game's exe was linked at another time (stamp %08x here, %08x there): a different build may desync\n", exe_stamp(), g_hs_peer.exe_stamp);
                 if (g_hs_peer.m.chara[0] != mine->chara[0] || g_hs_peer.m.rule_kind != mine->rule_kind || g_hs_peer.m.stock != mine->stock) {
                     snprintf(g_hs_why, sizeof g_hs_why, "the room's match differs on the two games (player 1 %016llx here, %016llx there; rule kind %d / %d, stocks %d / %d)", (unsigned long long)mine->chara[0], (unsigned long long)g_hs_peer.m.chara[0], mine->rule_kind, g_hs_peer.m.rule_kind, mine->stock, g_hs_peer.m.stock);
                     g_hs_refused = 1; hs_refuse(g_hs_peer.nonce, g_hs_why);
                 } else {
                     RbhMatch m = *mine; m.seed = hs_new_seed(); if (rbn_ba_mode()) m.pad0 |= 1;      /* (Battle Arena) the room maker's mode: a squad match */
+                    hs_delay_want(&m); hs_delay_agree(&m, &g_hs_peer.m);
                     hs_head(&g_hs_prop, RBH_PROPOSE); g_hs_prop.echo = g_hs_peer.nonce; g_hs_prop.m = m; g_hs_have_prop = 1;
                 }
             }
-            if (!g_hs_have_prop && g_hs_have_peer && !lwr) {
+            if (!g_hs_have_prop && g_hs_have_peer && !lwr && !rtt_wait) {
                 if (g_hs_peer.exe_stamp != exe_stamp()) printf("[rbnet] handshake: NOTE the other game's exe was linked at another time (stamp %08x here, %08x there): a different build may desync\n", exe_stamp(), g_hs_peer.exe_stamp);
                 RbhMatch m = *mine;
                 m.chara[1] = g_hs_peer.m.chara[0]; m.colour[1] = g_hs_peer.m.colour[0];
@@ -591,6 +617,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
                 if (m.chara[1] == m.chara[0] && m.colour[1] == m.colour[0]) m.colour[1] = (uint8_t)((m.colour[0] + 1) & 7);   /* same fighter, same colour: the joiner takes the next one */
                 m.seed = hs_new_seed();
                 hs_stage_rule(&m, &g_hs_peer.m);
+                hs_delay_want(&m); hs_delay_agree(&m, &g_hs_peer.m);
                 hs_head(&g_hs_prop, RBH_PROPOSE); g_hs_prop.echo = g_hs_peer.nonce; g_hs_prop.m = m; g_hs_have_prop = 1;
             }
             if (g_hs_accepted && g_hs_have_prop) { *out = g_hs_prop.m; ok = 1; }
@@ -599,7 +626,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
             if (g_hs_have_prop) {
                 if (g_hs_prop.exe_stamp != exe_stamp()) printf("[rbnet] handshake: NOTE the other game's exe was linked at another time (stamp %08x here, %08x there): a different build may desync\n", exe_stamp(), g_hs_prop.exe_stamp);
                 *out = g_hs_prop.m; ok = 1;
-            } else if (now - last_tx >= 100 && net_rb_ready()) { last_tx = now; RbhMsg c; hs_head(&c, RBH_CHOICE); c.m = *mine; if (lwr && rbn_ba_mode()) c.m.pad0 |= 1; hs_send(&c, sizeof c); }
+            } else if (now - last_tx >= 100 && net_rb_ready()) { last_tx = now; RbhMsg c; hs_head(&c, RBH_CHOICE); c.m = *mine; if (lwr && rbn_ba_mode()) c.m.pad0 |= 1; hs_delay_want(&c.m); hs_send(&c, sizeof c); }
         }
         if (ok) g_hs_waiting = 0;
         ReleaseSRWLockExclusive(&g_hs_lock);
@@ -643,6 +670,8 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
     menu_notice(NULL);
     g_hs_lwr = lwr;
     InterlockedExchange(&g_clk_match, 1);
+    g_delay_agreed = (out->pad0 & 0x08) ? out->pad0 >> 4 : 0;      /* (rb-8ms) the input delay of both games, or 0 */
+    if (g_delay_agreed) { printf("[rbnet] handshake: input delay %d frames on both games (agreed; this game %s)\n", g_delay_agreed, g_delay_auto ? "auto" : g_delay_cfg >= 0 ? "fixed" : "from the round trip"); fflush(stdout); }
     g_sq_agreed = lwr && (out->pad0 & 1);
     if (lwr && (g_sq_agreed || rbn_ba_mode())) { printf("[squad] room match: %s (room maker's Battle Arena mode %s, this game's %d)\n", g_sq_agreed ? "a Battle Arena squad match (Squad Strike, Tag Team, 3 fighters each, 1 stock each)" : "a 1-on-1 match: the room maker is not in Battle Arena", g_sq_agreed ? "on" : "off", rbn_ba_mode()); fflush(stdout); }
     g_hs_pending = 1; g_hs_pending_t = GetTickCount64();      /* (Arena) agreed: the fight's pads are the session's from now on (rbn_fight_pending) */
@@ -798,8 +827,20 @@ static int lock_delay(void) {                           /* the delay that covers
     return d < 1 ? 1 : d > 12 ? 12 : d;
 }
 static int peer_lockstep(void) { return g_peer_mode >= 0 && (g_peer_mode & 0x80) && g_peerdelay; }
+static int auto_rule_delay(void) {                      /* (rb-8ms) SSBU_RB_NET_DELAY=auto: the rule above hs_delay_want; -1 = no round trip yet */
+    static int mx = 0;
+    if (!mx) { const char *e = getenv("SSBU_RB_NET_DELAY_MAX"); mx = e && atoi(e) >= 1 ? (atoi(e) > 9 ? 9 : atoi(e)) : 5; }
+    int rtt = g_rtt_min_us > 0 ? g_rtt_min_us : g_rtt_us;
+    if (rtt <= 0) return -1;
+    double ms = rtt / 1000.0, one_way = ms / 2;
+    if (ms < 15) return 1;
+    int d = (int)(one_way / (1000.0 / 60.0) + 0.5) - (one_way >= 100 ? 0 : 1);
+    return d < 2 ? (mx < 2 ? mx : 2) : d > mx ? mx : d;
+}
 static int auto_delay(void) {
+    if (g_delay_agreed > 0 && !g_loop) return g_delay_agreed;      /* (rb-8ms) the one both games agreed (hs_delay_agree) */
     if (g_delay_cfg >= 0) return g_delay_cfg;
+    if (g_delay_auto && !g_lockstep && !peer_lockstep()) { int d = g_loop ? 2 : auto_rule_delay(); return d < 1 ? 2 : d; }    /* (auto with a game that cannot agree: this game's own value) */
     if (g_lockstep && (!g_peerdelay || g_loop)) return lock_delay();     /* (the old way; the loop test) */
     if (g_lockstep || peer_lockstep()) {                /* (hs14) either game has no ring: both take the larger of the two announced delays */
         int d = g_my_lockd, pd = g_peer_mode >= 0 ? (g_peer_mode & 0x7f) : 0;

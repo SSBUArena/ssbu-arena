@@ -284,7 +284,7 @@ namespace Arena
             OnlineBox.IsEnabled = Core.HasOnline;
             PingBox.IsChecked = Core.Ping;
             CrashBox.IsChecked = Core.CrashReports;
-            DelayBox.SelectedIndex = Math.Max(0, Math.Min(4, Core.InputDelay - 1));
+            DelayBox.SelectedIndex = Core.InputDelay == 0 ? 5 : Math.Max(0, Math.Min(4, Core.InputDelay - 1));      // (rb-8ms) item 5 = Auto
             RecMmBox.IsChecked = Core.RecMatchmaking; RecLdnBox.IsChecked = Core.RecLdn; RecArenaBox.IsChecked = Core.RecArena;
             RecLocalBox.IsChecked = Core.RecLocal;
             ServerBox.Items.Clear();
@@ -320,7 +320,7 @@ namespace Arena
             Core.Online = OnlineBox.IsChecked == true && Core.HasOnline;
             Core.Ping = PingBox.IsChecked == true;
             Core.CrashReports = CrashBox.IsChecked == true;
-            Core.InputDelay = Math.Max(1, DelayBox.SelectedIndex + 1);
+            Core.InputDelay = DelayBox.SelectedIndex == 5 ? 0 : Math.Max(1, DelayBox.SelectedIndex + 1);
             Core.RecMatchmaking = RecMmBox.IsChecked == true; Core.RecLdn = RecLdnBox.IsChecked == true; Core.RecArena = RecArenaBox.IsChecked == true;
             Core.RecLocal = RecLocalBox.IsChecked == true;
             Core.Server = Core.Servers[Math.Max(0, ServerBox.SelectedIndex)].Address;
