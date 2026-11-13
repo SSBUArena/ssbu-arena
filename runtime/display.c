@@ -971,6 +971,36 @@ double display_l1_ms(void) { LARGE_INTEGER n; QueryPerformanceCounter(&n); retur
 static volatile uint64_t g_pad_any[8];
 void display_pad_any(unsigned id, uint64_t b) { g_pad_any[id & 7] = b; }
 uint64_t display_p1_buttons(void) { uint64_t b = 0; for (int i = 0; i < 8; i++) b |= g_pad_any[i]; return b; }      /* every local pad, ORed */
+/* (rb-8ms 2026-11-13, OpenSmash A2 f9dd11f, after the community's less-lag "index mode"; reimplemented) SSBU_FRAME_INDEX: the game's
+ * f_710386ab10 (13.0.4; 0x710386b0c0 on 13.0.5) picks the texture of a ring of three (this + 0xa0, count at ring + 0x30, entries
+ * 0x20 apart from ring + 0x50) that the frame is drawn into: entry (count + 2) % 3, "two behind". 1 = one behind, 0 = immediate:
+ * the count the function reads is moved for the duration of the call and put back after it (the function only reads it).
+ * Default 2 = the game's own (off) until measured. Sync: nothing of the simulation reads it. */
+static ImportFn g_fi_orig; static int g_fi_shift; static volatile LONG64 g_fi_calls;
+static void fi_hook(Ctx *c, void *u) {
+    (void)u;
+    uint64_t ring = rd64(c->x[0] + 0xa0);
+    if (!ring) { g_fi_orig(c); return; }
+    uint32_t cnt = rd32(ring + 0x30), set = cnt + 3u - (uint32_t)g_fi_shift;
+    wr32(ring + 0x30, set);
+    g_fi_orig(c);
+    if (rd32(ring + 0x30) == set) wr32(ring + 0x30, cnt);
+    if (InterlockedIncrement64(&g_fi_calls) == 1) {
+        const char *guest_thread_name_of(DWORD tid); const char *nm = guest_thread_name_of(GetCurrentThreadId());
+        printf("display: frame index: first call (thread %s, ring %llx, count %u)%c", nm ? nm : "?", (unsigned long long)ring, cnt, 10); fflush(stdout);
+    }
+}
+void display_frame_index_init(void) {                   /* boot.c, after the game's static constructors */
+    const char *e = getenv("SSBU_FRAME_INDEX");
+    int n = e && *e ? atoi(e) : 2;
+    if (n < 0 || n > 2) n = 2;
+    if (n == 2) return;
+    int hook_install(uint64_t addr, void (*repl)(Ctx *, void *), void *user, ImportFn *orig);
+    g_fi_shift = 2 - n;
+    printf("display: frame index (SSBU_FRAME_INDEX=%d): the frame is drawn %s (the game's own: two behind): hook %s%c", n, n == 1 ? "one behind" : "into the texture shown now",
+           hook_install(GA(0x710386ab10ull), fi_hook, NULL, &g_fi_orig) ? "on" : "FAILED", 10);
+    fflush(stdout);
+}
 void display_l1_poll(uint64_t buttons, long long fight_ticks, long long poll) {
     static uint64_t prev;
     LARGE_INTEGER now;
