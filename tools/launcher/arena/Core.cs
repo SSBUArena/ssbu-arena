@@ -589,6 +589,12 @@ namespace Arena
 
         // ---------------------------------------------------------------- checks
         /// <summary>the game's files and what Windows must have; slow parts (store packages) included</summary>
+        /// <summary>(0.2.50) Arena's own menu (characters\arena_menu, made by the setup): the game is started as Arena
+        /// (SSBU_COMPETITIVE_UI=1) only with it; without it the game would show the original menu and the full stats overlay</summary>
+        public static string ArenaMenuDir => Path.Combine(Build, @"characters\arena_menu");
+        public static bool ArenaMenuOk => Competitive && Directory.Exists(ArenaMenuDir);
+        public const string ArenaMenuMissingText = "Arena menu files missing (characters\\arena_menu): the game would start with the original menu";
+
         public static List<Check> CheckFiles(out List<string> missingCodecs)
         {
             var r = new List<Check>();
@@ -599,6 +605,8 @@ namespace Arena
             r.Add(new Check(mods >= 98, "Fighter modules: " + mods + " of 98"));
             bool arc = RomFS != null && (File.Exists(Path.Combine(RomFS, "data.arc")) || File.Exists(Path.Combine(RomFS, "data.arcp")));
             r.Add(new Check(arc, arc ? "Game data (" + (LightArc ? "light archive" : "data.arc") + ")" : "data.arc not found (RomFS of the dump)"));
+            // (0.2.50) without Arena's menu the game starts as the original game (original menu, full stats overlay): never silently
+            r.Add(ArenaMenuOk ? new Check(true, "Arena menu") : new Check(false, ArenaMenuMissingText));
             bool vk = File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "vulkan-1.dll"));
             r.Add(new Check(vk, vk ? "Vulkan" : "Vulkan not found: update the graphics driver"));
             // the opening movie needs these two store packages (without them: a black screen)
@@ -911,7 +919,7 @@ namespace Arena
             else env["SSBU_ONLINE"] = "off";
             // Arena's native menu uses the same game DLL (including the rollback pair selected above).
             // Keep the original hosts available when the optional menu override has not been prepared.
-            if (Competitive && Directory.Exists(Path.Combine(Build, @"characters\arena_menu")))
+            if (ArenaMenuOk)
             {
                 env["SSBU_COMPETITIVE_UI"] = "1";
                 env["SSBU_MENU"] = "1"; // the Settings tile opens the existing PC settings overlay
