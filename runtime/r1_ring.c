@@ -673,7 +673,8 @@ static void rg_cap_dedup(RgSlot *s) {
     }
     s->nent = o;
 }
-static volatile LONG g_rg_loading; static volatile LONG64 g_rg_loadfault, g_rg_capfault; static int rg_fault_on(void);      /* (below: rg_load_fault) */
+static volatile LONG g_rg_loading; static volatile LONG64 g_rg_loadfault, g_rg_capfault; static int rg_fault_on(void);
+static int jl_on(void); static int jl_fmt(char *b, size_t n); static char g_jl_before[200]; static long long g_jl_n;      /* (rb-8ms 13/11) SSBU_RB_JOBLOG, below */      /* (below: rg_load_fault) */
 static double g_cq[3]; static long long g_cqn; static double g_ldp[3]; static long long g_ldp_n;      /* (rb-8ms) load parts: sweep (write watch, marks, extras), page list, copy */
 int r1_ring_capture(long long frame, Ctx *c) {
     { extern void (*g_os_wait_extra)(void (*pr)(const char *fmt, ...)); g_os_wait_extra = rg_loader_print; }
@@ -1303,6 +1304,7 @@ int r1_ring_load(long long frame, Ctx *c) {
     double t1 = now_ms();
     { long long nvn_r1_posted(void); void nvn_vk_r1_load_cut(long long, long long); nvn_vk_r1_load_cut(g->posted, nvn_r1_posted()); }      /* (Arena) compute results of the abandoned submissions: not landed (nvn_vk_draw.c) */
     R1_CTR("load (state of frame)", frame, 0);
+    if (jl_on()) jl_fmt(g_jl_before, sizeof g_jl_before);
     rgc_before();
     g_rg_ntl = 0;
     if (g_rgs_on > 0) rgv_before(si, r1_ring_newest());
@@ -1387,6 +1389,7 @@ int r1_ring_load(long long frame, Ctx *c) {
         {   extern long long g_wake_nolock; static long long seen; static int said;      /* (crash phase) a wake-up done without the event's lock */
             if (g_wake_nolock != seen) { seen = g_wake_nolock; if (said++ < 10) LOG("r1: RING: load at frame %lld: a worker's event was locked by a suspended thread: woken without its lock (%lld so far)\n", (long long)frame, seen); } } }
     rg_loader_wake(frame);
+    if (jl_on() && g_jl_n++ < 400) { char a[200]; jl_fmt(a, sizeof a); LOG("r1: JOBLOG load of frame %lld: before: %s | after: %s\n", frame, g_jl_before, a); }
     { double _t = now_ms(); dm_alloc_check("after the load", frame); g_tt[16] += now_ms() - _t; g_ttn[16]++; }
     { extern volatile LONG g_font_job_in; g_font_job_in = 0; }      /* (crash phase) every capture was taken with the font job not running: so is the loaded state */
     unpark();
@@ -1415,6 +1418,17 @@ static uint64_t us_rd64(uint64_t a) {
     return *(volatile uint64_t *)(uintptr_t)a;
 }
 static long long g_unstick2_n, g_unstick2_w, g_unstick2_cv;
+/* (rb-8ms 13/11) SSBU_RB_JOBLOG=1 (test, default 0): the render submission counters around every load (the lost-render-jobs freeze): the
+ * current slot index [obj+7472], each slot's submitted [+0x18a0] / done [+0x18a8] (slot stride 0x438), and win_acquire's host counter */
+static int jl_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RB_JOBLOG"); v = e && e[0] == '1'; } return v; }
+static int jl_fmt(char *b, size_t n) {
+    extern uint64_t g_sub_obj; long nvn_win_acq_next(void); uint64_t o = g_sub_obj;
+    if (!o) return snprintf(b, n, "(submission object not seen yet)");
+    return snprintf(b, n, "idx %llu, slot0 %llu/%llu, slot1 %llu/%llu, window acquire %ld", (unsigned long long)us_rd64(o + 7472),
+        (unsigned long long)us_rd64(o + 0x18a0), (unsigned long long)us_rd64(o + 0x18a8), (unsigned long long)us_rd64(o + 0x438 + 0x18a0),
+        (unsigned long long)us_rd64(o + 0x438 + 0x18a8), nvn_win_acq_next());
+}
+
 void r1_unstick(double spun_ms, uint64_t lr, Ctx *c) {
     if (g_unstick_ms < 0) { const char *e = getenv("SSBU_RB_UNSTICK"); g_unstick_ms = e ? atoi(e) : 50; }
     if (!g_unstick_ms || spun_ms < g_unstick_ms || !g_rg_ready || GetCurrentThreadId() != g_rgp_main) return;

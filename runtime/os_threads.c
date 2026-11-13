@@ -450,11 +450,13 @@ static void os_ChangeThreadPriority(Ctx *c) {
 }
 static void os_GetThreadId(Ctx *c) { Obj *o = obj(A0); RET(o->thread ? GetThreadId(o->thread) : GetCurrentThreadId()); }
 void r1_unstick(double spun_ms, uint64_t lr, Ctx *c);      /* (rb-8ms) r1_ring.c */
+uint64_t g_sub_obj;      /* (rb-8ms 13/11, SSBU_RB_JOBLOG) the render submission object (x19 of f_710384f460) seen while main waits in it */
 static void os_YieldThread(Ctx *c) {
     static __declspec(thread) uint64_t y_lr; static __declspec(thread) ULONGLONG y_t0, y_last; static __declspec(thread) ULONGLONG y_done;
     ULONGLONG now = GetTickCount64();
     if (c->x[30] != y_lr || now - y_last > 20) { y_lr = c->x[30]; y_t0 = now; y_done = 0; }      /* a new streak of yields from one place */
     y_last = now;
+    if (c->x[30] == 0x710384f4c8ull) g_sub_obj = c->x[19];
     if (now - y_t0 >= 50 && (!y_done || now - y_done >= 1000)) { y_done = now; r1_unstick((double)(now - y_t0), y_lr, c); }      /* (and again each second while it lasts) */
     SwitchToThread();
 }
