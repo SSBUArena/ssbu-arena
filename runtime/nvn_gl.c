@@ -4777,11 +4777,13 @@ static void win_initialize(Ctx *c) {                    /* (window, builder) */
     RET(1);
 }
 static volatile LONG g_win_acq_next; long nvn_win_acq_next(void) { return g_win_acq_next; }      /* (rb-8ms 13/11) SSBU_RB_JOBLOG: a host counter the load does not rewind */
+void nvn_win_acq_set(long v) { InterlockedExchange(&g_win_acq_next, (LONG)v); }      /* (rb-8ms 13/11, C1) r1_ring.c: a load puts it back (SSBU_RB_WINSLOT) */
 static void win_acquire(Ctx *c) {                       /* (window, sync, int *textureIndex) -> 0 = success */
     volatile LONG *const pnext = &g_win_acq_next;
     Window *w = hobj(A0, K_WIN);
     L1T("window acquire (index %d)", (int)((*pnext + 1) % 3));
     if (A2) wr32(A2, (uint32_t)(InterlockedIncrement(pnext) % (w && w->count ? (w->nactive ? w->nactive : w->count) : 2)));
+    if (A2) { void r1_jl2_ev(int kind, uint64_t a, uint64_t b, uint64_t c, uint64_t d); r1_jl2_ev(20, rd32(A2), (uint64_t)*pnext, w ? (uint64_t)w->count : 0, 0); }      /* (rb-8ms, SSBU_RB_JOBLOG=2: C1, the slot of each acquire) */
     InterlockedExchangePointer(&g_window_sync, A1 ? hobj(A1, K_SYNC) : NULL);        /* P3 round 3: nvnSyncWait on it = wait for the refresh that frees the texture */
     if (w && A2 && A1) { extern Window *g_l1_acq_win; extern volatile LONG g_l1_acq_idx, g_l1_acq_new; g_l1_acq_win = w; g_l1_acq_idx = (LONG)rd32(A2); InterlockedExchange(&g_l1_acq_new, 1); }      /* L1: early present */
     display_clock_sample(A2);

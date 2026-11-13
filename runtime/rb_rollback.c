@@ -306,7 +306,35 @@ static const char *g_rbg_skipf_def = "71022df110,71022dec30,71022dc3d0,7101357e2
 /* (13.0.5) the same list as numbers, so that tools/port/ga_sigs.py and verify_13_0_5.py see them: GA() at hook_install; they are in
  * g_code_13_0_5 (found on a 13.0.5 dump, same code at the same address). Before, GA() stopped a 13.0.5 game when the online rollback started. */
 static const uint64_t g_rbg_skipf_def_a[] = {0x71022df110ull, 0x71022dec30ull, 0x71022dc3d0ull, 0x7101357e20ull, 0x7101358ef0ull, 0x710375ea70ull};
+/* (rb-8ms 13/11) THE LOST-RENDER-JOBS FREEZE (ROLLBACK_STATO 5.2): a render dispatch job (loop 0x7103816180) takes a command buffer object
+ * of the frame's pool and begins its recording (f_71037f5160); the begin REFUSES (0xf0044009) when the object's byte + 0xa0 still says
+ * "recording" (it is cleared only when main's submission f_71037f0590 ends that object's recording), and the job then ends WITHOUT its
+ * done (0x710381643c): main waits in f_710384f460 for good ("submitted 4, done 2": one job per render dispatch thread). In the game a
+ * pool object comes back only after its recording was ended; a recording begun in frames that a rollback threw away (or a pool index
+ * and a flag from two different moments) leaves such an object behind. SSBU_RB_CBGUARD (default 1, 0 = off): in a rollback match, a
+ * render dispatch thread's begin on an object still marked as recording first ends that stale recording (the byte cleared: the host
+ * buffer is reset by the begin anyway), counted and logged; the job then records and reports done as in the game. A submission that
+ * meets such an object later finds it not recording and leaves it out (as the game does for any object not recording). */
+static ImportFn g_rbg_cbg_orig; static long long g_rbg_cbg_n;
+static void rbg_cbg_hook(Ctx *c, void *user) {
+    (void)user; uint64_t o = c->x[1];
+    if (g_rbg_in_match == 1 && g_rg_ready && o && *(volatile uint8_t *)(uintptr_t)(o + 0xa0)) {
+        const char *guest_thread_name_of(DWORD tid); const char *nm = guest_thread_name_of(GetCurrentThreadId());
+        if (nm && strstr(nm, "render dispatch")) {
+            void r1_wrote(uint64_t a, uint64_t n); r1_wrote(o + 0xa0, 1); *(volatile uint8_t *)(uintptr_t)(o + 0xa0) = 0;
+            g_rbg_cbg_n++;
+            if (g_rbg_cbg_n <= 20 || g_rbg_cbg_n % 100 == 0) LOG("r1: RB NET: CBGUARD: a render dispatch job's command buffer object %llx was still marked as recording at frame %lld (pass %d, left %d): its stale recording ended, the job goes on (%lld so far)\n",
+                (unsigned long long)o, g_ff, g_ra_phase, g_rgs_left, g_rbg_cbg_n);
+        }
+    }
+    g_rbg_cbg_orig(c);
+}
+static void rbg_cbg_init(void) {
+    const char *e = getenv("SSBU_RB_CBGUARD"); if (e && e[0] == '0') return;
+    LOG("r1: RB NET: render dispatch command buffer guard (SSBU_RB_CBGUARD): %s\n", hook_install(GA(0x71037f5160ull), rbg_cbg_hook, NULL, &g_rbg_cbg_orig) ? "on" : "hook FAILED");
+}
 static void rbg_skipf_init(void) {
+    rbg_cbg_init();
     const char *e = getenv("SSBU_RB_SKIPF"); if (!e) e = g_rbg_skipf_def;
     { const char *l = getenv("SSBU_RB_SKIPF_LAST"); if (l && l[0] == '0') g_rbg_skf_last = 0; }
     int def = e == g_rbg_skipf_def, di = 0;
@@ -861,6 +889,7 @@ static void rbg_fight_off(void) {
     rbg_pin(0);
     LOG("r1: RB NET: match %d over: ring emptied, session reset for the next match\n", rbn_match_number());
     { char mk[24]; snprintf(mk, sizeof mk, "match%dover", g_rbg_in_match == 1 ? rbn_match_number() : 0); if (g_rbg_in_match == 1) input_mark(mk); else input_mark("localmatchover"); }
+    LOG("r1: RB NET report: render dispatch begins on a command buffer still marked as recording, ended first (SSBU_RB_CBGUARD) %lld\n", g_rbg_cbg_n);
     LOG("r1: RB NET report: holds refused while the font job runs (SSBU_RB_FONTHOLD) %lld, H1 over an H1 not let go (SSBU_RB_WHGUARD) %lld, main stuck in yields with threads held (SSBU_RB_UNSTICK) %lld (threads resumed %lld)\n", g_fonthold_n, g_ra_wh_double, g_unstick_n, g_unstick_res);
     LOG("r1: RB NET report: holds that waited for the font job %lld, count reset %lld; H1 waits for it %lld (%.3f ms each)\n", g_fontwait_n, g_fontwait_reset, g_fontwait_h1, g_fontwait_h1 ? g_fontwait_h1_ms / (double)g_fontwait_h1 : 0.0);
     if (g_fd_on > 0) LOG("r1: FONTDIAG: font job runs %lld, in progress at loads %lld, at the idle collector %lld, at other safe points %lld; list broken %lld times\n", g_fd_runs, g_fd_atload, g_fd_atgc, g_fd_atcap, g_fd_bad);
@@ -903,7 +932,7 @@ static void rbg_report(void) {
     LOG("r1: RB NET report: ring memory (hs14, fix %s): captures given up %lld, old states freed early %lld, captures skipped to keep the oldest needed state %lld\n",
         g_rg_poolfix ? "on" : "OFF", g_rg_short_n, g_rg_freed_slots, g_rg_skip_full);
     LOG("r1: RB NET report: task-worker watchdog releases %lld (since the process start), rollbacks with the workers not held %lld (watchdog paused at H2: %s)\n", g_ra_wd_fired, g_rbg_rb_unheld, g_rbg_wdfix ? "yes" : "NO");
-    LOG("r1: RB NET report: loads that took the sound thread at another wait after 5 ms %lld; threads not at their wait after 500 ms %d (last load); loads refused, a thread still running (pub1) %lld\n", g_th_audio_other, g_th_mismatch, g_rg_refused);
+    LOG("r1: RB NET report: loads that took the sound thread at another wait after 5 ms %lld; threads not at their wait after 500 ms %d (last load); loads refused, a thread still running (pub1) or a fiber not restorable %lld (fibers, SSBU_RB_FIBREFUSE: %lld; loaded anyway after 3 refusals: %lld)\n", g_th_audio_other, g_th_mismatch, g_rg_refused, g_rg_fibrefused, g_rg_fibforced);
     LOG("r1: RB NET report: fiber host stacks in use at a load (not copied back) %lld, seen %lld; fibers found running by their thread (TEB) at a capture %lld; catch table at loads: entries dropped %lld, live entries put back %lld, loads changed %lld (hs13)\n", g_fib_live_skip, g_fib_live_seen, g_fib_teb_running, g_rgc_dropped, g_rgc_kept, g_rgc_loads_changed);
     { void nnunwind_catch_stats(long long *, long long *, long long *, long long *, long long *); long long l, d, cr, fu, mp; nnunwind_catch_stats(&l, &d, &cr, &fu, &mp);
       LOG("r1: RB NET report: catch table (hs15): %lld live records, %lld removed slots, %lld puts found no free slot in their window, %lld table full, longest probe %lld; dead records dropped at loads %lld (host fiber stacks known %zu)\n", l, d, cr, fu, mp, g_rgc_dead, g_nbf); }

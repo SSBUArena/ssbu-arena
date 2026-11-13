@@ -72,9 +72,34 @@ int rbn_ahead(void) { return g_ahead; }
 /* ---------------------------------------------------------------- the test bot: a pure function of (seed, frame) */
 static uint32_t mix32(uint32_t x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
 static RbPad bot_pad0(unsigned seed, long long f);
+/* (rb-8ms 13/11, OpenSmash #181, TEST) SSBU_RB_NET_BOT_CSTICK=1: the bot also uses the C-stick (rx / ry: smash attacks on the ground,
+ * aerials in the air) and the R / ZR triggers (shield, grab), which it never did: the C-stick desync class of their issue #181 was never
+ * exercised by our pairs. A second segment stream (its own salt) laid over the bot's pad: with the switch off the bot is unchanged.
+ * Pure function of (seed, frame) as the rest: both games of a pair compute the same pads. */
+static void bot_cstick(unsigned seed, long long f, RbPad *p) {
+    long long st = 1; uint32_t hh = 0; int sg = 0;
+    for (;; sg++) { hh = mix32(seed * 0x2545F491u ^ (uint32_t)sg * 0x9E3779B1u ^ 0xC5717C4Bu); long long len = 4 + (hh % 18); if (f < st + len) break; st += len; }
+    int a = (int)((hh >> 8) % 12), t = (int)(f - st); const int16_t M = 32767;
+    switch (a) {
+    case 0: p->rx = M; break;                                          /* C right (held: smash attack / forward aerial) */
+    case 1: p->rx = (int16_t)-M; break;                                /* C left */
+    case 2: p->ry = M; break;                                          /* C up */
+    case 3: p->ry = (int16_t)-M; break;                                /* C down */
+    case 4: if (t < 2) p->rx = M; break;                               /* C right flicked */
+    case 5: if (t < 2) p->ry = (int16_t)-M; break;                     /* C down flicked */
+    case 6: p->rx = (int16_t)((t & 3) < 2 ? M : -M); break;            /* C mashed left / right */
+    case 7: p->buttons |= 1ull << 7; break;                            /* R (shield / grab, as the controls map it) */
+    case 8: p->buttons |= 1ull << 9; break;                            /* ZR */
+    case 9: if (t < 2) p->buttons |= 1ull << 2; else if (t > 3) p->ry = M; break;     /* jump, then C up (up aerial) */
+    case 10: p->rx = (int16_t)(M / 2); p->ry = (int16_t)(M / 2); break;        /* C half diagonal (tilt range) */
+    case 11: break;                                                    /* nothing */
+    }
+}
 static RbPad bot_pad(unsigned seed, long long f) {       /* (crash phase, test) SSBU_RB_NET_BOT_JITTER=<n>: held sticks tremble by up to +-n every frame */
     static int jit = -1; if (jit < 0) { const char *e = getenv("SSBU_RB_NET_BOT_JITTER"); jit = e ? atoi(e) : 0; }
+    static int cs = -1; if (cs < 0) { const char *e = getenv("SSBU_RB_NET_BOT_CSTICK"); cs = e && e[0] == '1'; }
     RbPad p = bot_pad0(seed, f);
+    if (cs) bot_cstick(seed, f, &p);
     if (jit > 0) { int16_t *ax[2] = {&p.lx, &p.ly};
         for (int a = 0; a < 2; a++) if (*ax[a] > 1600 || *ax[a] < -1600) {
             int v = *ax[a] + (int)(mix32(seed * 31u + (uint32_t)f * 2u + (uint32_t)a) % (uint32_t)(2 * jit + 1)) - jit;

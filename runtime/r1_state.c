@@ -32,6 +32,7 @@ int r1_on(void) {
     return 0;
 }
 int r1_ra_phase(void) { return 0; }
+void r1_jl2_ev(int kind, uint64_t a, uint64_t b, uint64_t c, uint64_t d) { (void)kind; (void)a; (void)b; (void)c; (void)d; }
 int r1_ra_quiet(void) { return 0; }
 int r1_rb_paced(void) { return 0; }
 int r1_rb_present_queue(double *sched_ms) { (void)sched_ms; return 0; }
@@ -645,13 +646,37 @@ static int rest_stack(uint64_t a) { for (int i = 0; i < g_nrest; i++) if (a >= g
 void nnunwind_trace_note(const char *what, uint64_t cfa, uint64_t jb);      /* (hs15) nnunwind.c, SSBU_UNWIND_TRACE */
 static int g_r1_ctr = -1;
 #define R1_CTR(w, a, b) do { if (g_r1_ctr < 0) g_r1_ctr = getenv("SSBU_UNWIND_TRACE") != NULL; if (g_r1_ctr) nnunwind_trace_note(w, (uint64_t)(a), (uint64_t)(b)); } while (0)
+/* (rb-8ms 13/11, OpenSmash 0c9f96e: D2) SSBU_RB_FIBREFUSE (default 1, 0 = off): before a ring load writes anything, the fibers it would
+ * NOT put back whole are counted with the same rules as fibers_restore_all (a saved fiber whose host stack another thread now uses, or one
+ * running at the save that is not at the same place now). r8_svf_0_5 crashed right after "1 fibers not restored": such a load is now
+ * REFUSED like a load with a thread still running (r1_ring.c pub1: every thread goes on, the rollback is tried again at the next tick).
+ * The current fiber list and the live stacks taken here are used again by the restore (no second walk). */
+static int g_fib_pre;                                     /* 1: g_cur / the live stacks were taken by fibers_precheck for this load */
+static int fibers_precheck(const Fib *fs, int n) {
+    g_ncur = 0; int mode_was = g_fib_mode; g_fib_mode = 1; os_r1_fibers(fib_cb); g_fib_mode = mode_was;
+    if (g_fib_live_on < 0) { const char *e = getenv("SSBU_R1_LIVESTK"); g_fib_live_on = !(e && e[0] == '0'); }
+    live_rsps(); g_fib_pre = 1;
+    int bad = 0;
+    for (int i = 0; i < n; i++) {
+        const Fib *f = &fs[i];
+        if (!f->c) continue;                                  /* never ran then: a fresh start, always possible */
+        int j; for (j = 0; j < g_ncur; j++) if (g_cur[j].key == f->key) break;
+        void *cf = j < g_ncur ? g_cur[j].fiber : NULL; Ctx *cc = j < g_ncur ? g_cur[j].c : NULL;
+        int running_now = j < g_ncur && g_cur[j].tid != 0;
+        if (f->susp && !running_now) { if (g_fib_live_on && live_on_stack(f->blk)) bad++; continue; }
+        if (!f->susp && cf == f->fiber && cc == f->c && cc->in_import == f->imp && cc->import_from == f->from && cc->x[31] == f->sp) continue;
+        bad++;
+    }
+    return bad;
+}
 TT_DEFV(fibers_restore_all, (void), (), 7)
 static void fibers_restore_all_tt(void) {
     g_nrest = 0;
-    g_ncur = 0; g_fib_mode = 1; os_r1_fibers(fib_cb);
+    if (!g_fib_pre) { g_ncur = 0; g_fib_mode = 1; os_r1_fibers(fib_cb); }
     g_fib_same = g_fib_diff = g_fib_new = 0;
     if (g_fib_live_on < 0) { const char *e = getenv("SSBU_R1_LIVESTK"); g_fib_live_on = !(e && e[0] == '0'); }
-    live_rsps();
+    if (!g_fib_pre) live_rsps();
+    g_fib_pre = 0;
     for (int i = 0; i < g_nfib; i++) {
         Fib *f = &g_fib[i];
         int j; for (j = 0; j < g_ncur; j++) if (g_cur[j].key == f->key) break;

@@ -54,6 +54,7 @@ typedef struct {
     int ncbs; uint8_t *cbs; uint8_t *cbd; size_t cbd_used, cbd_com;
     size_t pages, xpages;
     long long posted;                                   /* (Arena) the submissions main had posted at this capture (nvn_gl.c) */
+    long acq_next;                                      /* (rb-8ms 13/11, C1) win_acquire's host counter at this capture (nvn_gl.c) */
 } RgSlot;
 /* (hs13) g_rg_nomem: 1 = the ring's base could not be made for lack of memory (nothing kept: tried again at the next match),
  * 2 = the ring broke on the way (its own allocations or a rebase failed: off for the rest of the process). rb_rollback.c then
@@ -346,6 +347,7 @@ static void rg_meta_capture_tt(RgSlot *s, Ctx *c) {       /* threads still held:
     fontll_rb_save((int)(s - g_rg));                      /* (crash phase) the font engines' settings (nnfontll.c) */
     s->ctx = *c;
     { long long nvn_r1_posted(void); s->posted = nvn_r1_posted(); }
+    { long nvn_win_acq_next(void); s->acq_next = nvn_win_acq_next(); }
     s->nth = g_nth; s->ninfo = g_ninfo;
     memcpy(s->th, g_th, (size_t)g_nth * sizeof *g_th);
     for (int i = 0; i < s->nth; i++) { s->th[i].held = 0; s->th[i].cok = 0; }
@@ -420,12 +422,14 @@ static int rg_init(void) {
     return 1;
 }
 static RgSlot *rg_slot(int i) { return &g_rg[(g_rg_head + i) % g_rg_cap]; }     /* i = 0 oldest */
+static void jl2_load_check(long long frame, int k); static void jl2_hold_note(int kind, long long frame); static void jl2_dump(const char *why); static void jl2_init(void);      /* (rb-8ms 13/11) SSBU_RB_JOBLOG=2, at the end */
 void r1_ring_let_go(void) { if (g_rg_kept) { unpark(); g_rg_kept = 0; } }      /* after a capture made with g_rg_keep and no load */
 /* (R3 hs11) the threads held for a load that follows at once, WITHOUT a capture of the state that is about to be thrown away
  * (the load finds what was written since the newest capture by its own sweep); r1_ring_load / r1_ring_let_go lets them go */
 int r1_ring_hold(void) {
     if (!g_rg_ready || g_rg_kept) return g_rg_kept;
     if (!ra_hold_quiet(g_rg_park_ms)) return 0;
+    jl2_hold_note(9, g_ff);
     g_rg_kept = 1; return 1;
 }
 long long r1_ring_oldest(void) { return g_rg_count ? rg_slot(0)->frame : -1; }
@@ -707,6 +711,7 @@ int r1_ring_capture(long long frame, Ctx *c) {
         return 0;
     }
     if (!ra_hold_quiet(g_rg_park_ms)) { g_rgp_seg = seg_was; g_rg_cap_fail++; if (g_rg_cap_fail <= 20 || g_rg_cap_fail % 100 == 0) LOG("r1: RING: capture %lld (frame %lld) skipped: thread %s not at a wait within %.1f ms\n", g_rg_cap_fail, frame, g_ra_busy ? g_ra_busy : "?", g_rg_park_ms); return 0; }
+    jl2_hold_note(10, frame);
     double t1 = now_ms();
     { void os_r1_fibers_inc_on(void); os_r1_fibers_inc_on(); }      /* (rollback 8 ms) the threads are held: the fiber list from now on kept, not rebuilt */
     if (g_rg_count == g_rg_cap) { rg_slot_drop(rg_slot(0), 1); g_rg_head = (g_rg_head + 1) % g_rg_cap; g_rg_count--; }
@@ -1184,6 +1189,7 @@ static void rgc_after_tt(void) {                           /* after the copies a
     if (deadfix) ReleaseSRWLockShared(&g_bf_lock);
     g_rgc_dropped += dropped; g_rgc_kept += kept; if (dropped || kept) g_rgc_loads_changed++;
 }
+static long long g_rg_fibrefused, g_rg_fibforced; static int g_rg_fibstreak;      /* (rb-8ms 13/11, D2) SSBU_RB_FIBREFUSE */
 static long long g_rg_refused;                        /* (R3 pub1) loads refused: a thread still running after the hold */
 static long long g_rg_rezero;                         /* (Arena) pages decommitted at the loaded frame, committed since: zeroed by the load */
 static long long g_rg_ldpg, g_rg_recommit, g_rg_rewake, g_rg_cvwake;           /* (R3 net3) pages to load, all loads (the written ones: g_cp_wrote); pages committed again by a load */
@@ -1281,6 +1287,7 @@ int r1_ring_load(long long frame, Ctx *c) {
         for (int i = 0; i < g_nth; i++) if (g_th[i].held) { ResumeThread(g_th[i].h); g_th[i].held = 0; }
         SwitchToThread();
     }
+    jl2_load_check(frame, k);
     /* (R3 pub1: fx2j / fx3h, c0000005 in the sound thread's memcpy right after "nus3::audio update not back at its wait after 500 ms
      * ... now guest code") a thread that is still RUNNING guest code (not blocked at a wait) after the hold's 500 ms was suspended in
      * the middle of its code, and the load then changed the memory under its registers. Now such a load is REFUSED: every thread
@@ -1289,14 +1296,19 @@ int r1_ring_load(long long frame, Ctx *c) {
      * refused as if a thread were running (the timeline must not change). */
     {   static int runfix = -1, tn = -1; static long long tc;
         if (runfix < 0) { const char *e = getenv("SSBU_R1_RUNFIX"); runfix = !(e && e[0] == '0'); e = getenv("SSBU_RB_NET_TEST_REFUSE"); tn = e ? atoi(e) : 0; }
-        int forced = tn > 0 && ++tc % tn == 0;
-        if ((runfix && g_th_running) || forced) {
+        int forced = tn > 0 && ++tc % tn == 0, fibbad = 0;
+        {   static int fr = -1; if (fr < 0) { const char *e = getenv("SSBU_RB_FIBREFUSE"); fr = !(e && e[0] == '0'); }      /* (rb-8ms 13/11, D2) r1_state.c fibers_precheck */
+            /* at most 3 refusals in a row: then loaded as before (a fiber that can never be put back must not keep the wrong guess forever) */
+            if (fr && !g_th_running && !forced && rgs_wanted()) { fibbad = fibers_precheck(g->fib, g->nfib);
+                if (fibbad && g_rg_fibstreak >= 3) { g_rg_fibforced++; LOG("r1: RING load of frame %lld (k %d): %d fibers cannot be put back whole, refused 3 times in a row: loaded anyway (%lld so far)\n", frame, k, fibbad, g_rg_fibforced); fibbad = 0; }
+                if (fibbad) { g_fib_pre = 0; g_rg_fibrefused++; g_rg_fibstreak++; } else g_rg_fibstreak = 0; } }
+        if ((runfix && g_th_running) || forced || fibbad) {
             unpark();
             Ctx *tc2; const char *nm2; HANDLE h2;                  /* the threads made after that frame (stop_born_threads) go on too */
             for (int i = g_ninfo; guest_thread_info(i, &tc2, &nm2, &h2); i++) if (h2 && GetThreadId(h2) != GetCurrentThreadId()) ResumeThread(h2);
             g_rg_refused++;
             if (g_rg_refused <= 20 || g_rg_refused % 100 == 0) LOG("r1: RING load of frame %lld (k %d) REFUSED (%lld so far): %s; every thread goes on, the rollback is tried again next tick\n",
-                frame, k, g_rg_refused, forced ? "test switch SSBU_RB_NET_TEST_REFUSE" : "a thread still running guest code after 500 ms");
+                frame, k, g_rg_refused, forced ? "test switch SSBU_RB_NET_TEST_REFUSE" : fibbad ? "a fiber could not be put back whole (SSBU_RB_FIBREFUSE)" : "a thread still running guest code after 500 ms");
             g_rgp_seg = 1;
             return -1;
         }
@@ -1380,6 +1392,13 @@ int r1_ring_load(long long frame, Ctx *c) {
     fibers_restore_all(); double t2b = now_ms();
     rgc_after(); double t2c = now_ms();
     rg_cb_load(g);
+    /* (rb-8ms 13/11, OpenSmash bf1f76c: C1) SSBU_RB_WINSLOT (default 1, 0 = off): win_acquire (nvn_gl.c) hands out the window texture
+     * index from a host counter that a load did not rewind, and every pass acquires (re-run passes too: JOBLOG=2 event 20): after a
+     * rollback of k frames the re-run passes got other indices than their first pass, and the next real pass the SAME index as the real
+     * pass before it (a k = 2 rollback with 3 textures: i, then i + 3 = i). The game keys per-texture data by that index (OpenSmash: the
+     * camera jumped at every rollback). Now the counter goes back with the state: each frame gets the index it got the first time. */
+    { static int ws = -1; if (ws < 0) { const char *e = getenv("SSBU_RB_WINSLOT"); ws = !(e && e[0] == '0'); }
+      if (ws) { void nvn_win_acq_set(long v); nvn_win_acq_set(g->acq_next); } }
     fontll_rb_load((int)(g - g_rg));                      /* (crash phase) the font engines' settings of that frame */
     double t3 = now_ms();
     {   int os_r1_wake_waits_from(uint64_t lr);      /* (Arena: the 6700K hang) the task workers' idle wait: woken again (os_threads.c) */
@@ -1433,6 +1452,7 @@ void r1_unstick(double spun_ms, uint64_t lr, Ctx *c) {
     if (g_unstick_ms < 0) { const char *e = getenv("SSBU_RB_UNSTICK"); g_unstick_ms = e ? atoi(e) : 50; }
     if (!g_unstick_ms || spun_ms < g_unstick_ms || !g_rg_ready || GetCurrentThreadId() != g_rgp_main) return;
     g_unstick_n++;
+    jl2_dump("UNSTICK");
     {   /* (rb-8ms 12/11 notte) SSBU_RB_UNSTICK2 (default 1, 0 = off): from the second call of one streak (main still spinning a
          * second after the first, so H1 was not the cause, or not the only one) the task workers' idle waits (710354a5ac) are woken
          * again as after a load, and every guest condition wait (the render dispatch threads, nu::GraphicsDevice::Update): a job in
@@ -1927,6 +1947,7 @@ static void rgs_lite_init(void) {
     const char *e = getenv("SSBU_RB_SIM_LITE"); g_rgs_lite = e ? atoi(e) : 0; g_rgs_prof = getenv("SSBU_RB_SIM_PROF") ? atoi(getenv("SSBU_RB_SIM_PROF")) : 0;
     if (g_rgs_prof == 2) rgp_init();
     sd_init();
+    jl2_init();
     if (!g_rgs_lite && !g_rgs_prof) return;
     g_rgl_lo = GA(0x7103747270ull); g_rgl_hi = GA(0x710374e000ull);
     {   /* (rb crash, 2026-11-08, TEST) SSBU_RB_SIM_LITE_KEEP=<hex>,<hex>..: these callees run in every re-run pass although their group is in
@@ -1940,8 +1961,9 @@ static void rgs_lite_init(void) {
     for (int i = 0; i < RGL_N; i++) if ((g_rgs_prof || (g_rgs_lite & g_rgl_h[i].grp)) && hook_install(GA(g_rgl_h[i].a), rgs_lite_hook, &g_rgl_h[i], &g_rgl_h[i].orig)) ok++;
     LOG("r1: RB SIM logic-only re-run: skip mask %d, profile %d: %d hooks installed\n", g_rgs_lite, g_rgs_prof, ok);
 }
+static void jl2_report(void);
 static void rgs_lite_report(void) {
-    sd_report();
+    sd_report(); jl2_report();
     if (!g_rgs_lite && !g_rgs_prof) return;
     for (int i = 0; i < RGL_N; i++) if (g_rgl_h[i].orig) LOG("r1: RB SIM lite %llx (group %d): skipped %lld; timed real %lld calls %.4f ms/call, re-run %lld calls %.4f ms/call\n", (unsigned long long)g_rgl_h[i].a, g_rgl_h[i].grp, g_rgl_h[i].sk,
         g_rgl_h[i].n[0], g_rgl_h[i].n[0] ? g_rgl_h[i].ms[0] / g_rgl_h[i].n[0] : 0, g_rgl_h[i].n[1], g_rgl_h[i].n[1] ? g_rgl_h[i].ms[1] / g_rgl_h[i].n[1] : 0);
@@ -2118,5 +2140,109 @@ static void rgs_report(void) {
         LOG("r1: RB SIM re-run passes but the last (the replayed frames a rollback pays for): %lld mean %.3f median %.3f ms; last re-run passes %lld mean %.3f median %.3f ms\n", g_rgs_npl[0], g_rgs_npl[0] ? g_rgs_pl[0] / g_rgs_npl[0] : 0, rg_pct(g_rgs_plv[0], g_rgs_nplv[0], 50), g_rgs_npl[1], g_rgs_npl[1] ? g_rgs_pl[1] / g_rgs_npl[1] : 0, rg_pct(g_rgs_plv[1], g_rgs_nplv[1], 50));
         for (int k = 0; k < 3; k++) if (g_rapn[k]) LOG("r1: RB SIM %s passes (%lld), means ms: pass start -> poll %.3f, poll -> frame end %.3f, frame end call %.3f, frame end -> safe point %.3f\n",
             k == 0 ? "real" : k == 1 ? "re-run (not the last)" : "re-run (the last)", g_rapn[k], g_rap[k][0] / g_rapn[k], g_rap[k][1] / g_rapn[k], g_rap[k][2] / g_rapn[k], g_rap[k][3] / g_rapn[k]);
+    }
+}
+
+/* ---------------------------------------------------------------- (rb-8ms 13/11) SSBU_RB_JOBLOG=2 (TEST ONLY): the lost-render-jobs freeze
+ * An event ring (host memory, never rolled back) of the render submission: f_710384f560 (frame start: the expected count [list + 0x1400]
+ * into slot [obj + 0x1d20]), f_7103815cb0 (a job pushed into the render dispatch queue, count [q + 0x1468]), f_7103815da0 (a job taken
+ * by a render dispatch thread), f_710384f820 (a job done: slot + 0x18a8), f_710384f460 (main's wait), plus the ring's captures, pre-holds
+ * and loads; dumped at the first UNSTICK. And at every load: each thread held as "at the same wait as at the capture" whose guest SP is
+ * NOT the capture's (the same import from the same SDK wrapper, e.g. any std::condition_variable wait, at another depth). */
+typedef struct { double t; uint32_t tid; int16_t kind, ph; long long fr; uint64_t a, b, c, d; } Jl2Ev;
+#define JL2_N 16384
+static uint64_t g_jl2_site[32][4]; static int g_jl2_nsite;
+static Jl2Ev g_jl2[JL2_N]; static volatile LONG64 g_jl2_n; static int g_jl2_on = -1; static long long g_jl2_spdiff, g_jl2_spdiff_rd, g_jl2_loads;
+static ImportFn g_jl2_o560, g_jl2_opush, g_jl2_opop, g_jl2_o820, g_jl2_o460;
+static int jl2_on(void) { if (g_jl2_on < 0) { const char *e = getenv("SSBU_RB_JOBLOG"); g_jl2_on = e && e[0] == '2'; } return g_jl2_on; }
+static void jl2_ev(int kind, uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
+    if (jl2_on() <= 0) return;
+    LONG64 i = InterlockedIncrement64(&g_jl2_n) - 1; Jl2Ev *e = &g_jl2[i & (JL2_N - 1)];
+    e->t = now_ms(); e->tid = GetCurrentThreadId(); e->kind = (int16_t)kind; e->ph = (int16_t)(g_ra_phase * 10 + (g_rgs_left > 9 ? 9 : g_rgs_left)); e->fr = g_ff; e->a = a; e->b = b; e->c = c; e->d = d;
+}
+void r1_jl2_ev(int kind, uint64_t a, uint64_t b, uint64_t c, uint64_t d) { if (g_jl2_on != 0) jl2_ev(kind, a, b, c, d); }      /* (for nvn_gl.c: 20 = window acquire) */
+static void jl2_h560(Ctx *c, void *u) { (void)u; uint64_t o = c->x[0], l = c->x[1]; jl2_ev(1, o, rd64(l + 0x1400), rd8(o + 0x1d18) ? rd64(o + 0x1d20) : 0, c->x[30]); g_jl2_o560(c); }
+static void jl2_hpush(Ctx *c, void *u) { (void)u; uint64_t o = c->x[0], e = c->x[1], sl = rd32(e + 4), q0 = rd64(o + 0x1468); g_jl2_opush(c); jl2_ev(2, o, sl, q0, rd64(o + 0x1468)); }
+static void jl2_hpop(Ctx *c, void *u) { (void)u; uint64_t out = c->x[0], o = c->x[1]; g_jl2_opop(c); jl2_ev(3, o, rd32(out + 4), rd32(out + 0x20), rd64(o + 0x1468));
+    /* (TEST) SSBU_RB_JOBLOG_RDSLOW=<ms>,<every>: every <every>-th job taken, the render dispatch thread sleeps <ms> first (a slow render dispatch, as with the
+     * host render thread on its cores: does the lost-jobs freeze come more often?) */
+    static int ms = -1, ev = 1; static volatile LONG n; if (ms < 0) { const char *e = getenv("SSBU_RB_JOBLOG_RDSLOW"); ms = 0; if (e) sscanf(e, "%d,%d", &ms, &ev); if (ev < 1) ev = 1; }
+    if (ms > 0 && rd32(out + 0x20) == 1 && InterlockedIncrement(&n) % ev == 0) Sleep((DWORD)ms); }
+static void jl2_h820(Ctx *c, void *u) { (void)u; uint64_t o = c->x[0], sl = (uint32_t)c->x[1]; g_jl2_o820(c); uint64_t s = o + sl * 0x438; jl2_ev(4, o, sl, rd64(s + 0x18a8), rd64(s + 0x18a0)); }
+static void jl2_h460(Ctx *c, void *u) { (void)u; uint64_t o = c->x[0], sl = rd64(o + 0x1d30), s = o + (sl & 1) * 0x438; jl2_ev(5, o, sl | (c->x[1] & 1) << 8, rd64(s + 0x18a0), rd64(s + 0x18a8)); g_jl2_o460(c); jl2_ev(6, o, sl, 0, 0); }
+/* f_71037f5160: a command buffer object's begin of recording; it refuses (0xf0044009) when the object's byte + 0xa0 says it is still
+ * recording (main's submission f_71037f0590 clears it when it ends the recording): the render dispatch job then ends WITHOUT its done
+ * (0x710381643c), main waits for it for good. f_71037f0590: the submission (x1 list, w2 count) */
+static ImportFn g_jl2_obeg, g_jl2_osub; static long long g_jl2_begfail;
+static void jl2_hbeg(Ctx *c, void *u) { (void)u; uint64_t out = c->x[0], o = c->x[1]; uint8_t f0 = rd8(o + 0xa0); g_jl2_obeg(c); uint32_t r = rd32(out);
+    jl2_ev(7, o, f0, r, 0);
+    if (r & 0x80000000u) { g_jl2_begfail++; const char *guest_thread_name_of(DWORD tid); const char *nm = guest_thread_name_of(GetCurrentThreadId());
+        if (g_jl2_begfail <= 40) LOG("r1: JOBLOG 2: command buffer object %llx: begin of recording REFUSED (%08x, still recording) on %s at frame %lld (phase %d, left %d)" "%c", (unsigned long long)o, r, nm ? nm : "?", g_ff, g_ra_phase, g_rgs_left, 10); } }
+static void jl2_hsub(Ctx *c, void *u) { (void)u; uint64_t l = c->x[1], n = (uint32_t)c->x[2], on = 0; for (uint64_t i = 0; i < n && i < 64; i++) { uint64_t o = rd64(l + 8 * i); if (o && rd8(o + 0xa0)) on++; }
+    jl2_ev(8, l, n, on, c->x[30]); for (uint64_t i = 0; i < n && i < 16; i++) { uint64_t o = rd64(l + 8 * i); jl2_ev(18, o, o ? rd8(o + 0xa0) : 0, i, 0); } g_jl2_osub(c); }
+static void jl2_init(void) {
+    if (jl2_on() <= 0) return;
+    int a = hook_install(GA(0x710384f560ull), jl2_h560, NULL, &g_jl2_o560), b = hook_install(GA(0x7103815cb0ull), jl2_hpush, NULL, &g_jl2_opush),
+        d = hook_install(GA(0x7103815da0ull), jl2_hpop, NULL, &g_jl2_opop), e = hook_install(GA(0x710384f820ull), jl2_h820, NULL, &g_jl2_o820),
+        f = hook_install(GA(0x710384f460ull), jl2_h460, NULL, &g_jl2_o460), g = hook_install(GA(0x71037f5160ull), jl2_hbeg, NULL, &g_jl2_obeg),
+        h = hook_install(GA(0x71037f0590ull), jl2_hsub, NULL, &g_jl2_osub);
+    LOG("r1: JOBLOG 2: hooks frame start %d, push %d, pop %d, done %d, wait %d, begin %d, submission %d\n", a, b, d, e, f, g, h);
+}
+/* the first return address of game code (main's image) in a held thread's guest frame chain: the game's call site of an SDK wait */
+static uint64_t jl2_rd(uint64_t a) { return a && !(a & 7) && !IsBadReadPtr((const void *)(uintptr_t)a, 8) ? *(volatile uint64_t *)(uintptr_t)a : 0; }      /* (no VirtualQuery: slow on the 62 GB window) */
+static uint64_t jl2_site(uint64_t fp, uint64_t sp) {
+    for (int n = 0; n < 8 && fp >= sp && fp - sp < (1u << 20); n++) {
+        uint64_t lr = jl2_rd(fp + 8);
+        if (lr >= 0x7100000000ull && lr < 0x7104000000ull) return lr;
+        uint64_t nf = jl2_rd(fp); if (nf <= fp) break; fp = nf;
+    }
+    return 0;
+}
+/* r1_ring_load, after its hold: threads taken as at their capture's wait whose SP differs (counted; logged; an event each) */
+static void jl2_load_check(long long frame, int k) {
+    if (jl2_on() <= 0) return;
+    g_jl2_loads++;
+    jl2_ev(11, (uint64_t)frame, (uint64_t)k, (uint64_t)g_th_mismatch, (uint64_t)g_th_running);
+    for (int i = 0; i < g_nth; i++) {
+        Th *t = &g_th[i];
+        if (!t->held || !t->same || !t->imp || strstr(t->imp, "Fiber")) continue;
+        if (t->c->x[31] == t->regs.x[31]) continue;
+        g_jl2_spdiff++; int rd = t->name && (strstr(t->name, "render dispatch") || strstr(t->name, "GraphicsDevice")); if (rd) g_jl2_spdiff_rd++;
+        uint64_t sn = jl2_site(t->c->x[29], t->c->x[31]);
+        jl2_ev(12, (uint64_t)GetThreadId(t->h), t->regs.x[31], t->c->x[31], sn);
+        if (g_jl2_spdiff <= 60) LOG("r1: JOBLOG 2: load of frame %lld (k %d): thread %s held as at its capture's wait (%s from %llx) but its SP differs: capture %llx, now %llx (game call site now %llx)\n",
+            frame, k, t->name ? t->name : "?", t->imp, (unsigned long long)t->from, (unsigned long long)t->regs.x[31], (unsigned long long)t->c->x[31], (unsigned long long)sn);
+    }
+}
+static void jl2_hold_note(int kind, long long frame) {      /* 9 = pre-hold of a load, 10 = capture: each render dispatch thread's place */
+    if (jl2_on() <= 0) return;
+    jl2_ev(kind, (uint64_t)frame, 0, 0, 0);
+    for (int i = 0; i < g_nth; i++) {
+        Th *t = &g_th[i];
+        if (!t->held || !t->name || !(strstr(t->name, "render dispatch") || strstr(t->name, "GraphicsDevice"))) continue;
+        uint64_t site = jl2_site(t->c->x[29], t->c->x[31]);
+        jl2_ev(kind + 20, (uint64_t)GetThreadId(t->h), t->from, t->c->x[31], site);
+        int j; for (j = 0; j < g_jl2_nsite; j++) if (g_jl2_site[j][0] == site && g_jl2_site[j][1] == t->from) break;
+        if (j == g_jl2_nsite && j < 32) { g_jl2_site[j][0] = site; g_jl2_site[j][1] = t->from; g_jl2_nsite++; }
+        if (j < 32) g_jl2_site[j][kind == 10 ? 2 : 3]++;
+    }
+}
+static void jl2_report(void) {
+    if (jl2_on() <= 0) return;
+    if (getenv("SSBU_RB_JOBLOG_END")) jl2_dump("report");
+    LOG("r1: JOBLOG 2 report: begins of recording refused %lld; loads %lld, threads held as at their capture's wait with another SP %lld (render dispatch / GraphicsDevice %lld); render dispatch places at holds (game site, import from: captures / pre-holds):", g_jl2_begfail, g_jl2_loads, g_jl2_spdiff, g_jl2_spdiff_rd);
+    for (int j = 0; j < g_jl2_nsite; j++) LOG(" [%llx %llx: %llu / %llu]", (unsigned long long)g_jl2_site[j][0], (unsigned long long)g_jl2_site[j][1], (unsigned long long)g_jl2_site[j][2], (unsigned long long)g_jl2_site[j][3]);
+    LOG("\n");
+}
+static void jl2_dump(const char *why) {
+    if (jl2_on() <= 0) return;
+    static int dumped; if (dumped++ >= 2) return;
+    LONG64 n = g_jl2_n, from = n > 1500 ? n - 1500 : 0;
+    const char *guest_thread_name_of(DWORD tid);
+    LOG("r1: JOBLOG 2 DUMP (%s): events %lld .. %lld; loads %lld, threads held as same with another SP %lld (render dispatch %lld). kinds: 1 frame start (obj, expected, slot, lr) 2 push (q, slot, count before, after) 3 pop (q, slot, status, count after) 4 done (obj, slot, done, submitted) 5 wait in (obj, slot | skip-submit << 8, submitted, done) 6 wait out 7 begin recording (cb object, its flag before, result) 8 submission (list, count, still recording) 18 each buffer of it (cb object, its flag); 20 window acquire (index given, count); 9 pre-hold, 10 capture, 11 load (frame, k, mismatch, running), 12 same-wait SP diff (tid, sp then, sp now, site); 29/30 render dispatch place (tid, from, sp, site)\n",
+        why, (long long)from, (long long)n, g_jl2_loads, g_jl2_spdiff, g_jl2_spdiff_rd);
+    for (LONG64 i = from; i < n; i++) {
+        Jl2Ev *e = &g_jl2[i & (JL2_N - 1)]; const char *nm = guest_thread_name_of(e->tid);
+        LOG("r1: JL2 %.3f %s ph %d fr %lld k%d %llx %llx %llx %llx\n", e->t, nm ? nm : "host", e->ph, e->fr, e->kind, (unsigned long long)e->a, (unsigned long long)e->b, (unsigned long long)e->c, (unsigned long long)e->d);
     }
 }
