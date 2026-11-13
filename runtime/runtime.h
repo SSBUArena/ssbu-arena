@@ -257,6 +257,24 @@ static inline float rt_fmaf(float x, float y, float z) {
     return fmaf(x, y, z);
 }
 #define fmaf rt_fmaf
+#ifdef R1_GAMEDLL
+/* (rb-8ms 13/11, OpenSmash TECHNICAL.md: E4) the C library's double fma on a CPU without FMA3 is a software routine whose zero results
+ * were seen with another sign than the hardware's: a possible cross-CPU desync. The cases exact in plain double arithmetic are done
+ * here, for every double fma of the game DLL (FMADD / FMSUB / FNMADD / FNMSUB from recomp.py, FMLA / FMLS / FRECPS / FRSQRTS from
+ * neon.h): a factor is zero (the exact product is that signed zero, so product + acc in double is the IEEE result, sign rule
+ * included), or the addend is zero and the product not (fma(a, b, +-0) is the product rounded once = a * b, also when it rounds to a
+ * zero: that zero keeps the exact product's sign, which adding the zero addend could change). Infinite / NaN operands: the library.
+ * Rollback game DLL only (-DR1_GAMEDLL); r1_fmazero = SSBU_FMAZERO (default 1). */
+static inline double rt_fma(double a, double b, double acc) {
+    uint64_t ua, ub, uc; memcpy(&ua, &a, 8); memcpy(&ub, &b, 8); memcpy(&uc, &acc, 8);
+    if (r1_fmazero && ((ua >> 52) & 0x7ff) != 0x7ff && ((ub >> 52) & 0x7ff) != 0x7ff && (uc << 1) <= 0xffe0000000000000ull) {
+        if (!(ua << 1) || !(ub << 1)) return a * b + acc;
+        if (!(uc << 1)) return a * b;
+    }
+    return fma(a, b, acc);
+}
+#define fma rt_fma
+#endif
 #endif
 
 /* (game code +30%) RT_LANES(i, first, end, body): for (int i = first; i < end; i++) body, for the lane loops of neon.h
