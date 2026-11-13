@@ -695,6 +695,12 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     (void)arg;
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");
+    {   /* (rb-8ms 13/11, OpenSmash survey 2 N7) SSBU_KEEP_AWAKE (default 1, 0 = as before): the display and the PC stay awake while
+         * this thread (the game window's, for the process's life) runs: a long fight played with a controller only gave Windows no
+         * input and the screen went dark. An application request (it ends with the thread), no system setting is changed. */
+        const char *e = getenv("SSBU_KEEP_AWAKE");
+        if (!(e && e[0] == '0')) SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+    }
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) { printf("display: SDL video cannot start: %s\n", SDL_GetError()); fflush(stdout); ExitProcess(5); }
     const GfxOptions *go = gfx_options();
     int cw = go->width, ch = go->height;

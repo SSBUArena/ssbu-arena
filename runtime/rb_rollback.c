@@ -575,6 +575,8 @@ static void rbg_step_body(Ctx *c) {
         }
         if (g_rbg_wdfix) g_ra_wd_pause = 1;
         g_rbg_in_match = 1;
+        {   int rbg_squad_active(void); uint8_t mm = rd8(GA(0x71052c41b0ULL));      /* (rb-8ms 13/11, OpenSmash survey 2 N2) the match block's melee mode at the base state: 0 = local versus (rollback's way) */
+            LOG("r1: RB NET: base state: melee mode (match block + 0) %u%s%s\n", mm, rbg_squad_active() ? " (a squad match)" : "", mm ? " - NOT the local versus mode the rollback expects" : ""); }
         if (i > 0) LOG("r1: RB NET: the base state was made %lld passes after the first safe point with the fight on (fight frame %lld): it is frame %lld, as on the other game (net3)\n", i, g_rbg_ff_first, i);
         rbg_pin(1);
         rbn_start(i);
