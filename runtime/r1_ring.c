@@ -217,6 +217,7 @@ static int g_rgpg_on = -1; static int g_rgpg_kind; static long long g_rgpg_caps[
 #define RGPG_N 16384
 static struct { uint64_t blk; long long n[3]; } g_rgpg[RGPG_N];
 static int r1_in_pool(const uint8_t *p); static volatile LONG g_npool;      /* (r1_state.c, below) */
+static void r1_pool_map_update(void); static int r1_pool_page(const uint8_t *a);      /* (r1_state.c, below; LOADSNAP) */
 static long long g_rgpg_pool[3], g_rgpg_ldn, g_rgpg_ldpool, g_rgpg_lds;
 static void rgpg_note(uint8_t *a) {
     if (r1_in_pool(a)) g_rgpg_pool[g_rgpg_kind]++;
@@ -1260,11 +1261,63 @@ static LONG CALLBACK rg_load_fault(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 static int rg_fault_on(void) { static int lf = -1; if (lf < 0) { const char *e = getenv("SSBU_RB_LOADFAULT"); lf = !(e && e[0] == '0'); if (lf) AddVectoredExceptionHandler(1, rg_load_fault); } return lf; }
+/* (rb-8ms 13/11) the load's page list, ids g_rg_tl[from .. to): each page once, from its value at `frame` (queued with cp_add, or
+ * handled here: base value left, decommitted, recommitted, zero). clr: its listing mark cleared now (0: the caller clears it later). */
+static int g_rg_sn5;                                     /* (LOADSNAP=5) this load lists the snapshot's slots */
+static void r1_pool_map_update(void); static int r1_pool_page(const uint8_t *a); uint8_t *nvn_r1_snap_slot(const uint8_t *page);
+void nvn_r1_snap_page(const uint8_t *page); void nvn_r1_snap_fill(uint8_t *slot, const uint8_t *page);
+static void rg_load_list(long long frame, size_t from, size_t to, int clr) {
+    for (size_t n = from; n < to; n++) {
+        uint32_t id = g_rg_tl[n]; if (clr) g_rg_touch[id] = 0;
+        uint8_t *a = rg_addr(id), *src = rg_src(id);
+        uint8_t *sn5 = g_rg_sn5 && r1_pool_page(a) ? nvn_r1_snap_slot(a) : NULL;      /* (LOADSNAP=5) listed now, filled by whoever writes the page */
+
+        if (g_lb_active && id < g_rg_n1 + g_rg_n2 && g_rg_idx[id] == RG_FLAT && g_lb_st[id]) {
+            /* (0.2.11, the lazy base: the replay agent's detA8 crashes) a page whose value at `frame` is the base's: while it is still
+             * PENDING it was not written since the base (it is read-only), so it already holds that value - left as it is. The load
+             * used to copy it from the shadow, which a lazy base has not filled yet (pages reported written that were not: the
+             * stacks' write watch, ranges marked whole); with a full shadow that copy was harmless. One being taken: waited for. */
+            if (g_lb_st[id] == LB_PENDING) { g_lb_kept++; continue; }
+            while (g_lb_st[id] == LB_BUSY) YieldProcessor();
+        }
+        if (src == (uint8_t *)1) {                         /* decommitted then */
+            /* (Arena) committed since (by the frames thrown away): zeroed, as a fresh commit; it was left as it was and the game's
+             * next commit of it found the old bytes (nu::GraphicsDevice::Update crash). SSBU_RB_DECOMFIX=0: left as it is */
+            static int df = -1; if (df < 0) { const char *e = getenv("SSBU_RB_DECOMFIX"); df = !(e && e[0] == '0'); }
+            if (df && id < g_rg_n1 && !g_dc[id]) { if (sn5) nvn_r1_snap_fill(sn5, a); memset(a, 0, PG); g_rg_rezero++;
+                if (g_rg_rezero <= 10 || g_rg_rezero % 1000 == 0) LOG("r1: RING load of frame %lld: page %p decommitted then, committed since: zeroed (%lld so far)\n", frame, (void *)a, g_rg_rezero); }
+            continue;
+        }
+        /* a page decommitted since (the game freed it) that was committed at `frame`: committed again, also when its value
+         * there was all zeros (a fresh commit is zero). (Arena) it was left decommitted for zeros: a fiber stack page
+         * freed after the capture, the fiber taken back by the load, its next write deeper on the stack crashed (c0000005) */
+        if (id < g_rg_n1 && g_dc[id]) { VirtualAlloc(a, PG, MEM_COMMIT, PAGE_READWRITE); g_dc[id] = 0; g_rg_recommit++; if (!src) continue; }
+        if (!src) { if (sn5) nvn_r1_snap_fill(sn5, a); memset(a, 0, PG); } else { cp_add(a, src); if (g_rg_same) cp_set_try(id < g_rg_same_n ? g_rg_same[id] : 0); if (g_rg_sn5) cp_set_snap(sn5); }
+    }
+}
+static void rbg_rpause(int bit, int on);                  /* (rb_rollback.c) */
+static long long g_rg_ls_n; static double g_rg_ls_ms; static long long g_rg_sn_n; static double g_rg_sn_ms;      /* (LOADSNAP) loads that made a snapshot, ms */      /* (LOADSYNC) loads that waited for the render thread, ms */
+static long long g_rg_lp_n; static double g_rg_lp_wait;      /* (LOADPIPE) loads piped, ms main waited for the first part after its sweep */
+/* (LOADSNAP=2) the snapshot's page copies, part k of main (0) and the helpers (1 .. g_ncp); -1 = all */
+static uint8_t *g_rg_sn_d[4096]; static const uint8_t *g_rg_sn_s[4096]; static int g_rg_sn_cnt;
+static void rg_snap_part(int k) { int step = k < 0 ? 1 : g_ncp + 1; for (int i = k < 0 ? 0 : k; i < g_rg_sn_cnt; i += step) memcpy(g_rg_sn_d[i], g_rg_sn_s[i], PG); }
+uint8_t *nvn_r1_snap_slot(const uint8_t *page);
 int r1_ring_load(long long frame, Ctx *c) {
     int si = -1;
     for (int i = 0; i < g_rg_count; i++) if (rg_slot(i)->frame == frame) si = i;
     if (si < 0) return 0;
     double t0 = now_ms(); g_rgp_seg = 5;
+    /* (rb-8ms 13/11) SSBU_RB_LOADSYNC (=1 on; default 0 until the cheaper fix, see ROLLBACK_STATO 5.2): THE ROLLBACK FRAME GLITCHES (black stripes across the screen on Town and City,
+     * a huge mis-placed platform on Smashville, single frames, only with rollbacks: rb8ms visual check r8_vis / r8_stp). The host render
+     * thread replays a submission LATER and reads the guest memory it names (vertex / uniform / storage buffers) when it replays it
+     * (nvn_gl.c P3: the game's fences keep the game itself from changing that memory too early). A load does not wait for those fences:
+     * the replay of the real pass just run (still queued, and with the render pause it ran only after the re-run passes) read the
+     * buffers rewritten by the load and the re-run passes: geometry with another frame's vertices / matrices. Now the render thread goes
+     * on during the load's hold and sweep, and the load waits for its queue to be replayed before it writes any guest page (rollbacks in
+     * the pacing wait, most of them online, find it empty); the render pause starts again after that, for the re-run passes. */
+    static int lsync = -1; if (lsync < 0) { const char *e = getenv("SSBU_RB_LOADSYNC"); lsync = e && atoi(e) > 0; }      /* (default 0 for now: ~3 ms per load on the loop bench, r8_lsc) */
+    void nvn_r1_render_pause(int on); int nvn_r1_sync_submits(void);
+    if (lsync) nvn_r1_render_pause(0);
     RgSlot *g = rg_slot(si);
     int k = g_rg_count - 1 - si;
     static Th cur[256]; int ncur = g_rg_kept ? g_nth : 0;  /* threads still held from the capture just made (g_rg_keep) */
@@ -1333,47 +1386,101 @@ int r1_ring_load(long long frame, Ctx *c) {
     if (rg_fault_on()) InterlockedExchange(&g_rg_loading, 1);
     double tl0 = now_ms();                                /* (rb-8ms) the load's parts timed (report: RING load parts) */
     rg_helpers_on(1);                                     /* (rb-8ms) loads: the helpers on the other L3 (SSBU_RB_COPYCCX) */
+    /* (rb-8ms 13/11) SSBU_RB_LOADPIPE=1 (test, default 0): the pages of the undo logs (known before any sweep) are copied by the helpers
+     * WHILE main sweeps the marks and asks the write watch (on main alone: the helpers are busy, cp_par refuses); the pages the sweep adds
+     * are copied after. Each page is still copied once from its value at `frame` (rg_src is final once the undo logs are applied; the
+     * sweep only adds ids not yet listed). Only with COPYCCX (main copies nothing in a load) and helpers in a chain. */
+    static int lpipe = -1; if (lpipe < 0) { const char *e = getenv("SSBU_RB_LOADPIPE"); lpipe = e ? atoi(e) : 0; }
+    size_t nl1 = 0; int piped = 0; double tlp0 = now_ms(), tlp1 = tlp0;
+    static int lc = -1, lnt; if (lc < 0) { const char *e = getenv("SSBU_RB_LOADCMP"); lc = e && e[0] == '1' ? 1 : e && e[0] == '2' ? 2 : 0; e = getenv("SSBU_RB_LOADNT"); lnt = !(e && e[0] == '0'); }
+    int lsynced = 0;
+    /* (rb-8ms 13/11 evening) SSBU_RB_LOADSNAP (default 3; 1 = main copies the snapshot, 2 = main + helpers after the sweep, 3 = the
+     * helpers copy the undo-log pages' part during main's sweep, main the rest; 0 = off, the glitches come back): the exact fix of the rollback frame glitches without LOADSYNC's wait
+     * (~3 ms per load: the render thread is always ~one submission behind at a load, also without the render pause): the load's pages
+     * in NVN memory pools are copied into nvn_gl.c's snapshot before any is written, and the submissions still queued read them from it
+     * (nvn_snap_copy). Not with LOADPIPE (pages written before the list is complete): that one waits (LOADSYNC). */
+    static int lsnap = -1; if (lsnap < 0) { const char *e = getenv("SSBU_RB_LOADSNAP"); lsnap = e ? atoi(e) : 3; }      /* (5: see below) */
+    int nvn_r1_snap_start(void); void nvn_r1_snap_page(const uint8_t *page); int nvn_r1_snap_end(void); void nvn_r1_snap_waited(void);
+    if (lsnap && lpipe > 0 && !lsync) lsync = 1;
+#define RG_LSYNC() do { if (lsync && !lsynced) { double _t = now_ms(); if (nvn_r1_sync_submits()) { g_rg_ls_ms += now_ms() - _t; g_rg_ls_n++; } lsynced = 1; rbg_rpause(1, 1); } } while (0)
+    if (lpipe > 0 && !g_ls_active && g_rg_copy_ccx && rg_cpmain(0) == 0.0 && !lc) {
+        RG_LSYNC();                                       /* (LOADSYNC) before the first guest page is written */
+        nl1 = g_rg_ntl;
+        rg_load_list(frame, 0, nl1, 0);
+        g_cp_cond = lc; g_cp_nt = lnt; g_cp_mw = rg_cpmain(0); g_cp_hmode = g_cph && (rg_loadhash() & 1) ? 2 : g_cph && (rg_loadhash() & 4) && g_rg_same ? 3 : 0;
+        piped = cp_start_async();
+        if (!piped) { g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_cond = 0; g_cp_nt = 0; }      /* (too few: queued, the copy below takes them) */
+        tlp1 = now_ms(); g_rg_lp_n += piped;
+    }
+    /* (LOADSNAP=3) the snapshot's copies of the pool pages already listed (undo logs) run on the copy helpers WHILE main sweeps (the
+     * sweep only reads: the game threads are held); the pool pages the sweep adds are copied by main after it, before any page is written */
+    int snap3 = 0; size_t snap_n1 = 0; double tsn0 = 0;
+    if (lsnap == 3 && !piped && lpipe <= 0 && !lsynced) {
+        tsn0 = now_ms(); snap3 = nvn_r1_snap_start();
+        if (snap3 > 0) {
+            r1_pool_map_update(); snap_n1 = g_rg_ntl;
+            for (size_t n = 0; n < snap_n1; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (!r1_pool_page(a)) continue; uint8_t *d = nvn_r1_snap_slot(a); if (d) cp_add(d, a); }
+            g_cp_cond = 0; g_cp_nt = 1; g_cp_mw = 0.0; g_cp_hmode = 0;
+            if (cp_start_async()) snap3 = 2; else { g_cp_mw = 1.0; cp_run(); g_ncj = 0; }
+            if (snap3 == 1) { g_cp_mw = 1.0; g_cp_nt = 0; }
+        }
+        tsn0 = now_ms() - tsn0;                           /* main's own time so far */
+    }
     rg_pww(1);                                            /* (rb-8ms) the write-watch questions on every copy thread */
     rg_stack_ww(NULL);                                    /* (Arena perf) the stack pages written since the newest capture */
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */
     rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
     size_t pages = g_rg_ntl; g_rg_ldpg += (long long)pages;
     double tl1 = now_ms();
+    if (piped) { cp_wait_async(); g_rg_lp_wait += now_ms() - tl1; g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_cond = 0; g_cp_nt = 0; }
     if (g_rgpg_on > 0) { g_rgpg_lds++; for (size_t n = 0; n < g_rg_ntl; n++) { g_rgpg_ldn++; if (r1_in_pool(rg_addr(g_rg_tl[n]))) g_rgpg_ldpool++; } }      /* (rb-8ms, diagnosis) */
-    for (size_t n = 0; n < g_rg_ntl; n++) {               /* each page once, from its value at `frame` */
-        uint32_t id = g_rg_tl[n]; g_rg_touch[id] = 0;
-        uint8_t *a = rg_addr(id), *src = rg_src(id);
-        if (g_lb_active && id < g_rg_n1 + g_rg_n2 && g_rg_idx[id] == RG_FLAT && g_lb_st[id]) {
-            /* (0.2.11, the lazy base: the replay agent's detA8 crashes) a page whose value at `frame` is the base's: while it is still
-             * PENDING it was not written since the base (it is read-only), so it already holds that value - left as it is. The load
-             * used to copy it from the shadow, which a lazy base has not filled yet (pages reported written that were not: the
-             * stacks' write watch, ranges marked whole); with a full shadow that copy was harmless. One being taken: waited for. */
-            if (g_lb_st[id] == LB_PENDING) { g_lb_kept++; continue; }
-            while (g_lb_st[id] == LB_BUSY) YieldProcessor();
-        }
-        if (src == (uint8_t *)1) {                         /* decommitted then */
-            /* (Arena) committed since (by the frames thrown away): zeroed, as a fresh commit; it was left as it was and the game's
-             * next commit of it found the old bytes (nu::GraphicsDevice::Update crash). SSBU_RB_DECOMFIX=0: left as it is */
-            static int df = -1; if (df < 0) { const char *e = getenv("SSBU_RB_DECOMFIX"); df = !(e && e[0] == '0'); }
-            if (df && id < g_rg_n1 && !g_dc[id]) { memset(a, 0, PG); g_rg_rezero++;
-                if (g_rg_rezero <= 10 || g_rg_rezero % 1000 == 0) LOG("r1: RING load of frame %lld: page %p decommitted then, committed since: zeroed (%lld so far)\n", frame, (void *)a, g_rg_rezero); }
-            continue;
-        }
-        /* a page decommitted since (the game freed it) that was committed at `frame`: committed again, also when its value
-         * there was all zeros (a fresh commit is zero). (Arena) it was left decommitted for zeros: a fiber stack page
-         * freed after the capture, the fiber taken back by the load, its next write deeper on the stack crashed (c0000005) */
-        if (id < g_rg_n1 && g_dc[id]) { VirtualAlloc(a, PG, MEM_COMMIT, PAGE_READWRITE); g_dc[id] = 0; g_rg_recommit++; if (!src) continue; }
-        if (!src) memset(a, 0, PG); else { cp_add(a, src); if (g_rg_same) cp_set_try(id < g_rg_same_n ? g_rg_same[id] : 0); }
+    int snap5 = 0; double tsn5 = 0;
+    if (lsnap == 5 && !lsynced && !piped) {               /* (LOADSNAP=5) live now, each slot filled by the copy right before its page is written */
+        double ts = now_ms(); int st = nvn_r1_snap_start();
+        if (st > 0) { r1_pool_map_update(); void nvn_r1_snap_live(void); nvn_r1_snap_live(); g_rg_sn5 = 1; snap5 = 1; }
+        if (st >= 0) lsynced = 1;
+        else { nvn_r1_snap_waited(); if (nvn_r1_sync_submits()) { g_rg_ls_ms += now_ms() - ts; g_rg_ls_n++; } lsynced = 1; rbg_rpause(1, 1); }
+        tsn5 = now_ms() - ts;
     }
+    if (lsnap == 3 && !lsynced && !piped) {               /* (LOADSNAP=3) the helpers' part taken back, the sweep's pages, made visible */
+        int st = snap3; double tsn1 = now_ms();
+        if (st == 2) { cp_wait_async(); g_cp_mw = 1.0; g_cp_nt = 0; }
+        if (st > 0) { for (size_t n = snap_n1; n < g_rg_ntl; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (r1_pool_page(a)) nvn_r1_snap_page(a); }
+                      if (nvn_r1_snap_end() < 0) st = -1; }
+        if (st >= 0) { if (st > 0) { g_rg_sn_ms += tsn0 + (now_ms() - tsn1); g_rg_sn_n++; } lsynced = 1; }
+        else { nvn_r1_snap_waited(); double _t = now_ms(); if (nvn_r1_sync_submits()) { g_rg_ls_ms += now_ms() - _t; g_rg_ls_n++; } lsynced = 1; rbg_rpause(1, 1); }
+    }
+    if (lsnap && !lsynced && !piped) {                    /* (LOADSNAP) before the load writes any guest page */
+        double ts = now_ms(); int st = nvn_r1_snap_start();
+        if (st > 0) {
+            r1_pool_map_update();
+            if (lsnap == 2) {                             /* (=2) the copies split between main and the copy helpers */
+                g_rg_sn_cnt = 0;
+                for (size_t n = 0; n < g_rg_ntl; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (!r1_pool_page(a)) continue;
+                    uint8_t *d = nvn_r1_snap_slot(a); if (d && g_rg_sn_cnt < 4096) { g_rg_sn_d[g_rg_sn_cnt] = d; g_rg_sn_s[g_rg_sn_cnt++] = a; } }
+                if (!cp_par(rg_snap_part)) rg_snap_part(-1);
+            } else
+            for (size_t n = 0; n < g_rg_ntl; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (r1_pool_page(a)) nvn_r1_snap_page(a); }
+            if (nvn_r1_snap_end() < 0) st = -1;
+        }
+        if (st >= 0) { if (st > 0) { g_rg_sn_ms += now_ms() - ts; g_rg_sn_n++; } lsynced = 1; }
+        else { nvn_r1_snap_waited(); if (nvn_r1_sync_submits()) { g_rg_ls_ms += now_ms() - ts; g_rg_ls_n++; } lsynced = 1; rbg_rpause(1, 1); }
+    }
+    RG_LSYNC();                                           /* (LOADSYNC) the render thread's queue replayed before the load writes guest memory */
+    { double t5 = now_ms(); rg_load_list(frame, nl1, g_rg_ntl, 1); if (snap5) tsn5 += now_ms() - t5; }      /* (=5: the slots listed in it) */
+    g_rg_sn5 = 0;
+    for (size_t n = 0; n < nl1; n++) g_rg_touch[g_rg_tl[n]] = 0;      /* (LOADPIPE) the first part's ids, kept listed during the sweep */
     {   /* (R3 net3) SSBU_RB_LOADCMP=1 (option, default off: measured no faster, na0 / na1): a page is written only if it differs from the value loaded;
          * (rb-ms) =2: each 64-byte line written only if it differs (r1_state.c cp_page_lines). SSBU_RB_LOADNT (default ON since rb-ms
          * 2026-11-11, =0 the old way): the load writes with non-temporal stores (no read for ownership of ~14 MB, the loaded lines
          * do not push the game's data out of the caches): loop bench BF -0.6..-0.9 ms, load 2.37 -> 1.9 ms. SSBU_RB_CPMAIN: main's share of the copies (rg_cpmain) */
-        static int lc = -1, lnt; if (lc < 0) { const char *e = getenv("SSBU_RB_LOADCMP"); lc = e && e[0] == '1' ? 1 : e && e[0] == '2' ? 2 : 0; e = getenv("SSBU_RB_LOADNT"); lnt = !(e && e[0] == '0'); }
         g_cp_cond = lc; g_cp_nt = lc != 1 && lnt; g_cp_mw = rg_cpmain(0); g_cp_hmode = g_cph && (rg_loadhash() & 1) ? 2 : g_cph && (rg_loadhash() & 4) && g_rg_same ? 3 : 0;      /* (rb-8ms) 3: only the pages same at their newest capture */
         double tl2 = now_ms();
-        if (!(g_rg_copy_ccx && cp_run_lh())) cp_run();      /* (rb-8ms, option SSBU_RB_LHMAIN: main hashes, the helpers copy what differs) */
-        g_ldp[0] += tl1 - tl0; g_ldp[1] += tl2 - tl1; g_ldp[2] += now_ms() - tl2; g_ldp_n++;
+        g_cp_sn5 = snap5;                                 /* (LOADSNAP=5) the copy fills the snapshot's slots */
+        if (!(g_rg_copy_ccx && cp_run_lh())) cp_run();
+        g_cp_sn5 = 0;
+        if (snap5) { nvn_r1_snap_end(); g_rg_sn_ms += tsn5; g_rg_sn_n++; }      /* (rb-8ms, option SSBU_RB_LHMAIN: main hashes, the helpers copy what differs) */
+        g_ldp[0] += tl1 - tlp1 + (tlp0 - tl0); g_ldp[1] += tl2 - tl1 + (tlp1 - tlp0); g_ldp[2] += now_ms() - tl2; g_ldp_n++;
         g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_cond = 0; g_cp_nt = 0; }
     InterlockedExchange(&g_rg_loading, 0);
     {   /* (rb-8ms, TEST ONLY) SSBU_RB_TEST_TOUCH=1: main reads every line of every page the load wrote back (they come into its caches /
@@ -2107,7 +2214,12 @@ static void rgs_report(void) {
     LOG("r1: RING loads: pages committed again (freed by the game after the loaded frame) %lld; pages decommitted at the loaded frame and committed since, zeroed %lld; task worker wake-ups given again %lld; resource loader / inflater woken after a load (SSBU_RB_LOADERWAKE) %lld / %lld\n", g_rg_recommit, g_rg_rezero, g_rg_rewake, g_rg_ldwake[0], g_rg_ldwake[1]);
     LOG("r1: RING loads: render dispatch condition waits woken again (SSBU_RB_CVWAKE) %lld\n", g_rg_cvwake);
     { long long os_lost_wakeups(long long *cv_slices); long long cs = 0, le = os_lost_wakeups(&cs); LOG("r1: OS waits (SSBU_OS_WAITSLICE): event wake-ups lost and found again after a slice %lld; condition waits ended by a slice %lld\n", le, cs); }
-    if (g_ldp_n) LOG("r1: RING load parts (means ms): sweep (write watch questions, marks, extras) %.3f, page list %.3f, copy %.3f (%lld loads)\n", g_ldp[0] / g_ldp_n, g_ldp[1] / g_ldp_n, g_ldp[2] / g_ldp_n, g_ldp_n);
+    { long long nvn_r1_render_pause_stats(long long *broken, long long *stale); long long br = 0, sl = 0, pn = nvn_r1_render_pause_stats(&br, &sl);
+      { void nvn_r1_snap_stats(long long *v); long long v[7] = {0}; nvn_r1_snap_stats(v);
+        LOG("r1: SSBU_RB_LOADSNAP: %lld loads made a snapshot (%.1f pool pages, %.3f ms mean), %lld waited for the render thread instead; stale replays: %lld reads from guest memory, %lld page parts from the snapshot, %lld writes followed; =5: %lld slots filled by the copy\n",
+            v[0], v[0] ? (double)v[1] / v[0] : 0.0, g_rg_sn_n ? g_rg_sn_ms / g_rg_sn_n : 0.0, v[2], v[3], v[4], v[5], v[6]); }
+      LOG("r1: render pauses (SSBU_RB_RPAUSE) %lld, ended by a wait for the render thread %lld, started with submissions still queued %lld\n", pn, br, sl); }
+    if (g_ldp_n) LOG("r1: RING load parts (means ms): sweep (write watch questions, marks, extras) %.3f, page list %.3f, copy %.3f (%lld loads; SSBU_RB_LOADPIPE: %lld piped, main waited %.3f ms for their first part after its sweep; SSBU_RB_LOADSYNC: %lld waits for the render thread, %.3f ms mean)\n", g_ldp[0] / g_ldp_n, g_ldp[1] / g_ldp_n, g_ldp[2] / g_ldp_n, g_ldp_n, g_rg_lp_n, g_rg_lp_n ? g_rg_lp_wait / g_rg_lp_n : 0.0, g_rg_ls_n, g_rg_ls_n ? g_rg_ls_ms / g_rg_ls_n : 0.0);
     for (int k = 0; k < RG_MAXSLOT; k++) {
         int m = g_rgl_n[k]; if (!m) continue;
         static double v[RG_NL], h[RG_NL], cpy[RG_NL]; double p = 0;

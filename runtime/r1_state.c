@@ -1449,6 +1449,12 @@ static void cp_add(uint8_t *d, const uint8_t *s) { if (g_ncj >= g_cjcap) { g_cjc
  * LOADHASH bit 2), 0 = copy it at once. g_cp_hmode 3 = a load that hashes only those. */
 static uint8_t *g_cj_try; static size_t g_cj_trycap;
 static void cp_set_try(uint8_t v) { size_t i = g_ncj - 1; if (i >= g_cj_trycap) { size_t n = g_cjcap > i + 1 ? g_cjcap : i + 65536; uint8_t *b = realloc(g_cj_try, n); if (!b) return; g_cj_try = b; g_cj_trycap = n; } g_cj_try[i] = v; }
+/* (rb-8ms 13/11, SSBU_RB_LOADSNAP=5) per queued job of a load: the snapshot slot of its page (an NVN pool page), filled by the copy
+ * right before the page is written (g_cp_sn5 set during the load's copy) */
+static uint8_t **g_cj_snap; static size_t g_cj_snapcap; static int g_cp_sn5;
+void nvn_r1_snap_fill(uint8_t *slot, const uint8_t *page);
+static void cp_set_snap(uint8_t *slot) { size_t i = g_ncj - 1; if (i >= g_cj_snapcap) { size_t n = g_cjcap > i + 1 ? g_cjcap : i + 65536; uint8_t **b = realloc(g_cj_snap, n * sizeof *b); if (!b) return; g_cj_snap = b; g_cj_snapcap = n; } g_cj_snap[i] = slot; }
+#define CP_SN5(i) do { if (g_cp_sn5 && (i) < g_cj_snapcap && g_cj_snap[i]) { nvn_r1_snap_fill(g_cj_snap[i], g_cj[i].d); _mm_sfence(); } } while (0)
 static void cp_add_range(uint8_t *d, const uint8_t *s, size_t n) { for (size_t o = 0; o < n; o += PG) cp_add(d + o, s + o); }
 static uint8_t *g_cp_cmp;                             /* (R2 round 3) set: the queued jobs are COMPARED (g_cp_cmp[i] = 1 if they differ), not copied */
 /* (R3 net3) g_cp_cond set: each queued page is copied only if it differs from its source (a ring load: most learned pages
@@ -1618,6 +1624,7 @@ static void cp_part_hash(size_t a, size_t b, int k) {
         long long x = cph_index(g_cj[i].s);
         if (x >= 0 && g_cph_ok[x] && (g_cp_hmode != 3 || (i < g_cj_trycap && g_cj_try[i]))) { uint64_t h[2]; g_ph(g_cj[i].d, h); ck++;
             if (h[0] == g_cph[2 * x] && h[1] == g_cph[2 * x + 1]) { sk++; continue; } }
+        CP_SN5(i);
         if (g_cp_cond == 2) { long long n = cp_page_lines(g_cj[i].d, g_cj[i].s); l += n; w += n != 0; }
         else if (g_cp_nt) cp_page_nt(g_cj[i].d, g_cj[i].s);
         else memcpy(g_cj[i].d, g_cj[i].s, PG);
@@ -1634,8 +1641,8 @@ static void cp_part(int k) {
     if (g_cp_cmp) { for (size_t i = a; i < b; i++) g_cp_cmp[i] = memcmp(g_cj[i].d, g_cj[i].s, PG) != 0; }
     else if (g_cp_cond == 2) { long long w = 0, l = 0; for (size_t i = a; i < b; i++) { long long n = cp_page_lines(g_cj[i].d, g_cj[i].s); l += n; w += n != 0; } g_cp_wrote[k < 9 ? k : 8] += w; g_cp_lines[k < 9 ? k : 8] += l; }
     else if (g_cp_cond) { long long w = 0; for (size_t i = a; i < b; i++) if (memcmp(g_cj[i].d, g_cj[i].s, PG)) { memcpy(g_cj[i].d, g_cj[i].s, PG); w++; } g_cp_wrote[k < 9 ? k : 8] += w; }
-    else if (g_cp_nt) { for (size_t i = a; i < b; i++) cp_page_nt(g_cj[i].d, g_cj[i].s); _mm_sfence(); }
-    else for (size_t i = a; i < b; i++) memcpy(g_cj[i].d, g_cj[i].s, PG); }
+    else if (g_cp_nt) { for (size_t i = a; i < b; i++) { CP_SN5(i); cp_page_nt(g_cj[i].d, g_cj[i].s); } _mm_sfence(); }
+    else for (size_t i = a; i < b; i++) { CP_SN5(i); memcpy(g_cj[i].d, g_cj[i].s, PG); } }
 static volatile LONG g_cp_left; static int g_cp_chain, g_cp_chain_on = -1;
 static void (*volatile g_cp_task)(int k);             /* (rb-8ms) set: the helpers run g_cp_task(k) instead of their share of the copy (cp_par) */
 static void cp_work(int k) { void (*f)(int) = g_cp_task; if (f) f(k); else cp_part(k); }
@@ -1666,8 +1673,23 @@ static void cp_run_tt(void) {                            /* every queued page, t
 /* (0.2.11) the whole-memory passes (first save, shadow fill, ring rebase): every helper the CPU allows, a plain copy (or what the
  * caller set: g_cp_cmp / g_cp_cond) whatever the ring's capture settings are */
 /* (rb-8ms) fn(0) on main and fn(1 .. g_ncp) on the copy helpers (woken as for a copy); returns when all are done. 0 = no helpers. */
+/* (rb-8ms 13/11, SSBU_RB_LOADPIPE) the queued jobs started on the helpers only, main goes on (cp_wait_async takes them back). Only when
+ * main's share is empty (g_cp_mw == 0: the loads with COPYCCX) and the helpers wake each other (chain, <= 3 helpers). While they run,
+ * nothing may be queued (cp_add) and cp_par refuses (its callers then do their work on main). 1 = started. */
+static volatile int g_cp_async;
+static int cp_start_async(void) {
+    if (g_cp_chain_on < 0) { const char *e = getenv("SSBU_RB_CPCHAIN"); g_cp_chain_on = !(e && e[0] == '0'); }
+    if (g_ncp <= 0 || g_ncp > 3 || !g_cp_chain_on || g_cp_mw != 0.0 || g_ncj < 64 || g_cp_async) return 0;
+    g_cp_task = NULL; g_cp_chain = 1; g_cp_left = g_ncp; g_cp_async = 1; SetEvent(g_cp_go[0]);
+    return 1;
+}
+static void cp_wait_async(void) {
+    if (!g_cp_async) return;
+    for (int spins = 0; g_cp_left > 0; spins++) { YieldProcessor(); if ((spins & 1023) == 1023) SwitchToThread(); }
+    g_cp_chain = 0; g_cp_async = 0; g_ncj = 0;
+}
 static int cp_par(void (*fn)(int k)) {
-    if (g_ncp <= 0) return 0;
+    if (g_ncp <= 0 || g_cp_async) return 0;
     g_cp_task = fn;
     if (g_cp_chain_on < 0) { const char *e = getenv("SSBU_RB_CPCHAIN"); g_cp_chain_on = !(e && e[0] == '0'); }
     if (g_cp_chain_on && g_ncp <= 3) {
@@ -2764,6 +2786,28 @@ void r1_pool_nosim_all(void) {
     for (LONG i = 0; i < g_npool; i++) { r1_nosim(g_pool_a[i], g_pool_n[i]); tot += g_pool_n[i]; }
     ReleaseSRWLockShared(&g_pool_lock);
     g_pool_ns = 1; LOG("r1: NOPOOL: %ld NVN memory pools (%.0f MB) left out of the state" "\n", (long)g_npool, tot / 1048576.0);
+}
+/* (rb-8ms 13/11, SSBU_RB_LOADSNAP) pages of the NVN memory pools, one byte per page of window 1 / 2: brought up to date with the pools
+ * noted since the last call (pools are made at loading screens), then a lookup as is_nosim */
+static uint8_t *g_pp1, *g_pp2; static LONG g_pp_done; static uint8_t *g_pp_win1;
+static void r1_pool_map_update(void) {
+    if (!g_win1) return;
+    if (!g_pp1 || g_pp_win1 != g_win1) { free(g_pp1); free(g_pp2); g_pp1 = calloc(g_wn1 >> 12, 1); g_pp2 = calloc(WN2 >> 12, 1); g_pp_done = 0; g_pp_win1 = g_win1; if (!g_pp1 || !g_pp2) return; }
+    if (g_pp_done == g_npool) return;
+    AcquireSRWLockShared(&g_pool_lock);
+    for (LONG i = g_pp_done; i < g_npool; i++)
+        for (uint64_t p = g_pool_a[i] & ~(uint64_t)(PG - 1); p < g_pool_a[i] + g_pool_n[i]; p += PG) {
+            uint64_t o = p - (uint64_t)(uintptr_t)g_win1;
+            if (o < g_wn1) g_pp1[o >> 12] = 1; else { o = p - WIN2; if (o < WN2) g_pp2[o >> 12] = 1; }
+        }
+    g_pp_done = g_npool;
+    ReleaseSRWLockShared(&g_pool_lock);
+}
+static int r1_pool_page(const uint8_t *a) {
+    if (!g_pp1) return 0;
+    if (a >= g_win1 && a < g_win1 + g_wn1) return g_pp1[(size_t)(a - g_win1) >> 12];
+    if ((uintptr_t)a >= WIN2 && (uintptr_t)a < WIN2 + WN2) return g_pp2[(size_t)((uintptr_t)a - WIN2) >> 12];
+    return 0;
 }
 static int r1_in_pool(const uint8_t *p) { uint64_t a = (uint64_t)(uintptr_t)p; for (LONG i = 0; i < g_npool; i++) if (a - g_pool_a[i] < g_pool_n[i]) return 1; return 0; }
 void r1_nosim(uint64_t a, uint64_t n) {

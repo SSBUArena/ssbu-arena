@@ -439,6 +439,8 @@ static void cmd_wait_all(void) { cmd_submit(NULL, NULL); for (int i = 0; i < NSL
 /* ---------------------------------------------------------------- stream ring */
 #define RING_ALIGN 256
 static void cb_ring_wrap(void);
+/* (rb-8ms, SSBU_RB_LOADSNAP, nvn_gl.c) guest reads / writes of a replayed submission that a load made stale */
+void nvn_snap_copy(void *dst, uint64_t addr, uint64_t n); const void *nvn_snap_ptr(uint64_t addr, uint64_t n, void **tmp); void nvn_snap_wrote(uint64_t addr, uint64_t n);
 static uint64_t ring_raw(const void *p, uint64_t n) {
     R.ring_pos = (R.ring_pos + RING_ALIGN - 1) & ~(uint64_t)(RING_ALIGN - 1);
     if (n > R.ring_size / 4) vkd_fail("a range of %llu bytes does not fit the stream ring (%llu MB)", (unsigned long long)n, (unsigned long long)(R.ring_size >> 20));
@@ -455,7 +457,7 @@ static uint64_t ring_put(uint64_t addr, uint64_t size) {
         if (R.acache[i].gen == R.gen && R.acache[i].addr == addr && R.acache[i].size == size) return R.acache[i].off;
         if (R.acache[i].gen != R.gen) { h = i; break; }
     }
-    uint64_t off = ring_raw(P(addr), size);
+    uint64_t off = ring_raw(NULL, size); nvn_snap_copy((uint8_t *)R.ring_mem.map + off, addr, size);      /* (LOADSNAP) */
     h &= 8191;
     R.acache[h].addr = addr; R.acache[h].size = size; R.acache[h].off = off; R.acache[h].gen = R.gen;
     return off;
@@ -1984,7 +1986,7 @@ static void cb_keep_back_(CB *c, const uint8_t *src);
 static void cb_keep_back(CB *c, const uint8_t *src) {
     AcquireSRWLockShared(&g_cb_r1lock);
     if ((c->dirty || c->stale) && cb_r1_old(c)) { g_ck_r1drop++; c->dirty = c->stale = 0; }      /* (Arena) written by an abandoned submission: not landed */
-    else cb_keep_back_(c, src);
+    else { cb_keep_back_(c, src); nvn_snap_wrote(c->addr, c->size); }      /* (LOADSNAP) */
     ReleaseSRWLockShared(&g_cb_r1lock);
 }
 static void cb_keep_back_(CB *c, const uint8_t *src) {      /* src: the bytes in ordinary memory already (the copy of an asynchronous landing), or NULL = the buffer itself */
@@ -2057,7 +2059,7 @@ static void cb_land(int midbatch) {                /* the GPU has finished every
         AcquireSRWLockShared(&g_cb_r1lock);              /* (Arena) a load does not add its cut in the middle of this copy-back */
         if (g_cb_keep <= 0 && c->dirty && cb_r1_old(c)) { g_ck_r1drop++; c->dirty = 0; }      /* (Arena) written by an abandoned submission: not copied back */
         if (g_cb_keep > 0) { cg_unguard(i); ReleaseSRWLockShared(&g_cb_r1lock); cb_keep_back(c, c->mid_stg ? (const uint8_t *)c->stg_mem.map : NULL); AcquireSRWLockShared(&g_cb_r1lock); c->stale = 0; }      /* mid_stg: cb_sync had the GPU copy it into ordinary memory (V 2026-10-21) */
-        else if (c->dirty && !c->snap) { memcpy(P(c->addr), c->mem.map, (size_t)c->size); R.cb_bytes += (LONG64)c->size; }
+        else if (c->dirty && !c->snap) { memcpy(P(c->addr), c->mem.map, (size_t)c->size); nvn_snap_wrote(c->addr, c->size); R.cb_bytes += (LONG64)c->size; }
         else if (c->dirty) {
             /* Session 5: the copy-back is DEFERRED (up to the next batch), so the guest may have written into the range since
              * the CB was filled. Only what compute changed goes back: a word the guest changed meanwhile (guest != snapshot)
@@ -2516,10 +2518,10 @@ static CB *cb_new(uint64_t addr, uint64_t size) {
     if (g_cb_keep > 0 && g_cb_ww) c->ww = cb_ww_query(c);      /* BEFORE the copy: a write between this question and the copy is in the copy and is also seen at the next question (the buffer is then filled once more) */
     if (g_cb_merge) {                              /* the snapshot the copy-back is compared with (cb_land) */
         if (c->snap_cap < size) { free(c->snap); c->snap_cap = (size + 4095) & ~(uint64_t)4095; c->snap = malloc((size_t)c->snap_cap); }
-        memcpy(c->snap, P(addr), (size_t)size);
+        nvn_snap_copy(c->snap, addr, size);      /* (LOADSNAP) */
         memcpy(c->mem.map, c->snap, (size_t)size);
     } else
-    memcpy(c->mem.map, P(addr), (size_t)size);
+    nvn_snap_copy(c->mem.map, addr, size);
     c->stale = 0; g_ck_fills++; g_ck_fill_bytes += (LONG64)size; c->bseq = g_cb_r1seq;
     g_cb_live++;
     return c;
@@ -2545,7 +2547,7 @@ static int cb_assemble(uint64_t addr, uint64_t size, BufRef *b) {
             if (c->wrote) return 0;
         }
     }
-    uint64_t off = ring_raw(P(addr), size);        /* may wrap the ring (wait for everything; pending buffers become kept): asked again below */
+    uint64_t off = ring_raw(NULL, size); nvn_snap_copy((uint8_t *)R.ring_mem.map + off, addr, size);        /* (LOADSNAP) may wrap the ring (wait for everything; pending buffers become kept): asked again below */
     static int16_t idx[256];
     int n = 0;
     for (int i = 0; i < g_cb_hi; i++) {
@@ -3501,9 +3503,9 @@ static void exec(const Cmd *m, int depth) {
     case OP_IMAGESTRIDE: R.image_stride = (int64_t)a[0]; break;
     case OP_BARRIER: if (a[0] & 0x10) nvn_front_barrier_texmem(); break;      /* ordering bits: every draw is recorded in order; feedback is handled at the draw */
     case OP_DISPATCH: { LONG64 t0 = tk(); compute_dispatch((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2]); g_tm[2] += tk() - t0; break; }
-    case OP_COPY_BUF_BUF: CB_WHY(CBW_GCMD, a[0], a[2]); cb_sync(); if (g_cb_nkept) { cb_kept_range(a[0], a[2], 3); cb_kept_range(a[1], a[2], 3); } if (a[0] && a[1]) memmove(P(a[1]), P(a[0]), (size_t)a[2]); R.gen++; break;      /* guest memory is read / written: what compute wrote must be there (as OpenGL's compute_flush) */
-    case OP_UPDATE_UBO: CB_WHY(CBW_GCMD, a[0] + a[2], a[3]); cb_sync(); if (g_cb_nkept) cb_kept_range(a[0] + a[2], a[3], 3); if (a[0]) memcpy((uint8_t *)P(a[0]) + a[2], blob, (size_t)a[3]); R.gen++; break;
-    case OP_CLEAR_BUF: CB_WHY(CBW_GCMD, a[0], a[1]); cb_sync(); if (g_cb_nkept) cb_kept_range(a[0], a[1], 3); if (a[0]) { uint32_t v = (uint32_t)a[2]; for (uint64_t i = 0; i + 4 <= a[1]; i += 4) memcpy((uint8_t *)P(a[0]) + i, &v, 4); } R.gen++; break;
+    case OP_COPY_BUF_BUF: CB_WHY(CBW_GCMD, a[0], a[2]); cb_sync(); if (g_cb_nkept) { cb_kept_range(a[0], a[2], 3); cb_kept_range(a[1], a[2], 3); } if (a[0] && a[1]) { void *t; const void *sp = nvn_snap_ptr(a[0], a[2], &t); memmove(P(a[1]), sp, (size_t)a[2]); free(t); nvn_snap_wrote(a[1], a[2]); } R.gen++; break;      /* guest memory is read / written: what compute wrote must be there (as OpenGL's compute_flush) */
+    case OP_UPDATE_UBO: CB_WHY(CBW_GCMD, a[0] + a[2], a[3]); cb_sync(); if (g_cb_nkept) cb_kept_range(a[0] + a[2], a[3], 3); if (a[0]) { memcpy((uint8_t *)P(a[0]) + a[2], blob, (size_t)a[3]); nvn_snap_wrote(a[0] + a[2], a[3]); } R.gen++; break;
+    case OP_CLEAR_BUF: CB_WHY(CBW_GCMD, a[0], a[1]); cb_sync(); if (g_cb_nkept) cb_kept_range(a[0], a[1], 3); if (a[0]) { uint32_t v = (uint32_t)a[2]; for (uint64_t i = 0; i + 4 <= a[1]; i += 4) memcpy((uint8_t *)P(a[0]) + i, &v, 4); nvn_snap_wrote(a[0], a[1]); } R.gen++; break;
     case OP_CLEARCOLOR: {
         unsigned i = (unsigned)a[0] & 7, mask = (unsigned)a[2] & 15;
         if (!R.have_targets || R.render_off || (int)i >= R.ncol || !R.col[i].tex) break;

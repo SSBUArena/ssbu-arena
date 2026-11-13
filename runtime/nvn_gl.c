@@ -270,12 +270,14 @@ void hitch_wait_render(int on); void hitch_frame(long long frame, double ms, int
  * caches shared: re-run passes and recapture ran 0.8 ms faster with the queue drained first, test SSBU_RB_TEST_DRAIN). Anyone who
  * WAITS for the render thread (gl_run) ends the pause first; a pause lasts 30 ms at most. */
 static volatile LONG g_rpause; static HANDLE g_rpause_ev; static volatile LONG64 g_rpause_n, g_rpause_broken;
+static volatile LONG64 g_sub_posted, g_sub_done;       /* (rb-8ms 13/11) asynchronous submissions queued / replayed (gl_post, render_loop) */
+static volatile LONG64 g_rpause_stale;      /* (rb-8ms 13/11) pauses that began with submissions still queued (report) */
 void nvn_r1_render_pause(int on) {
     if (!g_rpause_ev) g_rpause_ev = CreateEventA(NULL, TRUE, TRUE, NULL);
-    if (on) { if (!InterlockedExchange(&g_rpause, 1)) { ResetEvent(g_rpause_ev); g_rpause_n++; } }
+    if (on) { if (!g_rpause && g_sub_posted > g_sub_done) g_rpause_stale++; if (!InterlockedExchange(&g_rpause, 1)) { ResetEvent(g_rpause_ev); g_rpause_n++; } }
     else if (InterlockedExchange(&g_rpause, 0)) SetEvent(g_rpause_ev);
 }
-long long nvn_r1_render_pause_stats(long long *broken) { *broken = g_rpause_broken; return g_rpause_n; }
+long long nvn_r1_render_pause_stats(long long *broken, long long *stale) { *broken = g_rpause_broken; *stale = g_rpause_stale; return g_rpause_n; }
 static void gl_run(void (*fn)(void *), void *arg) {
     if (GetCurrentThreadId() == g_render_tid) { fn(arg); return; }
     if (g_rpause) { g_rpause_broken++; nvn_r1_render_pause(0); }      /* (rb-8ms) a wait for the render thread ends a pause */
@@ -316,6 +318,7 @@ static int gl_async_on(void) {
 }
 static void gl_post(void (*fn)(void *), const void *arg, size_t size) {       /* run fn(copy of arg) on the render thread, in order, without waiting */
     if (GetCurrentThreadId() == g_render_tid) { fn((void *)arg); return; }
+    if (g_rb && fn == g_rb->submit_async) InterlockedIncrement64(&g_sub_posted);
     Job *j = malloc(sizeof *j + size + 8);
     if (size) memcpy(j + 1, arg, size);
     j->fn = fn; j->arg = j + 1; j->done = NULL; j->next = NULL;
@@ -329,6 +332,107 @@ static void gl_post(void (*fn)(void *), const void *arg, size_t size) {       /*
 static void gl_barrier(void) { if (g_async_pending) gl_run(job_nop, NULL); }   /* everything queued so far has run when this returns */
 unsigned long nvn_render_tid(void) { return g_render_tid; }      /* (rb-8ms) rb_rollback.c rbg_pin: the host render thread placed too */
 void nvn_r1_drain(void) { gl_barrier(); }               /* (rb-8ms, TEST: SSBU_RB_TEST_DRAIN) the render thread's queue run to its end */
+/* (rb-8ms 13/11, SSBU_RB_LOADSYNC) every asynchronous submission queued so far replayed (they read the guest memory they name when they
+ * run; a present or other later job is not waited for). The render pause is ended (the caller starts it again). 1 = had to wait. */
+int nvn_r1_sync_submits(void) {
+    LONG64 t = g_sub_posted;
+    if (g_sub_done >= t) return 0;
+    nvn_r1_render_pause(0);
+    for (int spins = 0; g_sub_done < t; spins++) { YieldProcessor(); if ((spins & 255) == 255) SwitchToThread(); }
+    return 1;
+}
+/* (rb-8ms 13/11 evening) SSBU_RB_LOADSNAP (Vulkan back end): THE ROLLBACK FRAME GLITCHES, exact fix without waiting. A submission
+ * already queued when a load starts ("stale": the real pass just thrown away, re-run passes of the rollback before) is replayed later
+ * and reads the guest buffers it names when it runs (P3); the load rewrites them (black stripes / slabs of another frame's geometry,
+ * ROLLBACK_STATO 5.2). The load first copies the pages of its list that lie in NVN memory pools (the only guest memory a replay reads)
+ * into this snapshot; while the render thread replays a stale submission (g_sub_done < g_snap_until) its guest reads of those pages
+ * come from the snapshot (nvn_snap_copy), and its guest writes into them are copied into it too (nvn_snap_wrote). A load that finds
+ * the snapshot still in use (or too small) waits for the stale submissions instead (LOADSYNC). Main writes the snapshot only while
+ * the render thread is past every stale submission, so the two never touch it at once. */
+#define SNAP_MAX 4096
+#define SNAP_HN 16384
+static uint8_t *g_snap_mem; static uint64_t g_snap_pg[SNAP_MAX]; static volatile uint16_t g_snap_h[SNAP_HN]; static int g_snap_n, g_snap_ovf;
+/* (LOADSNAP=5) a slot is read only once filled: the copy helper fills it right before it writes that page (then an sfence, then its
+ * non-temporal stores); a slot never filled (the page held the value loaded: not written) leaves the guest page to be read */
+static volatile uint8_t g_snap_fill[SNAP_MAX]; static volatile LONG64 g_snap_filled;
+static volatile LONG g_snap_live; static volatile LONG64 g_snap_until;
+static long long g_snap_loads, g_snap_pages, g_snap_waits, g_snap_reads, g_snap_hits, g_snap_wr;
+static inline int snap_on(void) { return g_snap_live && g_sub_done < g_snap_until; }
+static inline unsigned snap_hash(uint64_t pg) { return (unsigned)((pg >> 12) * 0x9E3779B1u) >> 18; }
+static inline uint8_t *snap_find(uint64_t pg) {
+    for (unsigned h = snap_hash(pg), k = 0; k < SNAP_HN; k++, h = (h + 1) & (SNAP_HN - 1)) {
+        unsigned i = g_snap_h[h]; if (!i) return NULL;
+        if (g_snap_pg[i - 1] == pg) return g_snap_fill[i - 1] ? g_snap_mem + (size_t)(i - 1) * 4096 : NULL;
+    }
+    return NULL;
+}
+/* main, at a load: 1 = a snapshot is to be made (snap_page for each pool page, then snap_end), 0 = nothing stale queued, -1 = the
+ * snapshot of an earlier load is still read (the caller waits for the stale submissions: nvn_r1_sync_submits) */
+int nvn_r1_snap_start(void) {
+    if (!g_vk) return -1;
+    if (g_sub_done >= g_sub_posted) return 0;
+    if (snap_on()) return -1;
+    g_snap_live = 0;
+    if (!g_snap_mem) { g_snap_mem = VirtualAlloc(NULL, (size_t)SNAP_MAX * 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE); if (!g_snap_mem) return -1; }
+    if (g_snap_n) memset((void *)g_snap_h, 0, sizeof g_snap_h);
+    g_snap_n = 0; g_snap_ovf = 0;
+    return 1;
+}
+/* the slot of a page (listed now; its 4096 bytes are copied by the caller, before nvn_r1_snap_end), NULL = already listed or full */
+uint8_t *nvn_r1_snap_slot(const uint8_t *page) {
+    if (g_snap_n >= SNAP_MAX) { g_snap_ovf = 1; return NULL; }
+    uint64_t pg = (uint64_t)(uintptr_t)page;
+    for (unsigned h = snap_hash(pg), k = 0; k < SNAP_HN; k++, h = (h + 1) & (SNAP_HN - 1)) { unsigned i = g_snap_h[h]; if (!i) break; if (g_snap_pg[i - 1] == pg) return NULL; }
+    g_snap_pg[g_snap_n] = pg; g_snap_fill[g_snap_n] = 0;
+    unsigned h = snap_hash(pg); while (g_snap_h[h]) h = (h + 1) & (SNAP_HN - 1);
+    _ReadWriteBarrier(); g_snap_h[h] = (uint16_t)(g_snap_n + 1);      /* (=5: published last, the reader may be looking) */
+    return g_snap_mem + (size_t)g_snap_n++ * 4096;
+}
+void nvn_r1_snap_page(const uint8_t *page) { uint8_t *d = nvn_r1_snap_slot(page); if (d) { memcpy(d, page, 4096); g_snap_fill[(d - g_snap_mem) >> 12] = 1; } }
+/* (=5) a copy helper, right before it writes the page: the slot filled (the caller then makes an sfence before its stores) */
+void nvn_r1_snap_fill(uint8_t *slot, const uint8_t *page) { memcpy(slot, page, 4096); _ReadWriteBarrier(); g_snap_fill[(slot - g_snap_mem) >> 12] = 1; InterlockedIncrement64(&g_snap_filled); }
+/* (=5) the snapshot visible from the start of the load's page list (filled page by page by the copy) */
+void nvn_r1_snap_live(void) { g_snap_until = g_sub_posted; MemoryBarrier(); g_snap_live = 1; }
+/* 0 = made (the stale submissions read it), -1 = too many pages (nothing made: the caller waits) */
+int nvn_r1_snap_end(void) {
+    if (g_snap_ovf && !g_snap_live) { g_snap_n = 0; memset((void *)g_snap_h, 0, sizeof g_snap_h); return -1; }
+    for (int i = 0; i < g_snap_n; i++) if (!g_snap_live) g_snap_fill[i] = 1;      /* (modes 1-3: copied before; =5 fills them itself) */
+    g_snap_loads++; g_snap_pages += g_snap_n;
+    g_snap_until = g_sub_posted; MemoryBarrier(); g_snap_live = 1;
+    return 0;
+}
+void nvn_r1_snap_waited(void) { g_snap_waits++; }
+void nvn_r1_snap_stats(long long *v) { v[0] = g_snap_loads; v[1] = g_snap_pages; v[2] = g_snap_waits; v[3] = g_snap_reads; v[4] = g_snap_hits; v[5] = g_snap_wr; v[6] = g_snap_filled; }
+/* render thread: n guest bytes at addr into dst, the snapshot's bytes where a stale submission must see them */
+void nvn_snap_copy(void *dst, uint64_t addr, uint64_t n) {
+    memcpy(dst, (const void *)(uintptr_t)addr, (size_t)n);
+    if (!n || !snap_on()) return;
+    g_snap_reads++;
+    for (uint64_t pg = addr & ~4095ull; pg < addr + n; pg += 4096) {
+        const uint8_t *s = snap_find(pg); if (!s) continue;
+        uint64_t lo = pg > addr ? pg : addr, hi = pg + 4096 < addr + n ? pg + 4096 : addr + n;
+        memcpy((uint8_t *)dst + (lo - addr), s + (lo - pg), (size_t)(hi - lo)); g_snap_hits++;
+    }
+}
+/* render thread: a pointer to n guest bytes at addr as a stale submission must see them (tmp: n bytes, used when needed) */
+const void *nvn_snap_ptr(uint64_t addr, uint64_t n, void **tmp) {
+    *tmp = NULL;
+    if (!n || !snap_on()) return (const void *)(uintptr_t)addr;
+    int any = 0; for (uint64_t pg = addr & ~4095ull; pg < addr + n && !any; pg += 4096) any = snap_find(pg) != NULL;
+    if (!any) return (const void *)(uintptr_t)addr;
+    *tmp = malloc((size_t)n); if (!*tmp) return (const void *)(uintptr_t)addr;
+    nvn_snap_copy(*tmp, addr, n); return *tmp;
+}
+/* render thread: the replay wrote n guest bytes at addr (UPDATE_UBO, CLEAR_BUF, COPY_BUF_BUF, a compute buffer landing): the snapshot
+ * follows, so that a later read of the same stale submission sees the write as before */
+void nvn_snap_wrote(uint64_t addr, uint64_t n) {
+    if (!n || !snap_on()) return;
+    for (uint64_t pg = addr & ~4095ull; pg < addr + n; pg += 4096) {
+        uint8_t *s = snap_find(pg); if (!s) continue;
+        uint64_t lo = pg > addr ? pg : addr, hi = pg + 4096 < addr + n ? pg + 4096 : addr + n;
+        memcpy(s + (lo - pg), (const void *)(uintptr_t)lo, (size_t)(hi - lo)); g_snap_wr++;
+    }
+}
 
 /* ---------------------------------------------------------------- statistics and diagnostics */
 static struct {
@@ -3813,6 +3917,7 @@ static void render_loop(void) {
             g_hitch_rt = j->fn == g_rb->submit || j->fn == g_rb->submit_async ? "submitted commands (outside the named scopes)" : j->fn == g_rb->present ? "present (blit)" : j->fn == g_rb->sync_wait ? "SyncWait job" : "other job (texel read/write, finish, barrier, ...)";
             j->fn(j->arg);                       /* a member of g_rb (seam step S2), or a job of the front end / of the back end itself */
             g_hitch_rt = "idle";
+            if (j->fn == g_rb->submit_async) InterlockedIncrement64(&g_sub_done);      /* (rb-8ms, LOADSYNC) */
             if (done) SetEvent(done); else { free(j); InterlockedDecrement(&g_async_pending); }      /* gl_post: nobody waits */
         }
     }
