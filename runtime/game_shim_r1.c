@@ -9,4 +9,6 @@ __declspec(dllexport) uint64_t r1_lo1, r1_n1, r1_n2;
  * vector copies of the hottest NEON functions (neon_fast.h, tu_prepare.py RECOMP_NF_FNS; SSBU_FASTNEON, default 0) */
 __declspec(dllexport) int r1_fmazero = 1;
 __declspec(dllexport) int r1_fastneon;
+/* (rb-8ms 13/11) runtime.h R1MC: 1 = a store that leaves the bytes as they were marks nothing (SSBU_R1_MARKCMP); 0 until the runtime sets it */
+__declspec(dllexport) int r1_mcmp;
 #endif

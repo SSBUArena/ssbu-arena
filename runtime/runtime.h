@@ -73,10 +73,35 @@ static inline void r1m(uint64_t a) {
 #else
 #define R1M(a, n) ((void)0)
 #endif
+/* (rb-8ms 2026-11-13) SSBU_R1_MARKCMP, the rollback game DLL only (-DR1_GAMEDLL): a plain store first reads the bytes it replaces and
+ * marks its page only when they change (r1_mcmp = 1, set by the runtime, r1_state.c mark_bind; 0 = every store marks, as before). A
+ * store that leaves memory as it was cannot make the page differ from its newest captured value, so the ring (captures, the load's
+ * sweep) needs no mark for it. ~63% of the pages marked in a frame hold the same bytes at the capture (LOADHASH counts): the ones whose
+ * every store rewrote the same value drop out of the captures and loads. The store itself is always made (the lazy base takes a page at
+ * its first write, read-only pages fault as before). Ordered (stl) and exclusive (stx) stores mark as before. */
+#if defined(R1_MARK) && defined(R1_GAMEDLL) && !defined(__cplusplus)
+extern __declspec(dllexport) int r1_mcmp;
+#define R1MC(a, n, chg) do { if ((chg) || !r1_mcmp) R1M(a, n); } while (0)
+static inline int r1_vchg(uint64_t a, const void *v, int n) {      /* 1 = the n bytes at a differ from v (or n not 1/2/4/8/16) */
+    switch (n) {
+    case 16: { uint64_t x[2], y[2]; memcpy(x, (const void *)(uintptr_t)a, 16); memcpy(y, v, 16); return ((x[0] ^ y[0]) | (x[1] ^ y[1])) != 0; }
+    case 8: { uint64_t x, y; memcpy(&x, (const void *)(uintptr_t)a, 8); memcpy(&y, v, 8); return x != y; }
+    case 4: { uint32_t x, y; memcpy(&x, (const void *)(uintptr_t)a, 4); memcpy(&y, v, 4); return x != y; }
+    case 2: { uint16_t x, y; memcpy(&x, (const void *)(uintptr_t)a, 2); memcpy(&y, v, 2); return x != y; }
+    case 1: return *(const uint8_t *)(uintptr_t)a != *(const uint8_t *)v;
+    default: return 1;
+    }
+}
+#define R1MW(a, T, v) do { T _o; memcpy(&_o, (const void *)(uintptr_t)(a), sizeof _o); R1MC(a, sizeof(T), _o != (v)); } while (0)
+#define R1MV(a, v, n) R1MC(a, (uint64_t)(n), r1_vchg(a, v, n))
+#else
+#define R1MW(a, T, v) R1M(a, sizeof(T))
+#define R1MV(a, v, n) R1M(a, (uint64_t)(n))
+#endif
 /* Guest memory is mapped at its real address: a guest pointer is a host pointer. */
 #define DEF_MEM(bits) \
     static inline uint##bits##_t rd##bits(uint64_t a) { uint##bits##_t v; memcpy(&v, (void *)(uintptr_t)a, sizeof v); return v; } \
-    static inline void wr##bits(uint64_t a, uint##bits##_t v) { R1M(a, sizeof v); memcpy((void *)(uintptr_t)a, &v, sizeof v); }
+    static inline void wr##bits(uint64_t a, uint##bits##_t v) { R1MW(a, uint##bits##_t, v); memcpy((void *)(uintptr_t)a, &v, sizeof v); }
 DEF_MEM(8) DEF_MEM(16) DEF_MEM(32) DEF_MEM(64)
 /* Ordered and exclusive loads / stores (LDAR, STLR, LDAXR, LDXR; after stephenjayakar's fb716c2): atomics with the guest's
  * ordering. On x86 they are plain moves; what they add is that the compiler keeps them in order with the accesses around them. */
@@ -115,7 +140,7 @@ __attribute__((target("cx16"))) static inline uint32_t stxp64(Ctx *c, uint64_t a
 }
 
 static inline V128 rdv(uint64_t a, int n) { V128 v; v.d[0] = 0; v.d[1] = 0; memcpy(&v, (void *)(uintptr_t)a, (size_t)n); return v; }
-static inline void wrv(uint64_t a, const V128 *v, int n) { R1M(a, (uint64_t)n); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
+static inline void wrv(uint64_t a, const V128 *v, int n) { R1MV(a, v, n); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
 static inline void vzero(V128 *v) { v->d[0] = 0; v->d[1] = 0; }
 /* (Arena perf) stores relative to the guest SP (the lifter's wrsN / wrsv for a base register 31): no page mark; the
  * rollback ring finds the stack pages written through the OS's write watch (r1_ring.c rg_stack_ww) */

@@ -1150,6 +1150,9 @@ static int mark_bind(void) {
     {   int *fz = (int *)GetProcAddress(m, "r1_fmazero");       /* (rb-8ms) runtime.h rt_fmaf: an exact zero without the library (SSBU_FMAZERO, default 1) */
         const char *e = getenv("SSBU_FMAZERO"); int v = !(e && e[0] == '0');
         if (fz) { *fz = v; LOG("r1: fmaf exact zero without the library (SSBU_FMAZERO) %s\n", v ? "ON" : "off"); } }
+    {   int *mc = (int *)GetProcAddress(m, "r1_mcmp");          /* (rb-8ms 13/11) runtime.h R1MC: stores that change nothing mark nothing (SSBU_R1_MARKCMP) */
+        const char *e = getenv("SSBU_R1_MARKCMP"); int v = e ? atoi(e) : 1;
+        if (mc) { *mc = v; LOG("r1: marks only for stores that change the bytes (SSBU_R1_MARKCMP) %s\n", v ? "ON" : "off"); } else LOG("r1: SSBU_R1_MARKCMP: the game DLL has no compare-before-mark stores\n"); }
     return 1;
 }
 static uint8_t *in_shadow(uint8_t *a, uint8_t **cmap, size_t *pi) {
