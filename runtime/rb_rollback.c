@@ -315,7 +315,11 @@ static const uint64_t g_rbg_skipf_def_a[] = {0x71022df110ull, 0x71022dec30ull, 0
  * render dispatch thread's begin on an object still marked as recording first ends that stale recording (the byte cleared: the host
  * buffer is reset by the begin anyway), counted and logged; the job then records and reports done as in the game. A submission that
  * meets such an object later finds it not recording and leaves it out (as the game does for any object not recording). */
-static ImportFn g_rbg_cbg_orig; static long long g_rbg_cbg_n;
+static ImportFn g_rbg_cbg_orig, g_rbg_cbg_porig; static long long g_rbg_cbg_n, g_rbg_cbg_dup;
+/* (diagnosis) the pool f_71038514f0(out, pool, size) took the object from, per thread: when the guard fires, where that object is in the
+ * pool's vector (+0x30 data, +0x38 size, +0x248 next index): a pool holding the same object twice gives it to two jobs of one frame */
+static __declspec(thread) uint64_t t_cbg_pool;
+static void rbg_cbg_phook(Ctx *c, void *user) { (void)user; t_cbg_pool = c->x[1]; g_rbg_cbg_porig(c); }
 static void rbg_cbg_hook(Ctx *c, void *user) {
     (void)user; uint64_t o = c->x[1];
     if (g_rbg_in_match == 1 && g_rg_ready && o && *(volatile uint8_t *)(uintptr_t)(o + 0xa0)) {
@@ -323,6 +327,10 @@ static void rbg_cbg_hook(Ctx *c, void *user) {
         if (nm && strstr(nm, "render dispatch")) {
             void r1_wrote(uint64_t a, uint64_t n); r1_wrote(o + 0xa0, 1); *(volatile uint8_t *)(uintptr_t)(o + 0xa0) = 0;
             g_rbg_cbg_n++;
+            {   uint64_t p = t_cbg_pool, d = p ? rd64(p + 0x30) : 0, n = p ? rd64(p + 0x38) : 0, ix = p ? rd64(p + 0x248) : 0; char pos[160]; int at = 0, k = 0; pos[0] = 0;
+                for (uint64_t i = 0; d && i < n && i < 512; i++) if (rd64(d + 8 * i) == o) { k++; if (at < 140) at += snprintf(pos + at, sizeof pos - at, " %llu", (unsigned long long)i); }
+                if (k > 1) g_rbg_cbg_dup++;
+                if (g_rbg_cbg_n <= 20) LOG("r1: RB NET: CBGUARD pool %llx: size %llu, next index %llu, the object at index%s (%d times)\n", (unsigned long long)p, (unsigned long long)n, (unsigned long long)ix, pos, k); }
             if (g_rbg_cbg_n <= 20 || g_rbg_cbg_n % 100 == 0) LOG("r1: RB NET: CBGUARD: a render dispatch job's command buffer object %llx was still marked as recording at frame %lld (pass %d, left %d): its stale recording ended, the job goes on (%lld so far)\n",
                 (unsigned long long)o, g_ff, g_ra_phase, g_rgs_left, g_rbg_cbg_n);
         }
@@ -331,7 +339,7 @@ static void rbg_cbg_hook(Ctx *c, void *user) {
 }
 static void rbg_cbg_init(void) {
     const char *e = getenv("SSBU_RB_CBGUARD"); if (e && e[0] == '0') return;
-    LOG("r1: RB NET: render dispatch command buffer guard (SSBU_RB_CBGUARD): %s\n", hook_install(GA(0x71037f5160ull), rbg_cbg_hook, NULL, &g_rbg_cbg_orig) ? "on" : "hook FAILED");
+    LOG("r1: RB NET: render dispatch command buffer guard (SSBU_RB_CBGUARD): %s\n", hook_install(GA(0x71037f5160ull), rbg_cbg_hook, NULL, &g_rbg_cbg_orig) && hook_install(GA(0x71038514f0ull), rbg_cbg_phook, NULL, &g_rbg_cbg_porig) ? "on" : "hook FAILED");
 }
 static void rbg_skipf_init(void) {
     rbg_cbg_init();
@@ -889,7 +897,7 @@ static void rbg_fight_off(void) {
     rbg_pin(0);
     LOG("r1: RB NET: match %d over: ring emptied, session reset for the next match\n", rbn_match_number());
     { char mk[24]; snprintf(mk, sizeof mk, "match%dover", g_rbg_in_match == 1 ? rbn_match_number() : 0); if (g_rbg_in_match == 1) input_mark(mk); else input_mark("localmatchover"); }
-    LOG("r1: RB NET report: render dispatch begins on a command buffer still marked as recording, ended first (SSBU_RB_CBGUARD) %lld\n", g_rbg_cbg_n);
+    LOG("r1: RB NET report: render dispatch begins on a command buffer still marked as recording, ended first (SSBU_RB_CBGUARD) %lld (the object twice in its pool: %lld)\n", g_rbg_cbg_n, g_rbg_cbg_dup);
     LOG("r1: RB NET report: holds refused while the font job runs (SSBU_RB_FONTHOLD) %lld, H1 over an H1 not let go (SSBU_RB_WHGUARD) %lld, main stuck in yields with threads held (SSBU_RB_UNSTICK) %lld (threads resumed %lld)\n", g_fonthold_n, g_ra_wh_double, g_unstick_n, g_unstick_res);
     LOG("r1: RB NET report: holds that waited for the font job %lld, count reset %lld; H1 waits for it %lld (%.3f ms each)\n", g_fontwait_n, g_fontwait_reset, g_fontwait_h1, g_fontwait_h1 ? g_fontwait_h1_ms / (double)g_fontwait_h1 : 0.0);
     if (g_fd_on > 0) LOG("r1: FONTDIAG: font job runs %lld, in progress at loads %lld, at the idle collector %lld, at other safe points %lld; list broken %lld times\n", g_fd_runs, g_fd_atload, g_fd_atgc, g_fd_atcap, g_fd_bad);

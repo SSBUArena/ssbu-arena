@@ -2154,7 +2154,7 @@ typedef struct { double t; uint32_t tid; int16_t kind, ph; long long fr; uint64_
 static uint64_t g_jl2_site[32][4]; static int g_jl2_nsite;
 static Jl2Ev g_jl2[JL2_N]; static volatile LONG64 g_jl2_n; static int g_jl2_on = -1; static long long g_jl2_spdiff, g_jl2_spdiff_rd, g_jl2_loads;
 static ImportFn g_jl2_o560, g_jl2_opush, g_jl2_opop, g_jl2_o820, g_jl2_o460;
-static int jl2_on(void) { if (g_jl2_on < 0) { const char *e = getenv("SSBU_RB_JOBLOG"); g_jl2_on = e && e[0] == '2'; } return g_jl2_on; }
+static int jl2_on(void) { if (g_jl2_on < 0) { const char *e = getenv("SSBU_RB_JOBLOG"); g_jl2_on = e && e[0] == '2' ? 2 : e && e[0] == '3' ? 3 : 0; } return g_jl2_on; }      /* 3: no hooks, only the holds' places and the loads' SP check (less in the way of the timing) */
 static void jl2_ev(int kind, uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
     if (jl2_on() <= 0) return;
     LONG64 i = InterlockedIncrement64(&g_jl2_n) - 1; Jl2Ev *e = &g_jl2[i & (JL2_N - 1)];
@@ -2181,7 +2181,7 @@ static void jl2_hbeg(Ctx *c, void *u) { (void)u; uint64_t out = c->x[0], o = c->
 static void jl2_hsub(Ctx *c, void *u) { (void)u; uint64_t l = c->x[1], n = (uint32_t)c->x[2], on = 0; for (uint64_t i = 0; i < n && i < 64; i++) { uint64_t o = rd64(l + 8 * i); if (o && rd8(o + 0xa0)) on++; }
     jl2_ev(8, l, n, on, c->x[30]); for (uint64_t i = 0; i < n && i < 16; i++) { uint64_t o = rd64(l + 8 * i); jl2_ev(18, o, o ? rd8(o + 0xa0) : 0, i, 0); } g_jl2_osub(c); }
 static void jl2_init(void) {
-    if (jl2_on() <= 0) return;
+    if (jl2_on() != 2) return;
     int a = hook_install(GA(0x710384f560ull), jl2_h560, NULL, &g_jl2_o560), b = hook_install(GA(0x7103815cb0ull), jl2_hpush, NULL, &g_jl2_opush),
         d = hook_install(GA(0x7103815da0ull), jl2_hpop, NULL, &g_jl2_opop), e = hook_install(GA(0x710384f820ull), jl2_h820, NULL, &g_jl2_o820),
         f = hook_install(GA(0x710384f460ull), jl2_h460, NULL, &g_jl2_o460), g = hook_install(GA(0x71037f5160ull), jl2_hbeg, NULL, &g_jl2_obeg),
@@ -2222,6 +2222,9 @@ static void jl2_hold_note(int kind, long long frame) {      /* 9 = pre-hold of a
         if (!t->held || !t->name || !(strstr(t->name, "render dispatch") || strstr(t->name, "GraphicsDevice"))) continue;
         uint64_t site = jl2_site(t->c->x[29], t->c->x[31]);
         jl2_ev(kind + 20, (uint64_t)GetThreadId(t->h), t->from, t->c->x[31], site);
+        {   static long long said; if (strstr(t->name, "render dispatch") && site != GA(0x71038161f0ull) && said++ < 60)
+                LOG("r1: JOBLOG: %s of frame %lld: render dispatch %lu held NOT at its idle wait: %s from %llx, game site %llx, sp %llx\n", kind == 10 ? "capture" : "pre-hold", frame,
+                    (unsigned long)GetThreadId(t->h), t->imp ? t->imp : "guest code", (unsigned long long)t->from, (unsigned long long)site, (unsigned long long)t->c->x[31]); }
         int j; for (j = 0; j < g_jl2_nsite; j++) if (g_jl2_site[j][0] == site && g_jl2_site[j][1] == t->from) break;
         if (j == g_jl2_nsite && j < 32) { g_jl2_site[j][0] = site; g_jl2_site[j][1] = t->from; g_jl2_nsite++; }
         if (j < 32) g_jl2_site[j][kind == 10 ? 2 : 3]++;

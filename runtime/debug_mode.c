@@ -163,6 +163,16 @@ static void parse_match(const char *s) {
 static void match_player_hook(Ctx *c, void *user);
 static ImportFn g_orig_player_record;
 uint64_t g_sq_obj; static ImportFn g_orig_sq_init;
+/* (rb-8ms 13/11, crash "last guest function entered: f_710392acb0", reading a decommitted page of window 1 in host rd32 called from
+ * sq_eload_hook: pairs r8_j2p3 game B, r8_j3p2 game A, both between the two matches of a room; the same report as the field crash of
+ * ROLLBACK_STATO 5.2) g_sq_obj is the squad object of the LAST fight: between two fights it points to freed memory (its pages
+ * decommitted by the resource / task threads) until the next fight makes a new one, and the entry-loading hooks of the next fight's
+ * fighters read it before that. Its reads go through ReadProcessMemory now (0 when the page is gone). SSBU_SQ_SAFEOBJ=0: the old reads. */
+static uint32_t sq_obj32(uint64_t a) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SQ_SAFEOBJ"); on = !(e && e[0] == '0'); }
+    if (!on) return rd32(a);
+    uint32_t v = 0; return safe_read(a, &v, 4) ? v : 0;
+}
 /* (Battle Arena) SSBU_BA_SQUAD_CSS=1: the room maker's Battle Arena rooms play the game's own Squad Strike (select screen of Smash,
  * below); 0 = the old way (the ImGui squad screen and squad_build). Default ON from 0.2.46 (off in 0.2.45, b6ffb32: csh2 froze once,
  * the resource loader asleep after a ring load: r1_ring.c rg_loader_wake); a build with -DSSBU_BA_SQUAD_CSS_DEFAULT_OFF has it off.
@@ -221,7 +231,7 @@ static void sq_eload_hook(Ctx *c, void *user) {
         base = eb[ek].base; base_en = en0; }
     if (step < 0) { const char *e = getenv("SSBU_SQ_STEP"); step = e && *e ? atoi(e) : 20; }
     uint64_t en = c->x[0], o = g_sq_obj;
-    int64_t fc = o ? (int64_t)rd32(o + 0x112c) : 0;
+    int64_t fc = o ? (int64_t)sq_obj32(o + 0x112c) : 0;
     int loading = en && rd8(en + 0x5920) == 3, waiting = en && en == base_en && base >= 0 && rd32(en + 0x13c) == 0xffffffffu && fc - base < 1200;
     /* (research, SSBU_SQ_GATE01=1 with SSBU_BA_SQUAD_CSS=1; off by default) after "loaded" the entry waits at + 0x5920 = 1, then 6. Stepping
      * that wait did not help (run cssr2: the 1 -> 6 of a fighter loaded ahead is written outside this function, frame 953 on A and 954 on B),
@@ -241,7 +251,7 @@ static void sq_eload_hook(Ctx *c, void *user) {
              * change after a KO (part + d10 state 3 from 805): its 1 -> 6 came in that change, was not held, and its standby fighter (status b7)
              * began at 819 on B and 820 on A. Now an entry armed by its own load is held during a change too (SSBU_SQ_HOLD6CHG=0: not, as before) */
             static int hc = -1; if (hc < 0) { const char *e = getenv("SSBU_SQ_HOLD6CHG"); hc = !(e && e[0] == '0'); }
-            if (g_sq_obj && !hc) for (int k = 0; k < 3; k++) { uint32_t ps = rd32(g_sq_obj + (k == 0 ? 0x5b0 : k == 1 ? 0x950 : 0xd10) + 0x60); if (ps >= 2 && ps <= 4) chg = 1; }
+            if (g_sq_obj && !hc) for (int k = 0; k < 3; k++) { uint32_t ps = sq_obj32(g_sq_obj + (k == 0 ? 0x5b0 : k == 1 ? 0x950 : 0xd10) + 0x60); if (ps >= 2 && ps <= 4) chg = 1; }
             if (v == 3) { s1[ek] = 0; pend[ek] = 0; }
             if (v == 1 && base >= 0 && !pend[ek] && s1[ek] != en) { s1[ek] = en;      /* loaded, waiting: armed for this load */
                 static int w = -1; if (w < 0) w = getenv("SSBU_SQ_W5920") != NULL;      /* (RESEARCH) who writes the 6 */
@@ -286,7 +296,7 @@ static void sq_init_hook(Ctx *c, void *user) { (void)user; g_sq_obj = c->x[0]; g
  * thread loads / unloads: wall time); 0x71017e4790 = that loader's "ready" (vtable 0x710509eb10 slot 6: every module loaded, then the
  * base's 0x71017e28c0); 0x71022b6f60 drops one. Logged with the rollback frame and the fight frame. */
 static ImportFn g_orig_mod_take, g_orig_mod_ready, g_orig_mod_drop;
-static long long sq_fc(void) { return g_sq_obj ? (long long)rd32(g_sq_obj + 0x112c) : -1; }
+static long long sq_fc(void) { return g_sq_obj ? (long long)sq_obj32(g_sq_obj + 0x112c) : -1; }
 /* (Battle Arena, game's squad, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_READYGATE=0 off) a loader that takes a module DURING the fight (a next fighter
  * loaded ahead) becomes ready when the module manager's own thread is done: wall time (run csss1: ready at frame 2341 on A, 2340 on B,
  * asked every frame by 0x7100650010, which the squad code runs before the entry's loading for an entry at + 0x5920 = 1; run cssh5:
@@ -357,7 +367,7 @@ static int sq_gate(Ctx *c, const char *what) {      /* 1 = run the step now */
     if (on < 0) { const char *e = getenv("SSBU_SQ_GATE"), *k = getenv("SSBU_SQ_STEP"); on = !(e && e[0] == '0'); if (k && *k) step = atoi(k); }
     uint64_t o = g_sq_obj, part = c->x[0];
     if (!on || step <= 0 || !g_sq_made || !o || part < o || part > o + 0x1000) return 1;
-    uint32_t st = rd32(part + 0x60); int64_t fc = (int64_t)rd32(o + 0x112c);
+    uint32_t st = rd32(part + 0x60); int64_t fc = (int64_t)sq_obj32(o + 0x112c);
     int k = 0; while (k < 3 && g_sq_base[k].part && g_sq_base[k].part != part) k++;
     g_sq_base[k].part = part;
     if (st < 2 || st > 4) { g_sq_base[k].from = -1; return 1; }
@@ -370,8 +380,8 @@ static void sq_step_hook(Ctx *c, void *user) {
     (void)user; uint64_t part = c->x[0]; uint32_t st0 = g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 ? rd32(part + 0x60) : 0;
     if (!sq_gate(c, "step")) return;
     g_orig_sq_step(c);
-    if (getenv("SSBU_SQ_ELOG") && g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 && rd32(part + 0x60) != st0) { long long rbn_now(void); printf("[squad] part +%llx state %u -> %u at frame %lld (fight %u)\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rbn_now(), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
-    if (st0 >= 2 && st0 <= 4 && rd32(part + 0x60) != st0) { printf("[squad] change of fighter (part +%llx): state %u -> %u at fight frame %u\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
+    if (getenv("SSBU_SQ_ELOG") && g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 && rd32(part + 0x60) != st0) { long long rbn_now(void); printf("[squad] part +%llx state %u -> %u at frame %lld (fight %u)\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rbn_now(), sq_obj32(g_sq_obj + 0x112c)); fflush(stdout); }
+    if (st0 >= 2 && st0 <= 4 && rd32(part + 0x60) != st0) { printf("[squad] change of fighter (part +%llx): state %u -> %u at fight frame %u\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), sq_obj32(g_sq_obj + 0x112c)); fflush(stdout); }
 }
 static void sq_put_hook(Ctx *c, void *user) {
     (void)user; uint64_t part = c->x[0]; uint32_t st0 = g_sq_obj && part >= g_sq_obj && part <= g_sq_obj + 0x1000 ? rd32(part + 0x60) : 0;
@@ -383,10 +393,10 @@ static void sq_put_hook(Ctx *c, void *user) {
      * change only on the step frames of that entry's loading, so the 6 and the standby fighter come at the same frame on both games. */
     {   static int pg = -1; if (pg < 0) { const char *e = getenv("SSBU_BA_SQUAD_CSS"), *k = getenv("SSBU_SQ_PUTGATE"); (void)e; pg = !(k && k[0] == '0'); }
         static int step = -1; if (step < 0) { const char *e = getenv("SSBU_SQ_STEP"); step = e && *e ? atoi(e) : 20; }
-        if (pg && step > 0 && g_sq_obj && !(st0 >= 2 && st0 <= 4) && sq_gates()) { int64_t fc = (int64_t)rd32(g_sq_obj + 0x112c);
+        if (pg && step > 0 && g_sq_obj && !(st0 >= 2 && st0 <= 4) && sq_gates()) { int64_t fc = (int64_t)sq_obj32(g_sq_obj + 0x112c);
             for (int k = 0; k < 4; k++) if (g_h6arm[k].en && g_h6arm[k].base >= 0 && rd8(g_h6arm[k].en + 0x5920) == 1 && ((fc - g_h6arm[k].base) % step || fc == g_h6arm[k].base)) return; } }
     g_orig_sq_put(c);
-    if (st0 >= 2 && st0 <= 4 && rd32(part + 0x60) != st0) { printf("[squad] change of fighter (part +%llx): state %u -> %u at fight frame %u\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), rd32(g_sq_obj + 0x112c)); fflush(stdout); }
+    if (st0 >= 2 && st0 <= 4 && rd32(part + 0x60) != st0) { printf("[squad] change of fighter (part +%llx): state %u -> %u at fight frame %u\n", (unsigned long long)(part - g_sq_obj), st0, rd32(part + 0x60), sq_obj32(g_sq_obj + 0x112c)); fflush(stdout); }
 }
 static volatile LONG g_dm_setups;                      /* match set-ups seen (player 1's record built) */
 #ifdef _WIN32
