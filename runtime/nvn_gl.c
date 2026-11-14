@@ -426,6 +426,7 @@ const void *nvn_snap_ptr(uint64_t addr, uint64_t n, void **tmp) {
 /* render thread: the replay wrote n guest bytes at addr (UPDATE_UBO, CLEAR_BUF, COPY_BUF_BUF, a compute buffer landing): the snapshot
  * follows, so that a later read of the same stale submission sees the write as before */
 void nvn_snap_wrote(uint64_t addr, uint64_t n) {
+    { void r1_render_wrote(uint64_t a, uint64_t n); r1_render_wrote(addr, n); }      /* (round 10, SSBU_RB_LINES) such a page is loaded whole */
     if (!n || !snap_on()) return;
     for (uint64_t pg = addr & ~4095ull; pg < addr + n; pg += 4096) {
         uint8_t *s = snap_find(pg); if (!s) continue;

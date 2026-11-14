@@ -51,6 +51,7 @@ int rbg_net_thread_may_run(void) { return 1; }
 int rbg_pad_synced(int id) { (void)id; return 0; }
 void r1_mem_note(void *p, size_t n, int kind) { (void)p; (void)n; (void)kind; }
 void r1_wrote(uint64_t a, uint64_t n) { (void)a; (void)n; }
+void r1_render_wrote(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void r1_module_loaded(void *h, int fighter) { (void)h; (void)fighter; }
 void r1_nosim(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void r1_pool_note(uint64_t a, uint64_t n) { (void)a; (void)n; }
@@ -227,12 +228,31 @@ static HMODULE g_lmod[1024]; static uint8_t g_lmod_f[1024]; static volatile LONG
 static SRWLOCK g_lmod_lock = SRWLOCK_INIT;
 static uint8_t **pm1, **pm2; static uint64_t *plo1, *pn1, *pn2;
 static uint8_t *g_win1; static uint64_t g_wn1;
+/* (round 10) SSBU_RB_LINES (default 1 with a game DLL built with line marks, runtime.h R1_LINEMARK; 0 = whole pages as before): the DLL
+ * marks every 64-byte line it writes (g_l1 / g_l2, a byte per line, reserved, committed on first touch by ln_veh) on top of its page
+ * marks (*pm1 / *pm2); every other writer of guest memory (the exe's own marks: sdklift_gen.c, HOSTMEM, r1_wrote; the script modules;
+ * the stacks' write watch; re-marks) marks its own page maps g_m1h / g_m2h, whose pages a ring load writes back whole (r1_ring.c
+ * g_rg_full). Without line marks (or off) g_m1h / g_m2h ARE the DLL's maps: everything as before. */
+static uint8_t **pl1, **pl2; static uint8_t *g_l1, *g_l2; static size_t g_l1n, g_l2n; static uint8_t *g_m1h, *g_m2h; static int g_lines, g_ln_off; static HMODULE g_mark_dll;      /* g_lines: the maps are split (for good); g_ln_off: loads write whole pages */
+static volatile LONG64 g_ln_commits, g_ln_commit_fail;
+/* (round 10, SSBU_RB_LINES) pages the render thread's replay wrote (nvn_gl.c nvn_snap_wrote: UPDATE_UBO, CLEAR_BUF, COPY_BUF_BUF, compute
+ * buffers landing; no marks there) since the page's last load: a load writes such a page back whole, as before the line loads */
+static uint8_t *g_rm1, *g_rm2;
+static LONG CALLBACK ln_veh(EXCEPTION_POINTERS *e) {
+    if (e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
+    uint8_t *a = (uint8_t *)(uintptr_t)e->ExceptionRecord->ExceptionInformation[1], *b;
+    if (g_l1 && a >= g_l1 && a < g_l1 + g_l1n) b = g_l1; else if (g_l2 && a >= g_l2 && a < g_l2 + g_l2n) b = g_l2; else return EXCEPTION_CONTINUE_SEARCH;
+    uint8_t *c0 = b + ((size_t)(a - b) & ~(size_t)0xffff);
+    for (int t = 0; t < 40; t++) { if (VirtualAlloc(c0, 0x10000, MEM_COMMIT, PAGE_READWRITE)) { InterlockedIncrement64(&g_ln_commits); return EXCEPTION_CONTINUE_EXECUTION; } Sleep(5); }
+    InterlockedIncrement64(&g_ln_commit_fail);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 static int lmod_maps(HMODULE h) {                     /* 1 = its maps were set now */
     if (!pm1 || !*pm1) return 0;
     uint8_t **a1 = (uint8_t **)GetProcAddress(h, "r1_m1"), **a2 = (uint8_t **)GetProcAddress(h, "r1_m2");
     uint64_t *l1 = (uint64_t *)GetProcAddress(h, "r1_lo1"), *n1 = (uint64_t *)GetProcAddress(h, "r1_n1"), *n2 = (uint64_t *)GetProcAddress(h, "r1_n2");
-    if (!a1 || !a2 || !l1 || !n1 || !n2 || *a1 == *pm1) return 0;
-    *a1 = *pm1; *a2 = *pm2; *l1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); *n2 = 0x200000000ull; *n1 = g_wn1;      /* (WN2) */
+    if (!a1 || !a2 || !l1 || !n1 || !n2 || h == g_mark_dll || *a1 == (g_m1h ? g_m1h : *pm1)) return 0;
+    *a1 = g_m1h ? g_m1h : *pm1; *a2 = g_m2h ? g_m2h : *pm2;      /* (round 10) the other writers' maps (SSBU_RB_LINES) */ *l1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); *n2 = 0x200000000ull; *n1 = g_wn1;      /* (WN2) */
     return 1;
 }
 void r1_module_loaded(void *h, int fighter) {
@@ -1158,6 +1178,7 @@ static int mark_bind(void) {
     pm1 = (uint8_t **)GetProcAddress(m, "r1_m1"); pm2 = (uint8_t **)GetProcAddress(m, "r1_m2");
     plo1 = (uint64_t *)GetProcAddress(m, "r1_lo1"); pn1 = (uint64_t *)GetProcAddress(m, "r1_n1"); pn2 = (uint64_t *)GetProcAddress(m, "r1_n2");
     if (!pm1 || !pm2 || !plo1 || !pn1 || !pn2) { LOG("r1: MARK: the DLL has no r1_m1.. exports: off\n"); return 0; }
+    pl1 = (uint8_t **)GetProcAddress(m, "r1_l1"); pl2 = (uint8_t **)GetProcAddress(m, "r1_l2"); g_mark_dll = m;      /* (round 10) a DLL with line marks */
     {   int *fn = (int *)GetProcAddress(m, "r1_fastneon");      /* (rb-8ms) neon_fast.h copies: SSBU_FASTNEON (default 0: alone -0.12 ms on Smashville heavy, 2 rounds of 3, r8_fz5) */
         const char *e = getenv("SSBU_FASTNEON"); int v = e ? atoi(e) : 0;
         if (fn) { *fn = v; LOG("r1: NEON vector forms (SSBU_FASTNEON) %s\n", v ? "ON" : "off"); } else if (v) LOG("r1: NEON vector forms asked (SSBU_FASTNEON) but the game DLL has none\n"); }
@@ -1392,8 +1413,25 @@ static int mark_setup(void) {
     uint8_t *m1 = VirtualAlloc(NULL, g_wn1 >> 12, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     uint8_t *m2 = VirtualAlloc(NULL, WN2 >> 12, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!m1 || !m2) { if (m1) VirtualFree(m1, 0, MEM_RELEASE); if (m2) VirtualFree(m2, 0, MEM_RELEASE); LOG("r1: MARK setup: allocation of the mark maps FAILED: marks OFF\n"); mark_undo(); return 0; }
+    g_m1h = m1; g_m2h = m2; g_lines = 0;
+    if (pl1 && pl2) {                                     /* (round 10) the DLL marks lines: their maps first (it writes them from its first mark on) */
+        size_t n1 = (((size_t)g_wn1 >> 6) + 0xffff) & ~(size_t)0xffff, n2 = (((size_t)WN2 >> 6) + 0xffff) & ~(size_t)0xffff;
+        if (!g_l1 || g_l1n < n1) { g_l1 = VirtualAlloc(NULL, n1, MEM_RESERVE, PAGE_READWRITE); g_l1n = g_l1 ? n1 : 0; }
+        if (!g_l2 || g_l2n < n2) { g_l2 = VirtualAlloc(NULL, n2, MEM_RESERVE, PAGE_READWRITE); g_l2n = g_l2 ? n2 : 0; }
+        { static int veh; if (!veh) { veh = 1; AddVectoredExceptionHandler(1, ln_veh); } }
+        if (!g_l1 || !g_l2) { VirtualFree(m1, 0, MEM_RELEASE); VirtualFree(m2, 0, MEM_RELEASE); LOG("r1: MARK setup: reservation of the line maps FAILED: marks OFF\n"); mark_undo(); return 0; }
+        *pl1 = g_l1; *pl2 = g_l2;
+        const char *e = getenv("SSBU_RB_LINES");
+        if (!(e && e[0] == '0')) {
+            uint8_t *h1 = VirtualAlloc(NULL, g_wn1 >> 12, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE), *h2 = VirtualAlloc(NULL, WN2 >> 12, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            uint8_t *r1 = VirtualAlloc(NULL, g_wn1 >> 12, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE), *r2 = VirtualAlloc(NULL, WN2 >> 12, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            if (h1 && h2 && r1 && r2) { g_m1h = h1; g_m2h = h2; g_rm1 = r1; g_rm2 = r2; MemoryBarrier(); g_lines = 1; }
+            else { if (h1) VirtualFree(h1, 0, MEM_RELEASE); if (h2) VirtualFree(h2, 0, MEM_RELEASE); if (r1) VirtualFree(r1, 0, MEM_RELEASE); if (r2) VirtualFree(r2, 0, MEM_RELEASE); LOG("r1: MARK setup: the host page maps could not be made: line loads OFF\n"); }
+        }
+        LOG("r1: MARK: the game DLL marks 64-byte lines (maps %.0f + %.0f MB reserved); line loads (SSBU_RB_LINES) %s\n", g_l1n / 1048576.0, g_l2n / 1048576.0, g_lines ? "ON" : "off");
+    }
     *pm1 = m1; *pm2 = m2; *plo1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); *pn2 = WN2; *pn1 = g_wn1;
-    r1_m1 = m1; r1_m2 = m2; r1_lo1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); r1_n2 = WN2; r1_n1 = g_wn1;
+    r1_m1 = g_m1h; r1_m2 = g_m2h; r1_lo1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); r1_n2 = WN2; r1_n1 = g_wn1;
     {   int nmod = 0; char names[1500]; int o = 0;
         HANDLE sn = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
         MODULEENTRY32 me; me.dwSize = sizeof me;
@@ -1401,7 +1439,8 @@ static int mark_setup(void) {
             uint8_t **a1 = (uint8_t **)GetProcAddress(me.hModule, "r1_m1"), **a2 = (uint8_t **)GetProcAddress(me.hModule, "r1_m2");
             uint64_t *l1 = (uint64_t *)GetProcAddress(me.hModule, "r1_lo1"), *n1 = (uint64_t *)GetProcAddress(me.hModule, "r1_n1"), *n2 = (uint64_t *)GetProcAddress(me.hModule, "r1_n2");
             if (!a1 || !a2 || !l1 || !n1 || !n2) continue;
-            *a1 = m1; *a2 = m2; *l1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); *n2 = WN2; *n1 = g_wn1;
+            if (me.hModule == g_mark_dll) { *a1 = m1; *a2 = m2; } else { *a1 = g_m1h; *a2 = g_m2h; }      /* (round 10) SSBU_RB_LINES */
+            *l1 = (uint64_t)(uintptr_t)g_win1; MemoryBarrier(); *n2 = WN2; *n1 = g_wn1;
             nmod++; if (o < 1400) o += snprintf(names + o, sizeof names - o, " %s", me.szModule);
         }
         if (sn != INVALID_HANDLE_VALUE) CloseHandle(sn);
@@ -1460,7 +1499,18 @@ typedef struct { uint8_t *d; const uint8_t *s; } CopyJob;
 static CopyJob *g_cj; static size_t g_ncj, g_cjcap;
 static int g_ncp = -1, g_ncp_big;                    /* (0.2.11) g_ncp_big: the helpers of the whole-memory passes (cp_run_big) */
 static HANDLE g_cp_go[8], g_cp_done[8], g_cp_h[8];
-static void cp_add(uint8_t *d, const uint8_t *s) { if (g_ncj >= g_cjcap) { g_cjcap = g_cjcap ? g_cjcap * 2 : 65536; g_cj = realloc(g_cj, g_cjcap * sizeof *g_cj); } g_cj[g_ncj].d = d; g_cj[g_ncj].s = s; g_ncj++; }
+/* (round 10, SSBU_RB_LINES) per queued job of a ring load: the 64-byte lines to write (bit n = line n), 0 = the whole page as before.
+ * Read only while g_cp_lmask is set (the load's copy); cp_add clears the job's entry. */
+static uint64_t *g_cj_lmask; static size_t g_cj_lmcap; static int g_cp_lmask;
+/* (round 10) per job: 1 = a window page of a line load whose line marks the copy thread takes itself (rg_ln_job: the reads of the line
+ * map and the page flags off main); its mask decides there (0: the whole page) */
+static uint8_t *g_cj_lk; static size_t g_cj_lkcap; static uint64_t rg_ln_job(uint8_t *d, int k);
+static void cp_add(uint8_t *d, const uint8_t *s) { if (g_ncj >= g_cjcap) { g_cjcap = g_cjcap ? g_cjcap * 2 : 65536; g_cj = realloc(g_cj, g_cjcap * sizeof *g_cj); } g_cj[g_ncj].d = d; g_cj[g_ncj].s = s;
+    if (g_ncj < g_cj_lmcap) g_cj_lmask[g_ncj] = 0;
+    if (g_ncj < g_cj_lkcap) g_cj_lk[g_ncj] = 0;
+    g_ncj++; }
+static void cp_set_lk(void) { size_t i = g_ncj - 1; if (i >= g_cj_lkcap) { size_t n = g_cjcap > i + 1 ? g_cjcap : i + 65536; uint8_t *b = realloc(g_cj_lk, n); if (!b) return; memset(b + g_cj_lkcap, 0, n - g_cj_lkcap); g_cj_lk = b; g_cj_lkcap = n; } g_cj_lk[i] = 1; }
+static void cp_set_lmask(uint64_t m) { size_t i = g_ncj - 1; if (i >= g_cj_lmcap) { size_t n = g_cjcap > i + 1 ? g_cjcap : i + 65536; uint64_t *b = realloc(g_cj_lmask, n * sizeof *b); if (!b) return; memset(b + g_cj_lmcap, 0, (n - g_cj_lmcap) * sizeof *b); g_cj_lmask = b; g_cj_lmcap = n; } g_cj_lmask[i] = m; }
 /* (rb-8ms, SSBU_RB_LOADHASH bit 4) per queued job of a load: 1 = hash the page first (it held the same bytes at its newest capture,
  * LOADHASH bit 2), 0 = copy it at once. g_cp_hmode 3 = a load that hashes only those. */
 static uint8_t *g_cj_try; static size_t g_cj_trycap;
@@ -1489,6 +1539,57 @@ static void cp_page_nt(uint8_t *d, const uint8_t *s) {
         _mm_stream_si128(D + i + 4, a4); _mm_stream_si128(D + i + 5, a5); _mm_stream_si128(D + i + 6, a6); _mm_stream_si128(D + i + 7, a7);
     }
 }
+/* (round 10) the lines of mask m of page s written into page d (both 4 KB aligned), non-temporal with g_cp_nt as a whole page */
+/* (round 10, TEST ONLY) SSBU_RB_LINES_TRAP=1 (with SSBU_RB_LINES_CHECK=1): the first page the check finds with a line that changed without
+ * a line mark is made read-only after the load; every write into it faults here: the page is opened for that one instruction (trap
+ * flag) and closed again after it; writes into the unmarked line are logged with the instruction's module + offset and the thread. */
+static volatile uintptr_t g_trap_pg, g_trap_arm; static volatile int g_trap_line = -1; static volatile LONG g_trap_logs; static int g_trap_on = -1;
+static __declspec(thread) int t_trap_step;
+static LONG CALLBACK trap_veh(EXCEPTION_POINTERS *e) {
+    DWORD code = e->ExceptionRecord->ExceptionCode; uintptr_t pg = g_trap_pg; DWORD old;
+    if (code == EXCEPTION_SINGLE_STEP && t_trap_step) { t_trap_step = 0; if (pg) VirtualProtect((void *)pg, 4096, PAGE_READONLY, &old); e->ContextRecord->EFlags &= ~0x100u; return EXCEPTION_CONTINUE_EXECUTION; }
+    if (code != EXCEPTION_ACCESS_VIOLATION || e->ExceptionRecord->ExceptionInformation[0] != 1 || !pg) return EXCEPTION_CONTINUE_SEARCH;
+    uintptr_t a = (uintptr_t)e->ExceptionRecord->ExceptionInformation[1];
+    if ((a & ~(uintptr_t)4095) != pg) return EXCEPTION_CONTINUE_SEARCH;
+    if ((int)((a & 4095) >> 6) == g_trap_line && g_trap_logs < 40) {
+        InterlockedIncrement(&g_trap_logs);
+        HMODULE m = NULL; char mn[MAX_PATH] = "?"; uintptr_t rip = (uintptr_t)e->ContextRecord->Rip;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)rip, &m) && m) GetModuleFileNameA(m, mn, sizeof mn);
+        const char *b = strrchr(mn, 92);
+        LOG("r1: LINES TRAP: write at %p (line %d +%d) by %s+%llx, thread %lu, rcx %llx\n", (void *)a, g_trap_line, (int)(a & 63), b ? b + 1 : mn, (unsigned long long)(rip - (uintptr_t)m), (unsigned long)GetCurrentThreadId(), (unsigned long long)e->ContextRecord->Rcx);
+    }
+    VirtualProtect((void *)pg, 4096, PAGE_READWRITE, &old); t_trap_step = 1; e->ContextRecord->EFlags |= 0x100u;
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+static void trap_note(const uint8_t *d, int l) {      /* the check found line l of page d changed without a mark */
+    if (g_trap_on < 0) { const char *e = getenv("SSBU_RB_LINES_TRAP"); g_trap_on = e && atoi(e) > 0; if (g_trap_on) AddVectoredExceptionHandler(1, trap_veh); }
+    if (g_trap_on && !g_trap_arm && !g_trap_pg) { g_trap_line = l; g_trap_arm = (uintptr_t)d; }
+}
+static void trap_arm(void) {                          /* after a load, threads still held */
+    uintptr_t p = g_trap_arm; if (!p || g_trap_pg) return;
+    DWORD old; if (VirtualProtect((void *)p, 4096, PAGE_READONLY, &old)) g_trap_pg = p;
+}
+static int r1_in_pool(const uint8_t *p);
+static int g_ln_check; static volatile LONG64 g_ln_chk_pg, g_ln_chk_bad, g_ln_chk_badl;      /* (round 10, TEST) SSBU_RB_LINES_CHECK=1 */
+static void ln_check(const uint8_t *d, const uint8_t *s, uint64_t m) {      /* every line NOT written must already hold the loaded value */
+    InterlockedIncrement64(&g_ln_chk_pg); int bad = 0;
+    for (int l = 0; l < 64; l++) if (!(m >> l & 1) && memcmp(d + l * 64, s + l * 64, 64)) { bad++; InterlockedIncrement64(&g_ln_chk_badl); trap_note(d, l);
+        if (g_ln_chk_badl <= 12) LOG("r1: LINES CHECK: page %p line %d differs from the loaded value and had no line mark (mask %016llx; NVN pool %d)!\n", (void *)d, l, (unsigned long long)m, r1_in_pool(d)); }
+    if (bad) InterlockedIncrement64(&g_ln_chk_bad);
+}
+static void cp_page_lmask(uint8_t *d, const uint8_t *s, uint64_t m, int nt) {
+    uint64_t m0 = m;
+    while (m) {
+        int b = __builtin_ctzll(m); m &= m - 1;
+        const __m128i *S = (const __m128i *)(s + (size_t)b * 64); __m128i *D = (__m128i *)(d + (size_t)b * 64);
+        __m128i a0 = _mm_load_si128(S), a1 = _mm_load_si128(S + 1), a2 = _mm_load_si128(S + 2), a3 = _mm_load_si128(S + 3);
+        if (nt) { _mm_stream_si128(D, a0); _mm_stream_si128(D + 1, a1); _mm_stream_si128(D + 2, a2); _mm_stream_si128(D + 3, a3); }
+        else { _mm_store_si128(D, a0); _mm_store_si128(D + 1, a1); _mm_store_si128(D + 2, a2); _mm_store_si128(D + 3, a3); }
+    }
+    if (g_ln_check) ln_check(d, s, m0);
+}
+#define CP_LM(i) (g_cp_lmask && (i) < g_cj_lmcap && g_cj_lmask[i])
+static int g_cp_lskip;                                /* (round 10, SSBU_RB_LINES=2) the helpers leave the line jobs to main */
 /* (rb-ms 2026-11-10) g_cp_cond == 2 (ring load, SSBU_RB_LOADCMP=2): each 64-byte line written only if it differs (the lines that
  * hold the loaded value stay in the caches of the threads that have them, main's included); g_cp_lines[k] counts the lines written.
  * g_cp_mw: main's share of a cp_run against a helper's (1 = equal shares, 0 = main copies nothing: SSBU_RB_CPMAIN). */
@@ -1642,6 +1743,8 @@ static void cp_part_hash(size_t a, size_t b, int k) {
     }
     long long sk = 0, ck = 0, l = 0, w = 0;                 /* load: source = pool buffer with a hash -> skip when the page hashes the same */
     for (size_t i = a; i < b; i++) {
+        if (g_cp_lmask && i < g_cj_lkcap && g_cj_lk[i]) { uint64_t m = rg_ln_job(g_cj[i].d, k); if (m) { CP_SN5(i); cp_page_lmask(g_cj[i].d, g_cj[i].s, m, g_cp_nt); continue; } }
+        else if (CP_LM(i)) { if (g_cp_lskip) continue; CP_SN5(i); cp_page_lmask(g_cj[i].d, g_cj[i].s, g_cj_lmask[i], g_cp_nt); continue; }      /* (round 10) the lines written since the last load */
         long long x = cph_index(g_cj[i].s);
         if (x >= 0 && g_cph_ok[x] && (g_cp_hmode != 3 || (i < g_cj_trycap && g_cj_try[i]))) { uint64_t h[2]; g_ph(g_cj[i].d, h); ck++;
             if (h[0] == g_cph[2 * x] && h[1] == g_cph[2 * x + 1]) { sk++; continue; } }
@@ -1662,8 +1765,12 @@ static void cp_part(int k) {
     if (g_cp_cmp) { for (size_t i = a; i < b; i++) g_cp_cmp[i] = memcmp(g_cj[i].d, g_cj[i].s, PG) != 0; }
     else if (g_cp_cond == 2) { long long w = 0, l = 0; for (size_t i = a; i < b; i++) { long long n = cp_page_lines(g_cj[i].d, g_cj[i].s); l += n; w += n != 0; } g_cp_wrote[k < 9 ? k : 8] += w; g_cp_lines[k < 9 ? k : 8] += l; }
     else if (g_cp_cond) { long long w = 0; for (size_t i = a; i < b; i++) if (memcmp(g_cj[i].d, g_cj[i].s, PG)) { memcpy(g_cj[i].d, g_cj[i].s, PG); w++; } g_cp_wrote[k < 9 ? k : 8] += w; }
-    else if (g_cp_nt) { for (size_t i = a; i < b; i++) { CP_SN5(i); cp_page_nt(g_cj[i].d, g_cj[i].s); } _mm_sfence(); }
-    else for (size_t i = a; i < b; i++) { CP_SN5(i); memcpy(g_cj[i].d, g_cj[i].s, PG); } }
+    else if (g_cp_nt) { for (size_t i = a; i < b; i++) { CP_SN5(i);
+        if (g_cp_lmask && i < g_cj_lkcap && g_cj_lk[i]) { uint64_t m = rg_ln_job(g_cj[i].d, k); if (m) { cp_page_lmask(g_cj[i].d, g_cj[i].s, m, 1); continue; } cp_page_nt(g_cj[i].d, g_cj[i].s); continue; }
+        if (CP_LM(i)) { if (!g_cp_lskip) cp_page_lmask(g_cj[i].d, g_cj[i].s, g_cj_lmask[i], 1); } else cp_page_nt(g_cj[i].d, g_cj[i].s); } _mm_sfence(); }
+    else for (size_t i = a; i < b; i++) { CP_SN5(i);
+        if (g_cp_lmask && i < g_cj_lkcap && g_cj_lk[i]) { uint64_t m = rg_ln_job(g_cj[i].d, k); if (m) { cp_page_lmask(g_cj[i].d, g_cj[i].s, m, 0); continue; } memcpy(g_cj[i].d, g_cj[i].s, PG); continue; }
+        if (CP_LM(i)) { if (!g_cp_lskip) cp_page_lmask(g_cj[i].d, g_cj[i].s, g_cj_lmask[i], 0); } else memcpy(g_cj[i].d, g_cj[i].s, PG); } }
 static volatile LONG g_cp_left; static int g_cp_chain, g_cp_chain_on = -1;
 static void (*volatile g_cp_task)(int k);             /* (rb-8ms) set: the helpers run g_cp_task(k) instead of their share of the copy (cp_par) */
 static void cp_work(int k) { void (*f)(int) = g_cp_task; if (f) f(k); else cp_part(k); }
@@ -1772,6 +1879,7 @@ static void cp_clear(void) { g_ncj = 0; }
 static int g_cp_defer;                                /* mark_sweep queues its copies (run-ahead) instead of doing them */
 static size_t mark_sweep(int dir) {
     size_t n = 0;
+    if (dir && g_lines && !g_ln_off) { g_ln_off = 1; LOG("r1: MARK: a restore from the shadow: line loads (SSBU_RB_LINES) off for this process\n"); }
     if (g_full_sweep < 0) g_full_sweep = getenv("SSBU_R1_FULL_SWEEP") != NULL;
     if (!g_blk1 && !g_full_sweep && g_win1) blk1_init();
     if (g_blk1 && g_blk1_dirty) blk1_rebuild();
@@ -1779,14 +1887,15 @@ static size_t mark_sweep(int dir) {
         uint8_t *map = w ? *pm2 : *pm1; size_t np = (size_t)((w ? WN2 : g_wn1) >> 12);
         uint8_t *mem = w ? (uint8_t *)(uintptr_t)WIN2 : g_win1, *sh = w ? g_sh2 : g_sh1, *cm = w ? g_sh2c : g_sh1c;
         uint64_t *q = (uint64_t *)map;
+        uint8_t *hm = g_lines ? (w ? g_m2h : g_m1h) : map; uint64_t *qh = (uint64_t *)hm;      /* (round 10) the other writers' marks */
         uint32_t *bl = !g_blk1 ? NULL : w ? g_blk2_list : g_blk1_list;
         size_t nq = !bl ? np / 8 : (w ? g_blk2_n : g_blk1_n) * 8;
         for (size_t qi = 0; qi < nq; qi++) {
             size_t i = !bl ? qi : (size_t)bl[qi >> 3] * 8 + (qi & 7);
-            if (!q[i]) continue;
+            if (!q[i] && !qh[i]) continue;
             for (size_t j = i * 8; j < i * 8 + 8; j++) {
-                if (!map[j]) continue;
-                map[j] = 0;
+                if (!map[j] && !hm[j]) continue;
+                map[j] = 0; hm[j] = 0;
                 if (g_audio_free && is_async(mem + j * PG)) continue;
                 if (w ? g_ns2[j] : g_ns1[j]) continue;          /* not simulation */     /* audio's pages: not rolled back */
                 if (!dir) { if (!w && g_dc[j]) continue; sh_commit(sh + j * PG, cm, j); if (g_cp_defer) cp_add(sh + j * PG, mem + j * PG); else memcpy(sh + j * PG, mem + j * PG, PG); }
@@ -1880,8 +1989,8 @@ static Site g_site[512]; static int g_nsite;
 static SRWLOCK g_site_lock = SRWLOCK_INIT;
 static volatile LONG g_prot_faults, g_prot_misses;
 static int win_index(uint8_t *a, uint8_t **map, size_t *pi) {
-    if (g_win1 && a >= g_win1 && a < g_win1 + g_wn1) { *map = *pm1; *pi = (size_t)(a - g_win1) >> 12; return 1; }
-    if ((uintptr_t)a >= WIN2 && (uintptr_t)a < WIN2 + WN2) { *map = *pm2; *pi = (size_t)((uintptr_t)a - WIN2) >> 12; return 1; }
+    if (g_win1 && a >= g_win1 && a < g_win1 + g_wn1) { *map = g_lines ? g_m1h : *pm1; *pi = (size_t)(a - g_win1) >> 12; return 1; }
+    if ((uintptr_t)a >= WIN2 && (uintptr_t)a < WIN2 + WN2) { *map = g_lines ? g_m2h : *pm2; *pi = (size_t)((uintptr_t)a - WIN2) >> 12; return 1; }
     return 0;
 }
 static LONG CALLBACK prot_veh(EXCEPTION_POINTERS *e) {
@@ -2769,10 +2878,18 @@ static void r1_mark_range(uint64_t a, uint64_t n) {
  * =1: every page of the range marked (SIM_VERIFY r8_hmv: +8% pages compared against the lifted code). */
 static int g_hm_mode = -1;
 static int hm_mode(void) { if (g_hm_mode < 0) { const char *e = getenv("SSBU_HOSTMEM"); g_hm_mode = e && e[0] ? atoi(e) : 2; } return g_hm_mode; }
+/* (round 10, SSBU_RB_LINES) a changed piece (inside one page) of a host memcpy / memset marked like the game DLL's stores: its page in the
+ * DLL's map and its 64-byte lines (a ring load then writes back only those lines of the page); without line maps as before */
+static void hm_mark(uint64_t d, uint64_t n) {
+    if (!g_lines) { r1_mark_range(d, 1); return; }
+    uint64_t o = d - r1_lo1;
+    if (o < r1_n1) { (*pm1)[o >> 12] = 1; memset(g_l1 + (o >> 6), 1, (size_t)(((o + n - 1) >> 6) - (o >> 6) + 1)); return; }
+    o = d - WIN2; if (o < r1_n2) { (*pm2)[o >> 12] = 1; memset(g_l2 + (o >> 6), 1, (size_t)(((o + n - 1) >> 6) - (o >> 6) + 1)); }
+}
 static void hm_copy(uint64_t d, uint64_t s, uint64_t n) {
     while (n) {
         uint64_t piece = PG - (d & (PG - 1)); if (piece > n) piece = n;
-        if (memcmp((void *)(uintptr_t)d, (void *)(uintptr_t)s, (size_t)piece)) { r1_mark_range(d, 1); memcpy((void *)(uintptr_t)d, (void *)(uintptr_t)s, (size_t)piece); }
+        if (memcmp((void *)(uintptr_t)d, (void *)(uintptr_t)s, (size_t)piece)) { hm_mark(d, piece); memcpy((void *)(uintptr_t)d, (void *)(uintptr_t)s, (size_t)piece); }
         d += piece; s += piece; n -= piece;
     }
 }
@@ -2780,7 +2897,7 @@ static void hm_set(uint64_t d, int v, uint64_t n) {
     while (n) {
         uint64_t piece = PG - (d & (PG - 1)); if (piece > n) piece = n;
         const uint8_t *q = (const uint8_t *)(uintptr_t)d;
-        if (q[0] != (uint8_t)v || (piece > 1 && memcmp(q, q + 1, (size_t)piece - 1))) { r1_mark_range(d, 1); memset((void *)(uintptr_t)d, v, (size_t)piece); }
+        if (q[0] != (uint8_t)v || (piece > 1 && memcmp(q, q + 1, (size_t)piece - 1))) { hm_mark(d, piece); memset((void *)(uintptr_t)d, v, (size_t)piece); }
         d += piece; n -= piece;
     }
 }
@@ -2872,6 +2989,10 @@ void r1_on_commit(void *p, size_t n) {
 }
 static void prot_open(uint64_t a, uint64_t n);
 void r1_read_retry_note(void) { InterlockedIncrement64(&g_read_retry); }      /* (R4) nnfs.c read_at: a read repeated after ERROR_NOACCESS */
+void r1_render_wrote(uint64_t a, uint64_t n) {          /* (round 10) render thread: see g_rm1 */
+    if (!g_rm1 || !n) return;
+    for (uint64_t p = a & ~(uint64_t)(PG - 1); p < a + n; p += PG) { uint64_t o = p - (uint64_t)(uintptr_t)g_win1; if (o < g_wn1) g_rm1[o >> 12] = 1; else { o = p - WIN2; if (o < WN2) g_rm2[o >> 12] = 1; } }
+}
 void r1_wrote(uint64_t a, uint64_t n) { lb_open(a, n); r1_mark_range(a, n); ls_range(a, n, 0); if (g_prot_on) prot_open(a, n); }          /* host code that writes guest memory (nnhid.c, nnfs.c reads: the kernel's writes do not fault) */
 /* "not simulation": pages written by audio decoding etc.: not rolled back, not checked */
 /* (rb-8ms, diagnosis) the NVN memory pools the game made (nvn_stub.c pool_initialize): SSBU_RB_SIM_PAGES counts the ring's pages in them */

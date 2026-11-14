@@ -4,6 +4,11 @@
 #include "game_shim_eh.c"
 __declspec(dllexport) uint8_t *r1_m1, *r1_m2;
 __declspec(dllexport) uint64_t r1_lo1, r1_n1, r1_n2;
+#ifdef R1_LINEMARK
+/* (round 10) runtime.h R1_LINEMARK: the byte-per-64-byte-line maps of both windows (r1_ring.c SSBU_RB_LINES); set by the runtime before r1_n1.
+ * Exported only by a DLL built with line marks: the runtime turns line loads on only when it finds them. */
+__declspec(dllexport) uint8_t *r1_l1, *r1_l2;
+#endif
 #ifdef R1_GAMEDLL
 /* (rb-8ms) set by the runtime (r1_state.c mark_bind): runtime.h rt_fmaf's exact-zero path (SSBU_FMAZERO, default 1) and the
  * vector copies of the hottest NEON functions (neon_fast.h, tu_prepare.py RECOMP_NF_FNS; SSBU_FASTNEON, default 0) */

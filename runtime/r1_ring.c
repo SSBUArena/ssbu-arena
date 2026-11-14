@@ -174,6 +174,39 @@ static int rg_push(RgSlot *s, uint32_t id, uint32_t old) {
     s->ent[2 * s->nent] = id; s->ent[2 * s->nent + 1] = old; s->nent++;
     return 1;
 }
+/* (round 10) SSBU_RB_LINES (r1_state.c g_lines; runtime.h R1_LINEMARK): per page id of both windows, 1 = written since its last load by a
+ * writer without line marks (the exe, the script modules, the stacks' write watch, a re-mark): that page is written back whole. Set by
+ * the sweeps, cleared (with the page's line marks) when a load lists the page. g_rg_ln_last: the frame of the newest load (or base):
+ * the line marks kept are those written since it, so a load of an OLDER frame writes whole pages (the lines written before it are gone). */
+static uint8_t *g_rg_full; static long long g_rg_ln_last = -1; static int g_rg_lnload, g_ln_mode = 1; static long long g_ln_main;
+static long long g_ln_loads, g_ln_fall, g_ln_pg, g_ln_lines, g_ln_whole, g_ln_host, g_ln_zero;
+static volatile long long g_ln_kpg[9], g_ln_klines[9], g_ln_khost[9], g_ln_kzero[9]; static long long g_ln_defer_n; static int g_ln_defer = -1;
+static void rg_full_init(void) {
+    if (g_rg_full || !g_lines) return;
+    { const char *e = getenv("SSBU_RB_LINES_CHECK"); g_ln_check = e && atoi(e) > 0; e = getenv("SSBU_RB_LINES"); g_ln_mode = e && *e ? atoi(e) : 1; }
+    g_rg_full = VirtualAlloc(NULL, (size_t)g_rg_n1 + g_rg_n2 + 64, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!g_rg_full) { g_ln_off = 1; LOG("r1: RING: the line loads' page flags could not be made: SSBU_RB_LINES off\n"); }
+}
+static uint64_t ln_take(uint32_t id);
+/* (round 10, SSBU_RB_LINES_DEFER, default 1) a copy thread (k) takes the line marks and the flags of the page of its job d: 0 = the whole page */
+static uint64_t rg_ln_job(uint8_t *d, int k) {
+    uint32_t id = (g_win1 && d >= g_win1 && d < g_win1 + g_wn1) ? (uint32_t)((size_t)(d - g_win1) >> 12) : (uint32_t)(g_rg_n1 + (((uintptr_t)d - WIN2) >> 12));
+    uint64_t m = ln_take(id); uint8_t *rm = id < g_rg_n1 ? g_rm1 + id : g_rm2 + (id - g_rg_n1); int fu = g_rg_full[id] | *rm; g_rg_full[id] = 0; *rm = 0;
+    int kk = k < 9 ? k : 8;
+    if (fu) { g_ln_khost[kk]++; return 0; }
+    if (!m) { g_ln_kzero[kk]++; return 0; }
+    g_ln_kpg[kk]++; g_ln_klines[kk] += __builtin_popcountll(m); return m;
+}
+/* the page's 64 line marks as a mask (bit n = line n written), cleared */
+static uint64_t ln_take(uint32_t id) {
+    uint8_t *lb = id < g_rg_n1 ? g_l1 + (size_t)id * 64 : g_l2 + (size_t)(id - g_rg_n1) * 64;
+    __m128i z = _mm_setzero_si128(), a0 = _mm_loadu_si128((const __m128i *)lb), a1 = _mm_loadu_si128((const __m128i *)(lb + 16)),
+            a2 = _mm_loadu_si128((const __m128i *)(lb + 32)), a3 = _mm_loadu_si128((const __m128i *)(lb + 48));
+    uint64_t m = (uint64_t)(uint16_t)~_mm_movemask_epi8(_mm_cmpeq_epi8(a0, z)) | (uint64_t)(uint16_t)~_mm_movemask_epi8(_mm_cmpeq_epi8(a1, z)) << 16
+               | (uint64_t)(uint16_t)~_mm_movemask_epi8(_mm_cmpeq_epi8(a2, z)) << 32 | (uint64_t)(uint16_t)~_mm_movemask_epi8(_mm_cmpeq_epi8(a3, z)) << 48;
+    if (m) { _mm_storeu_si128((__m128i *)lb, z); _mm_storeu_si128((__m128i *)(lb + 16), z); _mm_storeu_si128((__m128i *)(lb + 32), z); _mm_storeu_si128((__m128i *)(lb + 48), z); }
+    return m;
+}
 static void rg_touch(uint32_t id) {
     if (g_rg_touch[id]) return;
     if (g_rg_ntl >= g_rg_tlcap) { g_rg_overflow++; return; }
@@ -195,13 +228,16 @@ static void rg_psweep_part(int k) {
     for (size_t x = a; x < b; x++) {
         int w = x >= g_psw_nq[0]; size_t qi = w ? x - g_psw_nq[0] : x;
         uint8_t *map = w ? *pm2 : *pm1; uint64_t *q = (uint64_t *)map; uint32_t *bl = g_psw_bl[w];
+        uint8_t *hm = g_lines ? (w ? g_m2h : g_m1h) : map; uint64_t *qh = (uint64_t *)hm;      /* (round 10) the other writers' marks */
         size_t i = !bl ? qi : (size_t)bl[qi >> 3] * 8 + (qi & 7);
-        if (!q[i]) continue;
+        if (!q[i] && !qh[i]) continue;
         if (n + 8 > g_psw_cap) { g_psw_full = 1; break; }      /* (the rest stays marked: the serial sweep takes it) */
         uint8_t *mem = w ? (uint8_t *)(uintptr_t)WIN2 : g_win1;
         for (size_t j = i * 8; j < i * 8 + 8; j++) {
-            if (!map[j]) continue;
-            map[j] = 0;
+            uint8_t hv = hm[j];
+            if (!map[j] && !hv) continue;
+            map[j] = 0; hm[j] = 0;
+            if (hv && hm != map && g_rg_full) g_rg_full[w ? g_rg_n1 + j : j] = 1;
             if (g_audio_free && is_async(mem + j * PG)) continue;
             if (w ? g_ns2[j] : g_ns1[j]) continue;
             ids[n++] = (uint32_t)(w ? g_rg_n1 + j : j);
@@ -210,6 +246,7 @@ static void rg_psweep_part(int k) {
     g_psw_n[k] = n;
 }
 static void rg_sweep_tt(void (*fn)(uint32_t id, int w, size_t j)) {
+    if (!g_rg_full && g_lines) rg_full_init();      /* (round 10) the other writers' pages flagged from the first sweep on */
     if (g_full_sweep < 0) g_full_sweep = getenv("SSBU_R1_FULL_SWEEP") != NULL;
     if (!g_blk1 && !g_full_sweep && g_win1) blk1_init();
     if (g_blk1 && g_blk1_dirty) blk1_rebuild();
@@ -234,14 +271,17 @@ static void rg_sweep_tt(void (*fn)(uint32_t id, int w, size_t j)) {
         uint8_t *map = w ? *pm2 : *pm1; size_t np = (size_t)((w ? WN2 : g_wn1) >> 12);
         uint8_t *mem = w ? (uint8_t *)(uintptr_t)WIN2 : g_win1;
         uint64_t *q = (uint64_t *)map;
+        uint8_t *hm = g_lines ? (w ? g_m2h : g_m1h) : map; uint64_t *qh = (uint64_t *)hm;      /* (round 10) the other writers' marks */
         uint32_t *bl = !g_blk1 ? NULL : w ? g_blk2_list : g_blk1_list;
         size_t nq = !bl ? np / 8 : (w ? g_blk2_n : g_blk1_n) * 8;
         for (size_t qi = 0; qi < nq; qi++) {
             size_t i = !bl ? qi : (size_t)bl[qi >> 3] * 8 + (qi & 7);
-            if (!q[i]) continue;
+            if (!q[i] && !qh[i]) continue;
             for (size_t j = i * 8; j < i * 8 + 8; j++) {
-                if (!map[j]) continue;
-                map[j] = 0;
+                uint8_t hv = hm[j];
+                if (!map[j] && !hv) continue;
+                map[j] = 0; hm[j] = 0;
+                if (hv && hm != map && g_rg_full) g_rg_full[w ? g_rg_n1 + j : j] = 1;
                 if (g_audio_free && is_async(mem + j * PG)) continue;
                 if (w ? g_ns2[j] : g_ns1[j]) continue;          /* not simulation */
                 fn((uint32_t)(w ? g_rg_n1 + j : j), w, j);
@@ -319,7 +359,7 @@ static void rg_test_perturb(int mask) {
     }
 }
 static void rg_remark(uint32_t id) {                     /* (hs14) a window page marked as written again (a capture given up) */
-    if (id < g_rg_n1) (*pm1)[id] = 1; else if (id < g_rg_n1 + g_rg_n2) (*pm2)[id - g_rg_n1] = 1;
+    if (id < g_rg_n1) (g_lines ? g_m1h : *pm1)[id] = 1; else if (id < g_rg_n1 + g_rg_n2) (g_lines ? g_m2h : *pm2)[id - g_rg_n1] = 1;      /* (round 10: whole page) */
 }
 static void rg_slot_drop(RgSlot *s, int log_too) {     /* log_too: the values in its undo log are no longer reachable */
     if (log_too) for (size_t i = 0; i < s->nent; i++) rg_pool_put(s->ent[2 * i + 1]);
@@ -561,7 +601,7 @@ void os_r1_stacks(void (*cb)(uint64_t lo, uint64_t n));
 static void **g_sw_addr; static size_t g_sw_cap; static long long g_sw_pages, g_sw_calls, g_sw_fail, g_sw_badsp; static double g_sw_ms;
 static void rg_stack_one(uint64_t lo, uint64_t n, void **buf, size_t cap, long long *pages, long long *fail) {      /* (rb-8ms) one stack, its own buffer */
     uint64_t w1 = (uint64_t)(uintptr_t)g_win1, a = lo & ~0xfffull, e = (lo + n + 0xfff) & ~0xfffull; uint8_t *map; uint64_t base;
-    if (w1 && a >= w1 && e <= w1 + g_wn1) { map = *pm1; base = w1; } else if (a >= WIN2 && e <= WIN2 + WN2) { map = *pm2; base = WIN2; } else return;
+    if (w1 && a >= w1 && e <= w1 + g_wn1) { map = g_lines ? g_m1h : *pm1; base = w1; } else if (a >= WIN2 && e <= WIN2 + WN2) { map = g_lines ? g_m2h : *pm2; base = WIN2; } else return;      /* (round 10: whole pages) */
     size_t np = (size_t)((e - a) >> 12); if (!map || !buf) return;
     ULONG_PTR cnt = np; ULONG gran = 0;
     if (np > cap || GetWriteWatch(WRITE_WATCH_FLAG_RESET, (void *)(uintptr_t)a, (SIZE_T)(e - a), buf, &cnt, &gran) != 0) {      /* not watched / not committed: every page marked */
@@ -743,7 +783,7 @@ static int r1_ring_capture_i(long long frame, Ctx *c) {
         if (!rg_init()) { g_rg_nomem = 2; if (!rbg_on()) g_ra_off = 1; LOG("r1: RING: its own allocations FAILED (out of memory): no rollback ring for the rest of this session\n"); return 0; }
         g_rg_ready = 1;
         RgSlot *s = &g_rg[0]; g_rg_head = 0; g_rg_count = 1;
-        s->frame = frame; s->nent = 0;
+        s->frame = frame; s->nent = 0; g_rg_ln_last = frame;      /* (round 10) */
         rg_meta_capture(s, &g_ctx_save);
         LOG("r1: RING: base state (frame %lld): full save in %.1f ms (save %.1f, release %.1f, ring init + meta %.1f)\n", frame, now_ms() - t0, ts1 - ts0, ts2 - ts1, now_ms() - ts2);
         return 1;
@@ -1167,7 +1207,7 @@ int r1_ring_rebase(long long frame, Ctx *c) {
     }
     double t2 = now_ms();
     RgSlot *s = &g_rg[0]; g_rg_head = 0; g_rg_count = 1;
-    s->frame = frame; s->nent = 0; s->pages = 0; s->xpages = 0;
+    s->frame = frame; s->nent = 0; s->pages = 0; s->xpages = 0; g_rg_ln_last = frame;      /* (round 10) a new base: line loads relative to it */
     fibers_save();
     nvn_r1_cb_save();
     rg_meta_capture(s, c);
@@ -1315,6 +1355,13 @@ static void rg_load_list(long long frame, size_t from, size_t to, int clr) {
     for (size_t n = from; n < to; n++) {
         uint32_t id = g_rg_tl[n]; if (clr) g_rg_touch[id] = 0;
         uint8_t *a = rg_addr(id), *src = rg_src(id);
+        uint64_t lmk = 0; int lwhy = 0, ldef = 0;         /* (round 10, SSBU_RB_LINES) the lines to write back (0: the whole page; lwhy 1 other writer, 2 no line mark) */
+        if (g_rg_full && id < g_rg_n1 + g_rg_n2 && g_rg_lnload && g_ln_mode != 2 && g_ln_defer && src && src != (uint8_t *)1
+            && !(g_lb_active && g_rg_idx[id] == RG_FLAT && g_lb_st[id] == LB_PENDING)) ldef = 1;      /* (it reaches cp_add: the copy thread takes its marks) */
+        else if (g_rg_full && id < g_rg_n1 + g_rg_n2) {      /* the page holds its value at `frame` after this load: its line marks start again */
+            uint64_t m = ln_take(id); uint8_t *rm = id < g_rg_n1 ? g_rm1 + id : g_rm2 + (id - g_rg_n1); int fu = g_rg_full[id] | *rm; g_rg_full[id] = 0; *rm = 0;
+            if (g_rg_lnload) { if (fu) lwhy = 1; else if (!m) lwhy = 2; else lmk = m; }
+        }
         uint8_t *sn5 = g_rg_sn5 && r1_pool_page(a) ? nvn_r1_snap_slot(a) : NULL;      /* (LOADSNAP=5) listed now, filled by whoever writes the page */
 
         if (g_lb_active && id < g_rg_n1 + g_rg_n2 && g_rg_idx[id] == RG_FLAT && g_lb_st[id]) {
@@ -1337,7 +1384,8 @@ static void rg_load_list(long long frame, size_t from, size_t to, int clr) {
          * there was all zeros (a fresh commit is zero). (Arena) it was left decommitted for zeros: a fiber stack page
          * freed after the capture, the fiber taken back by the load, its next write deeper on the stack crashed (c0000005) */
         if (id < g_rg_n1 && g_dc[id]) { VirtualAlloc(a, PG, MEM_COMMIT, PAGE_READWRITE); g_dc[id] = 0; g_rg_recommit++; if (!src) continue; }
-        if (!src) { if (sn5) nvn_r1_snap_fill(sn5, a); memset(a, 0, PG); } else { cp_add(a, src); if (g_rg_same) cp_set_try(id < g_rg_same_n ? g_rg_same[id] : 0); if (g_rg_sn5) cp_set_snap(sn5); }
+        if (!src) { if (sn5) nvn_r1_snap_fill(sn5, a); memset(a, 0, PG); } else { cp_add(a, src); if (g_rg_same) cp_set_try(id < g_rg_same_n ? g_rg_same[id] : 0); if (g_rg_sn5) cp_set_snap(sn5);
+            if (ldef) { cp_set_lk(); g_ln_defer_n++; } else if (lmk) { cp_set_lmask(lmk); g_ln_pg++; g_ln_lines += __builtin_popcountll(lmk); } else if (g_rg_lnload) { if (lwhy == 1) g_ln_host++; else if (lwhy == 2) g_ln_zero++; else g_ln_whole++; } }
     }
 }
 static void rbg_rpause(int bit, int on);                  /* (rb_rollback.c) */
@@ -1486,6 +1534,10 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
         tsn0 = now_ms() - tsn0;                           /* main's own time so far */
     }
     if (!pww_early) rg_pww(1);                            /* (rb-8ms) the write-watch questions on every copy thread */
+    rg_full_init();                                       /* (round 10, SSBU_RB_LINES) line loads for this load: not for an older frame than the last load's */
+    g_rg_lnload = g_rg_full && !g_ln_off && !lc && lpipe <= 0 && !g_ls_active && frame >= g_rg_ln_last;
+    if (g_ln_defer < 0) { const char *e = getenv("SSBU_RB_LINES_DEFER"); g_ln_defer = !(e && e[0] == '0'); }
+    if (g_rg_full) { if (g_rg_lnload) g_ln_loads++; else g_ln_fall++; }
     rg_stack_ww(NULL);                                    /* (Arena perf) the stack pages written since the newest capture */
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */
     rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
@@ -1542,8 +1594,18 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
         g_cp_cond = lc; g_cp_nt = lc != 1 && lnt; g_cp_mw = rg_cpmain(0); g_cp_hmode = g_cph && (rg_loadhash() & 1) ? 2 : g_cph && (rg_loadhash() & 4) && g_rg_same ? 3 : 0;      /* (rb-8ms) 3: only the pages same at their newest capture */
         double tl2 = now_ms(); tlc = tl2;
         g_cp_sn5 = snap5;                                 /* (LOADSNAP=5) the copy fills the snapshot's slots */
-        if (!(g_rg_copy_ccx && cp_run_lh())) cp_run();
-        g_cp_sn5 = 0;
+        g_cp_lmask = g_rg_lnload;                         /* (round 10) the jobs with a line mask write those lines only */
+        if (g_rg_lnload && g_ln_mode == 2 && g_rg_copy_ccx && g_cp_mw == 0.0) {
+            /* (SSBU_RB_LINES=2) the helpers (other L3) write the whole pages while MAIN writes the lines with plain stores: the lines the
+             * re-run passes find changed are then in main's own caches */
+            size_t nj = g_ncj; g_cp_lskip = 1;
+            int as = cp_start_async();
+            for (size_t i = 0; i < nj; i++) if (i < g_cj_lmcap && g_cj_lmask[i]) { CP_SN5(i); cp_page_lmask(g_cj[i].d, g_cj[i].s, g_cj_lmask[i], 0); }
+            if (as) cp_wait_async(); else cp_run();
+            g_cp_lskip = 0; g_ln_main++;
+        }
+        else if (!(g_rg_copy_ccx && cp_run_lh())) cp_run();
+        g_cp_sn5 = 0; g_cp_lmask = 0; g_rg_lnload = 0;
         if (snap5) { nvn_r1_snap_end(); g_rg_sn_ms += tsn5; g_rg_sn_n++; }      /* (rb-8ms, option SSBU_RB_LHMAIN: main hashes, the helpers copy what differs) */
         g_ldp[0] += tl1 - tlp1 + (tlp0 - tl0); g_ldp[1] += tl2 - tl1 + (tlp1 - tlp0); g_ldp[2] += now_ms() - tl2; g_ldp_n++;
         g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_cond = 0; g_cp_nt = 0; }
@@ -1586,7 +1648,12 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
     unpark();
     g_mp[4] += t2a - t2; g_mp[5] += t2b - t2a; g_mp[6] += t2c - t2b; g_mp[7] += t3 - t2c; g_mp[8] += now_ms() - t3; g_mp_n[1]++;
     *c = g->ctx;
-    g_rg_loads++;
+    if (g_ln_check) trap_arm();                          /* (round 10, TEST) SSBU_RB_LINES_TRAP */
+    {   /* (round 10, TEST ONLY) SSBU_RB_TEST_POSTLOAD=<us>: main spins that long after the load (the workers, woken, run the preparation
+         * jobs of the loaded frame meanwhile): is the first re-run pass dearer because those jobs run beside it? (the spin counts in the load) */
+        static int pl = -1; if (pl < 0) { const char *e = getenv("SSBU_RB_TEST_POSTLOAD"); pl = e ? atoi(e) : 0; }
+        if (pl > 0) { double te = now_ms() + pl / 1000.0; while (now_ms() < te) YieldProcessor(); } }
+    g_rg_loads++; g_rg_ln_last = frame;                 /* (round 10) the line marks from now on are relative to this frame */
     if (g_th_mismatch || g_fib_diff) LOG("r1: RING load of frame %lld (k %d): %d threads not at their wait, %d fibers not restored\n", frame, k, g_th_mismatch, g_fib_diff);
     {   /* (round 9, diagnosis) SSBU_RB_SLOWLOAD=<ms> (default 10, 0 = off): a load longer than that logs where its time went (1-2 loads of
          * 25-35 ms in about a third of the loop runs, with every timed part small: rb8ms r9_hp_1_3, r9_st_1_3, r8_st10 BF / PS2) */
@@ -2297,6 +2364,10 @@ static void rgs_report(void) {
       mo_report();
       if (g_rg_sn_n) LOG("r1: SSBU_RB_LOADSNAP=3: pages per snapshot copied by the helpers during the sweep %.1f, by main after it %.1f\n", (double)g_rg_sn_helppg / g_rg_sn_n, (double)g_rg_sn_mainpg / g_rg_sn_n);
       LOG("r1: render pauses (SSBU_RB_RPAUSE) %lld, ended by a wait for the render thread %lld, started with submissions still queued %lld\n", pn, br, sl); }
+    for (int k = 0; k < 9; k++) { g_ln_pg += g_ln_kpg[k]; g_ln_lines += g_ln_klines[k]; g_ln_host += g_ln_khost[k]; g_ln_zero += g_ln_kzero[k]; g_ln_kpg[k] = g_ln_klines[k] = g_ln_khost[k] = g_ln_kzero[k] = 0; }
+    if (g_ln_loads + g_ln_fall) LOG("r1: RING line loads (SSBU_RB_LINES): %lld loads by lines, %lld whole (an older frame than the last load or not possible); pages: by lines %lld (%.1f lines each), whole: written by other writers %lld, no line mark %lld, other %lld; line-map commits %lld (failed %lld); lines written by main (=2) in %lld loads\n",
+        g_ln_loads, g_ln_fall, g_ln_pg, g_ln_pg ? (double)g_ln_lines / (double)g_ln_pg : 0.0, g_ln_host, g_ln_zero, g_ln_whole, (long long)g_ln_commits, (long long)g_ln_commit_fail, g_ln_main);
+    if (g_ln_check) LOG("r1: RING LINES CHECK (SSBU_RB_LINES_CHECK): %lld pages checked, %lld with a line that differed and had no mark (%lld lines)\n", (long long)g_ln_chk_pg, (long long)g_ln_chk_bad, (long long)g_ln_chk_badl);
     if (g_ldp_n) LOG("r1: RING load parts (means ms): sweep (write watch questions, marks, extras) %.3f, page list %.3f, copy %.3f (%lld loads; SSBU_RB_LOADPIPE: %lld piped, main waited %.3f ms for their first part after its sweep; SSBU_RB_LOADSYNC: %lld waits for the render thread, %.3f ms mean)\n", g_ldp[0] / g_ldp_n, g_ldp[1] / g_ldp_n, g_ldp[2] / g_ldp_n, g_ldp_n, g_rg_lp_n, g_rg_lp_n ? g_rg_lp_wait / g_rg_lp_n : 0.0, g_rg_ls_n, g_rg_ls_n ? g_rg_ls_ms / g_rg_ls_n : 0.0);
     for (int k = 0; k < RG_MAXSLOT; k++) {
         int m = g_rgl_n[k]; if (!m) continue;

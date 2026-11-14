@@ -480,6 +480,9 @@ PIPE_FE = ['-O1', '-Xclang', '-disable-llvm-passes', '-emit-llvm', '-mcx16']
 # The end-to-end measure of 2026-11-04 (r8g, "no gain") was within the run-to-run noise. Compile: ~+30% for those units.
 PIPE_SCOPE = os.environ.get('RECOMP_PIPE_SCOPE', '1') not in ('', '0')
 PIPE_PASSES2 = os.environ.get('RECOMP_PIPE_PASSES2', 'function(early-cse<memssa>,gvn<no-pre>,dse,instcombine<no-verify-fixpoint>,simplifycfg)')
+# (round 10, build option) RECOMP_OPT2_FLAGS: more options for the second opt step (after ctxscope), e.g. the DSE / GVN scan limits
+# (LLVM's defaults stop the dead-store and redundant-load walks early in the long lifted functions). Empty = as before.
+PIPE_OPT2 = os.environ.get('RECOMP_OPT2_FLAGS', '').split()
 if PIPE_SCOPE:
     import ctxscope
 
@@ -496,7 +499,7 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
         ll, ll2 = obj[:-4] + '.a.ll', obj[:-4] + '.b.ll'
         if PIPE_SCOPE and inline:       # (rollback 8 ms) ctxscope.py: textual IR, the alias information, then the passes that use it
             steps[1] = [os.path.join(LLVM19, 'opt.exe'), '-S', '-passes=' + PIPE_PASSES, bc, '-o', ll]
-            steps[2:2] = ['scope', [os.path.join(LLVM19, 'opt.exe'), '-passes=' + PIPE_PASSES2, ll2, '-o', bc2]]
+            steps[2:2] = ['scope', [os.path.join(LLVM19, 'opt.exe'), '-passes=' + PIPE_PASSES2] + PIPE_OPT2 + [ll2, '-o', bc2]]
         code, out = 0, ''
         for cmd in steps:
             if cmd == 'scope':

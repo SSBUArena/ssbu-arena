@@ -59,7 +59,23 @@ void guest_svc(Ctx *c, uint32_t number);
  * byte-per-page map, so a save knows exactly which pages the simulation wrote. Two windows: the game's address region
  * (r1_lo1, r1_n1 bytes; set by the runtime) and the image / module area 0x7100000000.. (r1_n2 bytes). Both start empty
  * (n = 0): nothing is marked until the runtime sets them. Without R1_MARK: no code. */
-#ifdef R1_MARK
+#if defined(R1_MARK) && defined(R1_LINEMARK)
+/* (round 10) SSBU_RB_LINES, the rollback game DLL built with -DR1_LINEMARK (rb8ms/build_dll8.sh <name> lines): every marked store also
+ * marks its 64-byte line in a byte-per-line map (r1_l1 / r1_l2, set by the runtime before r1_n1), so a ring load can write back only
+ * the lines the game DLL wrote since the last load (r1_ring.c rg_load_list), not whole pages. A store over a line boundary marks the
+ * line of its last byte too (and every line between: never for the store sizes of the lifted code). Plain byte stores: no race between
+ * threads. The runtime gives the other writers (exe, script modules, the stacks' write watch) their own page maps: their pages are
+ * written back whole. */
+extern __declspec(dllexport) uint8_t *r1_m1, *r1_m2, *r1_l1, *r1_l2;
+extern __declspec(dllexport) uint64_t r1_lo1, r1_n1, r1_n2;
+static inline void r1m(uint64_t a) {
+    uint64_t o = a - r1_lo1;
+    if (o < r1_n1) { r1_m1[o >> 12] = 1; r1_l1[o >> 6] = 1; }
+    else { o = a - 0x7100000000ull; if (o < r1_n2) { r1_m2[o >> 12] = 1; r1_l2[o >> 6] = 1; } }
+}
+#define R1M(a, n) do { r1m(a); if ((n) > 1 && (((a) & 63) + (n) > 64)) { r1m((a) + (n) - 1); \
+    if ((n) > 65) for (uint64_t _q1 = ((a) | 63) + 1; _q1 < (a) + (n) - 1; _q1 += 64) r1m(_q1); } } while (0)
+#elif defined(R1_MARK)
 extern __declspec(dllexport) uint8_t *r1_m1, *r1_m2;
 extern __declspec(dllexport) uint64_t r1_lo1, r1_n1, r1_n2;
 static inline void r1m(uint64_t a) {
