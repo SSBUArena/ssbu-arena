@@ -2109,11 +2109,11 @@ static int ra_hold_save(void) {
     static int all_first = -1; if (all_first < 0) { const char *e = getenv("SSBU_RB_HOLD_ALL"); all_first = rgs_wanted() && e && atoi(e) != 0; }
     int af = all_first;      /* (round 9: 2 = HOLDPAR's pre-suspension for this hold) */      /* opt-in: saved ~0.07 ms only; rb2f1 crashed with it (cause not shown) */
     static uint8_t pre[256];                                /* (R2 round 3, ring only) every thread suspended first, then checked: the kernel delivers the suspends together */
-    /* (round 9) SSBU_RB_HOLDPAR (default 1, 0 = off): as SSBU_RB_HOLD_ALL but only the threads shown at a waiting import and not kept suspended by
+    /* (round 9) SSBU_RB_HOLDPAR=1 (option, default 0): as SSBU_RB_HOLD_ALL but only the threads shown at a waiting import and not kept suspended by
      * SNDKEEP (HOLD_ALL suspended those again and the kept path below never gave that suspension back: a thread left suspended for good,
      * maybe rb2f1's crash), and HOLDFAST's "same wait, same place" first: the GetThreadContext calls (~10 us each, the suspend has to
      * land) of the threads asked overlap instead of following each other */
-    static int hpar = -1; if (hpar < 0) { const char *e = getenv("SSBU_RB_HOLDPAR"); hpar = rgs_wanted() && !(e && e[0] == '0'); }      /* (TaC n3 r9_hp: rollback pre-hold 0.18 -> 0.12, capture hold 0.20 -> 0.12 ms) */
+    static int hpar = -1; if (hpar < 0) { const char *e = getenv("SSBU_RB_HOLDPAR"); hpar = rgs_wanted() && e && atoi(e) > 0; }      /* (option, default 0: the gain first measured, pre-hold 0.18 -> 0.12 ms, came from the leak below stopping the sound thread; fixed, TaC r9_ht: pre 0.18 / 0.22 against 0.18, capture hold 0.17-0.18 against 0.16) */
     if (hpar && !af) {
         int any = 0;
         for (int i = 0; i < g_nth; i++) { Th *t = &g_th[i];
