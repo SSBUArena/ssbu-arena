@@ -38,6 +38,46 @@ static int g_rbab = -1, g_rbab_side;
 static int rb_feat(int bit, int dflt) { if (g_rbab < 0) { const char *e = getenv("SSBU_RB_AB"); g_rbab = e ? atoi(e) : 0; } return (g_rbab & bit) ? g_rbab_side : dflt; }
 int r1_rb_feat(int bit, int dflt) { return rb_feat(bit, dflt); }
 extern volatile int g_rgp_seg;                            /* (R2 round 3, profile 3: which part of a pass main is in) */
+/* (rb-8ms round 8, TEST ONLY) SSBU_PMCMARK=<file>[,<seconds>]: every change of the main thread's (pass kind, part of the pass) with
+ * its time (GetSystemTimePreciseAsFileTime, the clock tracerpt prints for ETW events), so that a WPR PMC sampling profile can be
+ * split into real passes / re-run passes / load / capture. Parts: 1 safe point -> poll, 2 poll -> frame end (the logic step),
+ * 3 frame end -> safe point, 4 capture, 5 load, 6 the safe point itself (hold, rollback decision), 7 pacing wait. Kinds: 0 real,
+ * 1 re-run but the last, 2 the last re-run. The file is written once, <seconds> (default 30) after the first load, with the
+ * lifted function table (hostrt.c fn_table_dump) for the symbols. Nothing is recorded without the variable. */
+static int g_pmk_on = -1; static double g_pmk_t0, g_pmk_dur; static char g_pmk_file[400]; static int g_pmk_last = -1;
+static struct PmkRec { ULONG64 t; int ks; } *g_pmk; static unsigned g_pmk_n, g_pmk_cap;
+void fn_table_dump(FILE *f);
+static void pmk_mark(int seg) {
+    if (g_pmk_on < 0) {
+        const char *e = getenv("SSBU_PMCMARK"); g_pmk_on = 0;
+        if (!e || !*e) return;
+        snprintf(g_pmk_file, sizeof g_pmk_file, "%s", e); char *cm = strrchr(g_pmk_file, ','); g_pmk_dur = 30.0;
+        if (cm && cm > g_pmk_file + 2) { g_pmk_dur = atof(cm + 1); *cm = 0; }
+        g_pmk_cap = 1u << 21; g_pmk = VirtualAlloc(NULL, (size_t)g_pmk_cap * sizeof *g_pmk, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!g_pmk) return;
+        memset(g_pmk, 0, (size_t)g_pmk_cap * sizeof *g_pmk); g_pmk_on = 1; g_pmk_t0 = now_ms();
+    }
+    if (g_pmk_on <= 0) return;
+    if (g_pmk_on == 1) { if (seg != 5) return; g_pmk_on = 2; g_pmk_t0 = now_ms(); }      /* the window starts at the first load (the fight) */
+    int kd = g_ra_phase == 2 ? (g_rgs_left <= 1 ? 2 : 1) : 0, ks = kd * 16 + seg;
+    if (ks == g_pmk_last) return;
+    g_pmk_last = ks;
+    FILETIME ft; GetSystemTimePreciseAsFileTime(&ft);
+    if (g_pmk_n < g_pmk_cap) { g_pmk[g_pmk_n].t = ((ULONG64)ft.dwHighDateTime << 32) | ft.dwLowDateTime; g_pmk[g_pmk_n].ks = ks; g_pmk_n++; }
+    if (now_ms() - g_pmk_t0 >= g_pmk_dur * 1000.0 || g_pmk_n >= g_pmk_cap) {
+        FILE *f = fopen(g_pmk_file, "w"); g_pmk_on = 0;
+        if (!f) return;
+        fprintf(f, "T %lu\n", (unsigned long)GetCurrentThreadId());
+        for (unsigned i = 0; i < g_pmk_n; i++) fprintf(f, "M %llu %d %d\n", (unsigned long long)g_pmk[i].t, g_pmk[i].ks >> 4, g_pmk[i].ks & 15);
+        {   HANDLE sn = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0); MODULEENTRY32 me; me.dwSize = sizeof me;      /* the modules ("I <base> <size> <name>") */
+            if (sn != INVALID_HANDLE_VALUE) { for (BOOL ok = Module32First(sn, &me); ok; ok = Module32Next(sn, &me))
+                fprintf(f, "I %llx %lx %s\n", (unsigned long long)(uintptr_t)me.modBaseAddr, (unsigned long)me.modBaseSize, me.szModule); CloseHandle(sn); } }
+        fn_table_dump(f); fclose(f);
+        LOG("r1: PMCMARK: %u marks written to %s\n", g_pmk_n, g_pmk_file);
+    }
+}
+static void pmk_note(void) { pmk_mark(g_rgp_seg); }
+#define PMK_NOTE() do { if (g_pmk_on) pmk_note(); } while (0)
 #define RG_FLAT 0u
 #define RG_DECOM 1u
 #define RG_POOL_MAX (1u << 20)                 /* 4 GB of 4 KB buffers (reserved, committed as used) */
@@ -681,7 +721,12 @@ static void rg_cap_dedup(RgSlot *s) {
 static volatile LONG g_rg_loading; static volatile LONG64 g_rg_loadfault, g_rg_capfault; static int rg_fault_on(void);
 static int jl_on(void); static int jl_fmt(char *b, size_t n); static char g_jl_before[200]; static long long g_jl_n;      /* (rb-8ms 13/11) SSBU_RB_JOBLOG, below */      /* (below: rg_load_fault) */
 static double g_cq[3]; static long long g_cqn; static double g_ldp[3]; static long long g_ldp_n;      /* (rb-8ms) load parts: sweep (write watch, marks, extras), page list, copy */
-int r1_ring_capture(long long frame, Ctx *c) {
+static int r1_ring_capture_i(long long frame, Ctx *c);
+int r1_ring_capture(long long frame, Ctx *c) {      /* (SSBU_PMCMARK: the capture as its own part) */
+    if (!g_pmk_on) return r1_ring_capture_i(frame, c);
+    pmk_mark(4); int r = r1_ring_capture_i(frame, c); pmk_note(); return r;
+}
+static int r1_ring_capture_i(long long frame, Ctx *c) {
     { extern void (*g_os_wait_extra)(void (*pr)(const char *fmt, ...)); g_os_wait_extra = rg_loader_print; }
     R1_CTR("capture (frame)", frame, 0);
     double t0 = now_ms(); int seg_was = g_rgp_seg; g_rgp_seg = 4;
@@ -1302,7 +1347,12 @@ static long long g_rg_lp_n; static double g_rg_lp_wait;      /* (LOADPIPE) loads
 static uint8_t *g_rg_sn_d[4096]; static const uint8_t *g_rg_sn_s[4096]; static int g_rg_sn_cnt;
 static void rg_snap_part(int k) { int step = k < 0 ? 1 : g_ncp + 1; for (int i = k < 0 ? 0 : k; i < g_rg_sn_cnt; i += step) memcpy(g_rg_sn_d[i], g_rg_sn_s[i], PG); }
 uint8_t *nvn_r1_snap_slot(const uint8_t *page);
-int r1_ring_load(long long frame, Ctx *c) {
+static int r1_ring_load_i(long long frame, Ctx *c);
+int r1_ring_load(long long frame, Ctx *c) {         /* (SSBU_PMCMARK: the load as its own part) */
+    if (!g_pmk_on) return r1_ring_load_i(frame, c);
+    pmk_mark(5); int r = r1_ring_load_i(frame, c); pmk_note(); return r;
+}
+static int r1_ring_load_i(long long frame, Ctx *c) {
     int si = -1;
     for (int i = 0; i < g_rg_count; i++) if (rg_slot(i)->frame == frame) si = i;
     if (si < 0) return 0;
@@ -1622,6 +1672,7 @@ static ULONG64 rgs_cyc_now(void) { ULONG64 v = 0; QueryThreadCycleTime(GetCurren
 static void rgs_step(Ctx *c) {
     double t = now_ms(); ULONG64 cy = rgs_cyc_now();
     g_rgp_main = GetCurrentThreadId(); g_rgp_seg = 1; if (g_rgs_prof == 3 && g_rg_ready) rgs_samp_start();
+    if (g_pmk_on) pmk_mark(6);
     mo_pass_end();                                        /* (SSBU_RB_MEMO, memo.c) a unit call still open is dropped; the next pass counts again */
     if (g_rgs_pass_t0 > 0 && g_rg_ready) {                /* the pass that just ended: real (0) or re-run (1), without the capture / load */
         int kd = g_ra_phase == 2; double d = t - g_rgs_pass_t0; if (g_rgs_cyc0) g_rgs_cyc[kd] += (double)(cy - g_rgs_cyc0);
@@ -1633,7 +1684,7 @@ static void rgs_step(Ctx *c) {
     if (g_rgs_polls_cur > 1) g_rgs_multi++;
     g_rgs_polls_cur = 0;
     if (g_ra_off || !ra_fight_on()) { snd_let_go(); ls_fight_off(); if (g_ra_phase) g_ra_after_quiet = 1; g_ra_phase = 0; g_rgs_left = 0; g_rgs_pass_t0 = 0; if (rbg_on()) rbg_fight_off(); return; }   /* (R3: the report once at the end of each match; hs12: the session reset for the next match) */
-    if (rbg_on()) { rbg_step(c); g_rgs_pass_t0 = now_ms(); g_rgs_cyc0 = rgs_cyc_now(); g_ra_t_mark = g_rgs_pass_t0; return; }      /* R3: online rollback */
+    if (rbg_on()) { rbg_step(c); PMK_NOTE(); g_rgs_pass_t0 = now_ms(); g_rgs_cyc0 = rgs_cyc_now(); g_ra_t_mark = g_rgs_pass_t0; return; }      /* R3: online rollback */
     long long i = g_rgs_next;                             /* the pass that ended here */
     if (g_rg_keep_on < 0) { const char *e = getenv("SSBU_RB_KEEP"); g_rg_keep_on = !e || atoi(e) != 0; }
     {   /* will a load follow this capture? then the threads stay held from the capture to the load (SSBU_RB_KEEP=0: not) */

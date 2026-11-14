@@ -70,7 +70,9 @@ volatile LONG g_obj_in;                                /* (crash phase) threads 
  * took ONE process-wide lock exclusively. Records are never removed and a record's key and next pointer never change
  * once it is in the table, so a look-up can walk the bucket without the lock; only a miss takes the lock (and looks
  * again under it). SSBU_OBJ_LOCKFREE=0: the lock at every look-up, as before. */
-#define OBJ_LOCKFREE_DEFAULT 0
+/* (rb-8ms round 8, 14/11) default 1: the PMC profile of the main thread (r8_pmc_tc4) had obj() + the SRW lock at ~3% of the real pass
+ * (every guest mutex lock / unlock of every thread through one exclusive lock and g_obj_in); TaC n3 (r8_hm) 7.98 -> 7.88 */
+#define OBJ_LOCKFREE_DEFAULT 1
 static int g_obj_lf = -1;
 static Obj *obj(uint64_t key) {
     unsigned h = (unsigned)((key >> 3) * 2654435761u) & (BUCKETS - 1);

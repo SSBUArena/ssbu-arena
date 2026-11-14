@@ -101,7 +101,12 @@ static double g_rbg_wpad_at; static long long g_rbg_wpad_frame = -1;     /* loop
 static double g_rbg_sched, *g_rbg_late; static int g_rbg_nlate, g_rbg_wrb_pend;      /* time to the real pass's end from its scheduled tick */
 static long long g_rbg_n_wmis, g_rbg_n_wpeek; static double g_rbg_wm_t0, g_rbg_wm_hold_ms; static long long g_rbg_wm_frame = -1;     /* (v2) */
 HANDLE rbn_rx_event(void);
-static void rbg_sleep_until(double t, HANDLE ev) {      /* (phase 3 v2) sleep on the timer (and the receive event), no spin */
+static void rbg_sleep_until_i(double t, HANDLE ev);
+static void rbg_sleep_until(double t, HANDLE ev) {      /* (SSBU_PMCMARK: the pacing wait as part 7) */
+    if (g_pmk_on <= 1) { rbg_sleep_until_i(t, ev); return; }
+    int sg = g_rgp_seg; pmk_mark(7); rbg_sleep_until_i(t, ev); pmk_mark(sg);
+}
+static void rbg_sleep_until_i(double t, HANDLE ev) {      /* (phase 3 v2) sleep on the timer (and the receive event), no spin */
     double left = t - now_ms();
     if (left <= 0.05) return;
     if (!g_rbg_timer) { Sleep(0); return; }
@@ -143,7 +148,12 @@ static int rbg_capture(long long i, Ctx *c) { g_rg_need = rbn_confirmed(); if (g
     return ok; }
 void rbn_stats(int *delay, int *last, int *maxk) { *delay = rbn_delay(); *last = (int)g_rbg_last_k; *maxk = (int)g_rbg_max_k; }   /* net_relay.c net_stats_get (F2) */
 
-static void rbg_wait_until(double t) {                  /* a high-resolution timer for the long part, a spin for the last 0.3 ms */
+static void rbg_wait_until_i(double t);
+static void rbg_wait_until(double t) {                  /* (SSBU_PMCMARK: the pacing wait as part 7) */
+    if (g_pmk_on <= 1) { rbg_wait_until_i(t); return; }
+    int sg = g_rgp_seg; pmk_mark(7); rbg_wait_until_i(t); pmk_mark(sg);
+}
+static void rbg_wait_until_i(double t) {                  /* a high-resolution timer for the long part, a spin for the last 0.3 ms */
     for (;;) {
         double now = now_ms(), left = t - now;
         if (left <= 0) return;

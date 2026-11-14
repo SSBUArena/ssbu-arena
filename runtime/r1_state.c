@@ -56,6 +56,7 @@ void r1_nosim(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void r1_pool_note(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void r1_read_retry_note(void) {}
 void r1_register_heap(void) { r1_on(); }
+int r1_hostmem_keep(const char *name) { (void)name; return 0; }
 void mo_esc_note(int kind, int sym, uint64_t addr) { (void)kind; (void)sym; (void)addr; }
 #else
 #include <stdio.h>
@@ -2536,7 +2537,7 @@ static void r1_frame_end(Ctx *c, void *user) {
     (void)user;
     uint64_t lr = c->x[30];
     double te = now_ms();
-    { extern volatile int g_rgp_seg; if (g_rgp_seg == 2) g_rgp_seg = 3; }
+    { extern volatile int g_rgp_seg; if (g_rgp_seg == 2) g_rgp_seg = 3; PMK_NOTE(); }
     int rerun = g_phase == 2;
     g_orig_frame_end(c);         /* (round 2 tried skipping the whole frame end in re-run frames: the game crashed in the first one) */
     if (lr != GA(0x7103747b7cull)) return;
@@ -2578,7 +2579,7 @@ static void r1_frame_end(Ctx *c, void *user) {
 int r1_poll(int ticks) {
     g_ff += ticks;
     g_t_poll = now_ms();
-    { extern volatile int g_rgp_seg; g_rgp_seg = 2; }
+    { extern volatile int g_rgp_seg; g_rgp_seg = 2; PMK_NOTE(); }
     if (g_ra > 0 && rgs_wanted()) return rgs_poll();     /* R2 simulation: a re-run pass's poll does not advance it either */
     if (g_ra > 0) return g_ra_phase == 1;                 /* run-ahead: the speculative pass's poll does not advance the input sequence */
     return g_phase == 2 && g_ipad < g_npad;
@@ -2678,6 +2679,18 @@ static void r_posix_memalign(Ctx *c) { void *p = ar_alloc(RA2 ? RA2 : 1, RA1); w
 static void r_usable_size(Ctx *c) { void *p = (void *)(uintptr_t)RA0; c->x[0] = !p ? 0 : in_arena(p) ? ar_usable(p) : _aligned_msize(p, 16, 0); }
 
 
+/* (rb-8ms round 8) SSBU_HOSTMEM (default 2, see hm_mode; 0 = as before): the guest's memcpy / memmove / memset stay these host functions (native copy,
+ * the pages of the range marked) instead of the SDK code lifted from sdk.elf that nnsdk2.c install_lifted puts over them: the lifted
+ * loop moves 32 bytes per step through guest registers, each 16-byte store reading the old bytes for SSBU_R1_MARKCMP and the flags
+ * written to Ctx (PMC profile r8_pmc_tc4: ~3% of the cycles of real and re-run passes in the lifted SDK code). Same bytes in guest
+ * memory; the marks are a superset of the lifted code's (every page of the range, not only the changed ones). Only when the ring's
+ * marks are on (these handlers registered, g_r1_hostmem_ok). */
+int g_r1_hostmem_ok;
+int r1_hostmem_keep(const char *name) {        /* nnsdk2.c install_lifted: 1 = keep the host handler of this import */
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_HOSTMEM"); on = !(e && e[0] == '0'); }      /* (1 / 2: see m_memcpy) */
+    return on && g_r1_hostmem_ok && (!strcmp(name, "memcpy") || !strcmp(name, "memmove") || !strcmp(name, "memset"));
+}
 static void r1_mark_range(uint64_t a, uint64_t n) {
     if (!n || !r1_n1) return;
     for (uint64_t p = a & ~(uint64_t)(PG - 1); p < a + n; p += PG) {
@@ -2686,9 +2699,33 @@ static void r1_mark_range(uint64_t a, uint64_t n) {
         else { o = p - WIN2; if (o < r1_n2) r1_m2[o >> 12] = 1; }
     }
 }
-static void m_memcpy(Ctx *c) { r1_mark_range(c->x[0], c->x[2]); memcpy((void *)(uintptr_t)c->x[0], (void *)(uintptr_t)c->x[1], (size_t)c->x[2]); }
-static void m_memmove(Ctx *c) { r1_mark_range(c->x[0], c->x[2]); memmove((void *)(uintptr_t)c->x[0], (void *)(uintptr_t)c->x[1], (size_t)c->x[2]); }
-static void m_memset(Ctx *c) { r1_mark_range(c->x[0], c->x[2]); memset((void *)(uintptr_t)c->x[0], (int)c->x[1], (size_t)c->x[2]); }
+/* (round 8) SSBU_HOSTMEM=2 (default): like SSBU_R1_MARKCMP for these copies: per page piece of the destination, the piece is written and
+ * its page marked only when its bytes change (memcmp first); an overlapping memcpy / memmove is done whole with every page marked.
+ * =1: every page of the range marked (SIM_VERIFY r8_hmv: +8% pages compared against the lifted code). */
+static int g_hm_mode = -1;
+static int hm_mode(void) { if (g_hm_mode < 0) { const char *e = getenv("SSBU_HOSTMEM"); g_hm_mode = e && e[0] ? atoi(e) : 2; } return g_hm_mode; }
+static void hm_copy(uint64_t d, uint64_t s, uint64_t n) {
+    while (n) {
+        uint64_t piece = PG - (d & (PG - 1)); if (piece > n) piece = n;
+        if (memcmp((void *)(uintptr_t)d, (void *)(uintptr_t)s, (size_t)piece)) { r1_mark_range(d, 1); memcpy((void *)(uintptr_t)d, (void *)(uintptr_t)s, (size_t)piece); }
+        d += piece; s += piece; n -= piece;
+    }
+}
+static void hm_set(uint64_t d, int v, uint64_t n) {
+    while (n) {
+        uint64_t piece = PG - (d & (PG - 1)); if (piece > n) piece = n;
+        const uint8_t *q = (const uint8_t *)(uintptr_t)d;
+        if (q[0] != (uint8_t)v || (piece > 1 && memcmp(q, q + 1, (size_t)piece - 1))) { r1_mark_range(d, 1); memset((void *)(uintptr_t)d, v, (size_t)piece); }
+        d += piece; n -= piece;
+    }
+}
+static int hm_apart(uint64_t d, uint64_t s, uint64_t n) { return d + n <= s || s + n <= d; }
+static void m_memcpy(Ctx *c) { if (hm_mode() >= 2 && hm_apart(c->x[0], c->x[1], c->x[2])) { hm_copy(c->x[0], c->x[1], c->x[2]); return; }
+    r1_mark_range(c->x[0], c->x[2]); memcpy((void *)(uintptr_t)c->x[0], (void *)(uintptr_t)c->x[1], (size_t)c->x[2]); }
+static void m_memmove(Ctx *c) { if (hm_mode() >= 2 && hm_apart(c->x[0], c->x[1], c->x[2])) { hm_copy(c->x[0], c->x[1], c->x[2]); return; }
+    r1_mark_range(c->x[0], c->x[2]); memmove((void *)(uintptr_t)c->x[0], (void *)(uintptr_t)c->x[1], (size_t)c->x[2]); }
+static void m_memset(Ctx *c) { if (hm_mode() >= 2) { hm_set(c->x[0], (int)c->x[1], c->x[2]); return; }
+    r1_mark_range(c->x[0], c->x[2]); memset((void *)(uintptr_t)c->x[0], (int)c->x[1], (size_t)c->x[2]); }
 static uint8_t *g_dc_unused;                           /* window 1: 1 = the game decommitted the page (no VirtualQuery per page: ~1 ms each in this region) */
 static void dc_set(void *p, size_t n, int v) {
     if (!g_dc || !g_win1) return;
@@ -2833,7 +2870,7 @@ static int is_nosim(uint8_t *a) {
 void r1_register_heap(void) {
     if (r1_on() && (getenv("SSBU_R1_MARK") || ra_wanted())) {
         static const ImportDef md[] = { {"memcpy", m_memcpy}, {"memmove", m_memmove}, {"memset", m_memset} };
-        register_imports(md, 3);
+        register_imports(md, 3); g_r1_hostmem_ok = 1;
     }
     if (!r1_on() || getenv("SSBU_R1_CRT_HEAP")) return;
     g_ar = VirtualAlloc(NULL, AR_SIZE, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS);      /* (Arena perf) write watch: an extra of the ring (r1_ring.c rgx_each) */

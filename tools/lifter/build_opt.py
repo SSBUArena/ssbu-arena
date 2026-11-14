@@ -544,7 +544,7 @@ def compile_game_data_sdk(objdir, shim):
     here = build.HERE
     newest = max([os.path.getmtime(os.path.join(here, h)) for h in os.listdir(here) if h.endswith('.h')] +
                  [os.path.getmtime(src), os.path.getmtime(os.path.abspath(build.__file__))])
-    want = 'llvm19 inline ' + (' '.join(GAME_DEFS + (['scope'] if PIPE_SCOPE else [])) or 'none')
+    want = 'llvm19 inline ' + (' '.join(GAME_DEFS + (['scope'] if PIPE_SCOPE else []) + (['r1scope'] if PIPE_SCOPE and os.environ.get('RECOMP_R1SCOPE', '0') not in ('', '0') else [])) or 'none')
     try:
         have = open(stamp).read().strip()
     except OSError:
@@ -911,7 +911,7 @@ def cmd_main(jobs):
         shave = None
     # (game code +30%) objects compiled with other runtime.h switches (GAME_DEFS) or RECOMP_PIPE_SCOPE are compiled again, both kinds. No stamp:
     # objects of before the switches existed (as with every switch off), so a first build with them compiles everything once.
-    dstamp, dwant = os.path.join(build.OBJ, '_defs.txt'), ' '.join(GAME_DEFS + (['scope'] if PIPE_SCOPE and PIPE == 'llvm19' else [])) or 'none'
+    dstamp, dwant = os.path.join(build.OBJ, '_defs.txt'), ' '.join(GAME_DEFS + (['scope'] if PIPE_SCOPE and PIPE == 'llvm19' else []) + (['r1scope'] if PIPE_SCOPE and PIPE == 'llvm19' and os.environ.get('RECOMP_R1SCOPE', '0') not in ('', '0') else [])) or 'none'
     try:
         dhave = open(dstamp).read().strip()
     except OSError:

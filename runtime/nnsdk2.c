@@ -555,6 +555,7 @@ static void install_lifted(void) {
             snprintf(buf, sizeof buf, "%s", skip);
             for (char *t = strtok(buf, ","); t; t = strtok(NULL, ",")) if (strstr(sdk_install_names[i], t)) skip_this = 1;
         }
+        { int r1_hostmem_keep(const char *name); if (r1_hostmem_keep(sdk_install_names[i])) { skipped++; continue; } }     /* (r1_state.c, SSBU_HOSTMEM) */
         if (skip_this) { skipped++; continue; }
         if (sdk_install(sdk_install_names[i])) ok++;
         else printf("sdklift: %s is in sdklift_install.h but was not lifted or is not an import\n", sdk_install_names[i]);

@@ -614,6 +614,12 @@ uint64_t guest_function_of(uint64_t rip) {
     if (best < 0 || rip - (uintptr_t)g_by_host[best].fn > 0x400000) return nro_guest_function_of(rip);
     return g_by_host[best].addr;
 }
+/* (rb-8ms round 8, TEST: SSBU_PMCMARK, r1_ring.c) the lifted functions by host address, "F <host address> <guest address>" */
+void fn_table_dump(FILE *f) {
+    for (int i = 0; i < fn_table_count; i++) fprintf(f, "F %llx %llx\n", (unsigned long long)(uintptr_t)g_by_host[i].fn, (unsigned long long)g_by_host[i].addr);
+    if (g_handlers) for (int i = 0; i < dyn_sym_count; i++)          /* the import handlers ("H <host address> <name>": lifted SDK code has no table entry) */
+        if (g_handlers[i]) fprintf(f, "H %llx %s\n", (unsigned long long)(uintptr_t)g_handlers[i], dyn_syms[i].name);
+}
 
 /* ---------------------------------------------------------------- host functions handed to the guest
  * Function pointers the guest obtains at run time (for example through nvnBootstrapLoader) are
