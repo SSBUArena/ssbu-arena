@@ -1173,7 +1173,7 @@ void display_present_plan(int vulkan) {
     /* (Arena) a rollback match is paced by rb_rollback.c's own 60 Hz clock: held for this file's tick as well, the two clocks
      * beat (a frame finished just past this tick waited a whole frame, the next one came right after it: 0.7 ms apart, one
      * picture never on screen, for minutes while the phases stayed close). There the frame goes out as soon as it is ready. */
-    int paced; { int r1_rb_paced(void); paced = r1_rb_paced() && !getenv("SSBU_PACE_HOLD"); }
+    int paced; { int r1_rb_paced(void); static int ph = -1, st = -1; if (st < 0) { const char *e = getenv("SSBU_SYSTRIM"); st = !(e && e[0] == '0'); } if (ph < 0 || !st) ph = getenv("SSBU_PACE_HOLD") != NULL; paced = r1_rb_paced() && !ph; }      /* (round 9, SSBU_SYSTRIM=0 off: the variable read once, not each frame) */
     LONG64 tgt = on_time && g_hold_on && !g_lockstep && !paced ? at : 0;
     if (paced && !g_lockstep) {                            /* (0.2.38) the rollback match's 1-frame present queue (rb_rollback.c r1_rb_present_target) */
         /* the picture is due (1 + q) frames after its tick's place on the MATCH clock (1 ms early): the tick of ours at or after that.

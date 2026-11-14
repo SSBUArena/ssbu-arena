@@ -1434,7 +1434,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
     g_rg_count = si + 1;
     dc_copy_lock(1);                                      /* (crash phase) no decommit from here to the end of the copy */
     if (rg_fault_on()) InterlockedExchange(&g_rg_loading, 1);
-    double tl0 = now_ms();                                /* (rb-8ms) the load's parts timed (report: RING load parts) */
+    double tl0 = now_ms(), tlc = 0;                      /* (rb-8ms) the load's parts timed (report: RING load parts); tlc: the copy's start (round 9, SLOWLOAD) */
     rg_helpers_on(1);                                     /* (rb-8ms) loads: the helpers on the other L3 (SSBU_RB_COPYCCX) */
     /* (rb-8ms 13/11) SSBU_RB_LOADPIPE=1 (test, default 0): the pages of the undo logs (known before any sweep) are copied by the helpers
      * WHILE main sweeps the marks and asks the write watch (on main alone: the helpers are busy, cp_par refuses); the pages the sweep adds
@@ -1464,6 +1464,15 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
     }
     /* (LOADSNAP=3) the snapshot's copies of the pool pages already listed (undo logs) run on the copy helpers WHILE main sweeps (the
      * sweep only reads: the game threads are held); the pool pages the sweep adds are copied by main after it, before any page is written */
+    /* (round 9, option) SSBU_RB_LOADPWW=1 (default 0): the write-watch questions (stacks, extras) asked on main + the copy helpers BEFORE
+     * the snapshot's copies start on the helpers (LOADSNAP=3): asked after, cp_par found the helpers busy and main asked them all alone
+     * (~90 GetWriteWatch per load: rb8ms/sysstack.py r9_sys_tc2). The questions only mark the mark maps / keep the extras' answers (no
+     * page listed yet): the snapshot's page list (the undo logs') is the same. MEASURED WORSE (TaC r9_st: load sweep 0.29 -> 0.32, load
+     * 1.36 -> 1.40): the questions do not go faster in parallel (the kernel serialises them on the address space) and the snapshot's
+     * copies start later. Left off. */
+    static int lpww = -1; if (lpww < 0) { const char *e = getenv("SSBU_RB_LOADPWW"); lpww = e && atoi(e) > 0; }
+    int pww_early = 0;
+    if (lpww && !piped && lsnap == 3 && lpipe <= 0 && !lsynced) { rg_pww(1); pww_early = 1; }
     int snap3 = 0; size_t snap_n1 = 0; double tsn0 = 0;
     if (lsnap == 3 && !piped && lpipe <= 0 && !lsynced) {
         tsn0 = now_ms(); snap3 = nvn_r1_snap_start();
@@ -1476,7 +1485,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
         }
         tsn0 = now_ms() - tsn0;                           /* main's own time so far */
     }
-    rg_pww(1);                                            /* (rb-8ms) the write-watch questions on every copy thread */
+    if (!pww_early) rg_pww(1);                            /* (rb-8ms) the write-watch questions on every copy thread */
     rg_stack_ww(NULL);                                    /* (Arena perf) the stack pages written since the newest capture */
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */
     rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
@@ -1531,7 +1540,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
          * 2026-11-11, =0 the old way): the load writes with non-temporal stores (no read for ownership of ~14 MB, the loaded lines
          * do not push the game's data out of the caches): loop bench BF -0.6..-0.9 ms, load 2.37 -> 1.9 ms. SSBU_RB_CPMAIN: main's share of the copies (rg_cpmain) */
         g_cp_cond = lc; g_cp_nt = lc != 1 && lnt; g_cp_mw = rg_cpmain(0); g_cp_hmode = g_cph && (rg_loadhash() & 1) ? 2 : g_cph && (rg_loadhash() & 4) && g_rg_same ? 3 : 0;      /* (rb-8ms) 3: only the pages same at their newest capture */
-        double tl2 = now_ms();
+        double tl2 = now_ms(); tlc = tl2;
         g_cp_sn5 = snap5;                                 /* (LOADSNAP=5) the copy fills the snapshot's slots */
         if (!(g_rg_copy_ccx && cp_run_lh())) cp_run();
         g_cp_sn5 = 0;
@@ -1579,6 +1588,13 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
     *c = g->ctx;
     g_rg_loads++;
     if (g_th_mismatch || g_fib_diff) LOG("r1: RING load of frame %lld (k %d): %d threads not at their wait, %d fibers not restored\n", frame, k, g_th_mismatch, g_fib_diff);
+    {   /* (round 9, diagnosis) SSBU_RB_SLOWLOAD=<ms> (default 10, 0 = off): a load longer than that logs where its time went (1-2 loads of
+         * 25-35 ms in about a third of the loop runs, with every timed part small: rb8ms r9_hp_1_3, r9_st_1_3, r8_st10 BF / PS2) */
+        static double sl = -1; if (sl < 0) { const char *e = getenv("SSBU_RB_SLOWLOAD"); sl = e ? atof(e) : 10.0; }
+        double te = now_ms(); static int said;
+        if (sl > 0 && te - t0 > sl && said++ < 40) LOG("r1: SLOWLOAD frame %lld (k %d): %.2f ms: hold + restore %.2f, undo logs + copy lock %.2f, sweep %.2f, list + snapshot %.2f, copy %.2f, thread regs %.2f, fibers %.2f, catch table %.2f, command buffers + font %.2f, wakes + alloc check + let go %.2f; pages %zu\n",
+            frame, k, te - t0, t1 - t0, tl0 - t1, tl1 - tl0, (tlc > 0 ? tlc : t2) - tl1, tlc > 0 ? t2 - tlc : 0.0, t2a - t2, t2b - t2a, t2c - t2b, t3 - t2c, te - t3, pages);
+    }
     g_tt[1] += now_ms() - t0; g_ttn[1]++; g_rg_last[1] = now_ms() - t0; g_rgp_seg = 1;
     if (k < RG_MAXSLOT && g_rgl_n[k] < RG_NL) { int i = g_rgl_n[k]++; g_rgl[k][i][0] = now_ms() - t0; g_rgl[k][i][1] = t1 - t0; g_rgl[k][i][2] = t2 - t1; g_rgl_pg[k][i] = pages; (void)t3; }
     return 1;
@@ -2255,6 +2271,7 @@ static void rgs_report(void) {
     LOG("r1: RING capture sweep part (means ms): extras + write watch questions %.4f, stack write watch %.4f, sweep + undo log + queue %.4f (%lld captures)\n", g_cqn ? g_cq[0] / g_cqn : 0.0, g_cqn ? g_cq[1] / g_cqn : 0.0, g_cqn ? g_cq[2] / g_cqn : 0.0, g_cqn);
     LOG("r1: RING sweeps on the copy threads (SSBU_RB_PSWEEP): %lld, a list full (rest swept on main) %lld\n", g_psw_runs, g_psw_fallback);
     LOG("r1: RING loads right after a capture with the threads kept held: %lld (threads kept at the same wait: %lld); fibers %d (last); stale fiber-block notes refused %lld\n", g_rg_kept_n, g_rg_kept_same, g_nfib, g_r1_fls_stale);
+    if (g_hold_par_fast + g_hold_par_ok + g_hold_par_back) LOG("r1: HOLDPAR (round 9): threads held in the first pass %lld (same wait, same place) + %lld (asked), let go to the usual loop %lld\n", g_hold_par_fast, g_hold_par_ok, g_hold_par_back);
     LOG("r1: KEEP: sound threads kept suspended from a load to the last re-run pass %lld; kept after a second try %lld; not kept (suspended outside a system call) %lld; worker wake-ups without the event lock %lld\n", g_snd_keeps, g_keep_settled, g_keep_unsafe, g_wake_nolock);
     LOG("r1: RING capture: median %.3f mean %.3f p99 %.3f ms; parts (means): hold %.3f, sweep + undo log %.3f, page copy (parallel) %.3f, fibers + threads + command buffers + let go %.3f; pages %.0f + extras %.0f mean (%.1f MB)\n",
         rg_pct(g_rgc[0], n, 50), rg_mean(g_rgc[0], n), rg_pct(g_rgc[0], n, 99), rg_mean(g_rgc[1], n), rg_mean(g_rgc[2], n), rg_mean(g_rgc[3], n), rg_mean(g_rgc[4], n), n ? pg / n : 0, n ? xp / n : 0, n ? (pg + xp) / n * PG / 1048576.0 : 0);

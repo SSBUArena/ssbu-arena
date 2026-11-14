@@ -69,6 +69,7 @@ void mo_esc_note(int kind, int sym, uint64_t addr) { (void)kind; (void)sym; (voi
 
 int hook_install(uint64_t addr, void (*repl)(Ctx *, void *), void *user, ImportFn *orig);
 int guest_thread_info(int i, Ctx **c, const char **name, HANDLE *h);
+DWORD guest_thread_tid(int i, HANDLE h);          /* (round 9) os_threads.c: GetThreadId(h) without the system call (SSBU_TIDCACHE) */
 void os_r1_objs(void (*cb)(uint64_t key, int signaled, int count, uint64_t len, uint64_t thread, uint64_t stack, uint64_t stack_size));     /* os_threads.c */
 
 #define PG 4096
@@ -392,7 +393,7 @@ static void park(int restore_mode) {
     if (!restore_mode) {
         g_nth = 0;
         for (int i = 0; guest_thread_info(i, &tc, &nm, &h) && g_nth < 256; i++) {
-            if (!h || GetThreadId(h) == me) continue;
+            if (!h || guest_thread_tid(i, h) == me) continue;
             Th *t = &g_th[g_nth++]; memset(t, 0, sizeof *t); t->h = h; t->c = tc; t->name = nm ? nm : "?";
         }
         g_ninfo = 0; while (guest_thread_info(g_ninfo, &tc, &nm, &h)) g_ninfo++;
@@ -564,8 +565,9 @@ static int fib_host(void *fiber, uint64_t *rsp, uint64_t *base) {
  * holds one of them is not copied back (counted, logged). SSBU_R1_LIVESTK=0: copied anyway (the old way, test). */
 static long long g_fib_live_skip, g_fib_live_seen; static int g_fib_live_on = -1;
 static uint64_t g_live_rsp[512], g_live_rip[512], g_live_fib[512]; static const char *g_live_nm[512]; static HANDLE g_live_h[512]; static int g_nlive;
-static uint8_t *live_teb_addr(HANDLE h);
+static uint8_t *live_teb_addr(HANDLE h); static uint8_t *live_teb_addr_k(HANDLE h, DWORD tid, int alive);
 int guest_thread_info(int i, Ctx **c, const char **name, HANDLE *h);
+DWORD guest_thread_tid(int i, HANDLE h);          /* (round 9) os_threads.c: GetThreadId(h) without the system call (SSBU_TIDCACHE) */
 static int g_live_cache = -1; static long long g_live_cached, g_live_asked;
 TT_DEFV(live_rsps, (void), (), 6)
 static void live_rsps_tt(void) {
@@ -574,12 +576,13 @@ static void live_rsps_tt(void) {
     { volatile uint64_t here = (uint64_t)(uintptr_t)&here; g_live_rsp[g_nlive] = here; g_live_rip[g_nlive] = 0; g_live_nm[g_nlive] = "this thread"; g_live_h[g_nlive] = NULL; g_live_fib[g_nlive] = (uint64_t)(uintptr_t)GetCurrentFiber(); g_nlive++; }
     Ctx *tc; const char *nm; HANDLE h;
     for (int i = 0; guest_thread_info(i, &tc, &nm, &h) && g_nlive < 512; i++) {
-        if (!h || GetThreadId(h) == GetCurrentThreadId()) continue;
+        DWORD tid = h ? guest_thread_tid(i, h) : 0;
+        if (!h || tid == GetCurrentThreadId()) continue;
         CONTEXT x; memset(&x, 0, sizeof x); x.ContextFlags = CONTEXT_CONTROL;
         int got = 0;
         if (g_live_cache) for (int j = 0; j < g_nth; j++) if (g_th[j].h == h) { if (g_th[j].held && g_th[j].cok) { x.Rsp = g_th[j].rsp; x.Rip = g_th[j].rip; got = 1; g_live_cached++; } break; }
         if (!got) { got = GetThreadContext(h, &x) != 0; g_live_asked++; }
-        if (got) { uint8_t *t = live_teb_addr(h); g_live_rsp[g_nlive] = x.Rsp; g_live_rip[g_nlive] = x.Rip; g_live_nm[g_nlive] = nm ? nm : "?"; g_live_h[g_nlive] = h; g_live_fib[g_nlive] = t ? *(volatile uint64_t *)(t + 0x20) : 0; g_nlive++; }
+        if (got) { uint8_t *t = live_teb_addr_k(h, tid, 1); g_live_rsp[g_nlive] = x.Rsp; g_live_rip[g_nlive] = x.Rip; g_live_nm[g_nlive] = nm ? nm : "?"; g_live_h[g_nlive] = h; g_live_fib[g_nlive] = t ? *(volatile uint64_t *)(t + 0x20) : 0; g_nlive++; }
     }
 }
 static void live_teb(HANDLE h, uint64_t *fd, uint64_t *sb, uint64_t *sl) {     /* (diagnosis) that thread's TEB: FiberData, StackBase, StackLimit */
@@ -592,10 +595,17 @@ static void live_teb(HANDLE h, uint64_t *fd, uint64_t *sb, uint64_t *sl) {     /
     uint8_t *t = tb.teb; *sb = *(uint64_t *)(t + 0x08); *sl = *(uint64_t *)(t + 0x10); *fd = *(uint64_t *)(t + 0x20);
 }
 static struct { HANDLE h; DWORD tid; uint8_t *teb; } g_teb_cache[512]; static int g_nteb;
-static uint8_t *live_teb_addr(HANDLE h) {               /* a thread's TEB (cached: it never moves) */
+static uint8_t *live_teb_addr(HANDLE h) { return live_teb_addr_k(h, 0, 0); }
+/* (round 9) tid: the thread's id when the caller knows it (guest_thread_tid), 0 = asked; alive: the handle came from guest_thread_info
+ * just now (a run not finished: its thread has not ended), so the "ended?" question (a system call per thread) is not asked when the
+ * TEB is cached. SSBU_TIDCACHE=0: asked as before. */
+static uint8_t *live_teb_addr_k(HANDLE h, DWORD tid, int alive) {               /* a thread's TEB (cached: it never moves) */
     /* (0.2.11) the cache is keyed by the handle AND the thread id: a thread that ended (the room's waiting-stage fight) gives its
      * handle value back and a new thread may get it: its TEB is another (the old one is freed: crash in a room match, run lwr_rvroom) */
-    DWORD tid = GetThreadId(h);
+    static int tc = -1; if (tc < 0) { const char *e = getenv("SSBU_TIDCACHE"); tc = !(e && e[0] == '0'); }
+    if (!tc) { tid = 0; alive = 0; }
+    if (!tid) tid = GetThreadId(h);
+    if (alive && tid) for (int i = 0; i < g_nteb; i++) if (g_teb_cache[i].h == h && g_teb_cache[i].tid == tid) return g_teb_cache[i].teb;
     if (!tid || WaitForSingleObject(h, 0) == WAIT_OBJECT_0) return NULL;      /* (an ended thread: no TEB any more) */
     for (int i = 0; i < g_nteb; i++) if (g_teb_cache[i].h == h) {
         if (g_teb_cache[i].tid == tid) return g_teb_cache[i].teb;
@@ -1607,10 +1617,15 @@ static void cp_add_prev(uint8_t *d, const uint8_t *s, long long prev) {
     if (g_cj_prevcap < g_cjcap) { long long *n = realloc(g_cj_prev, g_cjcap * sizeof *n); if (!n) { g_cph_dedup = 0; return; } g_cj_prev = n; g_cj_prevcap = g_cjcap; }
     g_cj_prev[g_ncj - 1] = prev;
 }
+/* (round 9, option) SSBU_RB_CAPPF=<d>: a capture's copy + hash prefetches the whole source page of the job d places ahead (the pages
+ * are the game's, written in the frame: in other cores' L2 / the L3 / DRAM; the hardware prefetcher stops at each 4 KB page) */
+static int g_cap_pf = -1;
 static void cp_part_hash(size_t a, size_t b, int k) {
     if (g_cp_hmode == 1) {                                  /* capture: copy + hash (destination = pool buffer) */
         long long same = 0;
+        if (g_cap_pf < 0) { const char *e = getenv("SSBU_RB_CAPPF"); g_cap_pf = e ? atoi(e) : 0; if (g_cap_pf < 0 || g_cap_pf > 8) g_cap_pf = 0; }
         for (size_t i = a; i < b; i++) {
+            if (g_cap_pf && i + (size_t)g_cap_pf < b) { const char *q = (const char *)g_cj[i + (size_t)g_cap_pf].s; for (int o = 0; o < PG; o += 64) _mm_prefetch(q + o, _MM_HINT_T0); }
             long long x = cph_index(g_cj[i].d); uint64_t h[2];
             long long pv = g_cph_dedup && x >= 0 ? g_cj_prev[i] : -1;
             if (pv >= 0 && g_cph_ok[pv]) {
@@ -2080,26 +2095,48 @@ static int hf_same(Th *t) {
     t->rsp = g_hf[i].rsp; t->rip = g_hf[i].rip; return 1;
 }
 static void hf_note(Th *t) { unsigned i = (unsigned)(((uintptr_t)t->h >> 2) % HF_N); g_hf[i].h = t->h; g_hf[i].imp = t->c->in_import; g_hf[i].from = t->c->import_from; g_hf[i].rsp = g_tb_rsp; g_hf[i].rip = g_tb_rip; }
+static long long g_hold_par_fast, g_hold_par_ok, g_hold_par_back;      /* (round 9, SSBU_RB_HOLDPAR) threads held by HOLDFAST / by the question, let go */
 static int ra_hold_save(void) {
     DWORD me = GetCurrentThreadId(); Ctx *tc; const char *nm; HANDLE h;
     if (g_hp_on < 0) g_hp_on = getenv("SSBU_RB_HOLD_PROF") && atoi(getenv("SSBU_RB_HOLD_PROF")) > 0;
     if (g_hp_on) g_hp_holds++;
     g_nth = 0;
     for (int i = 0; guest_thread_info(i, &tc, &nm, &h) && g_nth < 256; i++) {
-        if (!h || GetThreadId(h) == me) continue;
+        if (!h || guest_thread_tid(i, h) == me) continue;
         Th *t = &g_th[g_nth++]; memset(t, 0, sizeof *t); t->h = h; t->c = tc; t->name = nm ? nm : "?";
     }
     g_ninfo = 0; while (guest_thread_info(g_ninfo, &tc, &nm, &h)) g_ninfo++;
-    static int all_first = -1; if (all_first < 0) { const char *e = getenv("SSBU_RB_HOLD_ALL"); all_first = rgs_wanted() && e && atoi(e) != 0; }      /* opt-in: saved ~0.07 ms only; rb2f1 crashed with it (cause not shown) */
+    static int all_first = -1; if (all_first < 0) { const char *e = getenv("SSBU_RB_HOLD_ALL"); all_first = rgs_wanted() && e && atoi(e) != 0; }
+    int af = all_first;      /* (round 9: 2 = HOLDPAR's pre-suspension for this hold) */      /* opt-in: saved ~0.07 ms only; rb2f1 crashed with it (cause not shown) */
     static uint8_t pre[256];                                /* (R2 round 3, ring only) every thread suspended first, then checked: the kernel delivers the suspends together */
-    if (all_first) for (int i = 0; i < g_nth; i++) pre[i] = !ra_free(g_th[i].name) && SuspendThread(g_th[i].h) != (DWORD)-1;
+    /* (round 9) SSBU_RB_HOLDPAR (default 1, 0 = off): as SSBU_RB_HOLD_ALL but only the threads shown at a waiting import and not kept suspended by
+     * SNDKEEP (HOLD_ALL suspended those again and the kept path below never gave that suspension back: a thread left suspended for good,
+     * maybe rb2f1's crash), and HOLDFAST's "same wait, same place" first: the GetThreadContext calls (~10 us each, the suspend has to
+     * land) of the threads asked overlap instead of following each other */
+    static int hpar = -1; if (hpar < 0) { const char *e = getenv("SSBU_RB_HOLDPAR"); hpar = rgs_wanted() && !(e && e[0] == '0'); }      /* (TaC n3 r9_hp: rollback pre-hold 0.18 -> 0.12, capture hold 0.20 -> 0.12 ms) */
+    if (hpar && !af) {
+        int any = 0;
+        for (int i = 0; i < g_nth; i++) { Th *t = &g_th[i];
+            pre[i] = !ra_free(t->name) && !(g_snd_keep && g_nsnd_kept && snd_kept_at(t->h) >= 0) && waiting_import(t->c->in_import) && SuspendThread(t->h) != (DWORD)-1; any |= pre[i]; }
+        /* each one asked right away (the first question waits for its suspend, the others have landed meanwhile); one not blocked in a
+         * system call is let go at once (it may hold a lock another thread needs) and goes through the usual loop below */
+        if (any) for (int i = 0; i < g_nth; i++) if (pre[i]) { Th *t = &g_th[i]; pre[i] = 0;
+            if (waiting_import(t->c->in_import) && hf_same(t)) { t->held = 1; t->parked = 1; t->cok = 1; t->from = t->c->import_from; t->imp = t->c->in_import; t->regs = *t->c; g_hold_par_fast++; continue; }
+            if (waiting_import(t->c->in_import) && th_blocked(t->h)) { t->held = 1; t->parked = 1; t->rsp = g_tb_rsp; t->rip = g_tb_rip; t->cok = 1; t->from = t->c->import_from; t->imp = t->c->in_import; t->regs = *t->c; hf_note(t); g_hold_par_ok++; continue; }
+            ResumeThread(t->h); g_hold_par_back++;
+        }
+        if (any) af = 2;      /* (the failure path below lets go every thread held here, also those after the one that timed out: without
+                               * this a failed hold left them suspended for good - the sound thread stopped in 3 of 7 TaC runs, r9_hp) */
+    }
+    if (af == 1) for (int i = 0; i < g_nth; i++) pre[i] = !ra_free(g_th[i].name) && SuspendThread(g_th[i].h) != (DWORD)-1;
     for (int i = 0; i < g_nth; i++) {
         Th *t = &g_th[i];
         if (ra_free(t->name)) continue;
+        if (t->held) continue;                                /* (round 9, HOLDPAR: held in the pass above) */
         if (g_snd_keep && g_nsnd_kept) { int kk = snd_kept_at(t->h);      /* (rollback 8 ms) still suspended at its wait: nothing to ask */
             if (kk >= 0) { t->held = 1; t->parked = 1; t->rsp = g_snd_rsp[kk]; t->rip = g_snd_rip[kk]; t->cok = 1; t->from = t->c->import_from; t->imp = t->c->in_import; t->regs = *t->c; continue; } }
         double t0 = now_ms();
-        if (all_first && pre[i]) {
+        if (af && pre[i]) {
             pre[i] = 0;
             if (waiting_import(t->c->in_import) && th_blocked(t->h)) { t->held = 1; t->parked = 1; t->rsp = g_tb_rsp; t->rip = g_tb_rip; t->cok = 1; t->from = t->c->import_from; t->imp = t->c->in_import; t->regs = *t->c; continue; }
             ResumeThread(t->h);
@@ -2116,8 +2153,8 @@ static int ra_hold_save(void) {
             ResumeThread(t->h); spins++;
             if (now_ms() - t0 > g_ra_park_ms) {
                 if (g_hp_on) hp_add(t->name, now_ms() - t0, spins);
-                for (int j = 0; j < i; j++) if (g_th[j].held) { if (!(g_snd_keep && snd_kept_at(g_th[j].h) >= 0)) ResumeThread(g_th[j].h); g_th[j].held = 0; }
-                if (all_first) for (int j = i + 1; j < g_nth; j++) if (pre[j]) { ResumeThread(g_th[j].h); pre[j] = 0; }
+                for (int j = 0; j < (af == 2 ? g_nth : i); j++) if (g_th[j].held) { if (!(g_snd_keep && snd_kept_at(g_th[j].h) >= 0)) ResumeThread(g_th[j].h); g_th[j].held = 0; }      /* (HOLDPAR: also those held above, after i) */
+                if (af == 1) for (int j = i + 1; j < g_nth; j++) if (pre[j]) { ResumeThread(g_th[j].h); pre[j] = 0; }
                 g_ra_busy = t->name; g_ra_busy_imp = t->c->in_import;      /* (R3 lwr) and the import it was in (log) */
                 if (strstr(t->name, "TaskWorker")) g_ra_skip_why[0]++; else if (ra_audio(t->name)) g_ra_skip_why[1]++; else g_ra_skip_why[2]++;
                 return 0;
@@ -2376,8 +2413,29 @@ static void ra_workers_hold_tt(void) {
      * SSBU_RB_WHGUARD=0: as before. */
     { static int wg = -1; if (wg < 0) { const char *e = getenv("SSBU_RB_WHGUARD"); wg = !(e && e[0] == '0'); } if (wg && g_ra_wh_on) { g_ra_wh_double++; ra_workers_release(); } }
     g_ra_nwh = 0;
+    /* (round 9) SSBU_RB_H1PAR (default 1, 0 = off): every task worker suspended first, then each one's place asked (GetThreadContext waits
+     * until its suspend has landed: ~10 us for a worker asleep in the kernel, one after the other ~50 us per H1; together ~one). A worker
+     * not blocked in a system call is let go as before; main takes no lock between the suspends and the questions. */
+    static int h1par = -1; if (h1par < 0) { const char *e = getenv("SSBU_RB_H1PAR"); h1par = !(e && e[0] == '0'); }
+    if (h1par) {
+        HANDLE sh[16]; Ctx *sc[16]; int ns = 0;
+        for (int i = 0; guest_thread_info(i, &tc, &nm, &h) && ns < 16; i++) {
+            if (!h || !nm || !strstr(nm, "TaskWorker") || guest_thread_tid(i, h) == me) continue;
+            if (SuspendThread(h) == (DWORD)-1) continue;
+            sh[ns] = h; sc[ns] = tc; ns++;
+        }
+        for (int j = 0; j < ns; j++) {
+            h = sh[j]; tc = sc[j];
+            if ((g_hf_on != 1 || hf_work_safe()) && !th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }
+            if (g_hf_on == 1 && !hf_work_safe() && !waiting_import(tc->in_import) && !th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }
+            g_ra_wh[g_ra_nwh++] = h;
+        }
+        InterlockedExchange(&g_ra_wh_on, 1);
+        SetEvent(g_ra_wd_ev);
+        return;
+    }
     for (int i = 0; guest_thread_info(i, &tc, &nm, &h) && g_ra_nwh < 16; i++) {
-        if (!h || GetThreadId(h) == me || !nm || !strstr(nm, "TaskWorker")) continue;
+        if (!h || !nm || !strstr(nm, "TaskWorker") || guest_thread_tid(i, h) == me) continue;      /* (round 9: the name first, the id without a system call) */
         if (SuspendThread(h) == (DWORD)-1) continue;
         if ((g_hf_on != 1 || hf_work_safe()) && !th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }      /* busy: not held (that pass will likely skip its save) */
         if (g_hf_on == 1 && !hf_work_safe() && !waiting_import(tc->in_import) && !th_blocked(h)) { ResumeThread(h); g_ra_wh_fail++; continue; }      /* (rollback 8 ms) at a waiting import: no question to the kernel */
@@ -2389,7 +2447,12 @@ static void ra_workers_hold_tt(void) {
 static void ra_kick2(Ctx *c, void *user) {           /* hook on FUN 0x7103549170 (kick of a job group): points BEFORE the call */
     (void)user;
     uint64_t lr = c->x[30];
-    if (lr == GA(0x71037494fcull) && g_ra_site == GA(0x7103749b24ull) && !g_ra_off && (g_ra_phase || ra_fight_on())) {
+    /* (round 9) SSBU_RB_H1SKIP (default 1, 0 = off): no H1 in a re-run pass whose kick here is skipped (SSBU_RB_SIM_SKIP bit 16, preparation
+     * list A: every re-run pass with the default masks and LASTLITE). H1 keeps the jobs of this kick from starting before the capture at H2;
+     * with the kick skipped no job starts here, and a re-run pass is not captured at H2 (RECAP=7: the last one in the pacing wait, after
+     * its jobs). It cost ~5 SuspendThread + GetThreadContext (~10 us each: the suspend has to land) per re-run pass (rb8ms/sysstack.py). */
+    static int h1skip = -1; if (h1skip < 0) { const char *e = getenv("SSBU_RB_H1SKIP"); h1skip = !(e && e[0] == '0'); }
+    if (lr == GA(0x71037494fcull) && g_ra_site == GA(0x7103749b24ull) && !g_ra_off && (g_ra_phase || ra_fight_on()) && !(h1skip && g_ra_phase == 2 && (rgs_skip_now() & 16))) {
         ra_workers_hold();      /* H1 */
         {   /* (hs10, test only) SSBU_RB_NET_TEST_H1=<fight frame>,<ms>: a slow pass at the first H1 from that fight frame on (the hold watchdog's case) */
             static long long tf = -2; static int tms;

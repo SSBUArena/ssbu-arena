@@ -3655,7 +3655,47 @@ static DWORD g_pf_main_tid;
 const char *guest_thread_name_of(DWORD tid);                             /* os_threads.c */
 static int pf_cmp_d(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return x < y ? -1 : x > y; }
 #ifdef _WIN32
+/* (round 9) SSBU_PERF_SNAP (default 0 in a rollback match, 1 = always the snapshot): the snapshot of every thread of the system
+ * (CreateToolhelp32Snapshot, every 300 frames) maps and unmaps a section ~2300 times (rb8ms r9_sys_tc3), and each unmap flushes the
+ * TLB of every core running a thread of this process: the main thread among them, a burst of interrupts in the middle of its passes.
+ * In a rollback match the line is made from the guest threads, the render thread and main (their own handles; the host-only helper
+ * threads are left out). */
+int guest_thread_info(int i, Ctx **c, const char **name, HANDLE *h);
+static void pf_threads_snap(double frames);
 static void pf_threads(double frames) {
+    static int snap = -1; if (snap < 0) { const char *e = getenv("SSBU_PERF_SNAP"); snap = e ? atoi(e) : -1; if (snap < 0) snap = 2; }
+    int r1_rb_paced(void);
+    if (snap == 1 || (snap == 2 && !r1_rb_paced())) { pf_threads_snap(frames); return; }
+    struct { DWORD tid; double ms; } top[512]; int n = 0; double total = 0;
+    DWORD ids[514]; HANDLE hs[514]; int own[514]; int nh = 0;
+    { Ctx *tc; const char *nm; HANDLE h; for (int i = 0; nh < 512 && guest_thread_info(i, &tc, &nm, &h); i++) if (h) { ids[nh] = GetThreadId(h); hs[nh] = h; own[nh] = 0; nh++; } }
+    DWORD extra[2] = {g_render_tid, g_pf_main_tid};
+    for (int k = 0; k < 2; k++) if (extra[k]) { int dup = 0; for (int i = 0; i < nh; i++) if (ids[i] == extra[k]) dup = 1;
+        if (!dup) { HANDLE h = OpenThread(0x0800, FALSE, extra[k]); if (h) { ids[nh] = extra[k]; hs[nh] = h; own[nh] = 1; nh++; } } }
+    for (int j = 0; j < nh; j++) {
+        FILETIME c, e, k, u;
+        if (GetThreadTimes(hs[j], &c, &e, &k, &u)) {
+            ULONGLONG cpu = (((ULONGLONG)k.dwHighDateTime << 32) | k.dwLowDateTime) + (((ULONGLONG)u.dwHighDateTime << 32) | u.dwLowDateTime), prev = 0;
+            int i;
+            for (i = 0; i < g_pf_nthr && g_pf_thr[i].tid != ids[j]; i++) {}
+            if (i < g_pf_nthr) prev = g_pf_thr[i].cpu; else if (g_pf_nthr < 512) { g_pf_thr[g_pf_nthr].tid = ids[j]; i = g_pf_nthr++; }
+            if (i < 512) g_pf_thr[i].cpu = cpu;
+            if (n < 512) { top[n].tid = ids[j]; top[n].ms = (double)(cpu - prev) / 10000.0 / frames; total += top[n].ms; n++; }
+        }
+        if (own[j]) CloseHandle(hs[j]);
+    }
+    printf("nvn_perf: cpu ms/frame by thread (game threads, render, main %.1f):", total);
+    for (int k = 0; k < 10; k++) {
+        int best = -1;
+        for (int i = 0; i < n; i++) if (top[i].ms > 0.05 && (best < 0 || top[i].ms > top[best].ms)) best = i;
+        if (best < 0) break;
+        const char *name = top[best].tid == g_render_tid ? "render(host)" : top[best].tid == g_pf_main_tid ? "main" : guest_thread_name_of(top[best].tid);
+        printf(" %s[%lu] %.1f", name ? name : "host", (unsigned long)top[best].tid, top[best].ms);
+        top[best].ms = 0;
+    }
+    printf("\n");
+}
+static void pf_threads_snap(double frames) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     THREADENTRY32 te;
     DWORD pid = GetCurrentProcessId();

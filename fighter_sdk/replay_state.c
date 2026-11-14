@@ -168,16 +168,34 @@ static long long g_rv_ok_frame = -1;
 /* (0.2.22) a page that can be read, asked once per frame by reading one byte of it. It was VirtualQuery, which walks the whole region
  * to say how long it is: with this game's memory 10 to 60 ms a frame, on the game's main thread, every frame of a recorded match. */
 static uint64_t g_rv_ok_page[64]; static int g_rv_ok_pages;
+/* (round 9) SSBU_SYSTRIM (default 1, 0 = off): a page found readable stays known across frames while no change of guest memory
+ * (decommit, release, protection: nncxxrt.c cxxrt_mem_changed, the same record the C++ runtime's readable checks use) touched it:
+ * ~11 ReadProcessMemory per frame on main (each frame asked its pages again) -> the pages new since the last change. */
+long cxxrt_mem_epoch(void); int cxxrt_range_unchanged(uint64_t lo, uint64_t hi, long since); int cxxrt_guest_region_at(int i, uint64_t *base, uint64_t *size);
+static long g_rv_ok_epoch[64]; static long long g_rv_ok_fr[64]; static int g_rv_trim = -1;
+static int rv_in_guest(uint64_t page) {                 /* only the game's own regions (every change of theirs is reported); others: asked each frame as before */
+    uint64_t b, n; for (int i = 0; cxxrt_guest_region_at(i, &b, &n); i++) if (page - b < n) return 1;
+    return 0;
+}
 static int rv_page_ok(uint64_t page) {
-    for (int i = 0; i < g_rv_ok_pages; i++) if (g_rv_ok_page[i] == page) return 1;
+    for (int i = 0; i < g_rv_ok_pages; i++) if (g_rv_ok_page[i] == page) {
+        if (!g_rv_trim || g_rv_ok_fr[i] == g_rv_ok_frame) return 1;      /* (in its own frame: as before) */
+        long now = cxxrt_mem_epoch();
+        if (g_rv_ok_epoch[i] == now || cxxrt_range_unchanged(page, page + 0x1000, g_rv_ok_epoch[i])) { g_rv_ok_epoch[i] = now; g_rv_ok_fr[i] = g_rv_ok_frame; return 1; }
+        --g_rv_ok_pages; g_rv_ok_page[i] = g_rv_ok_page[g_rv_ok_pages]; g_rv_ok_epoch[i] = g_rv_ok_epoch[g_rv_ok_pages]; g_rv_ok_fr[i] = g_rv_ok_fr[g_rv_ok_pages]; break;      /* (touched by a change: asked again) */
+    }
+    long ep = g_rv_trim ? cxxrt_mem_epoch() : 0;          /* (the epoch BEFORE the question: a change during it makes the record old) */
     uint8_t b; SIZE_T got = 0;
     if (!ReadProcessMemory(GetCurrentProcess(), (const void *)(uintptr_t)page, &b, 1, &got) || got != 1) return 0;
-    if (g_rv_ok_pages < 64) g_rv_ok_page[g_rv_ok_pages++] = page;
+    if (g_rv_trim && !rv_in_guest(page)) ep = -1000000;   /* (outside: never valid in a later frame; within the frame by g_rv_ok_frame below) */
+    if (g_rv_ok_pages < 64) { g_rv_ok_epoch[g_rv_ok_pages] = ep; g_rv_ok_fr[g_rv_ok_pages] = g_rv_ok_frame; g_rv_ok_page[g_rv_ok_pages++] = page; }
+    else if (g_rv_trim) { static unsigned rr; unsigned k = rr++ % 64; g_rv_ok_page[k] = page; g_rv_ok_epoch[k] = ep; g_rv_ok_fr[k] = g_rv_ok_frame; }      /* (full: one replaced) */
     return 1;
 }
 static int rv_ptr_ok(uint64_t a, size_t n, long long frame) {
     if (a < 0x10000 || a >> 47 || (a & 3)) return 0;
-    if (frame != g_rv_ok_frame) { g_rv_ok_frame = frame; g_rv_ok_pages = 0; }
+    if (g_rv_trim < 0) { const char *e = getenv("SSBU_SYSTRIM"); g_rv_trim = !(e && e[0] == '0'); }
+    if (frame != g_rv_ok_frame) { g_rv_ok_frame = frame; if (!g_rv_trim) g_rv_ok_pages = 0; }
     uint64_t p0 = a & ~0xfffull, p1 = (a + n - 1) & ~0xfffull;
     return rv_page_ok(p0) && (p1 == p0 || rv_page_ok(p1));
 }

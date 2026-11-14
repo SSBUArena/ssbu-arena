@@ -247,7 +247,7 @@ static Ctx *new_ctx(uint64_t stack_top) {
 }
 
 /* Every guest thread's context, so a report can say where each one is. */
-static struct { Obj *o; Ctx *c; int stale; } g_threads[256];      /* (R3 lwr) stale: an older run of the same thread object (started again) */
+static struct { Obj *o; Ctx *c; int stale; volatile DWORD tid; } g_threads[256];      /* (R3 lwr) stale: an older run of the same thread object (started again); (round 9) tid: the host thread id of this run */
 static volatile LONG g_threads_n;
 
 void dump_guest_threads(FILE *out) {
@@ -292,9 +292,29 @@ int guest_thread_info(int i, Ctx **c, const char **name, HANDLE *h) {
     *c = g_threads[i].c; *name = g_threads[i].o->name ? (const char *)(uintptr_t)g_threads[i].o->name : NULL; *h = g_threads[i].o->finished || g_threads[i].stale ? NULL : g_threads[i].o->thread;
     return 1;
 }
+/* (round 9) SSBU_TIDCACHE (default 1, 0 = off): the host thread id of guest thread i (the one guest_thread_info just gave handle h for)
+ * without a system call: GetThreadId is NtQueryInformationThread (~0.4 us in the kernel), and the holds / captures / loads asked it
+ * for every guest thread each time (~25 per hold, ~100 per load: rb8ms/sysstack.py). Each run records its own id when it starts
+ * (thread_main / pthread_main); a handle guest_thread_info gives (not finished, not stale) is that run's thread. 0 id: asked. */
+static int g_tidcache = -1;
+DWORD guest_thread_tid(int i, HANDLE h) {
+    if (g_tidcache < 0) { const char *e = getenv("SSBU_TIDCACHE"); g_tidcache = !(e && e[0] == '0'); }
+    if (g_tidcache && i >= 0 && i < 256 && i < g_threads_n && g_threads[i].tid && g_threads[i].o && h == g_threads[i].o->thread) return g_threads[i].tid;
+    return h ? GetThreadId(h) : 0;
+}
 void hitch_cur_ctx(Ctx *c);
 /* Name of the guest thread running on host thread `tid`, or NULL (nvn_gl.c: CPU time per thread, P3). */
 const char *guest_thread_name_of(DWORD tid) {
+    if (g_tidcache < 0) { const char *e = getenv("SSBU_TIDCACHE"); g_tidcache = !(e && e[0] == '0'); }
+    if (g_tidcache) {                                 /* (round 9) the ids each run recorded: a live run's id is unique (its handle is open) */
+        for (int i = 0; i < g_threads_n && i < 256; i++) {
+            Obj *o = g_threads[i].o;
+            if (o && o->thread && !g_threads[i].stale && g_threads[i].tid == tid) return o->name ? (const char *)(uintptr_t)o->name : "?";
+        }
+        for (int i = 0; i < g_threads_n && i < 256; i++) if (!g_threads[i].tid) { Obj *o = g_threads[i].o;      /* (a run not recorded yet: asked) */
+            if (o && o->thread && GetThreadId(o->thread) == tid) return o->name ? (const char *)(uintptr_t)o->name : "?"; }
+        return NULL;
+    }
     for (int i = 0; i < g_threads_n && i < 256; i++) {
         Obj *o = g_threads[i].o;
         if (o && o->thread && GetThreadId(o->thread) == tid) return o->name ? (const char *)(uintptr_t)o->name : "?";
@@ -309,7 +329,7 @@ static DWORD WINAPI thread_main(LPVOID arg) {
     Ctx *c = new_ctx(o->stack + o->stack_size);
     wr64(c->tpidr + 0x1f8, o->key);                   /* Horizon thread-local region: the ThreadType pointer lives at +0x1f8 */
     LONG slot = InterlockedIncrement(&g_threads_n) - 1;
-    if (slot < 256) { g_threads[slot].o = o; g_threads[slot].c = c; }
+    if (slot < 256) { g_threads[slot].tid = GetCurrentThreadId(); _ReadWriteBarrier(); g_threads[slot].o = o; g_threads[slot].c = c; }
     thread_slots_stale(o, slot);
     c->x[0] = o->arg;
     trace_printf("--- thread %llx started (entry %llx, name %s)\n", (unsigned long long)o->key, (unsigned long long)o->fn,
@@ -1115,7 +1135,7 @@ static DWORD WINAPI pthread_main(LPVOID arg) {
     Ctx *c = new_ctx(o->stack + o->stack_size);
     wr64(c->tpidr + 0x1f8, o->key);                   /* the ThreadType pointer, as for nn::os threads */
     LONG slot = InterlockedIncrement(&g_threads_n) - 1;
-    if (slot < 256) { g_threads[slot].o = o; g_threads[slot].c = c; }
+    if (slot < 256) { g_threads[slot].tid = GetCurrentThreadId(); _ReadWriteBarrier(); g_threads[slot].o = o; g_threads[slot].c = c; }
     thread_slots_stale(o, slot);
     c->x[0] = o->arg;
     trace_printf("--- pthread %llx started (entry %llx)\n", (unsigned long long)o->key, (unsigned long long)o->fn);

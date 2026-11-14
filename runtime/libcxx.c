@@ -191,8 +191,17 @@ static void str_plus_cstr(Ctx *c) { t_ctx = c;                      /* operator+
     s_init(out, lhs, strlen(lhs));
     s_append(out, s_data(rhs), s_size(rhs));
 }
-static void str_to_string_int(Ctx *c) { t_ctx = c; char b[32]; int n = snprintf(b, sizeof b, "%d", (int)A0); s_init((Str *)(uintptr_t)c->x[8], b, (size_t)n); }
-static void str_to_string_uint(Ctx *c) { t_ctx = c; char b[32]; int n = snprintf(b, sizeof b, "%u", (unsigned)A0); s_init((Str *)(uintptr_t)c->x[8], b, (size_t)n); }
+/* (round 9) SSBU_FASTSTR (default 1, 0 = snprintf as before): the game calls std::to_string(unsigned) hundreds of times per frame at
+ * the start of each real pass (PMC r9_pmc_tc1: 2.6% of that part, ~0.04 ms per frame, nearly all of it snprintf's format machinery);
+ * the digits are made here instead: the same text ("%u" / "%d": decimal, a '-' for a negative int, no padding). */
+static int g_faststr = -1;
+static int dec_u32(char *b, uint32_t v) { char t[12]; int n = 0; do { t[n++] = (char)('0' + v % 10u); v /= 10u; } while (v); for (int i = 0; i < n; i++) b[i] = t[n - 1 - i]; b[n] = 0; return n; }
+static int faststr(void) { if (g_faststr < 0) { const char *e = getenv("SSBU_FASTSTR"); g_faststr = !(e && e[0] == '0'); } return g_faststr; }
+static void str_to_string_int(Ctx *c) { t_ctx = c; char b[32]; int n;
+    if (faststr()) { int32_t v = (int32_t)A0; if (v < 0) { b[0] = '-'; n = 1 + dec_u32(b + 1, 0u - (uint32_t)v); } else n = dec_u32(b, (uint32_t)v); }
+    else n = snprintf(b, sizeof b, "%d", (int)A0);
+    s_init((Str *)(uintptr_t)c->x[8], b, (size_t)n); }
+static void str_to_string_uint(Ctx *c) { t_ctx = c; char b[32]; int n = faststr() ? dec_u32(b, (uint32_t)A0) : snprintf(b, sizeof b, "%u", (unsigned)A0); s_init((Str *)(uintptr_t)c->x[8], b, (size_t)n); }
 
 /* ---- std::align(alignment, size, void *&ptr, size_t &space): returns the aligned pointer and
  * updates ptr/space when the block fits, otherwise returns null and leaves them unchanged. */

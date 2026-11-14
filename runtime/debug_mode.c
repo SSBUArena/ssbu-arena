@@ -1223,7 +1223,11 @@ void dm_alloc_check(const char *when, long long frame) {
             uint64_t bin = g_ac_arena[ai] + 0x3e20 + 0x138ull * (unsigned)b, slab = 0, bits = 0, facts = GA(0x7104862158ULL) + 0x58ull * (unsigned)b;
             uint64_t lv[3] = {0, 0, 0}, nl = 0, w[64];
             if (!ac_read(bin + 0x98, &slab, 8) || !slab || !ac_read(slab, &bits, 8)) continue;
-            if (!ac_read(facts + 0x18 + 8, &nl, 8) || !ac_read(facts + 0x18 + 0x10, lv, sizeof lv)) continue;
+            /* (round 9, SSBU_SYSTRIM=0 off) the size-class table is in the game's own image (always mapped): read directly, not with two
+             * ReadProcessMemory calls per bin (~0.2-0.7 ms every 8th load in all) */
+            static int st = -1; if (st < 0) { const char *e = getenv("SSBU_SYSTRIM"); st = !(e && e[0] == '0'); }
+            if (st) { memcpy(&nl, (const void *)(uintptr_t)(facts + 0x18 + 8), 8); memcpy(lv, (const void *)(uintptr_t)(facts + 0x18 + 0x10), sizeof lv); }
+            else if (!ac_read(facts + 0x18 + 8, &nl, 8) || !ac_read(facts + 0x18 + 0x10, lv, sizeof lv)) continue;
             nl &= 0xffffffffu;
             if (nl < 1 || lv[1] <= lv[0] || lv[1] > 64) continue;
             if (!ac_read(slab + 0x40 + lv[0] * 8, w, (size_t)(lv[1] - lv[0]) * 8)) continue;

@@ -279,7 +279,10 @@ static void rbg_gc_idle(Ctx *c, long long i) {
     if (!L || g_rbg_gc_frame == i || g_rbg_next <= 0) return;
     g_rbg_gc_frame = i;
     double t0 = now_ms();
-    static double ms = -1; if (ms < 0) { const char *e = getenv("SSBU_RB_GC_MS"); ms = e ? atof(e) : 0.15; }
+    static double ms = -1, ms_set = -1; static int st = -1;      /* (round 9, SSBU_SYSTRIM=0 off: the variable read once; it was read again each frame after a cut) */
+    if (st < 0) { const char *e = getenv("SSBU_SYSTRIM"); st = !(e && e[0] == '0'); }
+    if (ms_set < 0 || !st) { const char *e = getenv("SSBU_RB_GC_MS"); ms_set = e ? atof(e) : 0.15; if (ms_set < 0) ms_set = 0; }
+    if (ms < 0) ms = ms_set;
     if (ms <= 0) return;
     if (g_rbg_gc_late > 0) { double left = g_rbg_next - t0 - 0.25; if (left < 0.05) { g_rbg_gc_noidle++; return; } if (left < ms) ms = left; }
     else if (g_rbg_next - t0 < 5.0) { g_rbg_gc_noidle++; return; }
@@ -493,7 +496,8 @@ static void rbg_squad_lock(long long i) {
     int was = g_sq_lock;
     int dm_squad_entry_loading(void); static long long last = -1000000;
     int act = on && rbg_squad_active();
-    int busy = dm_squad_entry_loading();
+    static int st = -1; if (st < 0) { const char *e = getenv("SSBU_SYSTRIM"); st = !(e && e[0] == '0'); }
+    int busy = act || !st ? dm_squad_entry_loading() : 0;      /* (round 9, SSBU_SYSTRIM=0 off: read only in a squad match: ReadProcessMemory x5 per pass otherwise; busy is used only with act) */
     if (act && g_sq_obj) for (int k = 0; k < 3; k++) { uint64_t part = g_sq_obj + (k == 0 ? 0x5b0 : k == 1 ? 0x950 : 0xd10);      /* (each side's part: state at + 0x60; debug_mode.c sq_gate; the word at - 0x10 is not a KO flag on every part: pair sq20b ran all in lockstep) */
         if (*(volatile uint32_t *)(uintptr_t)(part + 0x60) >= 2) busy = 1; }      /* (states 2..4; the first step comes 20 frames into state 2) */
     {   /* (Battle Arena, the game's own Squad Strike in a room, SSBU_BA_SQUAD_CSS=1; SSBU_SQ_LDLOCK=0 off) that match loads files at its
