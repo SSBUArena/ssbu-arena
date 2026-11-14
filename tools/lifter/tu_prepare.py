@@ -71,6 +71,19 @@ def nf_copy(name, cur):
     return copy + [cur[0], '  if (r1_fastneon) { %sff(c); return; }' % name] + body
 
 
+# (rb-8ms 2026-11-14, TEST ONLY) RECOMP_RC_FNS=<addr>,..: these functions get their body moved to a copy f_<addr>fc and an entry
+# that tells the runtime when they start and end (r1_rc_ent, game_shim_r1.c; -DR1_RDCOUNT builds): rc_test.c counts and hashes the
+# guest reads / writes made inside them on main (runtime.h RC_ACC), real against re-run passes.
+RC_FNS = {'f_' + a.strip().lower() for a in (os.environ.get('RECOMP_RC_FNS') or '').split(',') if a.strip()}
+
+
+def rc_copy(name, cur):
+    body = cur[1:]
+    return (['static void %sfc(Ctx *c) {' % name] + body +
+            [cur[0], '  if (r1_rc_ent) { r1_rc_ent(c, 0x%sULL, 0); %sfc(c); r1_rc_ent(c, 0x%sULL, 1); return; }' % (name[2:], name, name[2:]),
+             '  %sfc(c);' % name, '}'])
+
+
 def _write_if_changed(path, text):
     try:
         with open(path, encoding='latin-1', newline='') as f:
@@ -106,6 +119,10 @@ def prepare(src, out_dir, split_lines, cold=None, own_decls=True, stats=None):
             if m:
                 cur, name = [line], m.group(1)
             else:
+                m1 = re.match(r'void (f_[0-9a-f]+)\(Ctx \*c\) \{ (.*) \}$', line) if RC_FNS else None
+                if m1 and m1.group(1) in RC_FNS:        # (RC_FNS) a one-line entry (EH builds: `{ u_<addr>(c, 0); }`)
+                    small.extend(rc_copy(m1.group(1), ['void %s(Ctx *c) {' % m1.group(1), '  ' + m1.group(2), '}']))
+                    continue
                 small.append(line)                      # blank lines, one-line definitions
         else:
             cur.append(line)
@@ -114,6 +131,8 @@ def prepare(src, out_dir, split_lines, cold=None, own_decls=True, stats=None):
                 why = 'long' if split_lines and n > split_lines else 'cold' if cold is not None and cold(name) else None
                 if not why and name in NF_FNS and cur[0] == 'void %s(Ctx *c) {' % name:
                     cur = nf_copy(name, cur)
+                if not why and name in RC_FNS and cur[0] == 'void %s(Ctx *c) {' % name:
+                    cur = rc_copy(name, cur)
                 (big if why else small).extend(cur)
                 if why and stats is not None:
                     s = stats.setdefault(why, [0, 0])

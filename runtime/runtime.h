@@ -98,17 +98,28 @@ static inline int r1_vchg(uint64_t a, const void *v, int n) {      /* 1 = the n 
 #define R1MW(a, T, v) R1M(a, sizeof(T))
 #define R1MV(a, v, n) R1M(a, (uint64_t)(n))
 #endif
+/* (rb-8ms 14/11, TEST ONLY: game DLL built with -DR1_RDCOUNT, rb8ms/build_dll8.sh <name> rc) every guest load / store calls the
+ * runtime's r1_rc_acc while r1_rc_on is set (the runtime sets it inside the functions of RECOMP_RC_FNS on main: rc_test.c, SSBU_RC):
+ * the reads / writes of the model update counted and hashed, to see whether an exact memo of it in the re-run passes can pay. */
+#if defined(R1_RDCOUNT) && defined(R1_GAMEDLL) && !defined(__cplusplus)
+extern __declspec(dllexport) volatile int r1_rc_on;
+extern __declspec(dllexport) void (*r1_rc_acc)(uint64_t a, const void *v, int n, int w);
+extern __declspec(dllexport) void (*r1_rc_ent)(Ctx *c, uint64_t fn, int out);
+#define RC_ACC(a, v, n, w) do { if (__builtin_expect(r1_rc_on, 0)) r1_rc_acc((uint64_t)(a), (v), (int)(n), (w)); } while (0)
+#else
+#define RC_ACC(a, v, n, w) ((void)0)
+#endif
 /* Guest memory is mapped at its real address: a guest pointer is a host pointer. */
 #define DEF_MEM(bits) \
-    static inline uint##bits##_t rd##bits(uint64_t a) { uint##bits##_t v; memcpy(&v, (void *)(uintptr_t)a, sizeof v); return v; } \
-    static inline void wr##bits(uint64_t a, uint##bits##_t v) { R1MW(a, uint##bits##_t, v); memcpy((void *)(uintptr_t)a, &v, sizeof v); }
+    static inline uint##bits##_t rd##bits(uint64_t a) { uint##bits##_t v; memcpy(&v, (void *)(uintptr_t)a, sizeof v); RC_ACC(a, &v, sizeof v, 0); return v; } \
+    static inline void wr##bits(uint64_t a, uint##bits##_t v) { RC_ACC(a, &v, sizeof v, 1); R1MW(a, uint##bits##_t, v); memcpy((void *)(uintptr_t)a, &v, sizeof v); }
 DEF_MEM(8) DEF_MEM(16) DEF_MEM(32) DEF_MEM(64)
 /* Ordered and exclusive loads / stores (LDAR, STLR, LDAXR, LDXR; after stephenjayakar's fb716c2): atomics with the guest's
  * ordering. On x86 they are plain moves; what they add is that the compiler keeps them in order with the accesses around them. */
 #define DEF_ORD(bits) \
-    static inline uint##bits##_t lda##bits(uint64_t a) { return __atomic_load_n((uint##bits##_t *)(uintptr_t)a, __ATOMIC_ACQUIRE); } \
-    static inline uint##bits##_t ldx##bits(uint64_t a) { return __atomic_load_n((uint##bits##_t *)(uintptr_t)a, __ATOMIC_RELAXED); } \
-    static inline void stl##bits(uint64_t a, uint##bits##_t v) { R1M(a, sizeof v); __atomic_store_n((uint##bits##_t *)(uintptr_t)a, v, __ATOMIC_RELEASE); }
+    static inline uint##bits##_t lda##bits(uint64_t a) { uint##bits##_t v = __atomic_load_n((uint##bits##_t *)(uintptr_t)a, __ATOMIC_ACQUIRE); RC_ACC(a, &v, sizeof v, 2); return v; } \
+    static inline uint##bits##_t ldx##bits(uint64_t a) { uint##bits##_t v = __atomic_load_n((uint##bits##_t *)(uintptr_t)a, __ATOMIC_RELAXED); RC_ACC(a, &v, sizeof v, 2); return v; } \
+    static inline void stl##bits(uint64_t a, uint##bits##_t v) { RC_ACC(a, &v, sizeof v, 3); R1M(a, sizeof v); __atomic_store_n((uint##bits##_t *)(uintptr_t)a, v, __ATOMIC_RELEASE); }
 DEF_ORD(8) DEF_ORD(16) DEF_ORD(32) DEF_ORD(64)
 
 /* STXR: store only if the location still holds the value the matching LDXR read. Returns 0 on success. */
@@ -117,6 +128,7 @@ void stx_diag(Ctx *c, uint64_t a, uint64_t expected, uint64_t seen, uint64_t v, 
     static inline uint32_t stx##bits(Ctx *c, uint64_t a, uint##bits##_t v) { \
         if (c->ex_addr != a) { stx_diag(c, a, 0, 0, v, -bits); return 1; } \
         c->ex_addr = ~0ull; \
+        RC_ACC(a, &v, bits / 8, 3); \
         R1M(a, bits / 8); \
         if (__sync_bool_compare_and_swap((uint##bits##_t *)(uintptr_t)a, (uint##bits##_t)c->ex_val, v)) { c->ex_fail = 0; return 0; } \
         uint##bits##_t seen; memcpy(&seen, (void *)(uintptr_t)a, sizeof seen); \
@@ -139,14 +151,14 @@ __attribute__((target("cx16"))) static inline uint32_t stxp64(Ctx *c, uint64_t a
     return 1;
 }
 
-static inline V128 rdv(uint64_t a, int n) { V128 v; v.d[0] = 0; v.d[1] = 0; memcpy(&v, (void *)(uintptr_t)a, (size_t)n); return v; }
-static inline void wrv(uint64_t a, const V128 *v, int n) { R1MV(a, v, n); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
+static inline V128 rdv(uint64_t a, int n) { V128 v; v.d[0] = 0; v.d[1] = 0; memcpy(&v, (void *)(uintptr_t)a, (size_t)n); RC_ACC(a, &v, n, 0); return v; }
+static inline void wrv(uint64_t a, const V128 *v, int n) { RC_ACC(a, v, n, 1); R1MV(a, v, n); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
 static inline void vzero(V128 *v) { v->d[0] = 0; v->d[1] = 0; }
 /* (Arena perf) stores relative to the guest SP (the lifter's wrsN / wrsv for a base register 31): no page mark; the
  * rollback ring finds the stack pages written through the OS's write watch (r1_ring.c rg_stack_ww) */
-#define DEF_WRS(bits) static inline void wrs##bits(uint64_t a, uint##bits##_t v) { memcpy((void *)(uintptr_t)a, &v, sizeof v); }
+#define DEF_WRS(bits) static inline void wrs##bits(uint64_t a, uint##bits##_t v) { RC_ACC(a, &v, sizeof v, 1); memcpy((void *)(uintptr_t)a, &v, sizeof v); }
 DEF_WRS(8) DEF_WRS(16) DEF_WRS(32) DEF_WRS(64)
-static inline void wrsv(uint64_t a, const V128 *v, int n) { memcpy((void *)(uintptr_t)a, v, (size_t)n); }
+static inline void wrsv(uint64_t a, const V128 *v, int n) { RC_ACC(a, v, n, 1); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
 
 static inline uint64_t adds64(Ctx *c, uint64_t a, uint64_t b, uint32_t cin) {
     uint64_t r = a + b + cin;

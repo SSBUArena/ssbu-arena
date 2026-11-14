@@ -11,4 +11,10 @@ __declspec(dllexport) int r1_fmazero = 1;
 __declspec(dllexport) int r1_fastneon;
 /* (rb-8ms 13/11) runtime.h R1MC: 1 = a store that leaves the bytes as they were marks nothing (SSBU_R1_MARKCMP); 0 until the runtime sets it */
 __declspec(dllexport) int r1_mcmp;
+#ifdef R1_RDCOUNT
+/* (rb-8ms 14/11, TEST ONLY) runtime.h RC_ACC and the entries of tu_prepare.py RECOMP_RC_FNS: set by the runtime (rc_test.c, SSBU_RC) */
+__declspec(dllexport) volatile int r1_rc_on;
+__declspec(dllexport) void (*r1_rc_acc)(uint64_t a, const void *v, int n, int w);
+__declspec(dllexport) void (*r1_rc_ent)(Ctx *c, uint64_t fn, int out);
+#endif
 #endif

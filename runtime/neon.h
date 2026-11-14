@@ -263,6 +263,7 @@ static inline void v_tbl(Ctx *c, int rd, int rn, int len, int rm, int q, int tbx
 static inline void v_ldn(Ctx *c, uint64_t a, int rt, int n, int sz, int q) {
     int count = (q ? 16 : 8) >> sz, es = 1 << sz;
     V128 r[4];
+    RC_ACC(a, (const void *)(uintptr_t)a, count * n * es, 0);
     RT_LANES(k, 0, n, { r[k].d[0] = 0; r[k].d[1] = 0; })
     RT_LANES(i, 0, count, RT_LANES(k, 0, n, {
             uint64_t v = 0;
@@ -273,6 +274,7 @@ static inline void v_ldn(Ctx *c, uint64_t a, int rt, int n, int sz, int q) {
 }
 static inline void v_stn(Ctx *c, uint64_t a, int rt, int n, int sz, int q) {
     int count = (q ? 16 : 8) >> sz, es = 1 << sz;
+    RC_ACC(a, (const void *)0, count * n * es, 4);       /* (R1_RDCOUNT: n structures stored, value not hashed) */
     RT_LANES(i, 0, count, RT_LANES(k, 0, n, {
             uint64_t v = vget(&c->v[(rt + k) & 31], sz, i);
             R1M(a + (uint64_t)((i * n + k) * es), (uint64_t)es);

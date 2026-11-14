@@ -1296,7 +1296,7 @@ static void rg_load_list(long long frame, size_t from, size_t to, int clr) {
     }
 }
 static void rbg_rpause(int bit, int on);                  /* (rb_rollback.c) */
-static long long g_rg_ls_n; static double g_rg_ls_ms; static long long g_rg_sn_n; static double g_rg_sn_ms;      /* (LOADSNAP) loads that made a snapshot, ms */      /* (LOADSYNC) loads that waited for the render thread, ms */
+static long long g_rg_ls_n; static double g_rg_ls_ms; static long long g_rg_sn_n; static double g_rg_sn_ms; static long long g_rg_sn_mainpg, g_rg_sn_helppg;      /* (LOADSNAP=3) snapshot pages copied by main after the sweep / by the helpers during it */      /* (LOADSNAP) loads that made a snapshot, ms */      /* (LOADSYNC) loads that waited for the render thread, ms */
 static long long g_rg_lp_n; static double g_rg_lp_wait;      /* (LOADPIPE) loads piped, ms main waited for the first part after its sweep */
 /* (LOADSNAP=2) the snapshot's page copies, part k of main (0) and the helpers (1 .. g_ncp); -1 = all */
 static uint8_t *g_rg_sn_d[4096]; static const uint8_t *g_rg_sn_s[4096]; static int g_rg_sn_cnt;
@@ -1419,7 +1419,7 @@ int r1_ring_load(long long frame, Ctx *c) {
         tsn0 = now_ms(); snap3 = nvn_r1_snap_start();
         if (snap3 > 0) {
             r1_pool_map_update(); snap_n1 = g_rg_ntl;
-            for (size_t n = 0; n < snap_n1; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (!r1_pool_page(a)) continue; uint8_t *d = nvn_r1_snap_slot(a); if (d) cp_add(d, a); }
+            for (size_t n = 0; n < snap_n1; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (!r1_pool_page(a)) continue; uint8_t *d = nvn_r1_snap_slot(a); if (d) { cp_add(d, a); g_rg_sn_helppg++; } }
             g_cp_cond = 0; g_cp_nt = 1; g_cp_mw = 0.0; g_cp_hmode = 0;
             if (cp_start_async()) snap3 = 2; else { g_cp_mw = 1.0; cp_run(); g_ncj = 0; }
             if (snap3 == 1) { g_cp_mw = 1.0; g_cp_nt = 0; }
@@ -1445,7 +1445,13 @@ int r1_ring_load(long long frame, Ctx *c) {
     if (lsnap == 3 && !lsynced && !piped) {               /* (LOADSNAP=3) the helpers' part taken back, the sweep's pages, made visible */
         int st = snap3; double tsn1 = now_ms();
         if (st == 2) { cp_wait_async(); g_cp_mw = 1.0; g_cp_nt = 0; }
-        if (st > 0) { for (size_t n = snap_n1; n < g_rg_ntl; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (r1_pool_page(a)) nvn_r1_snap_page(a); }
+        /* (rb-8ms 14/11) SSBU_RB_SNAPNT=1 (option, default 0 = memcpy): main's own snapshot copies (the pool pages the sweep added, ~105-175
+         * of ~270-370 per load) with non-temporal stores. Measured no gain (TaC n3 r8_snt: snapshot 0.080-0.105 ms on / 0.084-0.092 off,
+         * tick 8.04 / 7.94): left off */
+        static int snt = -1; if (snt < 0) { const char *e = getenv("SSBU_RB_SNAPNT"); snt = e && atoi(e) > 0; }
+        if (st > 0) { for (size_t n = snap_n1; n < g_rg_ntl; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (!r1_pool_page(a)) continue;
+                          if (snt) { uint8_t *d = nvn_r1_snap_slot(a); if (d) { cp_page_nt(d, a); g_rg_sn_mainpg++; } } else { nvn_r1_snap_page(a); g_rg_sn_mainpg++; } }
+                      if (snt) _mm_sfence();
                       if (nvn_r1_snap_end() < 0) st = -1; }
         if (st >= 0) { if (st > 0) { g_rg_sn_ms += tsn0 + (now_ms() - tsn1); g_rg_sn_n++; } lsynced = 1; }
         else { nvn_r1_snap_waited(); double _t = now_ms(); if (nvn_r1_sync_submits()) { g_rg_ls_ms += now_ms() - _t; g_rg_ls_n++; } lsynced = 1; rbg_rpause(1, 1); }
@@ -2218,6 +2224,8 @@ static void rgs_report(void) {
       { void nvn_r1_snap_stats(long long *v); long long v[7] = {0}; nvn_r1_snap_stats(v);
         LOG("r1: SSBU_RB_LOADSNAP: %lld loads made a snapshot (%.1f pool pages, %.3f ms mean), %lld waited for the render thread instead; stale replays: %lld reads from guest memory, %lld page parts from the snapshot, %lld writes followed; =5: %lld slots filled by the copy\n",
             v[0], v[0] ? (double)v[1] / v[0] : 0.0, g_rg_sn_n ? g_rg_sn_ms / g_rg_sn_n : 0.0, v[2], v[3], v[4], v[5], v[6]); }
+      rc_report();
+      if (g_rg_sn_n) LOG("r1: SSBU_RB_LOADSNAP=3: pages per snapshot copied by the helpers during the sweep %.1f, by main after it %.1f\n", (double)g_rg_sn_helppg / g_rg_sn_n, (double)g_rg_sn_mainpg / g_rg_sn_n);
       LOG("r1: render pauses (SSBU_RB_RPAUSE) %lld, ended by a wait for the render thread %lld, started with submissions still queued %lld\n", pn, br, sl); }
     if (g_ldp_n) LOG("r1: RING load parts (means ms): sweep (write watch questions, marks, extras) %.3f, page list %.3f, copy %.3f (%lld loads; SSBU_RB_LOADPIPE: %lld piped, main waited %.3f ms for their first part after its sweep; SSBU_RB_LOADSYNC: %lld waits for the render thread, %.3f ms mean)\n", g_ldp[0] / g_ldp_n, g_ldp[1] / g_ldp_n, g_ldp[2] / g_ldp_n, g_ldp_n, g_rg_lp_n, g_rg_lp_n ? g_rg_lp_wait / g_rg_lp_n : 0.0, g_rg_ls_n, g_rg_ls_n ? g_rg_ls_ms / g_rg_ls_n : 0.0);
     for (int k = 0; k < RG_MAXSLOT; k++) {

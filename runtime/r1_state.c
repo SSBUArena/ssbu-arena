@@ -1136,6 +1136,7 @@ static Extra g_x[8192]; static int g_nx; static size_t g_xbytes;
 static double g_ms_s[4096], g_ms_r[4096], g_ms_scan[4096]; static size_t g_pg_s[4096], g_pg_r[4096]; static int g_nms, g_nmr;
 static long long g_miss_total, g_miss_remarked, g_miss_remarked_last; static int g_miss_cycles;
 static int win_index(uint8_t *a, uint8_t **map, size_t *pi);
+static void rc_bind(HMODULE m); static void rc_report(void);      /* (rb-8ms 14/11, TEST ONLY: rc_test.c, SSBU_RC) */
 static int mark_bind(void) {
     const char *dn = getenv("SSBU_R1_GAMEDLL");
     HMODULE m = GetModuleHandleA(dn && dn[0] ? dn : "ssbu_game_r1.dll");          /* the players' rollback pair (scripts/setup.py --rollback) */
@@ -1153,6 +1154,7 @@ static int mark_bind(void) {
     {   int *mc = (int *)GetProcAddress(m, "r1_mcmp");          /* (rb-8ms 13/11) runtime.h R1MC: stores that change nothing mark nothing (SSBU_R1_MARKCMP) */
         const char *e = getenv("SSBU_R1_MARKCMP"); int v = e ? atoi(e) : 1;
         if (mc) { *mc = v; LOG("r1: marks only for stores that change the bytes (SSBU_R1_MARKCMP) %s\n", v ? "ON" : "off"); } else LOG("r1: SSBU_R1_MARKCMP: the game DLL has no compare-before-mark stores\n"); }
+    rc_bind(m);
     return 1;
 }
 static uint8_t *in_shadow(uint8_t *a, uint8_t **cmap, size_t *pi) {
@@ -2454,6 +2456,7 @@ static void ra_report(void) {
 static void dc_copy_lock(int on);      /* (crash phase) below */
 #include "r1_ring.c"                                  /* R2: the snapshot ring (rollback) */
 #include "rb_rollback.c"                              /* R3: online rollback on the ring (SSBU_RB_NET) */
+#include "rc_test.c"                                  /* (rb-8ms 14/11, TEST ONLY) SSBU_RC: reads of the model update counted */
 static void ra_init(void) {
     g_ra = 1;
     if (getenv("SSBU_RUNAHEAD_PARK_MS")) g_ra_park_ms = atof(getenv("SSBU_RUNAHEAD_PARK_MS"));
