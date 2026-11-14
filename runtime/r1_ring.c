@@ -1396,6 +1396,20 @@ static uint8_t *g_rg_sn_d[4096]; static const uint8_t *g_rg_sn_s[4096]; static i
 static void rg_snap_part(int k) { int step = k < 0 ? 1 : g_ncp + 1; for (int i = k < 0 ? 0 : k; i < g_rg_sn_cnt; i += step) memcpy(g_rg_sn_d[i], g_rg_sn_s[i], PG); }
 uint8_t *nvn_r1_snap_slot(const uint8_t *page);
 static int r1_ring_load_i(long long frame, Ctx *c);
+/* (round 11, TEST ONLY) SSBU_RB_H1LOAD: the first re-run pass after a load spends ~0.22 ms more than the last one between its safe point
+ * and the pad poll (r10_pl: 0.30 against 0.08, and the same with SSBU_RB_TEST_POSTLOAD), and the PMC profile of that part (r9_pmc_tc1,
+ * rer1-start) shows MAIN running the model / animation code (f_710368d130, f_71036906b0, f_71036a0550 ...): the preparation list A jobs
+ * kicked at H1 of the loaded frame, queued in its state. The task workers stay suspended by H1 (of the real pass just thrown away) through
+ * the whole load and are let go only back at H2 (ra_kick2), so POSTLOAD could not let them run, and main helps with the jobs at its join.
+ * =1: H1 let go (and the workers' park) at the end of the load; =2: right after the threads' registers and fibers are back (the workers
+ * may run while main restores the catch table, command buffers, fonts and wakes: TEST, not proven safe). Default 0 = at H2 as before. */
+static int rg_h1load(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RB_H1LOAD"); v = e ? atoi(e) : 0; } return v; }
+static long long g_rg_h1early;
+static void rg_workers_go_early(void) {
+    if (!g_ra_wh_on) return;
+    for (int w = 0; w < g_ra_nwh; w++) for (int i = 0; i < g_nth; i++) if (g_th[i].h == g_ra_wh[w] && g_th[i].held) { g_th[i].held = 0; ResumeThread(g_th[i].h); break; }
+    ra_workers_release(); SetEvent(g_ra_wd_ev); g_rg_h1early++;
+}
 int r1_ring_load(long long frame, Ctx *c) {         /* (SSBU_PMCMARK: the load as its own part) */
     if (!g_pmk_on) return r1_ring_load_i(frame, c);
     pmk_mark(5); int r = r1_ring_load_i(frame, c); pmk_note(); return r;
@@ -1464,6 +1478,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
             return -1;
         }
     }
+    ra_kd_drop();                                         /* (round 11, SSBU_RB_KICKDEFER) the thrown-away real pass's kept list kicks */
     double t1 = now_ms();
     { long long nvn_r1_posted(void); void nvn_vk_r1_load_cut(long long, long long); nvn_vk_r1_load_cut(g->posted, nvn_r1_posted()); }      /* (Arena) compute results of the abandoned submissions: not landed (nvn_vk_draw.c) */
     R1_CTR("load (state of frame)", frame, 0);
@@ -1624,6 +1639,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
     g_fpool_used = g->fpool_used;
     restore_thread_regs(); double t2a = now_ms();
     fibers_restore_all(); double t2b = now_ms();
+    if (rg_h1load() == 2) rg_workers_go_early();          /* (round 11, TEST) SSBU_RB_H1LOAD=2: the task workers go on here (below) */
     rgc_after(); double t2c = now_ms();
     rg_cb_load(g);
     /* (rb-8ms 13/11, OpenSmash bf1f76c: C1) SSBU_RB_WINSLOT (default 1, 0 = off): win_acquire (nvn_gl.c) hands out the window texture
@@ -1646,6 +1662,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
     { double _t = now_ms(); dm_alloc_check("after the load", frame); g_tt[16] += now_ms() - _t; g_ttn[16]++; }
     { extern volatile LONG g_font_job_in; g_font_job_in = 0; }      /* (crash phase) every capture was taken with the font job not running: so is the loaded state */
     unpark();
+    if (rg_h1load() == 1) rg_workers_go_early();          /* (round 11, TEST) SSBU_RB_H1LOAD=1: H1 let go at the end of the load */
     g_mp[4] += t2a - t2; g_mp[5] += t2b - t2a; g_mp[6] += t2c - t2b; g_mp[7] += t3 - t2c; g_mp[8] += now_ms() - t3; g_mp_n[1]++;
     *c = g->ctx;
     if (g_ln_check) trap_arm();                          /* (round 10, TEST) SSBU_RB_LINES_TRAP */
@@ -2306,7 +2323,17 @@ static void rgv_after(void) {                               /* right after the c
     if (d[0] || d[1] || d[2] || g_rgv_runs <= 5) LOG("r1: RB VERIFY rollback to %lld, back at %lld: %lld pages compared; differ: window 1 %lld, window 2 %lld, extras %lld;%s\n", g_rgv_from, g_rgv_target, pages, d[0], d[1], d[2], first);
     g_rgv_target = -1;
 }
-static int rgs_skip_now(void) { return g_rgs_on > 0 && g_ra_phase == 2 && (g_rgs_left > 1 || g_rgs_lastlite) ? g_rgs_skip : 0; }
+/* (round 11) SSBU_RB_LASTLISTS=1 (option): the LAST re-run pass kicks the preparation list A (SIM_SKIP bit 16 not applied to it): the real
+ * pass after a rollback then prepares its picture from list A results of the frame before it, not of an older one (with LASTLITE every re-run
+ * pass skipped it: the results came from the first re-run pass, or with SSBU_RB_KICKDEFER from the loaded state). The jobs run in the pacing
+ * wait (H1 holds the workers to H2 as in a real pass); the deferred recapture (RECAP=7) is made after them. Simulation untouched (bit 16 is
+ * proven exact in every re-run pass). */
+static int g_rgs_lastlists = -1;
+static int rgs_skip_now(void) {
+    if (!(g_rgs_on > 0 && g_ra_phase == 2 && (g_rgs_left > 1 || g_rgs_lastlite))) return 0;
+    if (g_rgs_left <= 1) { if (g_rgs_lastlists < 0) { const char *e = getenv("SSBU_RB_LASTLISTS"); g_rgs_lastlists = e && atoi(e) > 0; } if (g_rgs_lastlists) return g_rgs_skip & ~16; }
+    return g_rgs_skip;
+}
 static int rgs_poll(void) { g_rgs_polls_cur++; return g_ra_phase == 2; }    /* a re-run pass: the input sequence waits */
 static void rgs_pad(uint64_t *b, int *lx, int *ly, int *rx, int *ry) {
     if (rbg_on()) { rbg_pad(0, b, lx, ly, rx, ry); return; }      /* R3 */
@@ -2396,9 +2423,9 @@ static void rgs_report(void) {
             g_rgs_npass[0], g_rgs_npass[0] ? g_rgs_pass[0] / g_rgs_npass[0] : 0, rg_pct(g_rgs_pass_v[0], g_rgs_pass_nv[0], 50), g_rgs_npass[1], g_rgs_npass[1] ? g_rgs_pass[1] / g_rgs_npass[1] : 0, rg_pct(g_rgs_pass_v[1], g_rgs_pass_nv[1], 50), g_rgs_skip);
         LOG("r1: RB SIM main-thread CPU per pass (safe point to safe point, without the capture / load; QueryThreadCycleTime): real %.3f, re-run %.3f million cycles (re-run but the last %.3f, the last %.3f)\n",
             g_rgs_npass[0] ? g_rgs_cyc[0] / g_rgs_npass[0] / 1e6 : 0, g_rgs_npass[1] ? g_rgs_cyc[1] / g_rgs_npass[1] / 1e6 : 0, g_rgs_npl[0] ? g_rgs_cycl[0] / g_rgs_npl[0] / 1e6 : 0, g_rgs_npl[1] ? g_rgs_cycl[1] / g_rgs_npl[1] / 1e6 : 0);
-        LOG("r1: RB SIM re-run passes by place (ms / M cycles / n): first after the load %.3f / %.3f / %.0f, middle %.3f / %.3f / %.0f, last %.3f / %.3f / %.0f, first after a test reload %.3f / %.3f / %.0f\n",
+        LOG("r1: RB SIM re-run passes by place (ms / M cycles / n): first after the load %.3f / %.3f / %.0f, middle %.3f / %.3f / %.0f, last %.3f / %.3f / %.0f, first after a test reload %.3f / %.3f / %.0f; H1 let go in the load %lld (SSBU_RB_H1LOAD); list kicks kept %lld, made at the early go %lld, after H2 %lld, dropped by loads %lld, SP moved %d, over %lld (SSBU_RB_KICKDEFER)\n",
             g_rgs_ct[0][2] ? g_rgs_ct[0][0] / g_rgs_ct[0][2] : 0, g_rgs_ct[0][2] ? g_rgs_ct[0][1] / g_rgs_ct[0][2] / 1e6 : 0, g_rgs_ct[0][2], g_rgs_ct[1][2] ? g_rgs_ct[1][0] / g_rgs_ct[1][2] : 0, g_rgs_ct[1][2] ? g_rgs_ct[1][1] / g_rgs_ct[1][2] / 1e6 : 0, g_rgs_ct[1][2],
-            g_rgs_ct[2][2] ? g_rgs_ct[2][0] / g_rgs_ct[2][2] : 0, g_rgs_ct[2][2] ? g_rgs_ct[2][1] / g_rgs_ct[2][2] / 1e6 : 0, g_rgs_ct[2][2], g_rgs_ct[3][2] ? g_rgs_ct[3][0] / g_rgs_ct[3][2] : 0, g_rgs_ct[3][2] ? g_rgs_ct[3][1] / g_rgs_ct[3][2] / 1e6 : 0, g_rgs_ct[3][2]);
+            g_rgs_ct[2][2] ? g_rgs_ct[2][0] / g_rgs_ct[2][2] : 0, g_rgs_ct[2][2] ? g_rgs_ct[2][1] / g_rgs_ct[2][2] / 1e6 : 0, g_rgs_ct[2][2], g_rgs_ct[3][2] ? g_rgs_ct[3][0] / g_rgs_ct[3][2] : 0, g_rgs_ct[3][2] ? g_rgs_ct[3][1] / g_rgs_ct[3][2] / 1e6 : 0, g_rgs_ct[3][2], g_rg_h1early, g_ra_kd_n, g_ra_kd_early, g_ra_kd_late, g_ra_kd_drop, g_ra_kd_sp, g_ra_kd_over);
         LOG("r1: RB SIM re-run passes but the last (the replayed frames a rollback pays for): %lld mean %.3f median %.3f ms; last re-run passes %lld mean %.3f median %.3f ms\n", g_rgs_npl[0], g_rgs_npl[0] ? g_rgs_pl[0] / g_rgs_npl[0] : 0, rg_pct(g_rgs_plv[0], g_rgs_nplv[0], 50), g_rgs_npl[1], g_rgs_npl[1] ? g_rgs_pl[1] / g_rgs_npl[1] : 0, rg_pct(g_rgs_plv[1], g_rgs_nplv[1], 50));
         for (int k = 0; k < 3; k++) if (g_rapn[k]) LOG("r1: RB SIM %s passes (%lld), means ms: pass start -> poll %.3f, poll -> frame end %.3f, frame end call %.3f, frame end -> safe point %.3f\n",
             k == 0 ? "real" : k == 1 ? "re-run (not the last)" : "re-run (the last)", g_rapn[k], g_rap[k][0] / g_rapn[k], g_rap[k][1] / g_rapn[k], g_rap[k][2] / g_rapn[k], g_rap[k][3] / g_rapn[k]);

@@ -2553,6 +2553,29 @@ static void ra_workers_hold_tt(void) {
     InterlockedExchange(&g_ra_wh_on, 1);
     SetEvent(g_ra_wd_ev);
 }
+/* (round 11) SSBU_RB_KICKDEFER (default 1 = on, 0 = off): THE PREPARATION LISTS A / B OF A REAL PASS KICKED AFTER ITS CAPTURE. Their kicks (calls of
+ * 0x7103549170 from 0x71037494f8 / 0x7103749594) come before the safe point H2, so every captured state held their jobs queued (H1 keeps the
+ * workers from starting them before the capture). A ring load brought them back: the first re-run pass after a load waited at their join
+ * (main itself ran model / animation jobs there: PMC profile r9_pmc_tc1, rer1-start) and the rest ran on the workers beside its logic, while
+ * every other re-run pass skips both kicks (SSBU_RB_SIM_SKIP 16 / 32, proven exact) and has neither: the first re-run pass cost ~0.65 ms more
+ * than the last (TaC 2.0 / 1.3). Now in a rollback match a real pass's list A / B kick is NOT made at its place: the context of the call is
+ * kept and the kick made at the pacing wait's early go (rb_rollback.c, where H1's workers are let go: the jobs start at the same time as
+ * before) or, failing that, right after H2's step; a ring load drops the kept ones (that pass is thrown away). Captured states then hold no
+ * list A / B jobs, so after a load no pass runs them, as in the other re-run passes. The code between the kicks and H2 runs without them,
+ * as in every re-run pass. */
+static int rbg_on(void);
+static Ctx g_ra_kd[4]; static int g_ra_nkd, g_ra_kd_sp; static long long g_ra_kd_n, g_ra_kd_early, g_ra_kd_late, g_ra_kd_drop, g_ra_kd_over;
+static int ra_kd_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RB_KICKDEFER"); v = e ? atoi(e) : 1; } return v; }
+static void ra_kd_flush(const Ctx *cur, int early) {      /* the kept kicks made now, in their order */
+    for (int k = 0; k < g_ra_nkd; k++) {
+        Ctx *s = &g_ra_kd[k];
+        if (cur && s->x[31] > cur->x[31]) { g_ra_kd_sp++; s->x[31] = (cur->x[31] - 0x400) & ~15ull; }      /* (never seen: kept below the live frames) */
+        g_orig_kick2(s);
+        if (early) g_ra_kd_early++; else g_ra_kd_late++;
+    }
+    g_ra_nkd = 0;
+}
+static void ra_kd_drop(void) { g_ra_kd_drop += g_ra_nkd; g_ra_nkd = 0; }      /* (a ring load: that real pass is thrown away) */
 static void ra_kick2(Ctx *c, void *user) {           /* hook on FUN 0x7103549170 (kick of a job group): points BEFORE the call */
     (void)user;
     uint64_t lr = c->x[30];
@@ -2569,7 +2592,12 @@ static void ra_kick2(Ctx *c, void *user) {           /* hook on FUN 0x7103549170
             if (tf > 0 && g_ff >= tf && g_ra_phase == 0) { tf = -1; Sleep((DWORD)tms); LOG("r1: TEST: a slow pass of %d ms at fight frame %lld, after the workers' hold (watchdog releases so far %lld)\n", tms, g_ff, g_ra_wd_fired); }
         }
     }
-    if (lr == g_ra_site) { ra_step(c); if (g_ra_wh_on) { ra_workers_release(); SetEvent(g_ra_wd_ev); } g_ra_wd_pause = g_ra_wd_base; }      /* H2 (R3: rb_rollback.c pauses the watchdog while it runs here, and keeps the long limit during the match) */
+    if (lr != g_ra_site && (lr == GA(0x71037494fcull) || lr == GA(0x7103749598ull)) && g_ra_phase == 0 && ra_kd_on() > 0 && g_ra_site == GA(0x7103749b24ull)
+        && !g_ra_off && rbg_on() && ra_fight_on()) {      /* (round 11, SSBU_RB_KICKDEFER) kept for after the capture */
+        if (g_ra_nkd >= 4) { g_ra_kd_over++; ra_kd_flush(c, 0); }
+        g_ra_kd[g_ra_nkd++] = *c; g_ra_kd_n++; return;
+    }
+    if (lr == g_ra_site) { ra_step(c); if (g_ra_nkd && g_ra_phase == 0) ra_kd_flush(c, 0); if (g_ra_wh_on) { ra_workers_release(); SetEvent(g_ra_wd_ev); } g_ra_wd_pause = g_ra_wd_base; }      /* H2 (R3: rb_rollback.c pauses the watchdog while it runs here, and keeps the long limit during the match) */
     if ((g_ra_phase == 1 && g_ra_skip) || rgs_skip_now()) {      /* SSBU_RUNAHEAD_SKIP (experiment): job groups of the speculative pass whose result is thrown away (R2: SSBU_RB_SIM_SKIP, re-run passes but the last) */
         int prep = c->x[30] == GA(0x7103749b24ull) || c->x[30] == GA(0x710374b4f8ull) || c->x[30] == GA(0x710374b528ull) || c->x[30] == GA(0x710374b558ull), rend = c->x[30] == GA(0x710374c0d8ull);
         int logic = c->x[30] == GA(0x710374c398ull) || c->x[30] == GA(0x710374c5b8ull);

@@ -769,6 +769,7 @@ static void rbg_step_body(Ctx *c) {
     {   /* (Arena perf) the task workers let go here, before the pacing wait (no load or capture follows in this tick): the
          * kick's preparation jobs run during the wait instead of after it. SSBU_RB_NET_EARLY_GO=0: at H2 as before */
         static int eg = -1; if (eg < 0) { const char *e = getenv("SSBU_RB_NET_EARLY_GO"); eg = !e || atoi(e) != 0; }
+        if (g_ra_nkd && g_ra_phase == 0) ra_kd_flush(c, 1);      /* (round 11, SSBU_RB_KICKDEFER) the real pass's list A / B kicks, after its capture */
         if (eg && g_ra_wh_on) { ra_workers_release(); SetEvent(g_ra_wd_ev); } }
     if (gorb && g_rbg_defcap == i) { double tc = now_ms(); if (!rbg_capture(i, c)) g_rbg_capfail++; g_rbg_t_recap += now_ms() - tc; g_rbg_n_recap++; g_rbg_defcap = -1; }      /* (rb-8ms, RECAP=7) no wait in this tick: now */
     if (gorb) { g_rbg_gorb = 0; return; }              /* (Arena perf) this tick's real pass now: its safe point counts the whole tick */
