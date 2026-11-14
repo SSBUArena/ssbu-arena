@@ -107,11 +107,13 @@ static RbPad bot_pad(unsigned seed, long long f) {       /* (crash phase, test) 
             *ax[a] = (int16_t)(v > 32767 ? 32767 : v < -32767 ? -32767 : v); } }
     return p;
 }
+volatile long long g_bot_walkoff_at = -1;              /* (rb-8ms round 12, TEST: SSBU_BENCH, rb_bench.c) set at run time: from that frame on the bots walk off */
 static RbPad bot_pad0(unsigned seed, long long f) {
     /* segments of 6..29 frames; each segment one action. Walking alternates sides around the middle of the stage. */
     RbPad p; memset(&p, 0, sizeof p);
     {   static long long off = -2; if (off == -2) { const char *e = getenv("SSBU_RB_NET_BOT_WALKOFF"); off = e && *e ? atoll(e) : -1; }      /* (R3 lwr, test) from that frame on: left held (the fighter walks off the stage: the match ends) */
-        if (off >= 0 && f >= off) { p.lx = -32767; return p; } }
+        if (off >= 0 && f >= off) { p.lx = -32767; return p; }
+        if (g_bot_walkoff_at >= 0 && f >= g_bot_walkoff_at) { p.lx = -32767; return p; } }
     {   static int rich = -1; if (rich < 0) { const char *e = getenv("SSBU_RB_NET_BOT_RICH"); rich = e && e[0] == '1'; }
         if (rich) {                                                   /* (Arena, test) a fighter that fights: short segments, every kind of move */
             long long st = 1; uint32_t hh = 0; int sg = 0;

@@ -205,6 +205,7 @@ static int rbg_sched(long long i, int m) {
     for (int q = 0; q < sn; q++) if (sf[q] == i) { sf[q] = -1; LOG("r1: RB NET TEST_SCHED: rollback at frame %lld to the state of frame %lld\n", i, sl[q]); if (m <= 0 || m > sl[q] + 1) m = (int)(sl[q] + 1); }
     return m;
 }
+#include "rb_bench.c"                                   /* (rb-8ms round 12, TEST ONLY) SSBU_BENCH: the standard bench (one process, the six stages) */
 /* (rollback 8 ms) THE LUA GARBAGE COLLECTOR OF THE MAIN LOOP. At 0x7103747ad8 the game runs luaC_step in a loop for up to 1 ms, and
  * only when more than 5 ms are left in its frame (the time is read from the clock at 0x7103747830: the amount of collector work is
  * wall-clock dependent, it differs between two games by design and has no part in the simulation). It was ~0.85 ms of every pass
@@ -674,7 +675,7 @@ static void rbg_step_body(Ctx *c) {
     } else {                                            /* a real pass ended */
         g_rgs_next = i + 1; g_rbg_real++;
         rbn_drain(i);
-        int m = rbg_sched(i, rbn_take_mismatch());
+        int m = rbg_bench_sched(i, rbg_sched(i, rbn_take_mismatch()));
         if (m > 0 && m <= i) {
             /* captured anyway, with the threads kept held for the load that follows (R2 round 2: load hold 3.5 -> 0.2 ms);
              * SSBU_RB_NET_KEEP=0: no capture, the load holds the threads itself */
@@ -728,6 +729,7 @@ static void rbg_step_body(Ctx *c) {
         if (g_rbg_late && g_rbg_nlate < RBG_NT) g_rbg_late[g_rbg_nlate++] = tw - g_rbg_sched; }
     g_rbg_wrb_pend = 0;
     if (!gorb && g_rbg_tick0 > 0 && g_rbg_nw < RBG_NT) { g_rbg_work[g_rbg_nw] = (float)(tw - g_rbg_tick0); g_rbg_wcyc[g_rbg_nw] = (float)((rgs_cyc_now() - g_rbg_cyc_go) / 1e6); g_rbg_wk[g_rbg_nw] = (unsigned char)(g_rbg_tick_k > 255 ? 255 : g_rbg_tick_k); if (g_rbg_wab) g_rbg_wab[g_rbg_nw] = (unsigned char)g_rbab_side; g_rbg_nw++; }
+    if (g_bn_on) rbg_bench_tick(i);                     /* (round 12, TEST) SSBU_BENCH (g_bn_on: -1 until read, 0 off) */
     if (!gorb && g_rbg_tick0 > 0) {      /* (stability phase) a slow tick: its parts; and the max per window of 1200 real frames */
         static int thr = -1; if (thr < 0) { const char *e = getenv("SSBU_RB_SLOWTICK"); thr = e ? atoi(e) : 25; }
         static double wmax; static long long wmax_f, slow_n, slow_match = -1; double wk = tw - g_rbg_tick0;
@@ -774,7 +776,7 @@ static void rbg_step_body(Ctx *c) {
     if (gorb && g_rbg_defcap == i) { double tc = now_ms(); if (!rbg_capture(i, c)) g_rbg_capfail++; g_rbg_t_recap += now_ms() - tc; g_rbg_n_recap++; g_rbg_defcap = -1; }      /* (rb-8ms, RECAP=7) no wait in this tick: now */
     if (gorb) { g_rbg_gorb = 0; return; }              /* (Arena perf) this tick's real pass now: its safe point counts the whole tick */
     if (g_rbg_pace) {
-        double extra = rbn_pace_extra(g_rgs_next), period = 1000.0 / 60.0 + extra, now = now_ms();
+        double extra = rbn_pace_extra(g_rgs_next), period = (1000.0 / 60.0 + extra) / (g_bn_on > 0 ? rbg_bench_speed() : 1.0), now = now_ms();
         if (g_rbg_next <= 0 || now - g_rbg_next > 3 * period) g_rbg_next = now;      /* (far behind: no catching up in a burst) */
         /* (0.2.40 test, after Rsoto95 841ae28) SSBU_RB_NET_TSWAIT=1: the time sync's extra wait is waited also when this game is
          * a little behind its own schedule (there the extra only shortened the catching up and the lead stayed) */

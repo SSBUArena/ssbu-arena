@@ -128,6 +128,13 @@ void debug_mode_frame(long long frame) {
     }
     if (g_end_limit && n >= g_end_limit) InterlockedExchange64(&g_end_fired, frame);
 }
+/* (rb-8ms round 12, TEST ONLY: SSBU_BENCH, rb_bench.c) the stage of the current debug match line; one stock left for the fighters
+ * (FighterInformation record + 0xd8, the lua_bind stock_count accessor 0x71020c9e80) so that a walk-off ends the match; the
+ * process ends the way SSBU_DEBUG_END ends it */
+const char *dm_bench_stage(void) { return g_dm.stage; }
+int dm_bench_stocks(int id) { uint64_t r = fighter_info_record(id); uint32_t v = 0; return r && safe_read(r + 0xd8, &v, 4) ? (int)v : -1; }
+void dm_bench_last_stock(void) { for (int id = 0; id < 2; id++) { uint64_t r = fighter_info_record(id); uint32_t v = 0; if (r && safe_read(r + 0xd8, &v, 4) && v > 1) wr32(r + 0xd8, 1); } }
+void dm_bench_exit(long long frame) { InterlockedExchange64(&g_end_fired, frame > 0 ? frame : 1); }
 static int fighter_kind_by_name(const char *name) {
     char *e; long v = strtol(name, &e, 0);
     if (*name && !*e) return (int)v;
@@ -898,6 +905,7 @@ static void match_player_hook(Ctx *c, void *user) {
     if (idx == 0 && g_dm_list) {                          /* SSBU_DEBUG_MATCH_LIST: every new match set-up takes the next line (the last one stays) */
         char line[256];
         if (fgets(line, sizeof line, g_dm_list)) { line[strcspn(line, "\r\n")] = 0; if (line[0]) { g_dm_fight++; parse_match(line); } }
+        { static int sets; char mk[24]; snprintf(mk, sizeof mk, "dmsetup%d", ++sets); void input_mark(const char *what); input_mark(mk); }      /* (round 12, test aid: rb8ms/bench_seq.txt "@untilmark:dmsetup<n>") */
     }
     if (g_dm.stock > 0 && type_was != 3 && rd8(st + 5) == 1) wr8(st + 0xa, (uint8_t)g_dm.stock);   /* state + 5: rule kind (1 = stock), + 0xa: stocks -> record + 0x18 */
     if ((idx == 2 || idx == 3) && g_dm_name[idx][0] && g_dm_state1_ok) {      /* session 14: p3 / p4 = CPU players. An empty panel (type 3) takes player 2's state as the template */
