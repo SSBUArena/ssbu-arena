@@ -2960,6 +2960,8 @@ void r1_dc_begin(void) {
     }
 }
 void r1_dc_end(void) { if (g_dc_lock_on > 0) ReleaseSRWLockShared(&g_dc_lock); }
+static int rg_dc_try_excl(void) { return g_dc_lock_on > 0 && TryAcquireSRWLockExclusive(&g_dc_lock); }      /* (round 12, SSBU_RB_LOADWARM) no decommit while the warm thread reads */
+static void rg_dc_rel_excl(void) { ReleaseSRWLockExclusive(&g_dc_lock); }
 /* (2026-11-09, run cssm9) a BLOCK: a TaskWorker inside the decommit (shared lock taken, then stuck in ZwFreeVirtualMemory, cpu 0) and the main
  * thread waiting for the lock exclusive at a capture (Squad Strike fighter change): both games frozen for minutes. Now the capture / load waits
  * at most SSBU_RB_DCLOCK_MS (default 50) and then copies without the lock (as SSBU_RB_DCLOCK=0), logged; SSBU_RB_DCLOCK_MS=0: waits forever. */

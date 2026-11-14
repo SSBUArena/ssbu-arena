@@ -63,6 +63,7 @@ static void bn_segment_end(long long i) {
              rb, g_rbg_k[1] - g_bn0.k[1], g_rbg_k[2] - g_bn0.k[2], g_rbg_k[3] - g_bn0.k[3], rb - (g_rbg_k[1] - g_bn0.k[1]) - (g_rbg_k[2] - g_bn0.k[2]) - (g_rbg_k[3] - g_bn0.k[3]), g_bn_extra - g_bn0.extra,
              ct[0][2] > 0 ? ct[0][0] / ct[0][2] : 0, ct[2][2] > 0 ? ct[2][0] / ct[2][2] : 0, ct[1][2] > 0 ? ct[1][0] / ct[1][2] : 0, sp1);
     LOG("r1: %s\n", line); printf("[bench] %s\n", line);
+    if (g_lw_ev) { printf("[bench] BENCH %d LOADWARM: runs %lld, skipped (lock busy) %lld, pages per run %.0f, %.3f ms per run\n", s + 1, g_lw_runs, g_lw_skips, g_lw_runs ? (double)g_lw_pages / g_lw_runs : 0.0, g_lw_runs ? g_lw_ms / g_lw_runs : 0.0); }
     if (g_rbab > 0 && g_rbg_wab) for (int sd = 0; sd < 2; sd++) {      /* (SSBU_RB_AB: A/B inside the segment, blocks of 8 rollbacks) */
         int an, bn2; double am, amn, ap, ao, bm, bmn, bp, bo; bn_dist(g_bn0.nw, to, 1, sd, &an, &am, &amn, &ap, &ao); bn_dist(g_bn0.nw, to, 0, sd, &bn2, &bm, &bmn, &bp, &bo);
         LOG("r1: BENCH %d AB %d side %s: rbmed %.2f mean %.2f p99 %.2f n %d | norm %.2f n %d\n", s + 1, g_rbab, sd ? "ON" : "off", am, amn, ap, an, bm, bn2);

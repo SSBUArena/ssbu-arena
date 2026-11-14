@@ -1410,6 +1410,41 @@ static void rg_workers_go_early(void) {
     for (int w = 0; w < g_ra_nwh; w++) for (int i = 0; i < g_nth; i++) if (g_th[i].h == g_ra_wh[w] && g_th[i].held) { g_th[i].held = 0; ResumeThread(g_th[i].h); break; }
     ra_workers_release(); SetEvent(g_ra_wd_ev); g_rg_h1early++;
 }
+/* (rb-8ms round 12, OPTION) SSBU_RB_LOADWARM=1 (A/B bit 512 of SSBU_RB_AB): the first re-run pass after a load costs ~0.6 ms more
+ * than the last one with the same instructions and the same misses (PMC, round 10): its misses go further. The load's helpers write
+ * the pages back from the OTHER L3 with non-temporal stores, which takes those lines (the pages the last real passes wrote: the game's
+ * hot data) out of main's L3. Here a thread on main's L3 (not main's core) reads every line of the loaded pages right after the copy,
+ * while main finishes the load and starts the first re-run pass, so main finds them in its L3. Reads only; the decommit lock is held
+ * (exclusive, as the copy holds it) so no page goes away under it; 2 ms at most. */
+static int rg_dc_try_excl(void); static void rg_dc_rel_excl(void);      /* r1_state.c */
+static HANDLE g_lw_ev; static volatile LONG g_lw_gen; static uint32_t *g_lw_ids; static size_t g_lw_n, g_lw_cap; static int g_lw_on = -1;
+static volatile long long g_lw_runs, g_lw_skips, g_lw_pages; static volatile double g_lw_ms;
+static DWORD WINAPI lw_thread(LPVOID u) {
+    (void)u;
+    for (;;) {
+        WaitForSingleObject(g_lw_ev, INFINITE);
+        LONG gen = g_lw_gen; double t0 = now_ms(); size_t n = 0;
+        if (!rg_dc_try_excl()) { g_lw_skips++; continue; }
+        volatile uint64_t acc = 0;
+        for (; n < g_lw_n && g_lw_gen == gen; n++) {
+            uint32_t id = g_lw_ids[n]; if (id < g_rg_n1 && g_dc[id]) continue;
+            const uint8_t *a = rg_addr(id); for (size_t o = 0; o < PG; o += 64) acc += *(const volatile uint64_t *)(a + o);
+            if ((n & 63) == 63 && now_ms() - t0 > 2.0) break;
+        }
+        rg_dc_rel_excl(); (void)acc; g_lw_runs++; g_lw_pages += (long long)n; g_lw_ms += now_ms() - t0;
+    }
+    return 0;
+}
+static void rg_loadwarm(size_t pages) {
+    if (g_lw_on < 0) { const char *e = getenv("SSBU_RB_LOADWARM"); g_lw_on = e ? atoi(e) : 0;
+        if (g_lw_on > 0 || (g_rbab & 512)) { g_lw_ev = CreateEventW(NULL, FALSE, FALSE, NULL); HANDLE h = CreateThread(NULL, 0, lw_thread, NULL, 0, NULL);
+            if (h && g_rg_cm_same) SetThreadAffinityMask(h, (DWORD_PTR)g_rg_cm_same);
+            LOG("r1: RING: SSBU_RB_LOADWARM %d: warm thread on mask %llx\n", g_lw_on, (unsigned long long)g_rg_cm_same); } }
+    if (!g_lw_ev || !rb_feat(512, g_lw_on > 0) || !pages) return;
+    if (pages > g_lw_cap) { free(g_lw_ids); g_lw_cap = pages + 1024; g_lw_ids = malloc(g_lw_cap * sizeof *g_lw_ids); if (!g_lw_ids) { g_lw_cap = 0; return; } }
+    memcpy(g_lw_ids, g_rg_tl, pages * sizeof *g_lw_ids); g_lw_n = pages;
+    InterlockedIncrement(&g_lw_gen); SetEvent(g_lw_ev);
+}
 int r1_ring_load(long long frame, Ctx *c) {         /* (SSBU_PMCMARK: the load as its own part) */
     if (!g_pmk_on) return r1_ring_load_i(frame, c);
     pmk_mark(5); int r = r1_ring_load_i(frame, c); pmk_note(); return r;
@@ -1633,6 +1668,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
                 for (size_t o = 0; o < PG; o += step) acc += *(const volatile uint64_t *)(a + o); } (void)acc; } }
     { static LONG64 said; if (g_rg_loadfault != said) { said = g_rg_loadfault; LOG("r1: RING load of frame %lld: a page only reserved was written: committed and copied (%lld so far, SSBU_RB_LOADFAULT)\n", frame, (long long)said); } }
     dc_copy_lock(0);
+    rg_loadwarm(pages);                                   /* (round 12, option) SSBU_RB_LOADWARM */
     double t2 = now_ms();
     g_nfib = g->nfib; memcpy(g_fib, g->fib, (size_t)g->nfib * sizeof *g_fib);
     if (g->fpool_used) memcpy(g_fpool, g->fpool, g->fpool_used);
