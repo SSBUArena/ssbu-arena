@@ -105,21 +105,43 @@ static inline int r1_vchg(uint64_t a, const void *v, int n) {      /* 1 = the n 
 extern __declspec(dllexport) volatile int r1_rc_on;
 extern __declspec(dllexport) void (*r1_rc_acc)(uint64_t a, const void *v, int n, int w);
 extern __declspec(dllexport) void (*r1_rc_ent)(Ctx *c, uint64_t fn, int out);
-#define RC_ACC(a, v, n, w) do { if (__builtin_expect(r1_rc_on, 0)) r1_rc_acc((uint64_t)(a), (v), (int)(n), (w)); } while (0)
+#define RC_ACC1(a, v, n, w) do { if (__builtin_expect(r1_rc_on, 0)) r1_rc_acc((uint64_t)(a), (v), (int)(n), (w)); } while (0)
 #else
-#define RC_ACC(a, v, n, w) ((void)0)
+#define RC_ACC1(a, v, n, w) ((void)0)
+#endif
+#define RC_ACC(a, v, n, w) RC_ACC1(a, v, n, w)
+/* (rb-8ms 14/11) SSBU_RB_MEMO, an exact memo of pure subtrees (the model update 71038d70f0) in the re-run passes: game DLL built with
+ * -DR1_MEMO (rb8ms/build_dll8.sh <name> memo). The functions of tu_prepare.py RECOMP_MEMO_FNS call the runtime's r1_mo_ent at their
+ * start (1 = the call was replayed from a record: return at once) and end. While main records one of them (a real pass) r1_mr_on
+ * holds main's thread id and every guest load / store of the lifted code on main, outside the recorded call's own stack frames
+ * ([r1_mr_slo, + r1_mr_sn)), goes to the runtime's logger (memo.c) with its address, value (lo / hi, in registers), size and kind
+ * w (0 load, 1 store, 2 ordered / exclusive load, 3 ordered / exclusive store). The call is an inline asm call to r1_mr_thunk
+ * (game_shim_r1.c), which keeps every register: no memory clobber, no register clobber, so the compiler keeps the lifted code as it
+ * was (a plain C call there forces every guest register back to memory around every access: the read-counting DLL r8rc1, made
+ * that way, measured +28% main-thread cycles with its counting OFF). Off: one load, a compare and a branch per access. */
+#if defined(R1_MEMO) && defined(R1_GAMEDLL) && !defined(__cplusplus)
+extern __declspec(dllexport) unsigned r1_mr_on;              /* the recording thread's id (main), 0 = none */
+extern __declspec(dllexport) uint64_t r1_mr_slo, r1_mr_sn;
+extern __declspec(dllexport) int (*r1_mo_ent)(Ctx *c, uint64_t fn, int out);
+static inline unsigned r1_mr_tid(void) { unsigned long long t; __asm__("movq %%gs:0x48, %0" : "=r"(t)); return (unsigned)t; }      /* TEB ClientId.UniqueThread */
+#define MR(a, lo, hi, n, w) do { unsigned _mo = r1_mr_on; \
+    if (__builtin_expect(_mo != 0, 0) && _mo == r1_mr_tid() && (uint64_t)(a) - r1_mr_slo >= r1_mr_sn) { \
+        register uint64_t _m8 __asm__("r8") = (uint64_t)(hi); register uint64_t _m9 __asm__("r9") = (uint64_t)(n) | (uint64_t)(w) << 16; \
+        __asm__ volatile("callq r1_mr_thunk" : : "c"((uint64_t)(a)), "d"((uint64_t)(lo)), "r"(_m8), "r"(_m9) : "cc"); } } while (0)
+#else
+#define MR(a, lo, hi, n, w) ((void)0)
 #endif
 /* Guest memory is mapped at its real address: a guest pointer is a host pointer. */
 #define DEF_MEM(bits) \
-    static inline uint##bits##_t rd##bits(uint64_t a) { uint##bits##_t v; memcpy(&v, (void *)(uintptr_t)a, sizeof v); RC_ACC(a, &v, sizeof v, 0); return v; } \
-    static inline void wr##bits(uint64_t a, uint##bits##_t v) { RC_ACC(a, &v, sizeof v, 1); R1MW(a, uint##bits##_t, v); memcpy((void *)(uintptr_t)a, &v, sizeof v); }
+    static inline uint##bits##_t rd##bits(uint64_t a) { uint##bits##_t v; memcpy(&v, (void *)(uintptr_t)a, sizeof v); RC_ACC(a, &v, sizeof v, 0); MR(a, v, 0, sizeof v, 0); return v; } \
+    static inline void wr##bits(uint64_t a, uint##bits##_t v) { RC_ACC(a, &v, sizeof v, 1); MR(a, v, 0, sizeof v, 1); R1MW(a, uint##bits##_t, v); memcpy((void *)(uintptr_t)a, &v, sizeof v); }
 DEF_MEM(8) DEF_MEM(16) DEF_MEM(32) DEF_MEM(64)
 /* Ordered and exclusive loads / stores (LDAR, STLR, LDAXR, LDXR; after stephenjayakar's fb716c2): atomics with the guest's
  * ordering. On x86 they are plain moves; what they add is that the compiler keeps them in order with the accesses around them. */
 #define DEF_ORD(bits) \
-    static inline uint##bits##_t lda##bits(uint64_t a) { uint##bits##_t v = __atomic_load_n((uint##bits##_t *)(uintptr_t)a, __ATOMIC_ACQUIRE); RC_ACC(a, &v, sizeof v, 2); return v; } \
-    static inline uint##bits##_t ldx##bits(uint64_t a) { uint##bits##_t v = __atomic_load_n((uint##bits##_t *)(uintptr_t)a, __ATOMIC_RELAXED); RC_ACC(a, &v, sizeof v, 2); return v; } \
-    static inline void stl##bits(uint64_t a, uint##bits##_t v) { RC_ACC(a, &v, sizeof v, 3); R1M(a, sizeof v); __atomic_store_n((uint##bits##_t *)(uintptr_t)a, v, __ATOMIC_RELEASE); }
+    static inline uint##bits##_t lda##bits(uint64_t a) { uint##bits##_t v = __atomic_load_n((uint##bits##_t *)(uintptr_t)a, __ATOMIC_ACQUIRE); RC_ACC(a, &v, sizeof v, 2); MR(a, v, 0, sizeof v, 2); return v; } \
+    static inline uint##bits##_t ldx##bits(uint64_t a) { uint##bits##_t v = __atomic_load_n((uint##bits##_t *)(uintptr_t)a, __ATOMIC_RELAXED); RC_ACC(a, &v, sizeof v, 2); MR(a, v, 0, sizeof v, 2); return v; } \
+    static inline void stl##bits(uint64_t a, uint##bits##_t v) { RC_ACC(a, &v, sizeof v, 3); MR(a, v, 0, sizeof v, 3); R1M(a, sizeof v); __atomic_store_n((uint##bits##_t *)(uintptr_t)a, v, __ATOMIC_RELEASE); }
 DEF_ORD(8) DEF_ORD(16) DEF_ORD(32) DEF_ORD(64)
 
 /* STXR: store only if the location still holds the value the matching LDXR read. Returns 0 on success. */
@@ -128,7 +150,7 @@ void stx_diag(Ctx *c, uint64_t a, uint64_t expected, uint64_t seen, uint64_t v, 
     static inline uint32_t stx##bits(Ctx *c, uint64_t a, uint##bits##_t v) { \
         if (c->ex_addr != a) { stx_diag(c, a, 0, 0, v, -bits); return 1; } \
         c->ex_addr = ~0ull; \
-        RC_ACC(a, &v, bits / 8, 3); \
+        RC_ACC(a, &v, bits / 8, 3); MR(a, v, 0, bits / 8, 3); \
         R1M(a, bits / 8); \
         if (__sync_bool_compare_and_swap((uint##bits##_t *)(uintptr_t)a, (uint##bits##_t)c->ex_val, v)) { c->ex_fail = 0; return 0; } \
         uint##bits##_t seen; memcpy(&seen, (void *)(uintptr_t)a, sizeof seen); \
@@ -143,6 +165,7 @@ DEF_STX(8) DEF_STX(16) DEF_STX(32) DEF_STX(64)
 __attribute__((target("cx16"))) static inline uint32_t stxp64(Ctx *c, uint64_t a, uint64_t lo, uint64_t hi) {
     if (c->ex_addr != a) { stx_diag(c, a, 0, 0, lo, -128); return 1; }
     c->ex_addr = ~0ull;
+    MR(a, lo, hi, 16, 3);
     R1M(a, 16);
     unsigned __int128 expected = ((unsigned __int128)c->ex_val2 << 64) | c->ex_val, v = ((unsigned __int128)hi << 64) | lo;
     if (__sync_bool_compare_and_swap((unsigned __int128 *)(uintptr_t)a, expected, v)) { c->ex_fail = 0; return 0; }
@@ -151,14 +174,14 @@ __attribute__((target("cx16"))) static inline uint32_t stxp64(Ctx *c, uint64_t a
     return 1;
 }
 
-static inline V128 rdv(uint64_t a, int n) { V128 v; v.d[0] = 0; v.d[1] = 0; memcpy(&v, (void *)(uintptr_t)a, (size_t)n); RC_ACC(a, &v, n, 0); return v; }
-static inline void wrv(uint64_t a, const V128 *v, int n) { RC_ACC(a, v, n, 1); R1MV(a, v, n); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
+static inline V128 rdv(uint64_t a, int n) { V128 v; v.d[0] = 0; v.d[1] = 0; memcpy(&v, (void *)(uintptr_t)a, (size_t)n); RC_ACC(a, &v, n, 0); MR(a, v.d[0], v.d[1], n, 0); return v; }
+static inline void wrv(uint64_t a, const V128 *v, int n) { RC_ACC(a, v, n, 1); MR(a, v->d[0], v->d[1], n, 1); R1MV(a, v, n); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
 static inline void vzero(V128 *v) { v->d[0] = 0; v->d[1] = 0; }
 /* (Arena perf) stores relative to the guest SP (the lifter's wrsN / wrsv for a base register 31): no page mark; the
  * rollback ring finds the stack pages written through the OS's write watch (r1_ring.c rg_stack_ww) */
-#define DEF_WRS(bits) static inline void wrs##bits(uint64_t a, uint##bits##_t v) { RC_ACC(a, &v, sizeof v, 1); memcpy((void *)(uintptr_t)a, &v, sizeof v); }
+#define DEF_WRS(bits) static inline void wrs##bits(uint64_t a, uint##bits##_t v) { RC_ACC(a, &v, sizeof v, 1); MR(a, v, 0, sizeof v, 1); memcpy((void *)(uintptr_t)a, &v, sizeof v); }
 DEF_WRS(8) DEF_WRS(16) DEF_WRS(32) DEF_WRS(64)
-static inline void wrsv(uint64_t a, const V128 *v, int n) { RC_ACC(a, v, n, 1); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
+static inline void wrsv(uint64_t a, const V128 *v, int n) { RC_ACC(a, v, n, 1); MR(a, v->d[0], v->d[1], n, 1); memcpy((void *)(uintptr_t)a, v, (size_t)n); }
 
 static inline uint64_t adds64(Ctx *c, uint64_t a, uint64_t b, uint32_t cin) {
     uint64_t r = a + b + cin;

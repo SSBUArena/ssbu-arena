@@ -15,6 +15,7 @@ MEMCALL = re.compile(r'call void @llvm\.mem(?:cpy|move|set)')
 INT2P = re.compile(r'%([\w.]+) = inttoptr ')
 POPER = re.compile(r'\bptr (?:[a-z_]+ )*([%@][\w.]+)')
 LOADPTR = re.compile(r'%([\w.]+) = load ptr, ')
+MRCALL = re.compile(r'call void asm sideeffect "callq r1_mr_thunk"')
 
 
 def annotate(text):
@@ -48,6 +49,8 @@ def annotate(text):
                         lm = LOADPTR.match(s)
                         if lm and p[0] == '@':
                             guest.add(lm.group(1))
+            elif MRCALL.search(s) and '!noalias' not in s:     # (rb-8ms 14/11, R1_MEMO) runtime.h MR: the logger's thunk keeps c
+                line += ', !noalias !9001'
             elif MEMCALL.search(s) and 'volatile' not in s.split('(')[0]:
                 ptrs = POPER.findall(s)
                 if ptrs and all(q[1:] in guest for q in ptrs if q[0] == '%') and '!noalias' not in s:

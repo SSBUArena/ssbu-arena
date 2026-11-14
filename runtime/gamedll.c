@@ -55,8 +55,39 @@ const int *game_fn_table_count_p;
 const DynSym (*game_dyn_syms_p)[];
 const int *game_dyn_sym_count_p;
 
+/* (rb-8ms 14/11, SSBU_RB_MEMO) the runtime's memo.c (r1_state.c): while main records a call of a memo unit (g_mo_rec_tid = its
+ * thread id, else 0), every way out of the lifted code into host code is noted (mo_esc_note): host code reads and writes guest memory
+ * without the record's log, so such a record is never replayed. No way out: an indirect call to a function of main's image (a lifted
+ * function of the game DLL; a hook on it is seen by the hook stubs, hook_host.c), an import bound to lifted SDK code (in the game DLL),
+ * a lifted SDK function reached through sdk_dispatch. The other threads, and main when it does not record: one load and a branch. */
+volatile DWORD g_mo_rec_tid; uintptr_t g_mo_dll_lo, g_mo_dll_hi;
+void mo_esc_note(int kind, int sym, uint64_t addr);
+void *hostrt_import_handler(int sym);
+#ifdef _WIN32
+#define MO_REC() (g_mo_rec_tid && GetCurrentThreadId() == g_mo_rec_tid)
+#else
+#define MO_REC() 0
+#endif
+static int mo_in_dll(const void *p) { return p && (uintptr_t)p - g_mo_dll_lo < g_mo_dll_hi - g_mo_dll_lo; }
+static void mo_call_indirect(Ctx *c, uint64_t addr) { if (MO_REC() && addr - 0x7100000000ULL >= 0x7500000ULL) mo_esc_note(1, -1, addr); call_indirect(c, addr); }
+static void mo_host_import(Ctx *c, int sym) { if (MO_REC() && !mo_in_dll(hostrt_import_handler(sym))) mo_esc_note(2, sym, c->x[30]); host_import(c, sym); }
+static void mo_guest_trap(const char *w, uint64_t a) { if (MO_REC()) mo_esc_note(3, -1, a); guest_trap(w, a); }
+static void mo_guest_unimpl(uint64_t pc, uint32_t insn, const char *w) { if (MO_REC()) mo_esc_note(4, -1, pc); guest_unimpl(pc, insn, w); }
+static void mo_guest_svc(Ctx *c, uint32_t n) { if (MO_REC()) mo_esc_note(5, (int)n, c->x[30]); guest_svc(c, n); }
+static void mo_stx_diag(Ctx *c, uint64_t a, uint64_t e, uint64_t s, uint64_t v, int b) { if (MO_REC()) mo_esc_note(6, -1, a); stx_diag(c, a, e, s, v, b); }
+static void mo_site_inline(Ctx *c, uint64_t a) { if (MO_REC()) mo_esc_note(7, -1, a); sky_site_inline(c, a); }
+static int mo_site_midhook(Ctx *c, uint64_t a) { if (MO_REC()) mo_esc_note(8, -1, a); return sky_site_midhook(c, a); }
+static void mo_sdk_host_call(Ctx *c, int i) { if (MO_REC()) mo_esc_note(9, i, c->x[30]); sdk_host_call(c, i); }
+static void mo_sdk_trap_call(Ctx *c, const char *n) { if (MO_REC()) mo_esc_note(10, -1, c->x[30]); sdk_trap_call(c, n); }
+static void mo_sdk_dispatch(Ctx *c, uint64_t a) { if (MO_REC() && a - 0x7500000000ULL >= 0xcfb000ULL) mo_esc_note(11, -1, a); sdk_dispatch(c, a); }
+static void *mo_sdk_jmp_record(Ctx *c) { if (MO_REC()) mo_esc_note(12, -1, c->x[30]); return sdk_jmp_record(c); }
+static void mo_sdk_jmp_restore(Ctx *c, void *r) { if (MO_REC()) mo_esc_note(12, -1, c->x[30]); sdk_jmp_restore(c, r); }
+static void *mo_sdk_longjmp_target(Ctx *c) { if (MO_REC()) mo_esc_note(12, -1, c->x[30]); return sdk_longjmp_target(c); }
+
 __attribute__((constructor)) static void bind_game(void) {
     GameHost h = {call_indirect, host_import, guest_trap, guest_unimpl, guest_svc, stx_diag, sky_site_inline, sky_site_midhook};
+    const char *mo_e = getenv("SSBU_RB_MEMO"); int mo = mo_e && atoi(mo_e) > 0;      /* (SSBU_RB_MEMO) the ways out watched only then */
+    if (mo) { GameHost hm = {mo_call_indirect, mo_host_import, mo_guest_trap, mo_guest_unimpl, mo_guest_svc, mo_stx_diag, mo_site_inline, mo_site_midhook}; h = hm; }
     GameTables t;
     game_bind(&h, &t);
     game_fn_table_p = (const FnEntry (*)[])t.table;
@@ -70,10 +101,13 @@ __attribute__((constructor)) static void bind_game(void) {
         if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)t.table, &m) && m) {
             volatile int *on = (volatile int *)(void *)GetProcAddress(m, "rt_ic_on");
             if (on) *on = !(e && e[0] == '0') && !getenv("SSBU_ICALLS") && !getenv("SSBU_ICALLS_STEP") && !getenv("SSBU_EXPERIMENT_POKE");
+            {   const IMAGE_DOS_HEADER *dh = (const IMAGE_DOS_HEADER *)(void *)m; const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const char *)m + dh->e_lfanew);
+                g_mo_dll_lo = (uintptr_t)m; g_mo_dll_hi = (uintptr_t)m + nt->OptionalHeader.SizeOfImage; }      /* (SSBU_RB_MEMO) the game DLL's image */
         }
     }
 #endif
     GameDataHost dh = {GAME_DATA_VERSION, sdk_host_call, sdk_trap_call, sdk_dispatch, sdk_jmp_record, sdk_jmp_restore, sdk_longjmp_target};
+    if (mo) { GameDataHost dm = {GAME_DATA_VERSION, mo_sdk_host_call, mo_sdk_trap_call, mo_sdk_dispatch, mo_sdk_jmp_record, mo_sdk_jmp_restore, mo_sdk_longjmp_target}; dh = dm; }
     game_data_bind(&dh, &game_data);
     if (game_data.version != GAME_DATA_VERSION || game_data.size != (int)sizeof game_data) {
         fprintf(stderr, "the game DLL was built for another version of this exe (game data interface %d, this exe %d): build both "

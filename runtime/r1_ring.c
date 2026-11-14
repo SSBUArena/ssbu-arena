@@ -1622,6 +1622,7 @@ static ULONG64 rgs_cyc_now(void) { ULONG64 v = 0; QueryThreadCycleTime(GetCurren
 static void rgs_step(Ctx *c) {
     double t = now_ms(); ULONG64 cy = rgs_cyc_now();
     g_rgp_main = GetCurrentThreadId(); g_rgp_seg = 1; if (g_rgs_prof == 3 && g_rg_ready) rgs_samp_start();
+    mo_pass_end();                                        /* (SSBU_RB_MEMO, memo.c) a unit call still open is dropped; the next pass counts again */
     if (g_rgs_pass_t0 > 0 && g_rg_ready) {                /* the pass that just ended: real (0) or re-run (1), without the capture / load */
         int kd = g_ra_phase == 2; double d = t - g_rgs_pass_t0; if (g_rgs_cyc0) g_rgs_cyc[kd] += (double)(cy - g_rgs_cyc0);
         if (kd) { int ct = g_rgs_left <= 1 ? 2 : g_rgs_firstp == 1 ? 0 : g_rgs_firstp == 2 ? 3 : 1; g_rgs_ct[ct][0] += d; g_rgs_ct[ct][1] += (double)(cy - g_rgs_cyc0); g_rgs_ct[ct][2] += 1; }
@@ -2225,6 +2226,7 @@ static void rgs_report(void) {
         LOG("r1: SSBU_RB_LOADSNAP: %lld loads made a snapshot (%.1f pool pages, %.3f ms mean), %lld waited for the render thread instead; stale replays: %lld reads from guest memory, %lld page parts from the snapshot, %lld writes followed; =5: %lld slots filled by the copy\n",
             v[0], v[0] ? (double)v[1] / v[0] : 0.0, g_rg_sn_n ? g_rg_sn_ms / g_rg_sn_n : 0.0, v[2], v[3], v[4], v[5], v[6]); }
       rc_report();
+      mo_report();
       if (g_rg_sn_n) LOG("r1: SSBU_RB_LOADSNAP=3: pages per snapshot copied by the helpers during the sweep %.1f, by main after it %.1f\n", (double)g_rg_sn_helppg / g_rg_sn_n, (double)g_rg_sn_mainpg / g_rg_sn_n);
       LOG("r1: render pauses (SSBU_RB_RPAUSE) %lld, ended by a wait for the render thread %lld, started with submissions still queued %lld\n", pn, br, sl); }
     if (g_ldp_n) LOG("r1: RING load parts (means ms): sweep (write watch questions, marks, extras) %.3f, page list %.3f, copy %.3f (%lld loads; SSBU_RB_LOADPIPE: %lld piped, main waited %.3f ms for their first part after its sweep; SSBU_RB_LOADSYNC: %lld waits for the render thread, %.3f ms mean)\n", g_ldp[0] / g_ldp_n, g_ldp[1] / g_ldp_n, g_ldp[2] / g_ldp_n, g_ldp_n, g_rg_lp_n, g_rg_lp_n ? g_rg_lp_wait / g_rg_lp_n : 0.0, g_rg_ls_n, g_rg_ls_n ? g_rg_ls_ms / g_rg_ls_n : 0.0);

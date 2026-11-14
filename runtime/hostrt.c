@@ -959,6 +959,9 @@ void guest_freeze_wait(void) { while (g_guest_frozen) Sleep(5); }
  * its third argument points at when it is a printable string: the format of a formatting function) and how many different
  * return addresses called it. Off: one compare per import call. */
 static void host_import_real(Ctx *c, int sym);
+/* (rb-8ms 14/11, SSBU_RB_MEMO) gamedll.c: the handler an import call of the lifted code runs (lifted SDK code in the game DLL or host code) */
+void *hostrt_import_handler(int sym) { return g_handlers && sym >= 0 && sym < dyn_sym_count ? (void *)g_handlers[sym] : NULL; }
+const char *hostrt_import_name(int sym) { return sym >= 0 && sym < dyn_sym_count ? dyn_syms[sym].name : "?"; }
 static int g_watch_sym = -2;
 void host_import(Ctx *c, int sym) {
     if (g_watch_sym == -2) {

@@ -84,6 +84,19 @@ def rc_copy(name, cur):
              '  %sfc(c);' % name, '}'])
 
 
+# (rb-8ms 2026-11-14) RECOMP_MEMO_FNS=<addr>,..: SSBU_RB_MEMO (-DR1_MEMO builds, runtime memo.c). Each of these functions gets its body
+# moved to a copy f_<addr>fm and an entry that asks the runtime first (r1_mo_ent, game_shim_r1.c): 1 = the call was replayed from an
+# exact record (its stores made, its registers set): return at once; else the body runs and the runtime hears its end.
+MEMO_FNS = {'f_' + a.strip().lower() for a in (os.environ.get('RECOMP_MEMO_FNS') or '').split(',') if a.strip()}
+
+
+def mo_copy(name, cur):
+    body = cur[1:]
+    return (['static void %sfm(Ctx *c) {' % name] + body +
+            [cur[0], '  if (r1_mo_ent) { if (r1_mo_ent(c, 0x%sULL, 0)) return; %sfm(c); r1_mo_ent(c, 0x%sULL, 1); return; }' % (name[2:], name, name[2:]),
+             '  %sfm(c);' % name, '}'])
+
+
 def _write_if_changed(path, text):
     try:
         with open(path, encoding='latin-1', newline='') as f:
@@ -123,6 +136,10 @@ def prepare(src, out_dir, split_lines, cold=None, own_decls=True, stats=None):
                 if m1 and m1.group(1) in RC_FNS:        # (RC_FNS) a one-line entry (EH builds: `{ u_<addr>(c, 0); }`)
                     small.extend(rc_copy(m1.group(1), ['void %s(Ctx *c) {' % m1.group(1), '  ' + m1.group(2), '}']))
                     continue
+                m1 = re.match(r'void (f_[0-9a-f]+)\(Ctx \*c\) \{ (.*) \}$', line) if MEMO_FNS else None
+                if m1 and m1.group(1) in MEMO_FNS:      # (MEMO_FNS) the same for the memo entries
+                    small.extend(mo_copy(m1.group(1), ['void %s(Ctx *c) {' % m1.group(1), '  ' + m1.group(2), '}']))
+                    continue
                 small.append(line)                      # blank lines, one-line definitions
         else:
             cur.append(line)
@@ -133,6 +150,8 @@ def prepare(src, out_dir, split_lines, cold=None, own_decls=True, stats=None):
                     cur = nf_copy(name, cur)
                 if not why and name in RC_FNS and cur[0] == 'void %s(Ctx *c) {' % name:
                     cur = rc_copy(name, cur)
+                if not why and name in MEMO_FNS and cur[0] == 'void %s(Ctx *c) {' % name:
+                    cur = mo_copy(name, cur)
                 (big if why else small).extend(cur)
                 if why and stats is not None:
                     s = stats.setdefault(why, [0, 0])

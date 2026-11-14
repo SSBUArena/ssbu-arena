@@ -268,6 +268,7 @@ static inline void v_ldn(Ctx *c, uint64_t a, int rt, int n, int sz, int q) {
     RT_LANES(i, 0, count, RT_LANES(k, 0, n, {
             uint64_t v = 0;
             memcpy(&v, (void *)(uintptr_t)(a + (uint64_t)((i * n + k) * es)), (size_t)es);
+            MR(a + (uint64_t)((i * n + k) * es), v, 0, es, 0);      /* (R1_MEMO: each element with its value) */
             vset(&r[k], sz, i, v);
         }))
     RT_LANES(k, 0, n, c->v[(rt + k) & 31] = r[k];)
@@ -277,6 +278,7 @@ static inline void v_stn(Ctx *c, uint64_t a, int rt, int n, int sz, int q) {
     RC_ACC(a, (const void *)0, count * n * es, 4);       /* (R1_RDCOUNT: n structures stored, value not hashed) */
     RT_LANES(i, 0, count, RT_LANES(k, 0, n, {
             uint64_t v = vget(&c->v[(rt + k) & 31], sz, i);
+            MR(a + (uint64_t)((i * n + k) * es), v, 0, es, 1);      /* (R1_MEMO: each element with its value) */
             R1M(a + (uint64_t)((i * n + k) * es), (uint64_t)es);
             memcpy((void *)(uintptr_t)(a + (uint64_t)((i * n + k) * es)), &v, (size_t)es);
         }))

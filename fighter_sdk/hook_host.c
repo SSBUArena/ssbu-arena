@@ -257,27 +257,46 @@ static int hk_layer_new(void) {
 }
 
 /* put layer `id` on the function at `addr` (lock held) */
+/* (rb-8ms 14/11, SSBU_RB_MEMO) [0] = the thread id whose hook calls are counted in [1] (0 = none): the runtime's memo.c sets it to main's
+ * while main records a call of a memo unit; a hooked function reached inside it runs host code the record cannot replay */
+volatile uint64_t g_hk_memo[2];
 static int hk_attach(int id, uint64_t addr) {
     HkLayer *l = hk_layer(id);
     ImportFn fn = function_at(addr);
     if (!fn) { snprintf(g_hk_error, sizeof g_hk_error, "%llx is not the entry of a lifted function (of a loaded module or of main)", (unsigned long long)addr); return 0; }
     HkSite *s = *hk_site_slot(addr);
     if (!s && !(s = hk_site_make(addr, (uint8_t *)(void *)fn))) return 0;
-    uint8_t *d = NULL, *m = hk_alloc(s->target, HK_LAYER_BYTES, 24, &d);
+    uint8_t *d = NULL, *m = hk_alloc(s->target, HK_LAYER_BYTES, 32, &d);
     if (!m) { snprintf(g_hk_error, sizeof g_hk_error, "no executable memory near the function at %llx", (unsigned long long)addr); return 0; }
     uint64_t head; memcpy(&head, s->head, 8);
     l->site = s; l->mem = m; l->data = d; l->addr = addr; l->orig = (ImportFn)(void *)(uintptr_t)head;
-    /* data: fn +0, user +8, calls +16.  code: +0 inc qword [calls]; +7 mov rdx,[user]; +14 jmp [fn] */
+    static int memo = -1; if (memo < 0) { const char *e = getenv("SSBU_RB_MEMO"); memo = e && atoi(e) > 0; }      /* (the counting stub only then) */
 #ifdef _WIN32
+    if (memo) {
+    /* data: fn +0, user +8, calls +16, &g_hk_memo +24.  code: +0 inc qword [calls]; (rb-8ms 14/11, SSBU_RB_MEMO) +7 mov r10,[&g_hk_memo];
+     * +14 mov r11,gs:[0x48] (this thread's id); +23 cmp r11,[r10]; +26 jne +4; +28 inc qword [r10+8] (only the thread named in g_hk_memo[0]:
+     * main while it records a memo call, runtime memo.c: a hooked function inside the recorded call ran host code); +32 mov rdx,[user];
+     * +39 jmp [fn]. r10 / r11: scratch registers that carry no argument. */
+    static const uint8_t code[45] = {0x48, 0xFF, 0x05, 0, 0, 0, 0,  0x4C, 0x8B, 0x15, 0, 0, 0, 0,  0x65, 0x4C, 0x8B, 0x1C, 0x25, 0x48, 0, 0, 0,
+                                     0x4D, 0x3B, 0x1A,  0x75, 0x04,  0x49, 0xFF, 0x42, 0x08,  0x48, 0x8B, 0x15, 0, 0, 0, 0,  0xFF, 0x25, 0, 0, 0, 0};
+    memcpy(m, code, 45);
+    int32_t r1 = (int32_t)(d + 16 - (m + 7)), rg = (int32_t)(d + 24 - (m + 14)), r2 = (int32_t)(d + 8 - (m + 39)), r3 = (int32_t)(d - (m + 45));
+    memcpy(m + 3, &r1, 4); memcpy(m + 10, &rg, 4); memcpy(m + 35, &r2, 4); memcpy(m + 41, &r3, 4);
+    } else {    /* data: fn +0, user +8, calls +16.  code: +0 inc qword [calls]; +7 mov rdx,[user]; +14 jmp [fn] (as before) */
     static const uint8_t code[24] = {0x48, 0xFF, 0x05, 0, 0, 0, 0,  0x48, 0x8B, 0x15, 0, 0, 0, 0,  0xFF, 0x25, 0, 0, 0, 0,  0xCC, 0xCC, 0xCC, 0xCC};
-#else       /* Linux build: the second argument (user) goes in rsi (System V), not rdx: +7 is mov rsi,[user] */
-    static const uint8_t code[24] = {0x48, 0xFF, 0x05, 0, 0, 0, 0,  0x48, 0x8B, 0x35, 0, 0, 0, 0,  0xFF, 0x25, 0, 0, 0, 0,  0xCC, 0xCC, 0xCC, 0xCC};
-#endif
     memcpy(m, code, 24);
     int32_t r1 = (int32_t)(d + 16 - (m + 7)), r2 = (int32_t)(d + 8 - (m + 14)), r3 = (int32_t)(d - (m + 20));
     memcpy(m + 3, &r1, 4); memcpy(m + 10, &r2, 4); memcpy(m + 16, &r3, 4);
-    uint64_t f = (uint64_t)(uintptr_t)(void *)l->repl, u = (uint64_t)(uintptr_t)l->user, z = 0;
-    memcpy(d, &f, 8); memcpy(d + 8, &u, 8); memcpy(d + 16, &z, 8);
+    }
+#else       /* Linux build: the second argument (user) goes in rsi (System V), not rdx: +7 is mov rsi,[user] */
+    /* data: fn +0, user +8, calls +16.  code: +0 inc qword [calls]; +7 mov rsi,[user]; +14 jmp [fn] */
+    static const uint8_t code[24] = {0x48, 0xFF, 0x05, 0, 0, 0, 0,  0x48, 0x8B, 0x35, 0, 0, 0, 0,  0xFF, 0x25, 0, 0, 0, 0,  0xCC, 0xCC, 0xCC, 0xCC};
+    memcpy(m, code, 24);
+    int32_t r1 = (int32_t)(d + 16 - (m + 7)), r2 = (int32_t)(d + 8 - (m + 14)), r3 = (int32_t)(d - (m + 20));
+    memcpy(m + 3, &r1, 4); memcpy(m + 10, &r2, 4); memcpy(m + 16, &r3, 4);
+#endif
+    uint64_t f = (uint64_t)(uintptr_t)(void *)l->repl, u = (uint64_t)(uintptr_t)l->user, z = 0, gm = (uint64_t)(uintptr_t)(void *)g_hk_memo;
+    memcpy(d, &f, 8); memcpy(d + 8, &u, 8); memcpy(d + 16, &z, 8); memcpy(d + 24, &gm, 8);
     if (l->orig_out) *l->orig_out = l->orig;
     l->state = HK_ON;
     InterlockedExchange64((volatile LONG64 *)s->head, (LONG64)(uintptr_t)m);       /* from here on the function runs the replacement */
