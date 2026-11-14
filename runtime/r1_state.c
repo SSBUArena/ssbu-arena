@@ -2551,8 +2551,10 @@ static void ra_init(void) {
         g_rgs_skip = getenv("SSBU_RB_SIM_SKIP") ? atoi(getenv("SSBU_RB_SIM_SKIP")) : 49;      /* (rollback 8 ms, 2026-11-01: speed first on this branch, the crashes noted above are open again; 1 / 0 is the stable pair) */
         /* 123 = 127 without group 4 (lighting): skipping the lighting callees in re-run passes left the fighters' colour
          * blend wrong for the rest of the match (magenta / green / yellow fighters, seen in every rollback fight; groups 1, 2,
-         * 8, 16, 32, 64 checked one by one: colours right). Costs ~0.3 of the ~1.3 ms a re-run pass saves. */
-        if (!getenv("SSBU_RB_SIM_LITE")) _putenv("SSBU_RB_SIM_LITE=123");
+         * 8, 16, 32, 64 checked one by one: colours right). Costs ~0.3 of the ~1.3 ms a re-run pass saves.
+         * (2026-11-14, the owner's decision) 113 = 123 without groups 2 (UI) and 8 (render layers): they run again in the re-run passes
+         * (measured ~0.01 ms per pass, pairs IDENTICAL); SSBU_RB_SIM_LITE=123: the old mask. */
+        if (!getenv("SSBU_RB_SIM_LITE")) _putenv("SSBU_RB_SIM_LITE=113");
         hook_install(GA(0x71038fe690ull), rbg_gc_hook, NULL, &g_rbg_gc_orig);      /* (rollback 8 ms) rb_rollback.c */
         rbg_skipf_init();
         { const char *e = getenv("SSBU_RB_FONTWAIT"); g_fontwait = e ? atoi(e) : 1; if (g_fontwait || getenv("SSBU_RB_FONTDIAG")) hook_install(GA(0x710007f870ull), rbg_fd_hook, NULL, &g_fd_orig); }      /* (crash phase) */
