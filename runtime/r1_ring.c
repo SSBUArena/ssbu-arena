@@ -1418,7 +1418,7 @@ static void rg_load_list(long long frame, size_t from, size_t to, int clr) {
     }
 }
 static void rbg_rpause(int bit, int on);                  /* (rb_rollback.c) */
-static long long g_rg_ls_n; static double g_rg_ls_ms; static long long g_rg_sn_n; static double g_rg_sn_ms; static long long g_rg_sn_mainpg, g_rg_sn_helppg;      /* (LOADSNAP=3) snapshot pages copied by main after the sweep / by the helpers during it */      /* (LOADSNAP) loads that made a snapshot, ms */      /* (LOADSYNC) loads that waited for the render thread, ms */
+static long long g_rg_ls_n; static double g_rg_ls_ms; static long long g_rg_sn_n; static double g_rg_sn_ms; static long long g_rg_sn_mainpg, g_rg_sn_helppg, g_rg_sn_help2;      /* (LOADSNAP=3) snapshot pages copied by main after the sweep / by the helpers during it */      /* (LOADSNAP) loads that made a snapshot, ms */      /* (LOADSYNC) loads that waited for the render thread, ms */
 static long long g_rg_lp_n; static double g_rg_lp_wait;      /* (LOADPIPE) loads piped, ms main waited for the first part after its sweep */
 /* (LOADSNAP=2) the snapshot's page copies, part k of main (0) and the helpers (1 .. g_ncp); -1 = all */
 static uint8_t *g_rg_sn_d[4096]; static const uint8_t *g_rg_sn_s[4096]; static int g_rg_sn_cnt;
@@ -1639,9 +1639,22 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
          * of ~270-370 per load) with non-temporal stores. Measured no gain (TaC n3 r8_snt: snapshot 0.080-0.105 ms on / 0.084-0.092 off,
          * tick 8.04 / 7.94): left off */
         static int snt = -1; if (snt < 0) { const char *e = getenv("SSBU_RB_SNAPNT"); snt = e && atoi(e) > 0; }
-        if (st > 0) { for (size_t n = snap_n1; n < g_rg_ntl; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (!r1_pool_page(a)) continue;
+        /* (round 13) SSBU_RB_SNAPHELP (default 1 from r13m6, =0 off; bit 2048 of SSBU_RB_AB): with COPYCCX, the sweep's pool pages are copied
+         * into the snapshot by the copy helpers on the other L3 too (non-temporal), not by main: main's caches keep the game's data for the
+         * first re-run pass (round 13 bisection: main copying 160 pages between two re-run passes made the second one +0.05..0.12 ms).
+         * Bench A/B in the same process (b13sh1 / b13sh2): six-stage mean 7.105 -> 6.970 and 7.128 -> 7.002 */
+        static int shelp = -1; if (shelp < 0) { const char *e = getenv("SSBU_RB_SNAPHELP"); shelp = !(e && e[0] == '0'); }
+        int helped = 0;
+        if (st > 0 && g_rg_copy_ccx && g_ncj == 0 && rb_feat(2048, shelp)) {
+            for (size_t n = snap_n1; n < g_rg_ntl; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (!r1_pool_page(a)) continue; uint8_t *d = nvn_r1_snap_slot(a); if (d) { cp_add(d, a); g_rg_sn_helppg++; } }
+            if (g_ncj >= 64) { g_cp_cond = 0; g_cp_nt = 1; g_cp_mw = 0.0; g_cp_hmode = 0; cp_run(); g_cp_nt = 0; g_cp_mw = 1.0; g_rg_sn_help2++; }
+            else { for (size_t q = 0; q < g_ncj; q++) cp_page_nt(g_cj[q].d, g_cj[q].s); _mm_sfence(); g_ncj = 0; }      /* (too few for the helpers' chain: main, non-temporal) */
+            helped = 1;
+        }
+        if (st > 0 && !helped) { for (size_t n = snap_n1; n < g_rg_ntl; n++) { uint8_t *a = rg_addr(g_rg_tl[n]); if (!r1_pool_page(a)) continue;
                           if (snt) { uint8_t *d = nvn_r1_snap_slot(a); if (d) { cp_page_nt(d, a); g_rg_sn_mainpg++; } } else { nvn_r1_snap_page(a); g_rg_sn_mainpg++; } }
-                      if (snt) _mm_sfence();
+                      if (snt) _mm_sfence(); }
+        if (st > 0) {
                       if (nvn_r1_snap_end() < 0) st = -1; }
         if (st >= 0) { if (st > 0) { g_rg_sn_ms += tsn0 + (now_ms() - tsn1); g_rg_sn_n++; } lsynced = 1; }
         else { nvn_r1_snap_waited(); double _t = now_ms(); if (nvn_r1_sync_submits()) { g_rg_ls_ms += now_ms() - _t; g_rg_ls_n++; } lsynced = 1; rbg_rpause(1, 1); }
