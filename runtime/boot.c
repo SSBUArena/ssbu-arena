@@ -326,6 +326,7 @@ static void print_build_identity(void) {
     (void)name;
     plat_print_build_identity(exe, dl);
 #endif
+    { const char *game_code(void); (void)game_code(); }      /* (online-mm 15/11) the "game code:" line (game_code.c) */
 }
 
 /* SSBU_CRASH_TEST=<seconds>: a write to address 0 after that time, on a thread of its own: tries the whole crash path of a

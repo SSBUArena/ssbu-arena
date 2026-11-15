@@ -44,12 +44,17 @@ namespace Arena
             StateChanged += (s, e) => Root.Margin = WindowState == WindowState.Maximized ? new Thickness(7) : new Thickness(0);
             Closing += (s, e) =>
             {
-                if (Core.CloseToTray && !quitting)      // (0.2.26) Settings > Launcher: the X leaves it in the notification area
+                // (online-mm 15/11) while an online game runs the X leaves the launcher in the notification area whatever the setting:
+                // the launcher renews the game's online pass (13/11 22:07: a player's launcher stopped while the game was in a room,
+                // the lobby dropped the game 35 minutes later). SSBU_ARENA_PASS_GUARD=0: as before
+                bool keepForPass = PassGuard && game != null && Core.Ticket != null;
+                if ((Core.CloseToTray || keepForPass) && !quitting)      // (0.2.26) Settings > Launcher: the X leaves it in the notification area
                 {
                     e.Cancel = true;
                     SaveQuiet();
                     ToTray();
-                    if (!trayToldOnce) { trayToldOnce = true; tray.ShowBalloonTip(4000, "SSBU Arena is still open", "Open it or quit it from this icon.", System.Windows.Forms.ToolTipIcon.None); }
+                    if (!trayToldOnce) { trayToldOnce = true; tray.ShowBalloonTip(4000, "SSBU Arena is still open", keepForPass && !Core.CloseToTray
+                        ? "It keeps your online pass while the game is online. Open it or quit it from this icon." : "Open it or quit it from this icon.", System.Windows.Forms.ToolTipIcon.None); }
                     return;
                 }
                 SaveQuiet();
@@ -625,6 +630,7 @@ namespace Arena
                 Start();
             };
             Core.Ticket = null;
+            if (CheckGameCode(go)) return;      // (online-mm 15/11) a game DLL from other sources: repaired first (or played as it is)
             go();      // (0.2.37) the online pass is asked in Start, after the shader preparation: just before the game starts
         }
 
@@ -636,6 +642,7 @@ namespace Arena
             {
                 ApplyAccount();
                 SetState();
+                AdoptRunningGame();
                 // (a launcher opened on a replay or a page is a tool's, App.OnlyLauncher: no sign-in screen over it)
                 bool tool = Environment.GetCommandLineArgs().Any(x => x == "--replay" || x == "--page");
                 if (!t.Result.Item1 && !tool) ShowLogin(t.Result.Item2 != null ? "Cannot reach the Arena server: " + t.Result.Item2 : null);
@@ -756,6 +763,8 @@ namespace Arena
                 }
                 // installed but not finished (the setup was stopped or failed): its screen again, it goes on from where it was
                 if (!Updater.DevCopy && !System.IO.File.Exists(Core.Exe)) { StartSetup(false); return; }
+                // (online-mm 15/11) no update to run: is the game DLL the one this exe expects? (an update runs its own build)
+                if (release == null || Updater.DevCopy || (!Updater.LauncherOutdated(release) && !Updater.GameOutdated(release))) CheckGameCode(null);
                 if (release == null || Updater.DevCopy) return;
                 if (Updater.LauncherOutdated(release)) { UpdateLauncher(); return; }
                 if (Updater.GameOutdated(release))
@@ -1032,6 +1041,73 @@ namespace Arena
             ticketTimer.Start();
         }
 
+        bool codeRepairAsked, codeRepairDone;
+        /// <summary>(online-mm 15/11) GameCode.cs: a game DLL built from other sources than the exe's (13/11) is built again by the setup
+        /// (asked once per launcher run; after a repair that did not help, only told). play: what PLAY does when the player keeps
+        /// it as it is (null at the start). True = a dialog was shown (PLAY waits for it).</summary>
+        bool CheckGameCode(Action play)
+        {
+            string why = GameCode.Mismatch();
+            if (why == null) return false;
+            Updater.Log("game code: " + why);
+            if (codeRepairDone)
+            {
+                Show("Game files", "The game DLL still does not match this version after the repair (" + why + "). Use Settings > Game files > Run the setup again.",
+                     null, ("OK", null, true));
+                return false;
+            }
+            if (codeRepairAsked && play == null) return false;
+            codeRepairAsked = true;
+            var buttons = new List<(string, Action, bool)> { ("Repair", RepairGameCode, true) };
+            if (play != null) buttons.Add(("Play as it is", play, false)); else buttons.Add(("Not now", null, false));
+            Show("Repair the game", "The game DLL was not built from the files of this version (" + why + "). " +
+                 "Online, games with other files are not paired, and a mixed game can desync. The setup builds it again (minutes, " +
+                 "longer when much changed).", null, buttons.ToArray());
+            return true;
+        }
+
+        void RepairGameCode()
+        {
+            setupPy = Installer.Python;
+            if (setupPy == null || Core.GameRunning()) { Show("Repair", Core.GameRunning() ? "Close the game first." : "The setup's Python is missing: use Run the setup again.", null, ("OK", null, true)); return; }
+            if (!GameCode.PrepareRepair(out var err)) { Show("Repair", "Could not prepare the repair: " + err, null, ("OK", null, true)); return; }
+            Updater.Log("game code: repair: the game DLL removed, compile / link run again");
+            codeRepairDone = true;
+            choice = new SetupChoice { Location = Core.Build };
+            SetupOverlay.Visibility = Visibility.Visible;
+            RunSetup();
+        }
+
+        /// <summary>(online-mm 15/11) SSBU_ARENA_PASS_GUARD (default on): the launcher keeps the online pass of a running game alive (the X
+        /// goes to the tray, quitting is asked, a launcher opened again takes the running game back). =0: as before</summary>
+        static bool PassGuard => Environment.GetEnvironmentVariable("SSBU_ARENA_PASS_GUARD") != "0";
+
+        /// <summary>(online-mm 15/11) a game started by an earlier launcher is still online (its pass file is there, it started before
+        /// this launcher): this launcher follows it (its end, its crash report) and renews its pass at once, then as usual. The game
+        /// reads the pass file again within 5 s and sends it to the lobby (runtime/net_relay.c); a game the lobby already dropped
+        /// for an ended pass joins again with it.</summary>
+        void AdoptRunningGame()
+        {
+            if (!PassGuard || game != null || !Account.SignedIn || !(Core.Online && Core.HasOnline) || !System.IO.File.Exists(Core.TicketFile)) return;
+            Process p = null;
+            var mine = Process.GetCurrentProcess().StartTime;
+            foreach (var n in new[] { "ssbu_native", "ssbu_native_rb", "ssbu_ui_native" })
+                foreach (var x in Process.GetProcessesByName(n))
+                {
+                    try { if (x.StartTime < mine && (p == null || x.StartTime < p.StartTime)) p = x; } catch { }
+                }
+            if (p == null) return;
+            try { p.EnableRaisingEvents = true; } catch (Exception e) { Updater.Log("online pass: the running game cannot be followed (" + e.Message + ")"); return; }
+            game = p;
+            gameStarted = p.StartTime.ToUniversalTime();
+            game.Exited += (s, e) => Dispatcher.Invoke(GameExited);
+            Updater.Log("online pass: a game started before this launcher is running (process " + p.Id + "): its pass is renewed from here");
+            Core.Ticket = "";                      // (not null: the renewal's checks) the real one comes now
+            RenewTicketLater(TimeSpan.FromSeconds(1));
+            SetState();
+            ToTray();
+        }
+
         void StartGame()
         {
             bool first = Core.FirstRun();
@@ -1059,7 +1135,14 @@ namespace Arena
                 tray = new System.Windows.Forms.NotifyIcon { Text = "SSBU Arena", Icon = System.Drawing.Icon.ExtractAssociatedIcon(Updater.ExePath) };
                 var menu = new System.Windows.Forms.ContextMenuStrip();
                 menu.Items.Add("Open SSBU Arena", null, (s, e) => Dispatcher.Invoke(FromTray));
-                menu.Items.Add("Quit the launcher", null, (s, e) => Dispatcher.Invoke(() => { quitting = true; HideTray(); Application.Current.Shutdown(); }));
+                menu.Items.Add("Quit the launcher", null, (s, e) => Dispatcher.Invoke(() =>
+                {
+                    // (online-mm 15/11) the pass of an online game is renewed by the launcher only: quitting ends online play in ~35 min
+                    if (PassGuard && game != null && Core.Ticket != null && MessageBox.Show("The game is online. SSBU Arena renews its online pass every 15 minutes: " +
+                            "without the launcher the game leaves online play within about 35 minutes.\n\nQuit the launcher anyway?", "SSBU Arena",
+                            MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+                    quitting = true; HideTray(); Application.Current.Shutdown();
+                }));
                 tray.ContextMenuStrip = menu;
                 tray.DoubleClick += (s, e) => Dispatcher.Invoke(FromTray);
                 Closed += (s, e) => HideTray();

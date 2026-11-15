@@ -63,6 +63,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <ctype.h>
 #include "net_relay.h"
 #include "net_stats.h"
@@ -167,6 +168,12 @@ static char g_ticket[320];
  * read again when it changes (every 5 s at most) and sent at once with the same nonce: the lobby takes it as a renewal */
 static char g_ticket_file[MAX_PATH];
 static FILETIME g_ticket_ft;
+/* (online-mm 15/11) SSBU_ONLINE_GAME_CODE=0: no "GC" block in the JOIN (as before). Default on: the game code (game_code.c, exe +
+ * game DLL) after the level as "GC" + u16 length + text; the SSBU Arena lobby (match_game_code) pairs and lists as joinable only
+ * games with the same code, and marks other codes' rooms (ROOM_INFO flags bit 8: "different game files"). An older lobby ignores it. */
+static int g_send_code = 1;
+/* (online-mm 15/11, the pass that expired on 13/11 22:07) the pass's expiry, read from the ticket text; SSBU_ONLINE_PASS_WARN=0: no warning */
+static int g_pass_warn = 1; static long long g_pass_warned_exp;
 static int g_mods_wire_len = 1;                        /* (count 0) */
 static char g_mods_text[512] = "none";
 #define FNV0 0xcbf29ce484222325ull
@@ -341,6 +348,8 @@ static void configure(void) {
     else snprintf(g_name, sizeof g_name, "Player-%04x", (unsigned)(rnd64() & 0xffff));
     if ((e = getenv("SSBU_ONLINE_TICKET")) && *e) snprintf(g_ticket, sizeof g_ticket, "%s", e);
     if ((e = getenv("SSBU_ONLINE_TICKET_FILE")) && *e) snprintf(g_ticket_file, sizeof g_ticket_file, "%s", e);
+    if ((e = getenv("SSBU_ONLINE_GAME_CODE"))) g_send_code = !is_off(e);
+    if ((e = getenv("SSBU_ONLINE_PASS_WARN"))) g_pass_warn = !is_off(e);
     if ((e = getenv("SSBU_ONLINE_CODE")) && *e) snprintf(g_code, sizeof g_code, "%s", e);
     else if (ini_value("online_code", v, sizeof v) && *v) snprintf(g_code, sizeof g_code, "%s", v);
     if ((e = getenv("SSBU_ONLINE_DIRECT"))) g_direct = !is_off(e);
@@ -824,7 +833,7 @@ static void rooms_info(const uint8_t *p, int n) {   /* (client thread) ROOM_INFO
     r->host = g32(p + 4);
     r->players = p[8]; r->most = p[9];
     r->open = p[10] & 1; r->mine = (p[10] & 2) != 0;
-    int known = (p[10] & 4) != 0;
+    int known = (p[10] & 4) != 0, other_code = (p[10] & 8) != 0;      /* (online-mm) bit 8: the SSBU Arena lobby says the room's game code differs */
     for (int k = 0; k < NAME_LEN; k++) r->name[k] = p[11 + k] && p[11 + k] < 0x20 ? '?' : (char)p[11 + k];
     memcpy(r->build, p + 11 + NAME_LEN, BUILD_LEN);
     build_version(r->build, r->version, sizeof r->version);
@@ -835,6 +844,11 @@ static void rooms_info(const uint8_t *p, int n) {   /* (client thread) ROOM_INFO
     for (int i = 0; i < nm; i++) list_join(r->mods, sizeof r->mods, m[i].name);
     if (!known && strchr(r->build, '+')) snprintf(r->mods, sizeof r->mods, "(not named: an older game)");
     r->joinable = !room_why(r->build, known, m, nm, r->why, sizeof r->why);
+    if (r->joinable && other_code) {
+        r->joinable = 0;
+        snprintf(r->why, sizeof r->why, "Different game files: this room's game was built from other files than yours. Update both games "
+                 "from the SSBU Arena launcher (it repairs a game whose files do not match)");
+    }
     g_nroom_next++;
 }
 static void rooms_end(const uint8_t *p, int n) {    /* (client thread) ROOMS_END body */
@@ -1394,7 +1408,7 @@ static int setup(void) {                        /* (client thread) where the lob
 
 static void send_join(void) {
     enum { BASE = 4 + 8 + 2 * NAME_LEN + BUILD_LEN + 4 + 2 + 1 };
-    uint8_t p[BASE + 2 + sizeof g_mods_wire + 4 + sizeof g_ticket + 4] = {0};
+    uint8_t p[BASE + 2 + sizeof g_mods_wire + 4 + sizeof g_ticket + 4 + 4 + 40] = {0};
     hdr(p, T_JOIN);
     s64(p + 4, g_nonce);
     memcpy(p + 12, g_code, strlen(g_code));
@@ -1408,6 +1422,11 @@ static void send_join(void) {
     int n = BASE + 2 + g_mods_wire_len, tl = (int)strlen(g_ticket);
     if (tl) { p[n] = 'T'; p[n + 1] = 'K'; s16(p + n + 2, (uint16_t)tl); memcpy(p + n + 4, g_ticket, (size_t)tl); n += 4 + tl; }
     p[n] = 'C'; p[n + 1] = 'V'; s16(p + n + 2, NET_CLIENT_LEVEL); n += 4;      /* (0.2.37; an older lobby ignores it) */
+    if (g_send_code) {                                 /* (online-mm 15/11) the game code (game_code.c): the lobby pairs only equal ones */
+        const char *game_code(void); const char *gc = game_code(); int gl = (int)strlen(gc);
+        if (gl > 40) gl = 40;
+        p[n] = 'G'; p[n + 1] = 'C'; s16(p + n + 2, (uint16_t)gl); memcpy(p + n + 4, gc, (size_t)gl); n += 4 + gl;
+    }
     tx(p, n, &g_lobby);
 }
 
@@ -1438,6 +1457,15 @@ static DWORD WINAPI client_thread(LPVOID unused) {
         if (!g_joined && t - last_join >= 500) { send_join(); last_join = t; }
         if (g_ticket_file[0] && t - last_ticket_look >= 5000) {      /* (0.2.37) the launcher's renewed pass */
             last_ticket_look = t;
+            if (g_pass_warn && g_ticket[0]) {      /* (online-mm 15/11) "<id>|<name>|<expiry>[|<issued>].<mac>": not renewed 5 min before it ends */
+                const char *b1 = strchr(g_ticket, '|'), *b2 = b1 ? strchr(b1 + 1, '|') : NULL;
+                long long exp = b2 ? _atoi64(b2 + 1) : 0, left = exp - (long long)time(NULL);
+                if (exp > 0 && left < 300 && g_pass_warned_exp != exp) {
+                    g_pass_warned_exp = exp;
+                    say("online pass: %s and the launcher did not renew it: is the SSBU Arena launcher still open (its icon by the clock)? "
+                        "The lobby ends this game's online session 5 minutes after the pass", left > 0 ? "ends in less than 5 minutes" : "ended");
+                }
+            }
             WIN32_FILE_ATTRIBUTE_DATA fa;
             if (GetFileAttributesExA(g_ticket_file, GetFileExInfoStandard, &fa) && CompareFileTime(&fa.ftLastWriteTime, &g_ticket_ft) != 0) {
                 char nt[sizeof g_ticket] = ""; FILE *f = fopen(g_ticket_file, "rb");
