@@ -161,7 +161,11 @@ int comp_in_options(void) {           /* menu.cpp: the game's own options screen
     if (!(cache && seen)) { if (!comp_mapped(CURRENT_SEQUENCE)) return 0; seen = 1; }
     return ((*(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE) >> 24) == 0x06;
 }
-static int comp_seq_allowed(uint32_t s) { return (s >> 24) == 0x01 || s == 0x02010000u || (s >> 24) == 0x06 || s == 0; }
+/* (field 15/11, matchmaking "like the real online", PROBE ONLY) SSBU_QUICK_NATIVE=1: the Online Ranked tile's sequence (and any
+ * 0x07 Online one) is NOT turned into the Smash versus one: the game's own Online mode runs, to see how far it gets on this
+ * runtime (scenes, nn:: services, missing files of the light archive). Not for play: there is no NEX server behind it. */
+static int comp_quick_native(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_QUICK_NATIVE"); v = e && e[0] == '1'; } return v; }
+static int comp_seq_allowed(uint32_t s) { return (s >> 24) == 0x01 || s == 0x02010000u || (s >> 24) == 0x06 || s == 0 || ((s >> 24) == 0x07 && comp_quick_native()); }
 
 /* ---- Online matchmaking (no rating yet), the Arena menu's "Online Ranked" tile. The tile asks for SEQUENCE_ONLINE_MELEE_ANYONE
  * (tools/ui/menu_actions_classic.py). The SEQUENCE_* values are the lua constants the game registers at 0x7101bf18xx (x1 = the
@@ -251,7 +255,8 @@ static void comp_scene(Ctx *c, void *user) {
     const char *ui = getenv("SSBU_COMPETITIVE_UI");
     if (ui && ui[0] == '1') {
         if ((s >> 24) == 0x01 && g_quick) comp_quick_end("back at the main menu");
-        if (s == SEQ_ONLINE_ANYONE) {
+        if (s == SEQ_ONLINE_ANYONE && comp_quick_native()) { static int said; if (!said++) { printf("competitive UI: Online Ranked -> the game's own Online mode (SSBU_QUICK_NATIVE=1, probe)\n"); fflush(stdout); } }
+        else if (s == SEQ_ONLINE_ANYONE) {
             if (comp_quick_begin()) *seq = SEQ_MELEE_NORMAL;
             else *seq = 0x01000000u;
             s = *seq;
