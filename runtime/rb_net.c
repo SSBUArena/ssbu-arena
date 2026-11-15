@@ -362,7 +362,7 @@ static int hs_check(const RbhMsg *m, char *why, size_t n) {           /* 0 = the
     if (code_check_on()) {
         const char *game_code(void); const char *gc = game_code();
         if (g_hs_peer_code[0] && strcmp(g_hs_peer_code, gc)) {
-            snprintf(why, n, "different game files (game code %.24s here, %.24s there): update both games from the SSBU Arena launcher", gc, g_hs_peer_code); return 0; }
+            snprintf(why, n, "different game files (game codes %.24s, %.24s): update both games in the launcher", gc, g_hs_peer_code); return 0; }
         if (!g_hs_peer_code[0]) { static int said; if (!said) { said = 1; printf("[rbnet] handshake: NOTE the other game sends no game code (an older build): not compared\n"); fflush(stdout); } }
     }
     int game_xver_with(int other); const char *game_build_label(int b);
