@@ -7,7 +7,7 @@
  *  - nn::nifm: the network is available, a request is never on hold; the current address is 127.0.0.1 (the socket layer of
  *    nnnet_c4a.inc reaches the loopback network only: the game server of a local test listens there).
  *  - nn::account: the user has a network service account (id = the two halves of the user id xor'ed, never 0), the id token
- *    cache is filled at once ("arena1.<account id hex>.<name>"; a later step puts the Arena lobby ticket in it), the cached
+ *    cache is filled at once ("arena2.<the Arena lobby ticket>", or without one "arena1.<account id hex>.<name>"), the cached
  *    Nintendo account info has a birthday, a gender and the country SSBU_ONLINE_COUNTRY (two letters, default US): the
  *    SDK's getters read birthday @0 (16 bytes), gender @0x10 (8), country @0x20 (4) ([sdk] 0x4a7f0 / 0x4a830 / 0x4a870).
  *  - nn::account::AsyncContext: a context given to EnsureNetworkServiceAccountIdTokenCacheAsync holds a finished request
@@ -71,9 +71,14 @@ static void acc_LoadCachedInfo(Ctx *c) {                                        
     for (unsigned i = 0; i < sizeof buf; i++) wr8(A0 + i, buf[i]);
     RET(0);
 }
+int net_lobby_ticket(char *out, size_t n);                  /* net_relay.c */
 static void acc_LoadIdToken(Ctx *c) {                                                         /* (u64 *size, char *buf, u64 capacity, handle) */
     char name[64] = "Player"; const char *e = getenv("SSBU_ONLINE_NAME"); if (e && *e) snprintf(name, sizeof name, "%s", e);
-    char tok[160]; int n = snprintf(tok, sizeof tok, "arena1.%016llx.%s", (unsigned long long)nsa_id(), name);
+    /* the game server's login (rb_nex.c): "arena2.<the SSBU Arena lobby ticket>", which it checks as the lobby does; without a
+     * ticket (tests on this PC) "arena1.<account id>.<name>", which only a server started with --test-tokens takes */
+    char tok[400], tk[330]; int n;
+    if (net_lobby_ticket(tk, sizeof tk) > 0) n = snprintf(tok, sizeof tok, "arena2.%s", tk);
+    else n = snprintf(tok, sizeof tok, "arena1.%016llx.%s", (unsigned long long)nsa_id(), name);
     if (n < 0 || (uint64_t)n + 1 > c->x[2]) { RET(ACC_NO_INTERNET); return; }
     for (int i = 0; i <= n; i++) wr8(A1 + (uint64_t)i, (uint8_t)tok[i]);
     wr64(A0, (uint64_t)n);

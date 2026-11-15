@@ -890,6 +890,9 @@ int net_rooms_get(NetRoom *out, int max, int *state) {
 }
 const char *net_build_id(void) { configure(); return g_build; }
 const char *net_mods_text(void) { configure(); return g_mods_text; }
+/* (online-mm, SSBU_ONLINE_NEX=1) the signed-in player's lobby ticket (the launcher's pass, renewed from SSBU_ONLINE_TICKET_FILE):
+ * nnonline.c puts it in the id token that the game's NEX logs in with; 0 = none */
+int net_lobby_ticket(char *out, size_t n) { configure(); if (!g_ticket[0] || !n) return 0; snprintf(out, n, "%s", g_ticket); return (int)strlen(out); }
 /* nnldn.c join(): 1 = this game must not join the room of host (another build): why says the cause, the popup shows it */
 int net_room_refusal(uint32_t host, char *why, size_t n) {
     char b[BUILD_LEN + 1] = "", name[NAME_LEN + 1] = "";
