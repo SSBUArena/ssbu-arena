@@ -2408,7 +2408,7 @@ static void rgv_after(void) {                               /* right after the c
     if (d[0] || d[1] || d[2] || g_rgv_runs <= 5) LOG("r1: RB VERIFY rollback to %lld, back at %lld: %lld pages compared; differ: window 1 %lld, window 2 %lld, extras %lld;%s\n", g_rgv_from, g_rgv_target, pages, d[0], d[1], d[2], first);
     g_rgv_target = -1;
 }
-/* (round 11) SSBU_RB_LASTLISTS=1 (option): the LAST re-run pass kicks the preparation list A (SIM_SKIP bit 16 not applied to it): the real
+/* (round 11; DEFAULT ON from round 14, user decision 15/11; SSBU_RB_LASTLISTS=0 off) SSBU_RB_LASTLISTS: the LAST re-run pass kicks the preparation list A (SIM_SKIP bit 16 not applied to it): the real
  * pass after a rollback then prepares its picture from list A results of the frame before it, not of an older one (with LASTLITE every re-run
  * pass skipped it: the results came from the first re-run pass, or with SSBU_RB_KICKDEFER from the loaded state). The jobs run in the pacing
  * wait (H1 holds the workers to H2 as in a real pass); the deferred recapture (RECAP=7) is made after them. Simulation untouched (bit 16 is
@@ -2416,7 +2416,7 @@ static void rgv_after(void) {                               /* right after the c
 static int g_rgs_lastlists = -1;
 static int rgs_skip_now(void) {
     if (!(g_rgs_on > 0 && g_ra_phase == 2 && (g_rgs_left > 1 || g_rgs_lastlite))) return 0;
-    if (g_rgs_left <= 1) { if (g_rgs_lastlists < 0) { const char *e = getenv("SSBU_RB_LASTLISTS"); g_rgs_lastlists = e && atoi(e) > 0; } if (g_rgs_lastlists) return g_rgs_skip & ~16; }
+    if (g_rgs_left <= 1) { if (g_rgs_lastlists < 0) { const char *e = getenv("SSBU_RB_LASTLISTS"); g_rgs_lastlists = e && *e ? atoi(e) > 0 : 1; } if (g_rgs_lastlists) return g_rgs_skip & ~16; }
     return g_rgs_skip;
 }
 static int rgs_poll(void) { g_rgs_polls_cur++; return g_ra_phase == 2; }    /* a re-run pass: the input sequence waits */
