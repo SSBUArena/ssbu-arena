@@ -166,6 +166,7 @@ class Lobby:
         self.by_at, self.by_ip, self.rooms = {}, {}, {}
         self.next_ip = SUBNET + 2
         self.stats = {"relayed game datagrams": 0, "ldn messages": 0, "dropped": 0}
+        self.relay_partition = False   # --test-relay-partition (on_data)
 
     def say(self, *what):
         print(time.strftime("%H:%M:%S"), *what, flush=True)
@@ -384,6 +385,17 @@ class Lobby:
         if sport == LDN_PORT or dport == LDN_PORT:
             return self.on_ldn(c, p, dst, sport, dport, now)
         room = self.room_of(c)
+        if room is None and self.relay_partition:
+            # (test only, --test-relay-partition: the game's own Online mode, online-mm A2) a player in no room reaches one other
+            # player of its partition (same build and lobby code) that is in no room either: the players the game server put
+            # in one gathering. The product's lobby will take the pairs from the game server instead.
+            b = self.by_ip.get(dst)
+            if b is not None and b is not c and b.part == c.part and self.room_of(b) is None and b.ip not in skip:
+                self.send(p, b.at)
+                self.stats["relayed game datagrams"] += 1
+            else:
+                self.stats["dropped"] += 1
+            return
         if room is None:
             self.stats["dropped"] += 1
             return
@@ -626,6 +638,7 @@ def main():
     ap.add_argument("--status-bind", default="127.0.0.1", help="address of the status endpoint (default 127.0.0.1, behind a proxy)")
     ap.add_argument("--search-secs", type=float, default=SEARCH_FOR, help="matchmaking: a search without an opponent ends after this (default 120)")
     ap.add_argument("--match-secs", type=float, default=MATCH_FOR, help="matchmaking: matched players not in one room by then are told it expired (default 180)")
+    ap.add_argument("--test-relay-partition", action="store_true", help="TEST ONLY (online-mm A2): relay datagrams between two players of one partition that are in no room")
     o = ap.parse_args()
     started = time.monotonic()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -636,6 +649,7 @@ def main():
             pass
     sock.bind((o.bind, o.port))
     lobby = Lobby(sock, o.verbose, o.search_secs, o.match_secs)
+    lobby.relay_partition = o.test_relay_partition
     lobby.say("lobby on UDP %s:%d (protocol SU %d)" % (o.bind, o.port, PROTO))
     if o.status_port:
         srv = start_status_server(lobby, o.status_bind, o.status_port, started)
