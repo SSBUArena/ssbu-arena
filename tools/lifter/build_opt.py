@@ -72,6 +72,12 @@ GAME_DEFS = RT_DEFS + (['-DRECOMP_ICACHE'] if os.environ.get('RECOMP_ICACHE', '1
 # modules (EXTRA): r1_fmazero / r1_fastneon live in the game DLL's shim (game_shim_r1.c, which needs -DR1_GAMEDLL in RECOMP_DATA_CFLAGS).
 if os.environ.get('RECOMP_R1_GAMEDLL', '') not in ('', '0'):
     GAME_DEFS = GAME_DEFS + ['-DR1_GAMEDLL']
+# (NEON generator 2026-11-16) RECOMP_NEON_VEC=1: the game's units get -DRECOMP_NEON_VEC: neon.h's hot helpers become the whole-register
+# vector forms of runtime/neon_vec.h (FMA3 / SSSE3 chosen at run time by game_shim.c, generic x86-64 ways otherwise; Arm's results bit for
+# bit, tools/lifter/neon_vec_test.c). Default 0: neon.h exactly as before. RECOMP_NEON_CHECK=1 (TEST DLL ONLY, slow): the same plus every NEON op
+# checked against the other way and the old helper while the game runs (counters read by the exe: NEONCHK lines).
+if os.environ.get('RECOMP_NEON_VEC', '0') not in ('', '0') or os.environ.get('RECOMP_NEON_CHECK', '0') not in ('', '0'):
+    GAME_DEFS = GAME_DEFS + ['-DRECOMP_NEON_VEC'] + (['-DRECOMP_NEON_CHECK'] if os.environ.get('RECOMP_NEON_CHECK', '0') not in ('', '0') else [])
 # RECOMP_INLINE=1: the helpers of runtime.h / neon.h / fpexact.h (every guest load / store, flag, NEON op) inlined into the
 # lifted code. clang 9 at -O1 runs only the always-inline inliner, so without this each helper is a real call: measured
 # 2026-10-13 (private round 15): main thread -25-30 %, audio update 9-17 -> 2-4 ms, per-frame hash identical. Same

@@ -84,6 +84,42 @@ static void *mo_sdk_jmp_record(Ctx *c) { if (MO_REC()) mo_esc_note(12, -1, c->x[
 static void mo_sdk_jmp_restore(Ctx *c, void *r) { if (MO_REC()) mo_esc_note(12, -1, c->x[30]); sdk_jmp_restore(c, r); }
 static void *mo_sdk_longjmp_target(Ctx *c) { if (MO_REC()) mo_esc_note(12, -1, c->x[30]); return sdk_longjmp_target(c); }
 
+#ifdef _WIN32
+/* (NEON generator 16/11) a game DLL built with RECOMP_NEON_VEC (neon_vec.h): its fused multiply-adds use FMA3 and its TBL PSHUFB when
+ * the CPU has them (game_shim.c rt_cpu_detect), the generic x86-64 ways otherwise; the same results bit for bit. SSBU_NEON_FMA=0 /
+ * SSBU_NEON_SSSE3=0 (tests): the generic ways on this CPU too. A test DLL with RECOMP_NEON_CHECK counts its checks (rt_nchk): a
+ * "NEONCHK" line on stderr every 10 s while they grow, with the first samples of any difference. An older DLL has none of these. */
+static volatile long long *g_nchk; static volatile uint32_t (*g_nchk_log)[20];
+static DWORD WINAPI neon_chk_report(LPVOID p) {
+    (void)p; long long last = 0; int shown = 0;
+    for (;;) {
+        Sleep(10000);
+        long long n = g_nchk[0];
+        if (n == last) continue;
+        last = n;
+        fprintf(stderr, "NEONCHK ops %lld | two ways differ %lld | differ from the old helper: with NaN / inf %lld, other %lld\n", n, g_nchk[1], g_nchk[2], g_nchk[3]);
+        for (int k = 0; k < 16; k++) {
+            if (g_nchk_log[k][0] == 0 || (shown >> k) & 1) continue;
+            volatile uint32_t *l = g_nchk_log[k]; shown |= 1 << k;
+            fprintf(stderr, "NEONCHK sample kind %u op %u: got %08x %08x %08x %08x other %08x %08x %08x %08x in %08x %08x %08x %08x / %08x %08x %08x %08x\n",
+                    l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7], l[8], l[9], l[10], l[11], l[12], l[13], l[14], l[15], l[16], l[17]);
+        }
+        fflush(stderr);
+    }
+    return 0;
+}
+static void neon_bind(HMODULE m) {
+    int *fma = (int *)(void *)GetProcAddress(m, "rt_cpu_fma"), *ss = (int *)(void *)GetProcAddress(m, "rt_cpu_ssse3");
+    const char *e1 = getenv("SSBU_NEON_FMA"), *e2 = getenv("SSBU_NEON_SSSE3");
+    if (!fma || !ss) return;
+    if (e1 && e1[0] == '0') *fma = 0;
+    if (e2 && e2[0] == '0') *ss = 0;
+    fprintf(stderr, "[neon] game DLL NEON: FMA3 %s, SSSE3 %s (used only by a DLL built with RECOMP_NEON_VEC)\n", *fma ? "on" : "off", *ss ? "on" : "off");
+    g_nchk = (volatile long long *)(void *)GetProcAddress(m, "rt_nchk"); g_nchk_log = (volatile uint32_t (*)[20])(void *)GetProcAddress(m, "rt_nchk_log");
+    if (g_nchk && g_nchk_log) CloseHandle(CreateThread(NULL, 0, neon_chk_report, NULL, 0, NULL));
+}
+#endif
+
 __attribute__((constructor)) static void bind_game(void) {
     GameHost h = {call_indirect, host_import, guest_trap, guest_unimpl, guest_svc, stx_diag, sky_site_inline, sky_site_midhook};
     const char *mo_e = getenv("SSBU_RB_MEMO"); int mo = mo_e && atoi(mo_e) > 0;      /* (SSBU_RB_MEMO) the ways out watched only then */
@@ -101,6 +137,7 @@ __attribute__((constructor)) static void bind_game(void) {
         if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)t.table, &m) && m) {
             volatile int *on = (volatile int *)(void *)GetProcAddress(m, "rt_ic_on");
             if (on) *on = !(e && e[0] == '0') && !getenv("SSBU_ICALLS") && !getenv("SSBU_ICALLS_STEP") && !getenv("SSBU_EXPERIMENT_POKE");
+            neon_bind(m);
             {   const IMAGE_DOS_HEADER *dh = (const IMAGE_DOS_HEADER *)(void *)m; const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const char *)m + dh->e_lfanew);
                 g_mo_dll_lo = (uintptr_t)m; g_mo_dll_hi = (uintptr_t)m + nt->OptionalHeader.SizeOfImage; }      /* (SSBU_RB_MEMO) the game DLL's image */
         }
