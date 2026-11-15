@@ -417,7 +417,7 @@ static DWORD WINAPI comp_wait(LPVOID arg) {
         if (hook_install(GA(0x71014e58f0ull), comp_battle, NULL, &g_battle_orig)) {
             if (!hook_install(GA(0x710235cbf0ull), comp_scene, NULL, &g_scene_orig)) printf("competitive: scene hook FAILED: every mode can be opened\n");
             { const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && w[0] == '2' && comp_quick_native()) hook_install(GA(0x7102363970ull), comp_seqstep, NULL, &g_seqstep_orig);
-              if (w && w[0] == '3' && comp_quick_native()) { hook_install(GA(0x7103725c90ull), comp_scn_a, NULL, &g_scn_a_orig); hook_install(GA(0x7103726120ull), comp_scn_b, NULL, &g_scn_b_orig); } }
+              if (w && w[0] == '3') {      /* (also without SSBU_QUICK_NATIVE: the Smash versus flow, to compare) */ hook_install(GA(0x7103725c90ull), comp_scn_a, NULL, &g_scn_a_orig); hook_install(GA(0x7103726120ull), comp_scn_b, NULL, &g_scn_b_orig); } }
             const char *arena_ui = getenv("SSBU_COMPETITIVE_UI");
             if (arena_ui && arena_ui[0] == '1') {
                 int menu_hook = hook_install(GA(0x710232ce40ull), comp_menu, NULL, &g_menu_orig);
