@@ -17,10 +17,10 @@
 static int g_bn_on = -1, g_bn_warm, g_bn_meas, g_bn_n, g_bn_done, g_bn_period, g_bn_depth;
 static long long g_bn_match = -1;
 static struct {
-    int nw; long long rb, real, k[RG_MAXSLOT + 2], n_rerun, n_recap, extra;
+    int nw, nol; long long rb, real, k[RG_MAXSLOT + 2], n_rerun, n_recap, extra;
     double t_pre, t_load, t_rerun, t_recap, cyc[2], ct[4][3], rap[3][4]; long long npass[2], rapn[3];
 } g_bn0;
-static double g_bn_rb[16], g_bn_norm[16], g_bn_p99[16]; static char g_bn_name[16][48]; static long long g_bn_extra;
+static double g_bn_rb[16], g_bn_norm[16], g_bn_p99[16], g_bn_ol[16]; static char g_bn_name[16][48]; static long long g_bn_extra;
 static int bn_on(void) {
     if (g_bn_on < 0) { const char *e = getenv("SSBU_BENCH"); g_bn_on = 0;
         if (e && *e && sscanf(e, "%d,%d,%d,%d,%d", &g_bn_warm, &g_bn_meas, &g_bn_n, &g_bn_period, &g_bn_depth) >= 3 && g_bn_meas > 0 && g_bn_n > 0) {
@@ -30,7 +30,7 @@ static int bn_on(void) {
     return g_bn_on;
 }
 static void bn_snap(void) {
-    g_bn0.nw = g_rbg_nw; g_bn0.rb = g_rbg_rb; g_bn0.real = g_rbg_real; memcpy(g_bn0.k, g_rbg_k, sizeof g_bn0.k); g_bn0.n_rerun = g_rbg_n_rerun; g_bn0.n_recap = g_rbg_n_recap;
+    g_bn0.nw = g_rbg_nw; g_bn0.nol = g_rbg_nol; g_bn0.rb = g_rbg_rb; g_bn0.real = g_rbg_real; memcpy(g_bn0.k, g_rbg_k, sizeof g_bn0.k); g_bn0.n_rerun = g_rbg_n_rerun; g_bn0.n_recap = g_rbg_n_recap;
     g_bn0.t_pre = g_rbg_t_pre; g_bn0.t_load = g_rbg_t_load; g_bn0.t_rerun = g_rbg_t_rerun; g_bn0.t_recap = g_rbg_t_recap; g_bn0.extra = g_bn_extra;
     memcpy(g_bn0.cyc, g_rgs_cyc, sizeof g_bn0.cyc); memcpy(g_bn0.npass, g_rgs_npass, sizeof g_bn0.npass); memcpy(g_bn0.ct, g_rgs_ct, sizeof g_bn0.ct);
     memcpy(g_bn0.rap, g_rap, sizeof g_bn0.rap); memcpy(g_bn0.rapn, g_rapn, sizeof g_bn0.rapn);
@@ -57,17 +57,26 @@ static void bn_segment_end(long long i) {
     g_bn_rb[s] = med; g_bn_norm[s] = nmed; g_bn_p99[s] = p99;
     char line[1200];
     snprintf(line, sizeof line, "BENCH %d %s | stage id 0x%x | frames %lld-%lld | rbmed %.2f p99 %.2f over %.2f mean %.2f n %d | norm %.2f n %d | real %.3f rerun %.3f | pre %.3f load %.3f rr %.3f recap %.3f "
-             "| rollbacks %lld (k1 %lld k2 %lld k3 %lld k4+ %lld; extra %lld) | first %.3f last %.3f middle %.3f ms, start->poll %.3f",
+             "| rollbacks %lld (k1 %lld k2 %lld k3 %lld k4+ %lld; extra %lld) | first %.3f last %.3f middle %.3f ms, start->poll %.3f, after a test reload %.3f",
              s + 1, g_bn_name[s], sid, i - g_bn_meas + 1, i, med, p99, over, mean, n, nmed, nn, c0, c1,
              (g_rbg_t_pre - g_bn0.t_pre) / rbd, (g_rbg_t_load - g_bn0.t_load) / rbd, (g_rbg_t_rerun - g_bn0.t_rerun) / rbd, (g_rbg_t_recap - g_bn0.t_recap) / rbd,
              rb, g_rbg_k[1] - g_bn0.k[1], g_rbg_k[2] - g_bn0.k[2], g_rbg_k[3] - g_bn0.k[3], rb - (g_rbg_k[1] - g_bn0.k[1]) - (g_rbg_k[2] - g_bn0.k[2]) - (g_rbg_k[3] - g_bn0.k[3]), g_bn_extra - g_bn0.extra,
-             ct[0][2] > 0 ? ct[0][0] / ct[0][2] : 0, ct[2][2] > 0 ? ct[2][0] / ct[2][2] : 0, ct[1][2] > 0 ? ct[1][0] / ct[1][2] : 0, sp1);
+             ct[0][2] > 0 ? ct[0][0] / ct[0][2] : 0, ct[2][2] > 0 ? ct[2][0] / ct[2][2] : 0, ct[1][2] > 0 ? ct[1][0] / ct[1][2] : 0, sp1, ct[3][2] > 0 ? ct[3][0] / ct[3][2] : 0);
     LOG("r1: %s\n", line); printf("[bench] %s\n", line);
     if (g_lw_ev) { printf("[bench] BENCH %d LOADWARM: runs %lld, skipped (lock busy) %lld, pages per run %.0f, %.3f ms per run\n", s + 1, g_lw_runs, g_lw_skips, g_lw_runs ? (double)g_lw_pages / g_lw_runs : 0.0, g_lw_runs ? g_lw_ms / g_lw_runs : 0.0); }
     if (g_rbab > 0 && g_rbg_wab) for (int sd = 0; sd < 2; sd++) {      /* (SSBU_RB_AB: A/B inside the segment, blocks of 8 rollbacks) */
         int an, bn2; double am, amn, ap, ao, bm, bmn, bp, bo; bn_dist(g_bn0.nw, to, 1, sd, &an, &am, &amn, &ap, &ao); bn_dist(g_bn0.nw, to, 0, sd, &bn2, &bm, &bmn, &bp, &bo);
         LOG("r1: BENCH %d AB %d side %s: rbmed %.2f mean %.2f p99 %.2f n %d | norm %.2f n %d\n", s + 1, g_rbab, sd ? "ON" : "off", am, amn, ap, an, bm, bn2);
         printf("[bench] BENCH %d AB %d side %s: rbmed %.2f mean %.2f p99 %.2f n %d | norm %.2f n %d\n", s + 1, g_rbab, sd ? "ON" : "off", am, amn, ap, an, bm, bn2); }
+    {   /* (round 13) the online-like cost over the segment (rb_rollback.c g_rbg_olv): every frame period with a rollback, by start */
+        int a0 = g_bn0.nol, a1 = g_rbg_olon > 0 ? g_rbg_nol : a0, nk[5] = {0}; double md[5] = {0}, ks[5] = {0};
+        float *w = malloc((size_t)(a1 - a0 + 1) * sizeof *w);
+        for (int q = 0; q <= 4 && w; q++) { int m = 0; for (int j = a0; j < a1; j++) if (!q || g_rbg_olkind[j] == q) { w[m++] = g_rbg_olv[j]; ks[q] += g_rbg_olk[j]; }
+            nk[q] = m; if (m) { qsort(w, (size_t)m, sizeof *w, bn_cmpf); md[q] = w[m / 2]; ks[q] /= m; } }
+        free(w); g_bn_ol[s] = md[0];
+        snprintf(line, sizeof line, "BENCH %d ONLINE %s | olmed %.2f n %d k %.2f | safe point n %d med %.2f k %.2f | go check n %d med %.2f k %.2f | in the wait n %d med %.2f k %.2f | wait + safe point n %d med %.2f",
+                 s + 1, g_bn_name[s], md[0], nk[0], ks[0], nk[1], md[1], ks[1], nk[2], md[2], ks[2], nk[3], md[3], ks[3], nk[4], md[4]);
+        LOG("r1: %s\n", line); printf("[bench] %s\n", line); }
     fflush(stdout);
     {   const char *e = getenv("SSBU_BENCH_TICKS"); FILE *tf; char fn[600];      /* every tick of this match so far: "<tick> <work ms> <k> <main M cycles>" (windows studied offline) */
         if (e && *e) { snprintf(fn, sizeof fn, "%s_%d_%s.txt", e, s + 1, g_bn_name[s]);
@@ -77,7 +86,11 @@ static void bn_segment_end(long long i) {
         double a = 0, b = 0; char lst[400]; int at = 0; lst[0] = 0;
         for (int k = 0; k < g_bn_done; k++) { a += g_bn_rb[k]; b += g_bn_norm[k]; at += snprintf(lst + at, sizeof lst - at > 0 ? sizeof lst - at : 0, "%s%s %.2f", k ? ", " : "", g_bn_name[k], g_bn_rb[k]); }
         LOG("r1: BENCH SUMMARY %d stages: rollback tick mean of medians %.3f ms, normal %.3f ms | %s\n", g_bn_done, a / g_bn_done, b / g_bn_done, lst);
-        printf("[bench] BENCH SUMMARY %d stages: rollback tick mean of medians %.3f ms, normal %.3f ms | %s\n", g_bn_done, a / g_bn_done, b / g_bn_done, lst); fflush(stdout);
+        printf("[bench] BENCH SUMMARY %d stages: rollback tick mean of medians %.3f ms, normal %.3f ms | %s\n", g_bn_done, a / g_bn_done, b / g_bn_done, lst);
+        { double o = 0; for (int k = 0; k < g_bn_done; k++) o += g_bn_ol[k];
+          LOG("r1: BENCH SUMMARY ONLINE %d stages: online-like work per period with a rollback, mean of medians %.3f ms\n", g_bn_done, o / g_bn_done);
+          printf("[bench] BENCH SUMMARY ONLINE %d stages: online-like work per period with a rollback, mean of medians %.3f ms\n", g_bn_done, o / g_bn_done); }
+        fflush(stdout);
         void dm_bench_exit(long long); dm_bench_exit(i);
     }
 }

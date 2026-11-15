@@ -99,6 +99,14 @@ static int g_rbg_gocheck = -1, g_rbg_gorb, g_rbg_golate = -1, g_rbg_gotry; stati
 static int g_rbg_waitrb = -1; static long long g_rbg_n_wrb, g_rbg_n_wbusy; static double g_rbg_wrb_ms, g_rbg_wrb_late_ms; static long long g_rbg_wrb_late;
 static double g_rbg_wpad_at; static long long g_rbg_wpad_frame = -1;     /* loop test: when the next frame's bot pads arrive inside the wait */
 static double g_rbg_sched, *g_rbg_late; static int g_rbg_nlate, g_rbg_wrb_pend;      /* time to the real pass's end from its scheduled tick */
+/* (round 13, measure) THE ONLINE-LIKE ROLLBACK COST: the main thread's work in the frame period that holds a rollback, by where the
+ * rollback started: 1 at the real pass's safe point (the bench's case: real pass + pre + load + re-run passes in one tick), 2 at the go
+ * check (load + re-runs + the real pass, one tick), 3 inside the pacing wait (WAITRB: the rollback started there, its re-run passes,
+ * then the next real tick), 4 = 3 and a second rollback at that tick's safe point. Online the other player's pad often arrives in the
+ * wait: the frame of that tick is not run yet, so that rollback re-runs one frame less than the bench's. Measure only (a few stores
+ * per tick, no behaviour change); SSBU_RB_OLSTAT=0: off. Report lines and the bench's "BENCH <n> ONLINE" line. */
+static float *g_rbg_olv; static unsigned char *g_rbg_olkind, *g_rbg_olk; static int g_rbg_nol, g_rbg_ol_have, g_rbg_ol_pk, g_rbg_tick_go, g_rbg_olon = -1; static double g_rbg_ol_part, g_rbg_wrb_t0;
+static long long g_rbg_tpart_n;      /* (round 13, TEST) SSBU_RB_TEST_PART injections made */
 static long long g_rbg_n_wmis, g_rbg_n_wpeek; static double g_rbg_wm_t0, g_rbg_wm_hold_ms; static long long g_rbg_wm_frame = -1;     /* (v2) */
 HANDLE rbn_rx_event(void);
 static void rbg_sleep_until_i(double t, HANDLE ev);
@@ -647,6 +655,8 @@ static void rbg_step_body(Ctx *c) {
             }
             static int tpb = -1; if (tpb < 0) { const char *e = getenv("SSBU_RB_TEST_PERTURB"); tpb = e ? atoi(e) : 0; }
             if (tpb && g_rbg_cur_k >= 2 && g_rgs_left == g_rbg_cur_k) { rg_test_perturb(tpb); g_rgs_firstp = 2; }      /* (the next pass: its own place) */
+            static int tpt = -1; if (tpt < 0) { const char *e = getenv("SSBU_RB_TEST_PART"); tpt = e ? (int)strtol(e, NULL, 0) : 0; }      /* (round 13, TEST ONLY) r1_ring.c rg_test_part */
+            if (tpt && g_rbg_cur_k >= 2 && g_rgs_left == g_rbg_cur_k && r1_ring_hold()) { rg_test_part(tpt); g_rbg_tpart_n++; r1_ring_let_go(); }
             if (g_rgs_left <= 1) g_rbg_reloaded = 0;
         }
         int r4 = g_rbg_recap == 4 || (g_rbg_recap == 5 && g_rbg_cur_k == 3);
@@ -727,6 +737,18 @@ static void rbg_step_body(Ctx *c) {
     if (!gorb && !g_rbg_wrb_pend && g_rbg_sched > 0) {      /* (phase 3) a real pass ended: its time from its scheduled tick (deadline 16.67 ms) */
         if (!g_rbg_late) g_rbg_late = calloc(RBG_NT, sizeof *g_rbg_late);
         if (g_rbg_late && g_rbg_nlate < RBG_NT) g_rbg_late[g_rbg_nlate++] = tw - g_rbg_sched; }
+    if (g_rbg_olon < 0) { const char *e = getenv("SSBU_RB_OLSTAT"); g_rbg_olon = !(e && e[0] == '0');
+        if (g_rbg_olon) { g_rbg_olv = calloc(RBG_NT, sizeof *g_rbg_olv); g_rbg_olkind = calloc(RBG_NT, 1); g_rbg_olk = calloc(RBG_NT, 1); if (!g_rbg_olv || !g_rbg_olkind || !g_rbg_olk) g_rbg_olon = 0; } }
+    if (g_rbg_olon > 0) {                               /* (round 13, measure) the online-like cost (above) */
+        if (g_rbg_wrb_pend) { g_rbg_ol_part += tw - g_rbg_wrb_t0; g_rbg_ol_pk += g_rbg_cur_k; g_rbg_ol_have = 1; }      /* the re-run passes of a rollback started in the wait ended */
+        else if (!gorb && g_rbg_tick0 > 0) {            /* a real tick ended */
+            int kind = 0; double v = tw - g_rbg_tick0; int kk = g_rbg_tick_k;
+            if (g_rbg_ol_have) { kind = g_rbg_tick_k ? 4 : 3; v += g_rbg_ol_part; kk += g_rbg_ol_pk; }
+            else if (g_rbg_tick_k) kind = g_rbg_tick_go ? 2 : 1;
+            if (kind && g_rbg_nol < RBG_NT) { g_rbg_olv[g_rbg_nol] = (float)v; g_rbg_olkind[g_rbg_nol] = (unsigned char)kind; g_rbg_olk[g_rbg_nol] = (unsigned char)(kk > 255 ? 255 : kk); g_rbg_nol++; }
+            g_rbg_ol_have = 0; g_rbg_ol_part = 0; g_rbg_ol_pk = 0;
+        }
+    }
     g_rbg_wrb_pend = 0;
     if (!gorb && g_rbg_tick0 > 0 && g_rbg_nw < RBG_NT) { g_rbg_work[g_rbg_nw] = (float)(tw - g_rbg_tick0); g_rbg_wcyc[g_rbg_nw] = (float)((rgs_cyc_now() - g_rbg_cyc_go) / 1e6); g_rbg_wk[g_rbg_nw] = (unsigned char)(g_rbg_tick_k > 255 ? 255 : g_rbg_tick_k); if (g_rbg_wab) g_rbg_wab[g_rbg_nw] = (unsigned char)g_rbab_side; g_rbg_nw++; }
     if (g_bn_on) rbg_bench_tick(i);                     /* (round 12, TEST) SSBU_BENCH (g_bn_on: -1 until read, 0 off) */
@@ -808,7 +830,7 @@ static void rbg_step_body(Ctx *c) {
                     else {
                         g_rg_kept = 1; double t0 = now_ms();
                         g_rbg_gotry = 1; int r = rbg_rollback(c, i, m); g_rbg_gotry = 0;
-                        if (r) { g_rbg_n_wrb++; g_rbg_wrb_ms += g_rbg_next - t0; g_rbg_wm_hold_ms += t0 - g_rbg_wm_t0; g_rbg_wrb_pend = 1; return; }      /* re-run passes now; then back here for the rest of the wait */
+                        if (r) { g_rbg_wrb_t0 = t; g_rbg_n_wrb++; g_rbg_wrb_ms += g_rbg_next - t0; g_rbg_wm_hold_ms += t0 - g_rbg_wm_t0; g_rbg_wrb_pend = 1; return; }      /* re-run passes now; then back here for the rest of the wait */
                         r1_ring_let_go();
                     }
                 }
@@ -832,7 +854,7 @@ static void rbg_step_body(Ctx *c) {
     double go = now_ms();
     g_rbg_go_sched = g_rbg_pace && g_rbg_sched > 0 ? g_rbg_sched : go;      /* (0.2.38) the present queue counts from the tick's place on the match clock */
     if (g_rbg_last_go > 0 && g_rbg_ng < RBG_NT) g_rbg_gap[g_rbg_ng++] = (float)(go - g_rbg_last_go);
-    g_rbg_last_go = go; g_rbg_tick0 = go; g_rbg_tick_k = 0; g_rbg_cyc_go = rgs_cyc_now();
+    g_rbg_last_go = go; g_rbg_tick0 = go; g_rbg_tick_k = 0; g_rbg_tick_go = 0; g_rbg_cyc_go = rgs_cyc_now();
     if (g_rbg_gocheck < 0) { const char *e = getenv("SSBU_RB_NET_GOCHECK"); g_rbg_gocheck = !e || atoi(e) != 0; e = getenv("SSBU_RB_NET_TEST_GOLATE"); g_rbg_golate = e ? atoi(e) : 0; }
     if (!g_rbg_noring && g_rg_ready) {                  /* (Arena perf) GO CHECK (above) */
         if (g_rbg_golate > 0 && rbn_loop() && g_rbg_pace) { if (g_rbg_wpad_frame == i + 1 && g_rbg_wpad_at > 0) { rbn_drain(i + 1); g_rbg_wpad_at = -1; } }      /* (v2) arrived in the wait, seen now */
@@ -846,7 +868,7 @@ static void rbg_step_body(Ctx *c) {
                 else {
                     g_rg_kept = 1;                          /* the load takes the threads held here */
                     g_rbg_gotry = 1; int r = rbg_rollback(c, i, m); g_rbg_gotry = 0;
-                    if (r) { g_rbg_gorb = 1; g_rbg_n_gorb++; return; }
+                    if (r) { g_rbg_gorb = 1; g_rbg_n_gorb++; g_rbg_tick_go = 1; return; }
                     r1_ring_let_go();                       /* (not loaded: the threads go on) */
                 }
             }
@@ -969,7 +991,7 @@ static void rbg_fight_off(void) {
     g_rbg_in_match = 0; g_rbg_ff_first = -1;
     g_rbg_rb = 0; memset(g_rbg_k, 0, sizeof g_rbg_k); g_rbg_rerun = g_rbg_miss = g_rbg_stalls = g_rbg_capfail = g_rbg_capskip = g_rbg_capskip_real = g_rbg_lastlocal = g_rbg_real = g_rbg_gone = 0;
     g_rbg_stall_ms = g_rbg_load_ms = g_rbg_tick0 = g_rbg_next = g_rbg_last_go = 0;
-    g_rbg_last_k = 0; g_rbg_max_k = 0; g_rbg_short_waits = 0; g_rg_short = 0; g_rg_need = -1; g_rbg_nw = g_rbg_ng = g_rbg_tick_k = 0; g_rbg_rb_unheld = 0; g_rbg_recap_first = 0;
+    g_rbg_last_k = 0; g_rbg_max_k = 0; g_rbg_short_waits = 0; g_rg_short = 0; g_rg_need = -1; g_rbg_nw = g_rbg_ng = g_rbg_tick_k = 0; g_rbg_nol = 0; g_rbg_ol_have = 0; g_rbg_ol_part = 0; g_rbg_ol_pk = 0; g_rbg_rb_unheld = 0; g_rbg_recap_first = 0;
     g_rbg_t_pre = g_rbg_t_load = g_rbg_t_rerun = g_rbg_t_recap = g_rbg_t_pass0 = 0; g_rbg_n_rerun = g_rbg_n_recap = 0;
     g_rbg_wd_before = g_ra_wd_fired;
     g_rbg_pend = 0; g_rbg_gorb = 0; g_rbg_n_gorb = g_rbg_n_gobusy = 0;
@@ -1025,6 +1047,14 @@ static void rbg_report(void) {
     rbg_dist("work per tick (real pass + its rollback, without waits)", g_rbg_work, g_rbg_nw, g_rbg_wk, -1);
     rbg_dist("work per tick without rollback", g_rbg_work, g_rbg_nw, g_rbg_wk, 0);
     rbg_dist("work per tick with rollback", g_rbg_work, g_rbg_nw, g_rbg_wk, 1);
+    if (g_rbg_tpart_n) LOG("r1: RB NET report: TEST_PART injections between the first and the second re-run pass: %lld\n", g_rbg_tpart_n);
+    if (g_rbg_olon > 0 && g_rbg_nol) {                  /* (round 13, measure) the online-like cost by where the rollback started */
+        static const char *kn[5] = {"", "at the real safe point", "at the go check", "inside the wait (+ the next real tick)", "inside the wait + one more at the safe point"};
+        static unsigned char kv[RBG_NT];
+        rbg_dist("ONLINE-LIKE work per frame period with a rollback (any start)", g_rbg_olv, g_rbg_nol, NULL, -1);
+        for (int q = 1; q <= 4; q++) { int n = 0; double ks = 0; for (int j = 0; j < g_rbg_nol; j++) { kv[j] = g_rbg_olkind[j] == q; if (kv[j]) { n++; ks += g_rbg_olk[j]; } }
+            if (n) { char w[160]; snprintf(w, sizeof w, "ONLINE-LIKE, rollback started %s (frames again %.2f mean)", kn[q], ks / n); rbg_dist(w, g_rbg_olv, g_rbg_nol, kv, 1); } }
+    }
     if (g_rbab > 0 && g_rbg_wab) for (int sd = 0; sd < 2; sd++) {      /* (TEST, SSBU_RB_AB) the two groups */
         unsigned char *kk = malloc((size_t)g_rbg_nw + 1); if (!kk) break;
         for (int j = 0; j < g_rbg_nw; j++) kk[j] = g_rbg_wk[j] && g_rbg_wab[j] == sd;

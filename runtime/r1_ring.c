@@ -358,6 +358,35 @@ static void rg_test_perturb(int mask) {
         _mm_sfence();
     }
 }
+/* (round 13, TEST ONLY) SSBU_RB_TEST_PART=<mask> (rb_rollback.c): between the first and the second re-run pass of a rollback (k >= 2),
+ * with every thread held, parts of a load's work that change no guest byte; the second (last) re-run pass then shows which part makes
+ * the first re-run pass after a load dearer than the others (the bench's "first" / "last" columns; the bisection of the round 10 plan):
+ * 1 the hold itself (r1_ring_hold / let go, always made); 2 a read of the mark maps' blocks (the sweep's reads); 4 main copies 160 pages
+ * between two host buffers (LOADSNAP's part on main); 8 the copy helpers (other L3) rewrite the last load's pages with their own bytes,
+ * non-temporal (the copy's effect on main's caches); 16 a protection change on 2 MB of a host buffer (a TLB flush of the process);
+ * 32 main reads the last load's page list and each page's index entry (the list build). */
+static void rg_helpers_on(int other);
+static void rg_test_part(int mask) {
+    if (mask & 2) { volatile uint64_t acc = 0;
+        for (int w = 0; w < 2; w++) {
+            uint8_t *map = w ? *pm2 : *pm1; size_t np = (size_t)((w ? WN2 : g_wn1) >> 12);
+            uint64_t *q = (uint64_t *)map; uint32_t *bl = !g_blk1 ? NULL : w ? g_blk2_list : g_blk1_list;
+            size_t nq = !bl ? np / 8 : (w ? g_blk2_n : g_blk1_n) * 8;
+            for (size_t qi = 0; qi < nq; qi++) { size_t i = !bl ? qi : (size_t)bl[qi >> 3] * 8 + (qi & 7); acc += q[i]; }
+        } (void)acc; }
+    if (mask & 4) { static uint8_t *a, *b; size_t np = 160;
+        if (!a) { a = VirtualAlloc(NULL, np * PG, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); b = VirtualAlloc(NULL, np * PG, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); }
+        if (a && b) for (size_t i = 0; i < np; i++) { a[i * PG] = (uint8_t)i; memcpy(b + i * PG, a + i * PG, PG); } }
+    if (mask & 8) {
+        rg_helpers_on(1);
+        for (size_t n = 0; n < g_rg_ntl; n++) { uint32_t id = g_rg_tl[n]; if (id < g_rg_n1 && g_dc[id]) continue; uint8_t *a = rg_addr(id);
+            if (id < g_rg_n1 + g_rg_n2 && g_audio_free && is_async(a)) continue; cp_add(a, a); }
+        g_cp_nt = 1; g_cp_mw = 0.0; cp_run(); g_cp_nt = 0; g_cp_mw = 1.0; _mm_sfence(); }
+    if (mask & 16) { static uint8_t *t; size_t n = 2u << 20; DWORD old;
+        if (!t) { t = VirtualAlloc(NULL, n, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); if (t) for (size_t o = 0; o < n; o += PG) t[o] = 1; }
+        if (t) { VirtualProtect(t, n, PAGE_READONLY, &old); VirtualProtect(t, n, PAGE_READWRITE, &old); } }
+    if (mask & 32) { volatile uint64_t acc = 0; for (size_t n = 0; n < g_rg_ntl; n++) { uint32_t id = g_rg_tl[n]; acc += g_rg_idx[id] + (uintptr_t)rg_addr(id); } (void)acc; }
+}
 static void rg_remark(uint32_t id) {                     /* (hs14) a window page marked as written again (a capture given up) */
     if (id < g_rg_n1) (g_lines ? g_m1h : *pm1)[id] = 1; else if (id < g_rg_n1 + g_rg_n2) (g_lines ? g_m2h : *pm2)[id - g_rg_n1] = 1;      /* (round 10: whole page) */
 }
