@@ -37,10 +37,10 @@ PLAT_FLAGS += ['-mcx16'] if TARGET_LINUX else []
 CFLAGS = ['-c', '-O1', '-w', '-fno-strict-aliasing', '-I', HERE, '-I', GEN] + PLAT_FLAGS
 HOST_SOURCES = ['hostrt.c', 'boot.c', 'nnsdk.c', 'libcxx.c', 'os_threads.c', 'nvn_stub.c', 'nvn_gl.c', 'nvn_vk.c', 'mx_translate.c', 'tex_decode.c', 'nnfs.c', 'clib.c', 'nntime.c', 'nnhid.c', 'nnpad_sdl.c', 'nnpad_gca.c', 'display.c', 'nnpl.c', 'nnfontll.c', 'nnmovie.c', 'nnmisc.c', 'nnaudio.c', 'nnro.c', 'nnmovie_mf.c', 'nniostream.c', 'nncxxrt.c', 'nncxxlib.c', 'nnlibc2.c',
                 'sdklift_rt.c', 'nnsdk2.c', 'nnmii.c', 'nnapplet.c', 'nnalbum.c', 'nnnet.c', 'nnfsdir.c', 'nnunwind.c', 'nvn_sdk.c', 'nvn_c4.c', 'nvn_c5.c', 'hitch.c', 'gfx_options.c', 'debug_mode.c', 'r1_state.c',
-                'loose_host.c', 'osk.c', 'nnldn.c', 'net_relay.c', 'coverage.c', 'competitive.c', 'rb_net.c']    # the new fighters' file layer (loose_files.c): off unless SSBU_CHARACTERS / SSBU_LOOSE_FILES is set
+                'loose_host.c', 'osk.c', 'nnldn.c', 'net_relay.c', 'coverage.c', 'competitive.c', 'rb_net.c', 'game_code.c', 'nnonline.c']    # the new fighters' file layer (loose_files.c): off unless SSBU_CHARACTERS / SSBU_LOOSE_FILES is set
 # nnldn.c / net_relay.c: online play over the game's Local Wireless (plan/phases/N3_local_wireless_online.md), off unless SSBU_ONLINE
 # (taken only when present: a tree without the online files, e.g. a public one before they are published, still links)
-HOST_SOURCES[:] = [n for n in HOST_SOURCES if n not in ('nnldn.c', 'net_relay.c', 'rb_net.c') or os.path.exists(os.path.join(HERE, n))]   # rb_net.c: online rollback (R3), off unless SSBU_RB_NET
+HOST_SOURCES[:] = [n for n in HOST_SOURCES if n not in ('nnldn.c', 'net_relay.c', 'rb_net.c', 'game_code.c') or os.path.exists(os.path.join(HERE, n))]   # rb_net.c: online rollback (R3), off unless SSBU_RB_NET
 # Everything of the host that is derived from the dump is linked into the game DLL instead (game_data.h): the exe is made
 # of the runtime's own sources only and can be built without a dump (scripts/make_release.py).
 GAME_DATA_SOURCES = ['game_data.c', 'sdkdata.c', 'nro_registry.c', 'sdklift_gen.c']
@@ -79,7 +79,17 @@ def cmd_compile(jobs, force):
     os.makedirs(OBJ, exist_ok=True)
     sources = sorted(n for n in os.listdir(GEN) if n.endswith('.c'))
     # only the headers the generated code includes; hostrt.h belongs to the host sources, which cmd_link rebuilds when they are stale
-    newest_header = max(os.path.getmtime(os.path.join(HERE, h)) for h in GEN_HEADERS)
+    # (online-mm 15/11) RECOMP_CODE_CHECK (default 1): the headers are GEN_HEADERS and everything they include (neon_fast.h, which
+    # neon.h includes for R1_GAMEDLL, was not looked at), and an object that passes the date check is still compiled again when
+    # the record says it was made from another content (13/11: objects or a DLL made by a test build, newer than the sources of
+    # an update, were kept). =0: as before
+    code_check = os.environ.get('RECOMP_CODE_CHECK', '1') not in ('', '0')
+    if code_check:
+        import game_code
+        gen_headers = [h for h in game_code.closure(HERE, GEN_HEADERS) if os.path.isfile(os.path.join(HERE, h))]
+    else:
+        gen_headers = GEN_HEADERS
+    newest_header = max(os.path.getmtime(os.path.join(HERE, h)) for h in gen_headers)
     # content check on top of the dates: an object whose source, headers and flags hash to what it was compiled from is kept
     # even when the files are newer (an update that rewrote them with the same bytes, a lifter run that regenerated equal
     # files): before, any newer date recompiled, and touching runtime.h recompiled the whole game
@@ -90,7 +100,7 @@ def cmd_compile(jobs, force):
     except (OSError, ValueError):
         known = {}
     hh = hashlib.sha1(repr([os.environ.get(k, '') for k in ('RECOMP_CFLAGS', 'RECOMP_INLINE', 'RECOMP_OPT', 'RECOMP_TARGET', 'RECOMP_NOCRT')]).encode())
-    for h in GEN_HEADERS:
+    for h in gen_headers:
         with open(os.path.join(HERE, h), 'rb') as f:
             hh.update(f.read())
     hkey = hh.hexdigest()
@@ -98,12 +108,16 @@ def cmd_compile(jobs, force):
         with open(os.path.join(GEN, n), 'rb') as f:
             return hashlib.sha1(f.read() + hkey.encode()).hexdigest()
     todo, cur, kept = [], {}, 0
+    dated = []                                   # (RECOMP_CODE_CHECK) passed the date check, recorded: their content is checked below
     for n in sources:
         obj = os.path.join(OBJ, n[:-2] + '.obj')
         if force or not os.path.exists(obj):
             todo.append(n)
             continue
         if os.path.getmtime(obj) >= max(os.path.getmtime(os.path.join(GEN, n)), newest_header):
+            if code_check and n in known:
+                dated.append(n)
+                continue
             cur[n] = known[n] if n in known else src_hash(n)     # (first run with the check: the record is made now)
             continue
         cur[n] = src_hash(n)
@@ -112,6 +126,16 @@ def cmd_compile(jobs, force):
             kept += 1
         else:
             todo.append(n)
+    if dated:
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:      # (1.3 GB hashed: threads, hashlib lets go of the GIL)
+            now = dict(zip(dated, pool.map(src_hash, dated)))
+        stale = [n for n in dated if now[n] != known[n]]
+        for n in dated:
+            if now[n] == known[n]:
+                cur[n] = now[n]
+        if stale:
+            print('objects newer than their sources but made from another content (another build, a test DLL): %d compiled again' % len(stale), flush=True)
+            todo.extend(stale)
     if kept:
         print('objects kept because their source, headers and flags are unchanged (only the dates were newer): %d' % kept, flush=True)
     wanted = set(n[:-2] + '.obj' for n in sources)
@@ -316,12 +340,24 @@ def build_game_dll():
     data_objs = compile_game_data(data_dir, shim)
     if data_objs is None:
         return 1
+    code = None
+    if os.environ.get('RECOMP_CODE_CHECK', '1') not in ('', '0'):      # (online-mm 15/11) the DLL's game code (game_code.py)
+        code = game_code_object(data_dir)
+        if code is None:
+            return 1
+        data_objs = data_objs + [os.path.join(data_dir, 'game_code_dll.obj')]
     objs = sorted(os.path.join(OBJ, n) for n in os.listdir(OBJ) if n.endswith('.obj')) + data_objs
     if os.path.isdir(OBJ_BIG):               # the -O0 units of the split files (build_opt.py)
         objs += sorted(os.path.join(OBJ_BIG, n) for n in os.listdir(OBJ_BIG) if n.endswith('_b.obj'))
     newest = max(os.path.getmtime(o) for o in objs)
     if os.path.exists(dll) and os.path.exists(lib) and os.path.getmtime(dll) >= newest:
-        return 0
+        # (online-mm) the dates alone kept a DLL copied in by hand (13/11: a test DLL newer than every object of an update):
+        # a DLL without this code is linked again from the objects
+        import game_code
+        have = game_code.read_code(dll, b'SSBU-GAME-CODE:') if code and not TARGET_POSIX else code
+        if have == code:
+            return 0
+        print('%s carries the game code %s, its objects and sources give %s: linked again' % (GAME_DLL, have or '(none)', code), flush=True)
     t0 = time.time()
     r = link_dll(objs, dll, os.path.join(data_dir, 'link.rsp'))
     print((r.stdout + r.stderr)[-4000:])
@@ -330,6 +366,31 @@ def build_game_dll():
     else:
         print('could not link %s (is a game exe still running and holding it open?)' % GAME_DLL)
     return r.returncode
+
+
+def game_code_object(data_dir):
+    """(online-mm 15/11) game_code_dll.c in the DLL's data folder: the export ssbu_dll_code = the DLL's part of the game code
+    (game_code.py: our sources in the DLL and its compile settings), also in a section .ssbuid that the launcher reads
+    without loading the DLL. Written and compiled again only when the code changes. Returns the code, None if it failed."""
+    import game_code
+    code = game_code.dll_code(HERE)
+    src, obj = os.path.join(data_dir, 'game_code_dll.c'), os.path.join(data_dir, 'game_code_dll.obj')
+    text = ('/* written by build.py (game_code.py): the code of the game DLL. No game content. */\n'
+            '#ifdef _WIN32\n__declspec(dllexport) __attribute__((section(".ssbuid"))) const char ssbu_dll_code[] = "SSBU-GAME-CODE:%s";\n'
+            '#else\n__attribute__((visibility("default"))) const char ssbu_dll_code[] = "SSBU-GAME-CODE:%s";\n#endif\n') % (code, code)
+    try:
+        old = open(src).read()
+    except OSError:
+        old = None
+    if old != text:
+        with open(src, 'w') as f:
+            f.write(text)
+    if not os.path.exists(obj) or os.path.getmtime(obj) < os.path.getmtime(src):
+        r = subprocess.run([CLANG, '-c', '-O1', '-w'] + NOCRT_FLAGS + PLAT_FLAGS + [src, '-o', obj], capture_output=True, text=True, errors='replace')
+        if r.returncode:
+            print('FAILED game_code_dll.c\n%s' % (r.stdout + r.stderr)[-2000:])
+            return None
+    return code
 
 
 def game_import_lib(objdir):
@@ -345,9 +406,14 @@ def game_import_lib(objdir):
     return lld_def_lib(d, os.path.join(objdir, 'ssbu_game_import.lib'))
 
 
+GAME_CODE_FLAGS = []       # (online-mm 15/11) cmd_link: -DSSBU_EXE_CODE / -DSSBU_DLL_WANT for game_code.c
+
+
 def compile_host(job):
     src, obj = job
     flags = CXX_FLAGS if src.endswith('.cpp') else HOST_FLAGS
+    if os.path.basename(src) == 'game_code.c':
+        flags = flags + GAME_CODE_FLAGS
     r = subprocess.run([CLANG, '-c'] + flags + [src, '-o', obj], capture_output=True, text=True)
     return src, r.returncode, (r.stdout + r.stderr)[-3000:]
 
@@ -417,6 +483,23 @@ def cmd_link(host_only=False):
     # RECOMP_R1=1: the rollback exe (ssbu_native_rb.exe, scripts/setup.py --rollback): its C++ runtime marks the pages it
     # writes (r1src/nncxxrt.c, R1_MARK), like the game DLL built with -DR1_MARK (ssbu_game_r1.dll) it imports
     r1 = os.environ.get('RECOMP_R1') == '1'
+    if 'game_code.c' in HOST_SOURCES:
+        # (online-mm 15/11) the exe's part of the game code and the DLL part it expects (game_code.py), compiled into game_code.c;
+        # its object is made again when they change (stamp _game_code.txt beside it)
+        import game_code
+        exe_c, dll_c = game_code.exe_part(HERE, HOST_SOURCES), game_code.dll_part(HERE)
+        GAME_CODE_FLAGS[:] = ['-DSSBU_EXE_CODE="%s"' % exe_c, '-DSSBU_DLL_WANT="%s"' % dll_c]
+        stamp, obj = os.path.join(objdir, '_game_code.txt'), os.path.join(objdir, 'game_code.obj')
+        try:
+            have = open(stamp).read().strip()
+        except OSError:
+            have = None
+        if have != exe_c + ' ' + dll_c:
+            if os.path.exists(obj):
+                os.remove(obj)
+            with open(stamp, 'w') as f:
+                f.write(exe_c + ' ' + dll_c + '\n')
+        print('game code: exe e%s, expects the game DLL part d%s' % (exe_c, dll_c), flush=True)
     for n in HOST_SOURCES + ['gamedll.c'] + ([] if HAVE_IMGUI else ['menu_stub.c']):
         src, obj = os.path.join(HERE, 'r1src' if r1 and n == 'nncxxrt.c' else '', n), os.path.join(objdir, n[:-2] + '.obj')
         objs.append(obj)

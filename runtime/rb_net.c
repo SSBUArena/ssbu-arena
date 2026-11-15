@@ -339,9 +339,32 @@ static void ba_fill(uint8_t out[0xb0]) {      /* this game's picks (random ones 
 const char *rbn_hs_why(void) { return g_hs_why; }      /* (R3 pub1) why the last handshake failed (rb_rollback.c's notice) */
 static void rtt_reset(void);                            /* (R3 net3) a new opponent: its round trip is measured afresh */
 static void hs_head(RbhMsg *m, int type) { memset(m, 0, sizeof *m); m->type = (uint8_t)type; m->proto = RBH_PROTO; m->game_build = (int16_t)g_game_build; m->exe_stamp = exe_stamp(); m->nonce = g_hs_nonce; }
-static void hs_send(const void *p, int n) { if (net_rb_send(p, n)) g_hs_tx++; }
+/* (online-mm 15/11) SSBU_RB_NET_CODE_CHECK (default 1): every CHOICE / PROPOSE / ACCEPT / REFUSE / LAYOUT ends with "GC" + length u8
+ * + this game's code (game_code.c: exe + game DLL); a game whose code differs is refused ("different game files"), the safety net
+ * behind the lobby's own pairing (match_game_code). A message without it (a build of before: proto 6 takes longer messages and
+ * ignores the end) is only noted. =0: nothing sent, nothing checked (as before). */
+static int g_code_check = -1;
+static int code_check_on(void) { if (g_code_check < 0) { const char *e = getenv("SSBU_RB_NET_CODE_CHECK"); g_code_check = !(e && e[0] == '0'); } return g_code_check; }
+static char g_hs_peer_code[48];                         /* the code at the end of the newest handshake message (hs_rx), "" = none */
+static void hs_send(const void *p, int n) {
+    if (n == (int)sizeof(RbhMsg) && code_check_on()) {
+        const char *game_code(void); const char *gc = game_code(); int gl = (int)strlen(gc);
+        uint8_t b[sizeof(RbhMsg) + 3 + 47];
+        if (gl > 47) gl = 47;
+        memcpy(b, p, (size_t)n); b[n] = 'G'; b[n + 1] = 'C'; b[n + 2] = (uint8_t)gl; memcpy(b + n + 3, gc, (size_t)gl);
+        if (net_rb_send(b, n + 3 + gl)) g_hs_tx++;
+        return;
+    }
+    if (net_rb_send(p, n)) g_hs_tx++;
+}
 static int hs_check(const RbhMsg *m, char *why, size_t n) {           /* 0 = the other game cannot play this match with us */
     if (m->proto != RBH_PROTO) { snprintf(why, n, "handshake protocol %d here, %d there", RBH_PROTO, m->proto); return 0; }
+    if (code_check_on()) {
+        const char *game_code(void); const char *gc = game_code();
+        if (g_hs_peer_code[0] && strcmp(g_hs_peer_code, gc)) {
+            snprintf(why, n, "different game files (game codes %.24s, %.24s): update both games in the launcher", gc, g_hs_peer_code); return 0; }
+        if (!g_hs_peer_code[0]) { static int said; if (!said) { said = 1; printf("[rbnet] handshake: NOTE the other game sends no game code (an older build): not compared\n"); fflush(stdout); } }
+    }
     int game_xver_with(int other); const char *game_build_label(int b);
     if (m->game_build != (int16_t)g_game_build && !game_xver_with(m->game_build)) {      /* (cross-version: SSBU_XVER, hostrt.c) */
         snprintf(why, n, "game update %s here, %s there (build %d / %d): both players need the same game version", game_build_label(g_game_build), game_build_label(m->game_build), g_game_build, m->game_build); return 0; }
@@ -393,6 +416,13 @@ static int hs_rx(const uint8_t *p, int n) {
     RbhMsg m; memcpy(&m, p, sizeof m);
     char why[160];
     AcquireSRWLockExclusive(&g_hs_lock);
+    {   /* (online-mm) the game code at the end, if any (SSBU_RB_NET_CODE_CHECK) */
+        int o = (int)sizeof(RbhMsg); g_hs_peer_code[0] = 0;
+        if (n >= o + 3 && p[o] == 'G' && p[o + 1] == 'C' && p[o + 2] < sizeof g_hs_peer_code && n >= o + 3 + p[o + 2]) {
+            int l = p[o + 2]; for (int k = 0; k < l; k++) g_hs_peer_code[k] = p[o + 3 + k] >= 0x21 && p[o + 3 + k] < 0x7f ? (char)p[o + 3 + k] : '?';
+            g_hs_peer_code[l] = 0;
+        }
+    }
     int waiting = g_hs_waiting && g_hs_nonce;
     switch (m.type) {
     case RBH_CHOICE:                                    /* (host, while it waits: an older CHOICE is not for this match) */
@@ -600,7 +630,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
                 phase = 1; t0 = now; last_note = 0;
             } else if (mm.state == MM_TIMEOUT || mm.state == MM_OLD_LOBBY || mm.state == MM_PEER_LEFT || mm.state == MM_EXPIRED || mm.state == MM_OFFLINE
                        || mm.state == MM_NO_ACCOUNT || mm.state == MM_BLOCKED || (mm.kind != 2 && mm.state != MM_ASKING)) {
-                snprintf(g_hs_why, sizeof g_hs_why, "%s", mm.state == MM_TIMEOUT ? "no opponent found in time (nobody with your version and mods searched)" :
+                snprintf(g_hs_why, sizeof g_hs_why, "%s", mm.state == MM_TIMEOUT ? "no opponent found in time (nobody with your version, mods and game files searched)" :
                          mm.state == MM_NO_ACCOUNT ? "this search needs your SSBU Arena account: sign in in the launcher" :
                          mm.state == MM_BLOCKED ? "matchmaking is blocked for your account for now (fair play)" :
                          mm.state == MM_OLD_LOBBY ? "the lobby server is an older version (it cannot find rollback opponents): use a room code" :

@@ -255,7 +255,10 @@ static void comp_scene(Ctx *c, void *user) {
     const char *ui = getenv("SSBU_COMPETITIVE_UI");
     if (ui && ui[0] == '1') {
         if ((s >> 24) == 0x01 && g_quick) comp_quick_end("back at the main menu");
-        if (s == SEQ_ONLINE_ANYONE && comp_quick_native()) { static int said; if (!said++) { printf("competitive UI: Online Ranked -> the game's own Online mode (SSBU_QUICK_NATIVE=1, probe)\n"); fflush(stdout); } }
+        if (s == SEQ_ONLINE_ANYONE && comp_quick_native()) { static int said; if (!said++) { printf("competitive UI: Online Ranked -> the game's own Online mode (SSBU_QUICK_NATIVE=1, probe)\n"); fflush(stdout);
+                /* (online-mm 15/11, PROBE) SSBU_QUICK_NATIVE_WATCH=1: a hardware write watch on the current sequence (debug_mode.c debug_watch:
+                 * every thread, the guest functions of each write): who sends the Online mode back to the main menu */
+                { const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && w[0] == '1') { void debug_watch(const uint64_t *a, int n); uint64_t a = CURRENT_SEQUENCE; debug_watch(&a, 1); }      /* (=2: comp_seqstep) */ } } }
         else if (s == SEQ_ONLINE_ANYONE) {
             if (comp_quick_begin()) *seq = SEQ_MELEE_NORMAL;
             else *seq = 0x01000000u;
@@ -366,6 +369,125 @@ static void comp_stage_state(Ctx *c, void *user) {
     }
     g_stage_state_orig(c);
 }
+/* (online-mm 15/11, PROBE) SSBU_QUICK_NATIVE_WATCH=2: the scene sequence controller's state step 0x7102363970 (x0 = controller, its state
+ * machine at +0xe8: wanted state +0xc0 [+0x10c index], current +0x110; state 7 = 0x710235c6b0 "back to the main menu"). Once the Online
+ * sequence is set: hardware write watches on the wanted / current state and the sequence, to find who asks for state 7. */
+static ImportFn g_seqstep_orig;
+static void comp_seqstep(Ctx *c, void *user) {
+    (void)user;
+    static int armed;
+    if (!armed && *(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE == SEQ_ONLINE_ANYONE) {
+        armed = 1;
+        uint64_t sm = *(volatile uint64_t *)(uintptr_t)(c->x[0] + 0xe8);
+        int idx = *(volatile int32_t *)(uintptr_t)(sm + 0x10c);
+        printf("competitive probe: sequence controller %llx, state machine %llx, index %d, wanted %d, current %d\n", (unsigned long long)c->x[0],
+               (unsigned long long)sm, idx, idx >= 0 && idx < 0x13 ? *(volatile int32_t *)(uintptr_t)(sm + 0xc0 + 4ull * (unsigned)idx) : -1, *(volatile int32_t *)(uintptr_t)(sm + 0x110));
+        fflush(stdout);
+        void debug_watch(const uint64_t *a, int n);
+        uint64_t a[3] = {sm + 0xc0 + 4ull * (unsigned)(idx >= 0 && idx < 0x13 ? idx : 0), sm + 0x110, CURRENT_SEQUENCE};
+        debug_watch(a, 3);
+    }
+    g_seqstep_orig(c);
+}
+/* (online-mm 15/11, PROBE) SSBU_QUICK_NATIVE_WATCH=3: the scene manager's two "change to the scene named ..." functions (0x7103725c90:
+ * the dispatcher's, 0x7103726120: the sequence controller's), x1 = {hash u32, length u32, text}: every scene asked for, with the guest
+ * caller and its frame chain (who sends the Online scene back to the menus) */
+static ImportFn g_scn_a_orig, g_scn_b_orig;
+static void comp_scn_log(Ctx *c, const char *which) {
+    char name[72] = "?"; uint64_t p = c->x[1];
+    if (p) { int k = 0; for (; k < 70; k++) { char ch = *(volatile char *)(uintptr_t)(p + 8 + (uint64_t)k); if (!ch) break; name[k] = ch >= 0x20 && ch < 0x7f ? ch : '?'; } name[k] = 0; }
+    char fr[160] = ""; int n = 0; uint64_t fp = c->x[29];
+    for (int d = 0; d < 8 && fp >= c->x[31] && fp - c->x[31] < 0x1000000 && n < (int)sizeof fr - 20; d++) {
+        uint64_t nfp = *(volatile uint64_t *)(uintptr_t)fp, lr = *(volatile uint64_t *)(uintptr_t)(fp + 8);
+        n += snprintf(fr + n, sizeof fr - n, " %llx", (unsigned long long)lr);
+        if (nfp <= fp) break; fp = nfp;
+    }
+    printf("competitive probe: scene %s asked (%s) from %llx, frames%s; sequence %08x\n", name, which, (unsigned long long)c->x[30], fr,
+           *(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE);
+    fflush(stdout);
+}
+static void comp_scn_a(Ctx *c, void *u) { (void)u; comp_scn_log(c, "dispatcher's"); g_scn_a_orig(c); }
+/* (online-mm 15/11, PROBE A0) SSBU_QUICK_NATIVE_WATCH=4: why the Online scene ends at once. OnlineMeleeAnySequenceScene (factory
+ * 0x71022d9c80, vtable 0x71050b8000: enter +0x50 0x710236ab10 makes a 13-state machine, update +0x60 0x710236b020) runs state 0
+ * 0x71023675c0 first: it reads the game's online session object, [[[0x71052c3c58] + 8] + 0x80] (a 25-state machine ticked by the main
+ * loop at 0x71022d2d94: current state + 0x218, wanted + 0x1c8 [+ 0x214 index]), and when its byte + 0x244 is 0 (or its state is 9)
+ * it calls 0x7103726540 (x0 = the scene manager, w1 = 2): the scene ends and the manager goes back to the scene it came from (the
+ * MenuSequenceScene asked right after it). Logged here: that object at state 0 and every 0x7103726540 call with its caller.
+ * SSBU_QUICK_NATIVE_FORCE=1 (probe only): + 0x244 set to 1 before state 0, to see the scene's own flow past that check. */
+static ImportFn g_onl0_orig, g_scnend_orig;
+static uint64_t comp_online_obj(void) {
+    if (!comp_mapped(GA(0x71052c3c58ull))) return 0;
+    uint64_t g = *(volatile uint64_t *)(uintptr_t)GA(0x71052c3c58ull); if (!g) return 0;
+    uint64_t app = *(volatile uint64_t *)(uintptr_t)(g + 8); if (!app) return 0;
+    return *(volatile uint64_t *)(uintptr_t)(app + 0x80);
+}
+static void comp_online_dump(const char *why) {
+    uint64_t o = comp_online_obj();
+    if (!o) { printf("competitive probe: online session object (%s): none\n", why); fflush(stdout); return; }
+    int idx = *(volatile int32_t *)(uintptr_t)(o + 0x214);
+    printf("competitive probe: online session object %llx (%s): +0x244 %u, state %d (wanted %d, index %d, before %d), +0x208..: %02x %02x %02x %02x\n",
+           (unsigned long long)o, why, *(volatile uint8_t *)(uintptr_t)(o + 0x244), *(volatile int32_t *)(uintptr_t)(o + 0x218),
+           idx >= 0 && idx < 0x13 ? *(volatile int32_t *)(uintptr_t)(o + 0x1c8 + 4ull * (unsigned)idx) : -1, idx, *(volatile int32_t *)(uintptr_t)(o + 0x220),
+           *(volatile uint8_t *)(uintptr_t)(o + 0x208), *(volatile uint8_t *)(uintptr_t)(o + 0x209), *(volatile uint8_t *)(uintptr_t)(o + 0x230), *(volatile uint8_t *)(uintptr_t)(o + 0x231));
+    static int handlers;
+    if (!handlers++) {          /* its vtable and state handlers (+ 0x38 + 0x10 * state, 25 states): to read them off the binary */
+        printf("competitive probe: online session object: vtable %llx, handlers", (unsigned long long)*(volatile uint64_t *)(uintptr_t)o);
+        for (int k = 0; k < 0x19; k++) printf(" %d:%llx", k, (unsigned long long)*(volatile uint64_t *)(uintptr_t)(o + 0x38 + 0x10ull * (unsigned)k));
+        printf("\n");
+    }
+    fflush(stdout);
+}
+/* (online-mm 15/11, A0 fix, with SSBU_QUICK_NATIVE=1 only) The game's own Online menu logs in before it opens Quickplay: the session
+ * object's start 0x7101685520 (x0 = the object, w1 = which steps: bit 0 the network request (state 2, nn::nifm), bit 1 the network
+ * service account (3, nn::account), bit 2 the user + the game server login (4, 5 = NEX: its callback 0x71016850f0 sets + 0x244 and
+ * goes to state 11) and 10, bits 3..8 the states 0xd, 0x10, 0x11, 0x14..0x16; the game's callers pass 0x1ff, 0x1fc or 0xcc). The
+ * Arena tile goes straight to Quickplay, so nobody started it: the scene's state 0 found the object not logged in and ended the scene.
+ * Here, the first time state 0 finds it not logged in and idle, the game's own start is called (SSBU_QUICK_NATIVE_LOGIN = the steps,
+ * hex, default 1ff; 0 = not called, the scene ends as before) and state 0 is held (not run) while the login runs: logged in -> state 0
+ * runs and the scene goes on with its own flow; the object back at state 0 / 1 / 9 without + 0x244 (a step failed: the game shows
+ * its own error), or 90 s -> state 0 runs and the scene ends as before. Every change of the object's state is logged. */
+static int comp_online_login(Ctx *c, uint64_t o) {          /* 1 = state 0 held this frame */
+    static int started, last_state = -2, frames; static unsigned steps = 0x1ff; static ULONGLONG t0;
+    int st = *(volatile int32_t *)(uintptr_t)(o + 0x218);
+    if (st != last_state) { printf("competitive probe: online session state %d -> %d (+0x244 %u)\n", last_state, st, *(volatile uint8_t *)(uintptr_t)(o + 0x244)); fflush(stdout); last_state = st; }
+    if (*(volatile uint8_t *)(uintptr_t)(o + 0x244)) return 0;
+    if (!started) {
+        const char *e = getenv("SSBU_QUICK_NATIVE_LOGIN"); if (e && *e) steps = (unsigned)strtoul(e, NULL, 16);
+        if (!steps || (st != 0 && st != -1)) return 0;
+        started = 1; t0 = GetTickCount64(); frames = 0;
+        uint64_t save[32]; memcpy(save, c->x, sizeof save);
+        c->x[0] = o; c->x[1] = steps;
+        call_guest(c, GA(0x7101685520ull));
+        uint64_t r = c->x[0];
+        memcpy(c->x, save, sizeof save);
+        printf("competitive probe: the game's online login started (steps %x): result %llx\n", steps, (unsigned long long)r); fflush(stdout);
+        return 1;
+    }
+    if (started == 2) return 0;
+    if (++frames > 3 && (st == 0 || st == 1 || st == 9 || st == -1 || GetTickCount64() - t0 > 90000)) {
+        started = 2;
+        printf("competitive probe: the game's online login ended without logging in (state %d, %llu ms): the Online scene ends\n", st, (unsigned long long)(GetTickCount64() - t0)); fflush(stdout);
+        return 0;
+    }
+    return 1;
+}
+static void comp_onl_state0(Ctx *c, void *u) {
+    (void)u;
+    static int n;
+    { const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && w[0] == '4' && n++ < 4) comp_online_dump("Online scene state 0"); }
+    { const char *f = getenv("SSBU_QUICK_NATIVE_FORCE"); uint64_t o;
+      if (f && f[0] == '1' && (o = comp_online_obj()) && !*(volatile uint8_t *)(uintptr_t)(o + 0x244)) {
+          *(volatile uint8_t *)(uintptr_t)(o + 0x244) = 1; printf("competitive probe: + 0x244 set to 1 (SSBU_QUICK_NATIVE_FORCE)\n"); fflush(stdout); } }
+    { uint64_t o = comp_quick_native() ? comp_online_obj() : 0; if (o && comp_online_login(c, o)) return; }
+    g_onl0_orig(c);
+}
+static void comp_scnend(Ctx *c, void *u) {
+    (void)u;
+    printf("competitive probe: scene end 0x7103726540 (w1 %u) from %llx; sequence %08x\n", (unsigned)c->x[1], (unsigned long long)c->x[30], *(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE);
+    fflush(stdout);
+    g_scnend_orig(c);
+}
+static void comp_scn_b(Ctx *c, void *u) { (void)u; comp_scn_log(c, "controller's"); g_scn_b_orig(c); }
 static DWORD WINAPI comp_wait(LPVOID arg) {
     (void)arg;
     /* started by a constructor, before main.elf is read: GA() needs the game build (it stops the program before that) */
@@ -374,6 +496,11 @@ static DWORD WINAPI comp_wait(LPVOID arg) {
     for (int i = 0; i < 3000; i++) {        /* the hook table answers once the game's function table is set up */
         if (hook_install(GA(0x71014e58f0ull), comp_battle, NULL, &g_battle_orig)) {
             if (!hook_install(GA(0x710235cbf0ull), comp_scene, NULL, &g_scene_orig)) printf("competitive: scene hook FAILED: every mode can be opened\n");
+            { const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && w[0] == '2' && comp_quick_native()) hook_install(GA(0x7102363970ull), comp_seqstep, NULL, &g_seqstep_orig);
+              if (w && (w[0] == '3' || w[0] == '4')) {      /* (also without SSBU_QUICK_NATIVE: the Smash versus flow, to compare) */ hook_install(GA(0x7103725c90ull), comp_scn_a, NULL, &g_scn_a_orig); hook_install(GA(0x7103726120ull), comp_scn_b, NULL, &g_scn_b_orig); }
+              if (w && w[0] == '4') hook_install(GA(0x7103726540ull), comp_scnend, NULL, &g_scnend_orig);
+              if ((w && w[0] == '4') || comp_quick_native()) hook_install(GA(0x71023675c0ull), comp_onl_state0, NULL, &g_onl0_orig);
+              { void online_nex_hooks(void); online_nex_hooks(); } }      /* nnonline.c: SSBU_ONLINE_NEX=1 only */
             const char *arena_ui = getenv("SSBU_COMPETITIVE_UI");
             if (arena_ui && arena_ui[0] == '1') {
                 int menu_hook = hook_install(GA(0x710232ce40ull), comp_menu, NULL, &g_menu_orig);

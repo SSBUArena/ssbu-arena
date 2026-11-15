@@ -326,6 +326,7 @@ static void print_build_identity(void) {
     (void)name;
     plat_print_build_identity(exe, dl);
 #endif
+    { const char *game_code(void); (void)game_code(); }      /* (online-mm 15/11) the "game code:" line (game_code.c) */
 }
 
 /* SSBU_CRASH_TEST=<seconds>: a write to address 0 after that time, on a thread of its own: tries the whole crash path of a
@@ -523,6 +524,7 @@ int main(int argc, char **argv) {
     register_cxxrt_imports();                /* C / C++ runtime: everything still without a handler (keep last) */
     register_unwind_imports();               /* installs the unwinder the C++ runtime calls on a throw */
     register_sdk2_imports();                 /* SDK families (lifted sdk.elf code + offline service answers): fills only; after the C runtime because its self-test needs every handler */
+    { void register_online_imports(void); register_online_imports(); }   /* nnonline.c: SSBU_ONLINE_NEX=1 only (online answers for the game's Online mode, test) */
     { void audit_startup(void); audit_startup(); }   /* hostrt.c: fake audit / SSBU_STRICT (plan\FAKE_AUDIT.md) */
     display_init();
     /* (0.2.40, from Rsoto95 84bb87b) ABOVE NORMAL priority for the game's process (not HIGH: that can starve the mouse, the sound
