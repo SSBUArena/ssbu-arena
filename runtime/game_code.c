@@ -38,7 +38,7 @@ static char g_code[64], g_dll[32];
 static int g_dll_ok;                            /* 1: the DLL part is the one this exe expects; 0: another one, or unknown */
 
 static void init(void) {
-    const char *names[] = {getenv("SSBU_R1_GAMEDLL"), "ssbu_game_r1.dll", "ssbu_game.dll", "ssbu_game_eh_o1.dll", "ssbu_game_p15r1.dll"};
+    const char *names[] = {getenv("SSBU_R1_GAMEDLL"), "ssbu_game_r1.dll", "ssbu_game.dll", "ssbu_game_eh_o1.dll", "ssbu_game_p15r1.dll", "ssbu_game_eh_o1.so", "ssbu_game_eh_o1.dylib"};
     const char *code = NULL;
     for (int i = 0; i < (int)(sizeof names / sizeof *names) && !code; i++) {
         if (!names[i] || !names[i][0]) continue;

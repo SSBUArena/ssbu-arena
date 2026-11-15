@@ -255,7 +255,10 @@ static void comp_scene(Ctx *c, void *user) {
     const char *ui = getenv("SSBU_COMPETITIVE_UI");
     if (ui && ui[0] == '1') {
         if ((s >> 24) == 0x01 && g_quick) comp_quick_end("back at the main menu");
-        if (s == SEQ_ONLINE_ANYONE && comp_quick_native()) { static int said; if (!said++) { printf("competitive UI: Online Ranked -> the game's own Online mode (SSBU_QUICK_NATIVE=1, probe)\n"); fflush(stdout); } }
+        if (s == SEQ_ONLINE_ANYONE && comp_quick_native()) { static int said; if (!said++) { printf("competitive UI: Online Ranked -> the game's own Online mode (SSBU_QUICK_NATIVE=1, probe)\n"); fflush(stdout);
+                /* (online-mm 15/11, PROBE) SSBU_QUICK_NATIVE_WATCH=1: a hardware write watch on the current sequence (debug_mode.c debug_watch:
+                 * every thread, the guest functions of each write): who sends the Online mode back to the main menu */
+                { const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && w[0] == '1') { void debug_watch(const uint64_t *a, int n); uint64_t a = CURRENT_SEQUENCE; debug_watch(&a, 1); }      /* (=2: comp_seqstep) */ } } }
         else if (s == SEQ_ONLINE_ANYONE) {
             if (comp_quick_begin()) *seq = SEQ_MELEE_NORMAL;
             else *seq = 0x01000000u;
@@ -366,6 +369,45 @@ static void comp_stage_state(Ctx *c, void *user) {
     }
     g_stage_state_orig(c);
 }
+/* (online-mm 15/11, PROBE) SSBU_QUICK_NATIVE_WATCH=2: the scene sequence controller's state step 0x7102363970 (x0 = controller, its state
+ * machine at +0xe8: wanted state +0xc0 [+0x10c index], current +0x110; state 7 = 0x710235c6b0 "back to the main menu"). Once the Online
+ * sequence is set: hardware write watches on the wanted / current state and the sequence, to find who asks for state 7. */
+static ImportFn g_seqstep_orig;
+static void comp_seqstep(Ctx *c, void *user) {
+    (void)user;
+    static int armed;
+    if (!armed && *(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE == SEQ_ONLINE_ANYONE) {
+        armed = 1;
+        uint64_t sm = *(volatile uint64_t *)(uintptr_t)(c->x[0] + 0xe8);
+        int idx = *(volatile int32_t *)(uintptr_t)(sm + 0x10c);
+        printf("competitive probe: sequence controller %llx, state machine %llx, index %d, wanted %d, current %d\n", (unsigned long long)c->x[0],
+               (unsigned long long)sm, idx, idx >= 0 && idx < 0x13 ? *(volatile int32_t *)(uintptr_t)(sm + 0xc0 + 4ull * (unsigned)idx) : -1, *(volatile int32_t *)(uintptr_t)(sm + 0x110));
+        fflush(stdout);
+        void debug_watch(const uint64_t *a, int n);
+        uint64_t a[3] = {sm + 0xc0 + 4ull * (unsigned)(idx >= 0 && idx < 0x13 ? idx : 0), sm + 0x110, CURRENT_SEQUENCE};
+        debug_watch(a, 3);
+    }
+    g_seqstep_orig(c);
+}
+/* (online-mm 15/11, PROBE) SSBU_QUICK_NATIVE_WATCH=3: the scene manager's two "change to the scene named ..." functions (0x7103725c90:
+ * the dispatcher's, 0x7103726120: the sequence controller's), x1 = {hash u32, length u32, text}: every scene asked for, with the guest
+ * caller and its frame chain (who sends the Online scene back to the menus) */
+static ImportFn g_scn_a_orig, g_scn_b_orig;
+static void comp_scn_log(Ctx *c, const char *which) {
+    char name[72] = "?"; uint64_t p = c->x[1];
+    if (p) { int k = 0; for (; k < 70; k++) { char ch = *(volatile char *)(uintptr_t)(p + 8 + (uint64_t)k); if (!ch) break; name[k] = ch >= 0x20 && ch < 0x7f ? ch : '?'; } name[k] = 0; }
+    char fr[160] = ""; int n = 0; uint64_t fp = c->x[29];
+    for (int d = 0; d < 8 && fp >= c->x[31] && fp - c->x[31] < 0x1000000 && n < (int)sizeof fr - 20; d++) {
+        uint64_t nfp = *(volatile uint64_t *)(uintptr_t)fp, lr = *(volatile uint64_t *)(uintptr_t)(fp + 8);
+        n += snprintf(fr + n, sizeof fr - n, " %llx", (unsigned long long)lr);
+        if (nfp <= fp) break; fp = nfp;
+    }
+    printf("competitive probe: scene %s asked (%s) from %llx, frames%s; sequence %08x\n", name, which, (unsigned long long)c->x[30], fr,
+           *(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE);
+    fflush(stdout);
+}
+static void comp_scn_a(Ctx *c, void *u) { (void)u; comp_scn_log(c, "dispatcher's"); g_scn_a_orig(c); }
+static void comp_scn_b(Ctx *c, void *u) { (void)u; comp_scn_log(c, "controller's"); g_scn_b_orig(c); }
 static DWORD WINAPI comp_wait(LPVOID arg) {
     (void)arg;
     /* started by a constructor, before main.elf is read: GA() needs the game build (it stops the program before that) */
@@ -374,6 +416,8 @@ static DWORD WINAPI comp_wait(LPVOID arg) {
     for (int i = 0; i < 3000; i++) {        /* the hook table answers once the game's function table is set up */
         if (hook_install(GA(0x71014e58f0ull), comp_battle, NULL, &g_battle_orig)) {
             if (!hook_install(GA(0x710235cbf0ull), comp_scene, NULL, &g_scene_orig)) printf("competitive: scene hook FAILED: every mode can be opened\n");
+            { const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && w[0] == '2' && comp_quick_native()) hook_install(GA(0x7102363970ull), comp_seqstep, NULL, &g_seqstep_orig);
+              if (w && w[0] == '3' && comp_quick_native()) { hook_install(GA(0x7103725c90ull), comp_scn_a, NULL, &g_scn_a_orig); hook_install(GA(0x7103726120ull), comp_scn_b, NULL, &g_scn_b_orig); } }
             const char *arena_ui = getenv("SSBU_COMPETITIVE_UI");
             if (arena_ui && arena_ui[0] == '1') {
                 int menu_hook = hook_install(GA(0x710232ce40ull), comp_menu, NULL, &g_menu_orig);

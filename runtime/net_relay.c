@@ -1459,7 +1459,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             last_ticket_look = t;
             if (g_pass_warn && g_ticket[0]) {      /* (online-mm 15/11) "<id>|<name>|<expiry>[|<issued>].<mac>": not renewed 5 min before it ends */
                 const char *b1 = strchr(g_ticket, '|'), *b2 = b1 ? strchr(b1 + 1, '|') : NULL;
-                long long exp = b2 ? _atoi64(b2 + 1) : 0, left = exp - (long long)time(NULL);
+                long long exp = b2 ? strtoll(b2 + 1, NULL, 10) : 0, left = exp - (long long)time(NULL);
                 if (exp > 0 && left < 300 && g_pass_warned_exp != exp) {
                     g_pass_warned_exp = exp;
                     say("online pass: %s and the launcher did not renew it: is the SSBU Arena launcher still open (its icon by the clock)? "
