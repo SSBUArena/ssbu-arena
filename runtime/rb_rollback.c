@@ -472,18 +472,19 @@ static void rbg_pin_apply(unsigned long long mm, unsigned long long mc, unsigned
         unsigned long nvn_render_tid(void); DWORD rt = (DWORD)nvn_render_tid();
         if (pr && rt && md) { HANDLE rh = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE, rt); if (rh) { SetThreadAffinityMask(rh, (DWORD_PTR)md); CloseHandle(rh); } } }
 }
-/* (round 14, option) SSBU_RB_TWMOVE=1 (default 0; =<hex mask> that mask): the task workers on the other L3 (the copy helpers' load mask) from a
+/* (round 14) SSBU_RB_TWMOVE (DEFAULT 1 = the copy helpers' load mask; =<hex mask> that mask; =0 off): the task workers on the other L3 (the copy helpers' load mask) from a
  * rollback's load to the end of its last re-run pass, back on their own mask for the real passes. Bench r14m2: workers on fc0 all the time
  * (SSBU_RB_PIN_TW=fc0, b14t2) made the re-run passes faster (rr 2.31 -> 2.15 BF, 2.73 -> 2.59 TaC) but the real pass slower (+0.15..0.2 M
- * cycles: the render preparation jobs of its start read main's data) and the hold before the load slower (+0.07) */
+ * cycles: the render preparation jobs of its start read main's data) and the hold before the load slower (+0.07). Moved only for the
+ * rollback (chain182, r14m3, alternated n2): six-stage mean 7.064 -> 6.878 (-0.19, every stage better: rr -0.14..-0.30), real pass as before */
 static int g_rbg_twm = -1; static unsigned long long g_rbg_twm_mask; static int g_rbg_tw_moved; static long long g_rbg_twm_n;
 static void rbg_tw_mask(unsigned long long mk) {
     Ctx *tc; const char *nm; HANDLE h;
     for (int i = 0; guest_thread_info(i, &tc, &nm, &h); i++) if (h && nm && strstr(nm, "TaskWorker")) SetThreadAffinityMask(h, (DWORD_PTR)mk);
 }
 static void rbg_tw_move(int out) {
-    if (g_rbg_twm < 0) { const char *e = getenv("SSBU_RB_TWMOVE"); g_rbg_twm = 0;
-        if (e && *e && strcmp(e, "0")) { unsigned long long v = strtoull(e, NULL, 16); g_rbg_twm = 1; g_rbg_twm_mask = v > 1 ? v : 0; } }
+    if (g_rbg_twm < 0) { const char *e = getenv("SSBU_RB_TWMOVE"); g_rbg_twm = 1;      /* (default on from round 14) */
+        if (e && *e) { unsigned long long v = strtoull(e, NULL, 16); g_rbg_twm = v != 0; g_rbg_twm_mask = v > 1 ? v : 0; } }
     if (!g_rbg_twm || !g_rbg_pinned || !g_rbg_pm[2]) return;
     unsigned long long other = g_rbg_twm_mask ? g_rbg_twm_mask : g_rg_cm_other;
     if (!other) return;
