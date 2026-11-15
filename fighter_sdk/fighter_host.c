@@ -1260,8 +1260,14 @@ static void fh_hook(Ctx *c, void *user) {
             }
         }
         if (k < g_fh_n) g_fh_seen[k] = GetTickCount64();
-        if (k < g_fh_n && !g_fh_out) ++g_fh_f[k].frame;
-        if (k < g_fh_n && g_fh_out) {
+        /* (field 13/11) the online desync check ran only with SSBU_FIGHT_HASH (every test harness sets it, the field never did): an
+         * online rollback match now always folds the fighters' lines into the frame checksum that rb_net.c sends and compares
+         * ("checksums compared N, DESYNCS M", the "Out of sync" notice). SSBU_RB_NET_CHECK=0: as before (only with SSBU_FIGHT_HASH). */
+        static int netck = -1; if (netck < 0) { const char *e = getenv("SSBU_RB_NET_CHECK"); netck = !(e && e[0] == '0'); }
+        int rbn_rb_agreed(void), rbn_hash_wanted(void);
+        int hashing = g_fh_out || (netck && rbn_hash_wanted() && rbn_rb_agreed());
+        if (k < g_fh_n && !hashing) ++g_fh_f[k].frame;
+        if (k < g_fh_n && hashing) {
             long long f = ++g_fh_f[k].frame;
             float x = 0, y = 0, mf = 0, dmg = 0;
             int st = (int)fd_call(c, FD_N("30StatusModule__status_kind_impl"), boma, 0, 0, 0, 0, 0, 0, NULL);
@@ -1295,9 +1301,10 @@ static void fh_hook(Ctx *c, void *user) {
                 if (pad_on < 0) pad_on = getenv("SSBU_FIGHT_HASH_PAD") != NULL;
                 if (pad_on) { size_t l = strlen(wtxt); snprintf(wtxt + l, sizeof wtxt - l, " pad %llx", (unsigned long long)display_p1_buttons()); }
             }
+            if (g_fh_out) {
             fprintf(g_fh_out, "F %lld e %d st %x mot %llx mf %08x x %08x y %08x dmg %08x rngcalls %u rng %08x H %016llx  (%.3f %.3f frame %.2f %.2f%%)%s\n",
                     f, g_fh_f[k].entry, st, (unsigned long long)mot, bm, bx, by, bd, rc, (unsigned)(rh ^ (rh >> 32)), (unsigned long long)g_fh_run, (double)x, (double)y, (double)mf, (double)dmg, wtxt);
-            if ((f & 63) == 0) fflush(g_fh_out);
+            if ((f & 63) == 0) fflush(g_fh_out); }
             if (k == 0 && f % 300 == 0 && rb) {            /* which generators are drawn from: the 9 call counters */
                 printf("[fight] frame %lld: generator calls", f);
                 for (int i = 0; i < 9; i++) printf(" %u", w[i * 5 + 4]);
