@@ -1508,6 +1508,111 @@ static void rg_loadwarm(size_t pages) {
     memcpy(g_lw_ids, g_rg_tl, pages * sizeof *g_lw_ids); g_lw_n = pages;
     InterlockedIncrement(&g_lw_gen); SetEvent(g_lw_ev);
 }
+/* (round 16, DIAGNOSIS) SSBU_RB_LDCLASS=1: the pages of every load counted by class, to size "load fewer pages": a guest stack page
+ * entirely below the lowest SP the loaded state has in that stack (main's registers, the held threads' registers, the fibres' saved
+ * registers) holds no live data of the loaded frame (AArch64 has no red zone: nothing reads below SP before writing it); a stack with no
+ * SP of the loaded state in it counts as live (its owner may be on another stack, e.g. a thread running a fibre); main's own stack is
+ * the extras' allocation that holds its SP. Also: NVN pool pages, other window pages, other extras; each split by "predicted the same"
+ * (LOADHASH bit 4: hashed, not copied when equal). Report line "RING load classes". Nothing changes in the load. */
+static int g_lc_on = -1; static long long g_lc_loads, g_lc_cnt[8][2];
+static uint64_t g_lc_slo[1024], g_lc_shi[1024]; static int g_lc_ns;
+static void rg_lc_stk(uint64_t lo, uint64_t n) { if (g_lc_ns < 1024) { g_lc_slo[g_lc_ns] = lo; g_lc_shi[g_lc_ns] = lo + n; g_lc_ns++; } }
+static uint64_t g_lc_mlo, g_lc_mhi, g_lc_msp_seen;
+static void rg_ldclass(RgSlot *g) {
+    if (g_lc_on < 0) { const char *e = getenv("SSBU_RB_LDCLASS"); g_lc_on = e ? atoi(e) : 0; }
+    if (g_lc_on <= 0) return;
+    g_lc_ns = 0; os_r1_stacks(rg_lc_stk);
+    static uint64_t minsp[1024]; for (int k = 0; k < g_lc_ns; k++) minsp[k] = ~0ull;
+    uint64_t msp = g->ctx.x[31];
+    if (!(msp >= g_lc_mlo && msp < g_lc_mhi)) {           /* main's stack allocation (extras): found once */
+        MEMORY_BASIC_INFORMATION m; g_lc_mlo = g_lc_mhi = 0;
+        if (VirtualQuery((void *)(uintptr_t)msp, &m, sizeof m)) { void *ab = m.AllocationBase; uint8_t *q = (uint8_t *)ab;
+            while (VirtualQuery(q, &m, sizeof m) && m.AllocationBase == ab) q = (uint8_t *)m.BaseAddress + m.RegionSize;
+            g_lc_mlo = (uint64_t)(uintptr_t)ab; g_lc_mhi = (uint64_t)(uintptr_t)q; }
+    }
+    uint64_t sps[1100]; int nsp = 0; sps[nsp++] = msp;
+    for (int i = 0; i < g->nth && nsp < 1100; i++) sps[nsp++] = g->th[i].regs.x[31];
+    for (int i = 0; i < g->nfib && nsp < 1100; i++) sps[nsp++] = g->fib[i].regs.x[31];
+    for (int s = 0; s < nsp; s++) for (int k = 0; k < g_lc_ns; k++) if (sps[s] >= g_lc_slo[k] && sps[s] <= g_lc_shi[k] && sps[s] < minsp[k]) minsp[k] = sps[s];
+    g_lc_loads++; r1_pool_map_update();
+    for (size_t n = 0; n < g_rg_ntl; n++) {
+        uint32_t id = g_rg_tl[n]; uint64_t a = (uint64_t)(uintptr_t)rg_addr(id); int same = g_rg_same && id < g_rg_same_n && g_rg_same[id];
+        int cl = -1;
+        if (id >= g_rg_n1 + g_rg_n2) { cl = (a >= g_lc_mlo && a < g_lc_mhi) ? (a + PG <= (msp & ~0xfffull) ? 3 : 4) : 5; }
+        else {
+            for (int k = 0; k < g_lc_ns && cl < 0; k++) if (a + PG > g_lc_slo[k] && a < g_lc_shi[k]) cl = minsp[k] == ~0ull ? 2 : a + PG <= (minsp[k] & ~0xfffull) ? 0 : 1;
+            if (cl < 0) cl = r1_pool_page((const uint8_t *)(uintptr_t)a) ? 6 : 7;
+        }
+        g_lc_cnt[cl][same]++;
+    }
+}
+static void rg_ldclass_report(void) {
+    if (g_lc_on <= 0 || !g_lc_loads) return;
+    static const char *nm[8] = { "window stacks dead (below the lowest SP)", "window stacks live", "window stacks with no SP of the state", "main's stack dead", "main's stack live", "other extras", "NVN pool pages", "other window pages" };
+    char b[1600]; int at = 0; double L = (double)g_lc_loads;
+    for (int c = 0; c < 8 && at < 1500; c++) at += snprintf(b + at, sizeof b - at, "%s %s %.1f (%.1f hashed)", c ? ";" : "", nm[c], (g_lc_cnt[c][0] + g_lc_cnt[c][1]) / L, g_lc_cnt[c][1] / L);
+    LOG("r1: RING load classes (SSBU_RB_LDCLASS, %lld loads, pages per load):%s\n", g_lc_loads, b);
+}
+/* (round 16, DIAGNOSIS) SSBU_RB_LDTRAP=<n>: every n-th load (lazy base done), each loaded page of the two windows is made PAGE_NOACCESS
+ * right before the threads go on; the first access to it (a vectored handler: read / write, main or another thread, in a re-run pass or
+ * after) is counted and the page made read-write again; pages still untouched at the next load are counted as such. Upper bound of
+ * "load fewer pages": only a page whose first access after the load is a WRITE could be left out of a load (and only if that write and
+ * the ones after it cover every byte read later). Changes timing (faults), not the game's values (kernel-mode reads of a trapped page
+ * fail instead: the replay recorder's ReadProcessMemory). Report line "RING load trap". */
+static int g_tr_on = -1; static uint8_t *g_tr_st, *g_tr_cl; static uint32_t *g_tr_ids; static size_t g_tr_n, g_tr_cap; static DWORD g_tr_main;
+static volatile LONG64 g_tr_cnt[9][4]; static long long g_tr_loads, g_tr_armed, g_tr_vpfail, g_tr_dup, g_tr_odd; static volatile LONG64 g_tr_unk; static volatile uint64_t g_tr_unk_a; static volatile LONG g_tr_armed_now;
+static LONG CALLBACK rg_trap_fault(EXCEPTION_POINTERS *ep) {
+    if (!g_tr_armed_now || ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || ep->ExceptionRecord->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
+    uint8_t *a = (uint8_t *)(uintptr_t)(ep->ExceptionRecord->ExceptionInformation[1] & ~(uintptr_t)(PG - 1)); uint32_t id;
+    if (g_win1 && a >= g_win1 && a < g_win1 + g_wn1) id = (uint32_t)((size_t)(a - g_win1) / PG);
+    else if ((uintptr_t)a >= WIN2 && (uintptr_t)a < WIN2 + WN2) id = (uint32_t)(g_rg_n1 + ((uintptr_t)a - WIN2) / PG); else return EXCEPTION_CONTINUE_SEARCH;
+    uint8_t st = g_tr_st[id];
+    if (st == 0) { MEMORY_BASIC_INFORMATION m; DWORD op;      /* (a page left no-access that is not in the armed list: made read-write, counted) */
+        if (VirtualQuery(a, &m, sizeof m) && m.State == MEM_COMMIT && m.Protect == PAGE_NOACCESS && VirtualProtect(a, PG, PAGE_READWRITE, &op)) {
+            InterlockedIncrement64(&g_tr_unk); g_tr_unk_a = (uint64_t)(uintptr_t)a; return EXCEPTION_CONTINUE_EXECUTION; }
+        return EXCEPTION_CONTINUE_SEARCH; }
+    if (st == 1 && __sync_val_compare_and_swap(&g_tr_st[id], (uint8_t)1, (uint8_t)2) == 1) {
+        DWORD op; if (!VirtualProtect(a, PG, PAGE_READWRITE, &op)) g_tr_vpfail++;
+        int w = ep->ExceptionRecord->ExceptionInformation[0] == 1, other = GetCurrentThreadId() != g_tr_main, rr = g_ra_phase == 2;
+        InterlockedIncrement64(&g_tr_cnt[other * 4 + w * 2 + !rr][g_tr_cl[id]]);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    for (int i = 0; i < 100000 && g_tr_st[id] == 2; i++) { MEMORY_BASIC_INFORMATION m; if (VirtualQuery(a, &m, sizeof m) && m.Protect == PAGE_READWRITE) break; YieldProcessor(); }
+    return EXCEPTION_CONTINUE_EXECUTION;                 /* (another thread is making it read-write) */
+}
+static void rg_trap_disarm(void) {
+    if (!g_tr_n) return;
+    for (size_t i = 0; i < g_tr_n; i++) { uint32_t id = g_tr_ids[i];
+        if (g_tr_st[id] == 1) { DWORD op; VirtualProtect(rg_addr(id), PG, PAGE_READWRITE, &op); g_tr_cnt[8][g_tr_cl[id]]++; } g_tr_st[id] = 0; }
+    g_tr_n = 0; InterlockedExchange(&g_tr_armed_now, 0);
+}
+static void rg_trap_arm(size_t pages) {
+    if (g_tr_on < 0) { const char *e = getenv("SSBU_RB_LDTRAP"); g_tr_on = e ? atoi(e) : 0;
+        if (g_tr_on > 0) { size_t nw = g_rg_n1 + g_rg_n2; g_tr_st = VirtualAlloc(NULL, nw, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); g_tr_cl = VirtualAlloc(NULL, nw, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            if (!g_tr_st || !g_tr_cl) g_tr_on = 0; else AddVectoredExceptionHandler(1, rg_trap_fault); } }
+    if (g_tr_on <= 0 || g_lb_active || ++g_tr_loads % g_tr_on) return;
+    if (pages > g_tr_cap) { free(g_tr_ids); g_tr_cap = pages + 4096; g_tr_ids = malloc(g_tr_cap * sizeof *g_tr_ids); if (!g_tr_ids) { g_tr_cap = 0; return; } }
+    g_tr_main = GetCurrentThreadId(); r1_pool_map_update(); g_tr_n = 0; InterlockedExchange(&g_tr_armed_now, 1);      /* (before the first page: host threads run meanwhile) */
+    for (size_t n = 0; n < pages; n++) {
+        uint32_t id = g_rg_tl[n]; if (id >= g_rg_n1 + g_rg_n2 || (id < g_rg_n1 && g_dc[id])) continue;
+        uint8_t *a = rg_addr(id); DWORD op;
+        if (g_tr_st[id]) { g_tr_dup++; continue; }
+        g_tr_cl[id] = (uint8_t)((r1_pool_page(a) ? 2 : 0) | (g_rg_same && id < g_rg_same_n && g_rg_same[id] ? 1 : 0)); g_tr_st[id] = 1;
+        if (!VirtualProtect(a, PG, PAGE_NOACCESS, &op)) { g_tr_st[id] = 0; g_tr_vpfail++; continue; }
+        if (op != PAGE_READWRITE) { DWORD o2; VirtualProtect(a, PG, op, &o2); g_tr_st[id] = 0; if (g_tr_odd++ < 8) LOG("r1: LDTRAP: page %p had protection %lx: left as it was\n", (void *)a, (unsigned long)op); continue; }
+        g_tr_ids[g_tr_n++] = id;
+    }
+    g_tr_armed += (long long)g_tr_n;
+}
+static void rg_trap_report(void) {
+    if (g_tr_on <= 0 || !g_tr_armed) return;
+    static const char *nm[9] = { "main read in a re-run", "main read later", "main WRITE in a re-run", "main WRITE later", "other thread read in a re-run", "other read later", "other WRITE in a re-run", "other WRITE later", "untouched to the next load" };
+    char b[2400]; int at = 0;
+    for (int k = 0; k < 9 && at < 2200; k++) at += snprintf(b + at, sizeof b - at, "%s %s: other %lld (hashed %lld), pool %lld (hashed %lld)", k ? ";" : "", nm[k],
+        (long long)g_tr_cnt[k][0], (long long)g_tr_cnt[k][1], (long long)g_tr_cnt[k][2], (long long)g_tr_cnt[k][3]);
+    LOG("r1: RING load trap (SSBU_RB_LDTRAP=%d): %lld loads armed, %lld pages (%.1f per load), protect failures %lld, duplicates %lld, other faults in the windows %lld (last %llx); first access:%s\n", g_tr_on, g_tr_loads / (g_tr_on > 0 ? g_tr_on : 1), g_tr_armed,
+        g_tr_loads >= g_tr_on ? (double)g_tr_armed / (double)(g_tr_loads / g_tr_on) : 0.0, g_tr_vpfail, g_tr_dup, (long long)g_tr_unk, (unsigned long long)g_tr_unk_a, b);
+}
 int r1_ring_load(long long frame, Ctx *c) {         /* (SSBU_PMCMARK: the load as its own part) */
     if (!g_pmk_on) return r1_ring_load_i(frame, c);
     pmk_mark(5); int r = r1_ring_load_i(frame, c); pmk_note(); return r;
@@ -1517,6 +1622,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
     for (int i = 0; i < g_rg_count; i++) if (rg_slot(i)->frame == frame) si = i;
     if (si < 0) return 0;
     double t0 = now_ms(); g_rgp_seg = 5;
+    if (g_tr_n) rg_trap_disarm();                         /* (round 16, diagnosis) SSBU_RB_LDTRAP */
     /* (rb-8ms 13/11) SSBU_RB_LOADSYNC (=1 on; default 0 until the cheaper fix, see ROLLBACK_STATO 5.2): THE ROLLBACK FRAME GLITCHES (black stripes across the screen on Town and City,
      * a huge mis-placed platform on Smashville, single frames, only with rollbacks: rb8ms visual check r8_vis / r8_stp). The host render
      * thread replays a submission LATER and reads the guest memory it names (vertex / uniform / storage buffers) when it replays it
@@ -1660,6 +1766,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
     double tsw4 = now_ms();
     rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
     size_t pages = g_rg_ntl; g_rg_ldpg += (long long)pages;
+    if (g_lc_on) rg_ldclass(g);                           /* (round 16, diagnosis) SSBU_RB_LDCLASS */
     double tl1 = now_ms();
     g_lsw[0] += tsw0 - tl0; g_lsw[1] += tsw1 - tsw0; g_lsw[2] += tsw2 - tsw1; g_lsw[3] += tsw3 - tsw2; g_lsw[4] += tsw4 - tsw3; g_lsw[5] += tl1 - tsw4; g_lsw_n++;
     if (piped) { cp_wait_async(); g_rg_lp_wait += now_ms() - tl1; g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_cond = 0; g_cp_nt = 0; }
@@ -1779,6 +1886,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
     if (jl_on() && g_jl_n++ < 400) { char a[200]; jl_fmt(a, sizeof a); LOG("r1: JOBLOG load of frame %lld: before: %s | after: %s\n", frame, g_jl_before, a); }
     { double _t = now_ms(); dm_alloc_check("after the load", frame); g_tt[16] += now_ms() - _t; g_ttn[16]++; }
     { extern volatile LONG g_font_job_in; g_font_job_in = 0; }      /* (crash phase) every capture was taken with the font job not running: so is the loaded state */
+    if (g_tr_on) rg_trap_arm(pages);                       /* (round 16, diagnosis) SSBU_RB_LDTRAP */
     unpark();
     if (rg_h1load() == 1) rg_workers_go_early();          /* (round 11, TEST) SSBU_RB_H1LOAD=1: H1 let go at the end of the load */
     g_mp[4] += t2a - t2; g_mp[5] += t2b - t2a; g_mp[6] += t2c - t2b; g_mp[7] += t3 - t2c; g_mp[8] += now_ms() - t3; g_mp_n[1]++;
@@ -1985,6 +2093,7 @@ static void rgp_tree(Ctx *c, void *user) {
     g_rgp_depth--;
     RgpE *e = rgp_slot(g_rgp, RGP_N, vt ? vt : 1);
     if (e) { e->n[kd]++; e->incl[kd] += dt; e->excl[kd] += dt - g_rgp_child[d + 1]; if (d < e->dmin) e->dmin = d; }
+    if (vt == GA(0x71050a0070ull)) { RgpE *w = rgp_slot(g_rgpw, 64, (node & 0x3fffffffffffffffull) | (2ull << 62)); if (w) { w->n[kd]++; w->incl[kd] += dt; } }      /* (round 16) per node of that class ("function <node>") */
     g_rgp_child[d] += dt;
     if (d == 0) { RgpE *w = rgp_slot(g_rgpw, 64, lr | (1ull << 62)); if (w) { w->n[kd]++; w->incl[kd] += dt; } }
 }
@@ -2009,7 +2118,7 @@ static void rgp_x(Ctx *c, void *user) {
 static void rgp_wait_note(uint64_t lr, double dt) {      /* from ra_kick: a job-counter wait on main */
     if (g_rgs_prof < 2 || !g_rg_ready || GetCurrentThreadId() != g_rgp_main) return;
     int kd = rgp_kd(); if (kd < 0) return;
-    RgpE *w = rgp_slot(g_rgpw, 64, lr | (3ull << 62)); if (w) { w->n[kd]++; w->incl[kd] += dt; }
+    RgpE *w = rgp_slot(g_rgpw, 64, lr | (3ull << 62)); if (w) { w->n[kd]++; w->incl[kd] += dt; w->excl[kd] += g_rgp_wcyc / 1e6; }
 }
 static void rgp_init(void) {
     g_rgp_xa[0] = GA(0x71036676e0ull); g_rgp_xa[1] = GA(0x710375ea70ull); g_rgp_xa[2] = GA(0x710355b540ull); g_rgp_xa[3] = GA(0x7103569c70ull);
@@ -2110,7 +2219,8 @@ static void rgp_report(void) {
     LOG("r1: RB PROF per pass (real %lld, re-run %lld): ms per pass real / re-run\n", g_rgs_npass[0], g_rgs_npass[1]);
     memcpy(g_rgp_s, g_rgpw, sizeof g_rgpw); qsort(g_rgp_s, 64, sizeof *g_rgp_s, rgp_cmpi);
     for (int i = 0; i < 64; i++) if (g_rgp_s[i].key) { uint64_t k = g_rgp_s[i].key; int ty = (int)(k >> 62); k &= ~(3ull << 62);
-        LOG("r1: RB PROF %s %llx: calls %lld / %lld, %.4f / %.4f ms per pass\n", ty == 1 ? "tree walk from" : ty == 2 ? "function" : "wait at", (unsigned long long)k, g_rgp_s[i].n[0], g_rgp_s[i].n[1], g_rgp_s[i].incl[0] / np, g_rgp_s[i].incl[1] / nr); }
+        LOG("r1: RB PROF %s %llx: calls %lld / %lld, %.4f / %.4f ms per pass\n", ty == 1 ? "tree walk from" : ty == 2 ? "function" : "wait at", (unsigned long long)k, g_rgp_s[i].n[0], g_rgp_s[i].n[1], g_rgp_s[i].incl[0] / np, g_rgp_s[i].incl[1] / nr);
+        if (ty == 3) LOG("r1: RB PROF   (wait at %llx: main's own cycles in it %.4f / %.4f M per pass)\n", (unsigned long long)k, g_rgp_s[i].excl[0] / np, g_rgp_s[i].excl[1] / nr); }
     memcpy(g_rgp_s, g_rgp, sizeof g_rgp); qsort(g_rgp_s, RGP_N, sizeof *g_rgp_s, rgp_cmp);
     for (int i = 0; i < RGP_N && i < 80; i++) if (g_rgp_s[i].key) LOG("r1: RB PROF node vt %llx depth %d: calls/pass %.2f / %.2f, exclusive %.4f / %.4f ms per pass, inclusive %.4f / %.4f\n",
         (unsigned long long)g_rgp_s[i].key, g_rgp_s[i].dmin, g_rgp_s[i].n[0] / (double)np, g_rgp_s[i].n[1] / (double)nr, g_rgp_s[i].excl[0] / np, g_rgp_s[i].excl[1] / nr, g_rgp_s[i].incl[0] / np, g_rgp_s[i].incl[1] / nr);
@@ -2515,6 +2625,8 @@ static void rgs_report(void) {
     if (g_ln_loads + g_ln_fall) LOG("r1: RING line loads (SSBU_RB_LINES): %lld loads by lines, %lld whole (an older frame than the last load or not possible); pages: by lines %lld (%.1f lines each), whole: written by other writers %lld, no line mark %lld, other %lld; line-map commits %lld (failed %lld); lines written by main (=2) in %lld loads\n",
         g_ln_loads, g_ln_fall, g_ln_pg, g_ln_pg ? (double)g_ln_lines / (double)g_ln_pg : 0.0, g_ln_host, g_ln_zero, g_ln_whole, (long long)g_ln_commits, (long long)g_ln_commit_fail, g_ln_main);
     if (g_ln_check) LOG("r1: RING LINES CHECK (SSBU_RB_LINES_CHECK): %lld pages checked, %lld with a line that differed and had no mark (%lld lines)\n", (long long)g_ln_chk_pg, (long long)g_ln_chk_bad, (long long)g_ln_chk_badl);
+    rg_ldclass_report();
+    rg_trap_report();
     if (g_lsw_n) LOG("r1: RING load sweep parts (means ms, %lld loads): up to the questions (snapshot start) %.4f, write-watch questions (rg_pww) %.4f, line-load set-up %.4f, stack write watch %.4f, mark sweep %.4f, extras %.4f\n",
         g_lsw_n, g_lsw[0] / g_lsw_n, g_lsw[1] / g_lsw_n, g_lsw[2] / g_lsw_n, g_lsw[3] / g_lsw_n, g_lsw[4] / g_lsw_n, g_lsw[5] / g_lsw_n);
     if (g_ldp_n) LOG("r1: RING load parts (means ms): sweep (write watch questions, marks, extras) %.3f, page list %.3f, copy %.3f (%lld loads; SSBU_RB_LOADPIPE: %lld piped, main waited %.3f ms for their first part after its sweep; SSBU_RB_LOADSYNC: %lld waits for the render thread, %.3f ms mean)\n", g_ldp[0] / g_ldp_n, g_ldp[1] / g_ldp_n, g_ldp[2] / g_ldp_n, g_ldp_n, g_rg_lp_n, g_rg_lp_n ? g_rg_lp_wait / g_rg_lp_n : 0.0, g_rg_ls_n, g_rg_ls_n ? g_rg_ls_ms / g_rg_ls_n : 0.0);

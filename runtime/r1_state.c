@@ -112,7 +112,7 @@ static long long g_pass_frames;
 
 /* run-ahead (round 5): SSBU_RUNAHEAD=1 (or graphics.ini `runahead = on`, gfx_options.c); default OFF.
  * R2 (r1_ring.c): SSBU_RB_SIM (the snapshot ring's rollback simulation) uses the same machinery; default OFF. */
-static int rgs_wanted(void); static void rgs_step(Ctx *c); static int rgs_poll(void); static void rgs_pad(uint64_t *b, int *lx, int *ly, int *rx, int *ry); static int rgs_skip_now(void); static void rgs_report(void); static void rgp_wait_note(uint64_t lr, double dt);
+static double g_rgp_wcyc; static int g_rgs_prof; static int rgs_wanted(void); static void rgs_step(Ctx *c); static int rgs_poll(void); static void rgs_pad(uint64_t *b, int *lx, int *ly, int *rx, int *ry); static int rgs_skip_now(void); static void rgs_report(void); static void rgp_wait_note(uint64_t lr, double dt);
 /* (issue #6) on 13.0.5 run-ahead stays off (hostrt.c game_rb_blocked: only with SSBU_R1_1305=0 since 2026-11-09); the player who turned it on (or
  * whose launcher asked for the online rollback, rb_net.c) is told once the menus are on the screen */
 static DWORD WINAPI ra_1305_note(void *p) {
@@ -2486,8 +2486,9 @@ static ImportFn g_orig_kick2;
 static void ra_kick(Ctx *c, void *user) {            /* hook on FUN 0x710354c720 (wait on a job counter): a point at its RETURN */
     (void)user;
     uint64_t lr = c->x[30];
-    double tw = now_ms();
+    double tw = now_ms(); ULONG64 cy0 = 0, cy1 = 0; if (g_rgs_prof == 2) QueryThreadCycleTime(GetCurrentThread(), &cy0);
     g_orig_kick(c);
+    if (g_rgs_prof == 2) { QueryThreadCycleTime(GetCurrentThread(), &cy1); g_rgp_wcyc = (double)(cy1 - cy0); }      /* (round 16) main's own cycles in the wait (jobs it runs, spins) */
     rgp_wait_note(lr, now_ms() - tw);
     if (lr == g_ra_site) ra_step(c);
 }
@@ -2583,9 +2584,32 @@ static void ra_kd_drop(void) { g_ra_kd_drop += g_ra_nkd; g_ra_nkd = 0; }      /*
 /* (round 15, measure) SSBU_JOBSTAT=1: the job-group kicks of a match counted by target (x2: -1 any worker of the pool, i = the worker of
  * console core i; 0 with no thread of its own = the main thread's queue), by pool (x0 + 0x14) and by kicking thread (main or not) */
 static int g_js_on = -1; static long long g_js[2][2][6], g_js_moved, g_js_lrn[64]; static DWORD g_js_main; static uint64_t g_js_lr[64]; static int g_js_lrt[64], g_js_nlr;
+/* (round 16, DIAGNOSIS) SSBU_JOBTREE=<n>: the logic task tree of 0x710374c540.. (root list at 0x7105332648; node: +0 vtable, +8 job group,
+ * +0x48 next sibling, +0x50 first child, +0x68 core, +0x6c ?, +0x70 mode: 1 skipped, 2 called at once by main, else kicked; a kicked
+ * node's job 0x7103548240 runs vt[0x10] then walks its children the same way) logged at the first root kick of n fight passes */
+static int g_jt_on = -1, g_jt_done;
+static void jt_dump(uint64_t node, int depth, char *b, int *at, int cap) {
+    for (int guard = 0; node && guard < 200 && *at < cap - 160; guard++) {
+        uint64_t vt = rd64(node);
+        *at += snprintf(b + *at, (size_t)(cap - *at), "\n    %*s%llx vt %llx run %llx core %d w3 %d mode %d", depth * 2, "", (unsigned long long)node, (unsigned long long)vt,
+                        (unsigned long long)(vt ? rd64(vt + 0x10) : 0), (int)rd32(node + 0x68), (int)rd32(node + 0x6c), (int)(rd32(node + 0x70) & 0xff));
+        uint64_t ch = rd64(node + 0x50); if (ch && depth < 12) jt_dump(ch, depth + 1, b, at, cap);
+        node = rd64(node + 0x48);
+    }
+}
 static void ra_kick2(Ctx *c, void *user) {           /* hook on FUN 0x7103549170 (kick of a job group): points BEFORE the call */
     (void)user;
     uint64_t lr = c->x[30];
+    if (g_jt_on < 0) { const char *e = getenv("SSBU_JOBTREE"); g_jt_on = e ? atoi(e) : 0; }
+    if (g_jt_on > 0 && lr == GA(0x710374c5b8ull) && ra_fight_on() && g_jt_done < g_jt_on) {
+        static uint64_t lastnode; uint64_t head = rd64(GA(0x7105332648ull));
+        if (c->x[0] - 8 == head || lastnode == 0) { static char b[24000]; int at = 0; g_jt_done++;
+            if (g_jt_done == 1) for (int q = 0; q < 2; q++) { uint64_t vt = GA(q ? 0x71050b5268ull : 0x71050a0070ull);      /* (the logic walker's two node classes of SIM_PROF=2) */
+                LOG("r1: JOBTREE walker node vt %llx: vt[0x10] %llx vt[0x18] %llx vt[0x20] %llx vt[0x28] %llx vt[0x30] %llx\n", (unsigned long long)vt, (unsigned long long)rd64(vt + 0x10),
+                    (unsigned long long)rd64(vt + 0x18), (unsigned long long)rd64(vt + 0x20), (unsigned long long)rd64(vt + 0x28), (unsigned long long)rd64(vt + 0x30)); }
+            jt_dump(head, 0, b, &at, (int)sizeof b); LOG("r1: JOBTREE pass kind %d fight frame %lld, this kick's node %llx:%s\n", g_ra_phase, g_ff, (unsigned long long)(c->x[0] - 8), b); }
+        lastnode = c->x[0] - 8;
+    }
     if (g_js_on < 0) { const char *e = getenv("SSBU_JOBSTAT"); g_js_on = e && atoi(e) > 0; }
     if (g_js_on > 0 && lr == g_ra_site) g_js_main = GetCurrentThreadId();      /* (the main thread makes the save-point kick) */
     if (g_js_on > 0 && ra_fight_on()) { int t = (int)(int32_t)c->x[2]; int k = t < 0 ? 0 : t < 4 ? t + 1 : 5; unsigned pl = rd32(c->x[0] + 0x14) & 1; g_js[pl][GetCurrentThreadId() == g_js_main][k]++; }
