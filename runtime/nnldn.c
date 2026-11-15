@@ -611,8 +611,14 @@ typedef struct {
     uint16_t port, peer_port;
     Dgram *head, *tail;
     uint32_t count, bytes;
+    intptr_t hs; int hs_on;               /* (online-mm, SSBU_ONLINE_NEX=1 only) a stream to the game server: nnonline.c's host TCP connection */
 } VSock;
 #define VS_MAX 128
+/* nnonline.c (online-mm, SSBU_ONLINE_NEX=1 only): NEX's streams to the game server; every other stream is still refused */
+int online_stream_wanted(uint32_t ip, uint16_t port);
+intptr_t online_stream_open(int fd, uint32_t ip, uint16_t port, void (*deliver)(int, intptr_t, const uint8_t *, int));
+long online_stream_send(intptr_t h, const void *data, uint32_t len);
+void online_stream_close(intptr_t h);
 static VSock vs[VS_MAX];
 static SRWLOCK vs_lock = SRWLOCK_INIT;
 static CONDITION_VARIABLE vs_cv = CONDITION_VARIABLE_INIT;
@@ -731,15 +737,45 @@ static void so_bind(Ctx *c) {
     if (LOGL(1)) { char a[16]; ip_str(ip, a); printf("[online] bind(%d, %s:%u) = %d\n", fd, a, port, err ? -err : 0); }
     if (err) fail(c, err); else RET(0);
 }
+static void stream_deliver(int fd, intptr_t h, const uint8_t *data, int n) {     /* (nnonline.c's reader thread) bytes of a NEX stream, n <= 0: its end */
+    int got = 0;
+    AcquireSRWLockExclusive(&vs_lock);
+    VSock *s = vsock(fd);
+    if (s && s->hs_on && s->hs == h) {
+        if (n <= 0) s->shut_rd = 1;
+        else {
+            Dgram *d = malloc(sizeof *d + (size_t)n);
+            if (d) {
+                d->next = NULL; d->src = s->peer_ip; d->sport = s->peer_port; d->len = (uint32_t)n;
+                memcpy(d->data, data, (size_t)n);
+                if (s->tail) s->tail->next = d; else s->head = d;
+                s->tail = d; s->count++; s->bytes += (uint32_t)n;
+            }
+        }
+        got = 1;
+    }
+    ReleaseSRWLockExclusive(&vs_lock);
+    if (got) WakeAllConditionVariable(&vs_cv);
+    if (LOGL(2)) printf("[online] stream %d: %d bytes in\n", fd, n);
+}
 static void so_connect(Ctx *c) {
     int fd = (int)c->x[0], err;
     uint32_t ip = 0;
     uint16_t port = 0;
     AcquireSRWLockExclusive(&vs_lock);
     VSock *s = vsock(fd);
-    err = !s ? E_BADF : !read_sa(c->x[1], (uint32_t)c->x[2], &ip, &port) ? E_INVAL : s->type == 1 ? E_CONNREFUSED : 0;
+    err = !s ? E_BADF : !read_sa(c->x[1], (uint32_t)c->x[2], &ip, &port) ? E_INVAL : s->type == 1 && !online_stream_wanted(ip, port) ? E_CONNREFUSED : 0;
+    int stream = !err && s->type == 1;
     if (!err) { if (!s->port) s->port = free_port(s); s->peer_ip = ip; s->peer_port = port; }
     ReleaseSRWLockExclusive(&vs_lock);
+    if (stream) {               /* (online-mm, SSBU_ONLINE_NEX=1) NEX's stream to the game server: a host TCP connection (nnonline.c) */
+        intptr_t h = online_stream_open(fd, ip, port, stream_deliver);
+        AcquireSRWLockExclusive(&vs_lock);
+        s = vsock(fd);
+        if (h < 0 || !s) { err = !s ? E_BADF : E_CONNREFUSED; if (h >= 0) online_stream_close(h); }
+        else { s->hs = h; s->hs_on = 1; }
+        ReleaseSRWLockExclusive(&vs_lock);
+    }
     if (LOGL(1)) { char a[16]; ip_str(ip, a); printf("[online] connect(%d, %s:%u) = %d\n", fd, a, port, err ? -err : 0); }
     if (err) fail(c, err); else RET(0);
 }
@@ -751,6 +787,14 @@ static void do_send(Ctx *c, int fd, uint64_t buf, uint64_t len, uint64_t addr, u
     if (!buf) { fail(c, E_INVAL); return; }
     AcquireSRWLockExclusive(&vs_lock);
     VSock *s = vsock(fd);
+    if (s && s->type == 1 && s->hs_on && !s->shut_wr) {         /* (online-mm) a NEX stream: its host connection */
+        intptr_t h = s->hs;
+        ReleaseSRWLockExclusive(&vs_lock);
+        long n = online_stream_send(h, PTR(buf), (uint32_t)len);
+        if (LOGL(2)) printf("[online] stream %d: %llu bytes out = %ld\n", fd, (unsigned long long)len, n);
+        if (n < 0) fail(c, 32 /* EPIPE */); else RET(n);
+        return;
+    }
     if (!s) err = E_BADF;
     else if (s->type != 2 || s->shut_wr) err = E_NOTCONN;
     else if (addr && alen) { if (!read_sa(addr, alen, &dst, &dport)) err = E_INVAL; }
@@ -804,7 +848,10 @@ static void do_recv(Ctx *c, int fd, uint64_t buf, uint64_t len, int flags, uint6
     {   static int mk = -1; if (mk < 0) { const char *e = getenv("SSBU_NET_RECVMARK"); mk = !(e && e[0] == '0'); }      /* (OpenSmash phase) marked for the rollback ring */
         if (mk && n) { void r1_wrote(uint64_t, uint64_t); r1_wrote(buf, n); } }
     memcpy(PTR(buf), d->data, n);
-    if (!(flags & 2)) {
+    if (!(flags & 2) && s->type == 1 && n < d->len) {           /* (online-mm) a stream: the rest of the chunk stays for the next read */
+        memmove(d->data, d->data + n, d->len - n);
+        d->len -= n; s->bytes -= n;
+    } else if (!(flags & 2)) {
         s->head = d->next;
         if (!s->head) s->tail = NULL;
         s->count--;
@@ -836,7 +883,7 @@ static void so_poll(Ctx *c) {             /* (pollfd {int fd; short events, reve
             if (!s) re = 0x20;
             else {
                 if (s->head) re |= ev & (0x1 | 0x40);
-                if (s->type == 2 && !s->shut_wr) re |= ev & 0x4;
+                if ((s->type == 2 || s->hs_on) && !s->shut_wr) re |= ev & 0x4;
                 if (s->shut_rd && s->type == 1) re |= 0x10;
             }
             st16(p + 6, re);
@@ -926,8 +973,10 @@ static void so_close(Ctx *c) {
     int fd = (int)c->x[0];
     AcquireSRWLockExclusive(&vs_lock);
     VSock *s = vsock(fd);
+    intptr_t h = s && s->hs_on ? s->hs : -1;
     if (s) { drop_queue(s); memset(s, 0, sizeof *s); }
     ReleaseSRWLockExclusive(&vs_lock);
+    if (h >= 0) online_stream_close(h);            /* (online-mm) a NEX stream's host connection */
     WakeAllConditionVariable(&vs_cv);
     if (LOGL(2)) printf("[online] close(%d)\n", fd);
     if (!s) fail(c, E_BADF); else RET(0);
