@@ -619,6 +619,7 @@ int online_stream_wanted(uint32_t ip, uint16_t port);
 intptr_t online_stream_open(int fd, uint32_t ip, uint16_t port, void (*deliver)(int, intptr_t, const uint8_t *, int));
 long online_stream_send(intptr_t h, const void *data, uint32_t len);
 void online_stream_close(intptr_t h);
+int online_ncs_answer(uint32_t dst, uint16_t dport, uint32_t me, uint16_t sport, const uint8_t *data, uint32_t len, uint8_t out[16], uint16_t *from_port);
 static VSock vs[VS_MAX];
 static SRWLOCK vs_lock = SRWLOCK_INIT;
 static CONDITION_VARIABLE vs_cv = CONDITION_VARIABLE_INIT;
@@ -805,6 +806,11 @@ static void do_send(Ctx *c, int fd, uint64_t buf, uint64_t len, uint64_t addr, u
     if (!err) sport = s->port;
     ReleaseSRWLockExclusive(&vs_lock);
     uint32_t me = net_my_ip();
+    if (!err) {                 /* (online-mm A2, SSBU_ONLINE_NEX=1 only) Pia's NAT check: answered here, nothing leaves the game */
+        uint8_t ans[16]; uint16_t from = 0;
+        int k = online_ncs_answer(dst, dport, me, sport, PTR(buf), (uint32_t)(len > 65507 ? 65507 : len), ans, &from);
+        if (k >= 0) { if (k) nnldn_deliver(dst, from, me, sport, ans, 16); RET(len); return; }
+    }
     int bcast = dst == ALL_ONES || dst == VNET_BROADCAST;
     if (!err && !bcast && dst != LOOPBACK && dst != me && ((dst & VNET_MASK) != VNET_SUBNET || !me)) err = E_NETUNREACH;
     if (LOGL(3) || (LOGL(1) && err)) { char a[16]; ip_str(dst, a); printf("[online] sendto(%d, %llu bytes, %s:%u) from port %u = %d\n", fd, (unsigned long long)len, a, dport, sport, err ? -err : 0); }

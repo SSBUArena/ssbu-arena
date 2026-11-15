@@ -4,8 +4,9 @@
  * Without the variable nothing here is registered and the offline answers of nnfs.c / nnmisc.c / nnsvc_c5a.inc stay.
  *
  * Registered after every other import table (boot.c), so these replace the offline handlers:
- *  - nn::nifm: the network is available, a request is never on hold; the current address is 127.0.0.1 (the socket layer of
- *    nnnet_c4a.inc reaches the loopback network only: the game server of a local test listens there).
+ *  - nn::nifm: the network is available, a request is never on hold (one waits up to 5 s for the lobby); the current address is
+ *    this player's address on the lobby's virtual network (10.13.x.y, mask 255.255.0.0, gateway the lobby's 10.13.0.1), never
+ *    a real one; 127.0.0.1 only before the lobby answered.
  *  - nn::account: the user has a network service account (id = the two halves of the user id xor'ed, never 0), the id token
  *    cache is filled at once ("arena2.<the Arena lobby ticket>", or without one "arena1.<account id hex>.<name>"), the cached
  *    Nintendo account info has a birthday, a gender and the country SSBU_ONLINE_COUNTRY (two letters, default US): the
@@ -48,11 +49,20 @@ static uint64_t nsa_id(void) { uint64_t lo, hi; account_uid(&lo, &hi); uint64_t 
 static void on_true(Ctx *c) { RET(1); }
 static void on_false(Ctx *c) { RET(0); }
 static void on_keep(Ctx *c) { (void)c; }
-static void nifm_PrimaryIp(Ctx *c) { if (A0) wr32(A0, 0x0100007fu); RET(0); }                 /* (in_addr *) 127.0.0.1 */
+/* (A2) the console's address is this player's address on the lobby's virtual network (net_relay.c), never a real one: Pia
+ * puts it in the station URL the game server hands to the other player, and compares it with what the NAT check saw
+ * (online_ncs_answer below: the same address, so "no NAT"). 127.0.0.1 only before the lobby answered (a test without one). */
+uint32_t net_my_ip(void);                                   /* net_relay.c */
+#define VNET_GATEWAY_IP 0x0A0D0001u                         /* (net_relay.h) */
+static uint32_t my_vip(void) { uint32_t ip = net_my_ip(); return ip ? ip : 0x7f000001u; }
+static uint32_t be32(uint32_t v) { return (v >> 24) | ((v >> 8) & 0xff00u) | ((v << 8) & 0xff0000u) | (v << 24); }
+static void on_wait_lobby(Ctx *c) { (void)c; for (int i = 0; i < 50 && !net_my_ip(); i++) Sleep(100); }
+static void nifm_PrimaryIp(Ctx *c) { if (A0) wr32(A0, be32(my_vip())); RET(0); }              /* (in_addr *, network order) */
 static void nifm_IpConfig(Ctx *c) {                                                            /* (ip, mask, gateway, dns1, dns2) */
-    if (c->x[0]) wr32(c->x[0], 0x0100007fu);
-    if (c->x[1]) wr32(c->x[1], 0x000000ffu);
-    if (c->x[2]) wr32(c->x[2], 0x0100007fu);
+    int v = net_my_ip() != 0;
+    if (c->x[0]) wr32(c->x[0], be32(my_vip()));
+    if (c->x[1]) wr32(c->x[1], be32(v ? 0xffff0000u : 0xff000000u));
+    if (c->x[2]) wr32(c->x[2], be32(v ? VNET_GATEWAY_IP : 0x7f000001u));
     if (c->x[3]) wr32(c->x[3], 0);
     if (c->x[4]) wr32(c->x[4], 0);
     RET(0);
@@ -103,7 +113,7 @@ static void async_move_assign(Ctx *c) {
 #define AC(n) "_ZN2nn7account" n
 static const ImportDef online_imports[] = {
     {NI("18IsNetworkAvailableEv"), on_true}, {NI("22IsNetworkRequestOnHoldEv"), on_false},
-    {NI("20SubmitNetworkRequestEv"), on_keep}, {NI("27SubmitNetworkRequestAndWaitEv"), on_keep}, {NI("20CancelNetworkRequestEv"), on_keep},
+    {NI("20SubmitNetworkRequestEv"), on_keep}, {NI("27SubmitNetworkRequestAndWaitEv"), on_wait_lobby}, {NI("20CancelNetworkRequestEv"), on_keep},
     {NI("31HandleNetworkRequestErrorResultEv"), on_false},
     {NI("26GetCurrentPrimaryIpAddressEP7in_addr"), nifm_PrimaryIp},
     {NI("22GetCurrentIpConfigInfoEP7in_addrS2_S2_S2_S2_"), nifm_IpConfig},
@@ -171,15 +181,53 @@ static void nex_inet_from_name(Ctx *c, void *u) {
     }
     g_inet_orig(c);
 }
+/* (A2) Pia's names: the NAT check servers nncs1 / nncs2 are two addresses of the virtual network that no player ever gets
+ * (the lobby's own 10.13.0.1 and 10.13.255.254; Pia wants them different) and that nnldn.c answers itself
+ * (online_ncs_answer); any other Nintendo name Pia asks for is the game server, as before. */
+#define NCS1_IP 0x0A0D0001u
+#define NCS2_IP 0x0A0DFFFEu
 static void pia_resolve(Ctx *c, void *u) {
     (void)u; char name[128];
     if (nintendo_name(c->x[0], name, sizeof name)) {
-        printf("online: Pia resolves \"%s\" -> the game server\n", name); fflush(stdout);
-        if (c->x[4]) { for (int i = 0; i < 16; i++) wr8(c->x[4] + 8 + (uint64_t)i, 0); wr32(c->x[4] + 8, g_nex_ip); }
+        uint32_t ip = !strncmp(name, "nncs1", 5) ? NCS1_IP : !strncmp(name, "nncs2", 5) ? NCS2_IP : g_nex_ip;
+        printf("online: Pia resolves \"%s\" -> %s\n", name, ip == NCS1_IP || ip == NCS2_IP ? "the NAT check (answered in the game)" : "the game server"); fflush(stdout);
+        if (c->x[4]) { for (int i = 0; i < 16; i++) wr8(c->x[4] + 8 + (uint64_t)i, 0); wr32(c->x[4] + 8, ip); }
         RET(1);
         return;
     }
     g_pia_orig(c);
+}
+
+/* (A2) Pia's NAT check (nn::pia::nex::NatPropertyDetecter), answered by nnldn.c's sendto without anything leaving the game:
+ * on the virtual network there is no NAT, so the answer is fixed. Requests: 16 bytes, a big-endian u32 kind (101 and 102 to
+ * nncs1, 103 to nncs2, ports 10025 / 10125) and zeros. Answer: the kind, the port and the address the request came from (this
+ * player's virtual address and the socket's port: "no NAT"), a u32 0, all big-endian; it comes from where the request went,
+ * except 102's, which comes from the other port (the test of the NAT's filtering). Anything else sent to the two addresses
+ * (Pia's keep-alive to nncs1) is taken and dropped.
+ * Returns -1: not for the NAT check; 0: taken, no answer; 1: answer in out[16], from port *from_port of dst. */
+static volatile LONG g_ncs_said;
+static void pia_port_note(uint32_t me, uint16_t port);
+int online_ncs_answer(uint32_t dst, uint16_t dport, uint32_t me, uint16_t sport, const uint8_t *data, uint32_t len, uint8_t out[16], uint16_t *from_port) {
+    if (!online_nex_on() || (dst != NCS1_IP && dst != NCS2_IP)) return -1;
+    /* Pia's keep-alive to nncs1 (port 33334, the Pia packet magic 32 ab 98 64): its station socket's port, which the game server
+     * puts in this player's station URL for the other player (pia_port_note) */
+    if (dst == NCS1_IP && (dport == 33334 || dport == 33335) && len >= 4 && data[0] == 0x32 && data[1] == 0xab && data[2] == 0x98 && data[3] == 0x64) {
+        pia_port_note(me, sport);
+        return 0;
+    }
+    if (len < 16 || (dport != 10025 && dport != 10125)) {
+        if (InterlockedIncrement(&g_ncs_said) <= 12) { printf("online: %u bytes to the NAT check's port %u dropped\n", len, dport); fflush(stdout); }
+        return 0;
+    }
+    uint32_t kind = (uint32_t)data[0] << 24 | (uint32_t)data[1] << 16 | (uint32_t)data[2] << 8 | data[3];
+    if (kind < 101 || kind > 103) return 0;
+    uint16_t from = dport;
+    if (kind == 102) from = dport == 10025 ? 10125 : 10025;
+    uint32_t v[4] = {kind, sport, me, 0};
+    for (int i = 0; i < 4; i++) { out[4 * i] = (uint8_t)(v[i] >> 24); out[4 * i + 1] = (uint8_t)(v[i] >> 16); out[4 * i + 2] = (uint8_t)(v[i] >> 8); out[4 * i + 3] = (uint8_t)v[i]; }
+    *from_port = from;
+    if (InterlockedIncrement(&g_ncs_said) <= 12) { printf("online: Pia NAT check %u answered (no NAT: the virtual address)\n", kind); fflush(stdout); }
+    return 1;
 }
 void online_nex_hooks(void) {
     if (!online_nex_on()) return;
@@ -248,3 +296,28 @@ long online_stream_send(intptr_t h, const void *data, uint32_t len) {
     return (long)len;
 }
 void online_stream_close(intptr_t h) { shutdown((SOCKET)h, SD_BOTH); closesocket((SOCKET)h); }
+
+/* (A2) Pia's station port for the game server. On Nintendo's network the server learns it from Pia's keep-alive to nncs1 (a UDP
+ * datagram from the station socket; NEX itself speaks over a stream, so its URL has no Pia port): the server puts that port in
+ * the station URL it hands to the other player of the gathering. Here the keep-alive never leaves the game (online_ncs_answer);
+ * instead the game sends the game server a 12-byte note on UDP to the server's address (SSBU_ONLINE_NEX_REAL or
+ * SSBU_ONLINE_NEX_SERVER, the authentication port): "RBPP", this player's VIRTUAL address (u32 BE), the port (u16 BE), 0 u16.
+ * At most once per 5 s, and when the port changes. TEST PATH (as the NEX stream on the host's TCP): in the product the lobby,
+ * which knows each player's virtual address, will carry the keep-alive to the game server. Nothing real is in the note. */
+static void pia_port_note(uint32_t me, uint16_t port) {
+    static SOCKET s = INVALID_SOCKET; static uint16_t last_port; static uint64_t last_ms; static int said;
+    uint64_t now = GetTickCount64();
+    if (!me || (port == last_port && now - last_ms < 5000)) return;
+    static int wsa; if (!wsa) { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); wsa = 1; }
+    if (s == INVALID_SOCKET) s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return;
+    uint32_t rip = g_nex_ip; uint16_t rport = g_nex_port;
+    const char *e = getenv("SSBU_ONLINE_NEX_REAL");
+    if (e && *e) { unsigned a, b, d, f, pp; if (sscanf(e, "%u.%u.%u.%u:%u", &a, &b, &d, &f, &pp) == 5) { rip = a << 24 | b << 16 | d << 8 | f; rport = (uint16_t)pp; } }
+    uint8_t m[12] = {'R', 'B', 'P', 'P', (uint8_t)(me >> 24), (uint8_t)(me >> 16), (uint8_t)(me >> 8), (uint8_t)me, (uint8_t)(port >> 8), (uint8_t)port, 0, 0};
+    struct sockaddr_in sa; memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET; sa.sin_port = htons(rport); sa.sin_addr.s_addr = htonl(rip);
+    sendto(s, (const char *)m, (int)sizeof m, 0, (struct sockaddr *)&sa, sizeof sa);
+    if (port != last_port || said < 2) { printf("online: Pia's station port %u told to the game server\n", port); fflush(stdout); said++; }
+    last_port = port; last_ms = now;
+}
