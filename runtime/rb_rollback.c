@@ -57,6 +57,7 @@ static HANDLE g_rbg_timer;
 static int g_rbg_wdfix = -1; static long long g_rbg_wd_before, g_rbg_rb_unheld;
 static int g_rbg_detail = -1;
 static long long g_rbg_test_f = -2; static int g_rbg_test_ms, g_rbg_test_k;    /* SSBU_RB_NET_TEST=<frame>,<ms>[,<k>]: a stall of ms at frame's H2, then a rollback of k */
+static void rbg_tw_move(int out);                     /* (round 14, below) */
 /* (hs11) frame time of rollback ticks. SSBU_RB_NET_RECAP: which re-run passes capture their state: 0 = every one from the
  * newest frame with both pads known on (the old way), 1 = only that frame (the oldest any later rollback can need) and the
  * last one, 2 = every other one from that frame, and the last; 3 = the last one only; 4 = (hs16, option) that frame
@@ -197,6 +198,7 @@ static int rbg_rollback(Ctx *c, long long i, int m) {
     if (!lr) { g_rbg_miss++; return 0; }
     g_rbg_pend = 0;
     if (g_rbg_defcap >= 0) { g_rbg_defcap = -1; g_rbg_dc_drop++; }      /* (rb-8ms, RECAP=7) a deferred capture not made: dropped */
+    rbg_tw_move(1);                                     /* (round 14, option SSBU_RB_TWMOVE) */
     g_rbg_load_ms += now_ms() - t0; g_rbg_t_load += now_ms() - t0; g_rbg_recap_first = -1; g_rbg_t_pass0 = now_ms();
     int k = (int)(i - best);
     g_rgs_left = k; g_rgs_next = best + 1; g_ra_phase = 2; g_rbg_cur_k = k; g_rgs_firstp = 1;
@@ -470,6 +472,24 @@ static void rbg_pin_apply(unsigned long long mm, unsigned long long mc, unsigned
         unsigned long nvn_render_tid(void); DWORD rt = (DWORD)nvn_render_tid();
         if (pr && rt && md) { HANDLE rh = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE, rt); if (rh) { SetThreadAffinityMask(rh, (DWORD_PTR)md); CloseHandle(rh); } } }
 }
+/* (round 14, option) SSBU_RB_TWMOVE=1 (default 0; =<hex mask> that mask): the task workers on the other L3 (the copy helpers' load mask) from a
+ * rollback's load to the end of its last re-run pass, back on their own mask for the real passes. Bench r14m2: workers on fc0 all the time
+ * (SSBU_RB_PIN_TW=fc0, b14t2) made the re-run passes faster (rr 2.31 -> 2.15 BF, 2.73 -> 2.59 TaC) but the real pass slower (+0.15..0.2 M
+ * cycles: the render preparation jobs of its start read main's data) and the hold before the load slower (+0.07) */
+static int g_rbg_twm = -1; static unsigned long long g_rbg_twm_mask; static int g_rbg_tw_moved; static long long g_rbg_twm_n;
+static void rbg_tw_mask(unsigned long long mk) {
+    Ctx *tc; const char *nm; HANDLE h;
+    for (int i = 0; guest_thread_info(i, &tc, &nm, &h); i++) if (h && nm && strstr(nm, "TaskWorker")) SetThreadAffinityMask(h, (DWORD_PTR)mk);
+}
+static void rbg_tw_move(int out) {
+    if (g_rbg_twm < 0) { const char *e = getenv("SSBU_RB_TWMOVE"); g_rbg_twm = 0;
+        if (e && *e && strcmp(e, "0")) { unsigned long long v = strtoull(e, NULL, 16); g_rbg_twm = 1; g_rbg_twm_mask = v > 1 ? v : 0; } }
+    if (!g_rbg_twm || !g_rbg_pinned || !g_rbg_pm[2]) return;
+    unsigned long long other = g_rbg_twm_mask ? g_rbg_twm_mask : g_rg_cm_other;
+    if (!other) return;
+    if (out && !g_rbg_tw_moved) { rbg_tw_mask(other); g_rbg_tw_moved = 1; g_rbg_twm_n++; }
+    else if (!out && g_rbg_tw_moved) { rbg_tw_mask(g_rbg_pm[2]); g_rbg_tw_moved = 0; }
+}
 static void rbg_pin(int on) {
     if (on) {
         const char *e = getenv("SSBU_RB_PIN"); if (e && e[0] == '0' && !e[1]) return;
@@ -483,7 +503,7 @@ static void rbg_pin(int on) {
         rbg_pin_apply(m[0], m[1], m[2], m[3], m[4]); g_rbg_pinned = 1;
         LOG("r1: RB NET: threads placed: main %llx, copy helpers %llx, task workers %llx, render dispatch %llx, others %llx\n", m[0], m[1], m[2], m[3], m[4]);
     } else if (g_rbg_pinned) {
-        g_rg_copy_ccx = 0;
+        g_rg_copy_ccx = 0; g_rbg_tw_moved = 0;
         DWORD_PTR pa = 0, sa = 0; GetProcessAffinityMask(GetCurrentProcess(), &pa, &sa); g_rbg_pinned = 0;
         rbg_pin_apply(pa, pa, pa, pa, pa);
     }
@@ -681,6 +701,7 @@ static void rbg_step_body(Ctx *c) {
         g_ra_phase = 0; g_ra_after_quiet = 1; g_rgs_left = 0;
         rbg_rpause(1, 0);                               /* (rb-8ms) the render thread goes on */
         snd_let_go();                                   /* (Arena perf) the sound threads go on (held since the load) */
+        rbg_tw_move(0);                                 /* (round 14, option SSBU_RB_TWMOVE) the task workers back on their mask */
     } else if (g_rbg_noring) {                          /* (hs13) a real pass ended, no ring: nothing to capture, nothing ran on a guess */
         g_rgs_next = i + 1; g_rbg_real++;
         rbn_drain(i);
@@ -1026,6 +1047,7 @@ static void rbg_report(void) {
     LOG("r1: RB NET report: stalls for the other player %lld (%.1f ms in all; %lld of them because the ring was short of memory); captures failed %lld, re-run captures not needed %lld; load mean %.3f ms; peer silent %lld\n",
         g_rbg_stalls, g_rbg_stall_ms, g_rbg_short_waits, g_rbg_capfail, g_rbg_capskip, g_rbg_rb ? g_rbg_load_ms / g_rbg_rb : 0.0, g_rbg_gone);
     LOG("r1: RB NET report: real-pass captures not needed (next frame's pads already here, SSBU_RB_CAPSKIP %d) %lld of %lld real frames\n", g_rbg_capskip_on, g_rbg_capskip_real, g_rbg_real);
+    if (g_rbg_twm > 0) LOG("r1: RB NET report: SSBU_RB_TWMOVE: the task workers moved for %lld rollbacks\n", g_rbg_twm_n);
     LOG("r1: RB NET report: deferred recaptures (SSBU_RB_NET_RECAP=7) %lld, mean %.3f ms (made in the wait: not in the rollback tick), started late %lld, dropped by a rollback in the wait %lld\n", g_rbg_dc_n, g_rbg_dc_n ? g_rbg_dc_ms / g_rbg_dc_n : 0.0, g_rbg_dc_late, g_rbg_dc_drop);
     LOG("r1: RB NET report: ring memory (hs14, fix %s): captures given up %lld, old states freed early %lld, captures skipped to keep the oldest needed state %lld\n",
         g_rg_poolfix ? "on" : "OFF", g_rg_short_n, g_rg_freed_slots, g_rg_skip_full);

@@ -121,8 +121,8 @@ static RbPad bot_pad0(unsigned seed, long long f) {
             static int wj = -1; if (wj < 0) { const char *e = getenv("SSBU_RB_NET_BOT_WALKJUMP"); wj = e && e[0] == '1'; }
             long long t = f - g_bot_walkoff_at;
             if (wj && g_bp_remote) goto normal;            /* (WALKJUMP) only the local bot walks off: the other player fights on */
-            if (wj && t < 2) return p;
-            p.lx = -32767;
+            if (wj && t % 300 < 2) return p;              /* (WALKJUMP) the side changes every 300 frames (a wall on one side: PS2 b14h2) */
+            p.lx = wj && (t / 300) % 2 ? 32767 : -32767;
             if (wj && t % 40 >= 20 && t % 40 < 22) p.buttons = 1ull << 2;
             return p; } }
 normal:

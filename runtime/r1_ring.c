@@ -789,6 +789,7 @@ static void rg_cap_dedup(RgSlot *s) {
 }
 static volatile LONG g_rg_loading; static volatile LONG64 g_rg_loadfault, g_rg_capfault; static int rg_fault_on(void);
 static int jl_on(void); static int jl_fmt(char *b, size_t n); static char g_jl_before[200]; static long long g_jl_n;      /* (rb-8ms 13/11) SSBU_RB_JOBLOG, below */      /* (below: rg_load_fault) */
+static double g_lsw[6]; static long long g_lsw_n;      /* (round 14) load sweep parts: before (snapshot start), write-watch questions, line init, stacks, mark sweep, extras */
 static double g_cq[3]; static long long g_cqn; static double g_ldp[3]; static long long g_ldp_n;      /* (rb-8ms) load parts: sweep (write watch, marks, extras), page list, copy */
 static int r1_ring_capture_i(long long frame, Ctx *c);
 int r1_ring_capture(long long frame, Ctx *c) {      /* (SSBU_PMCMARK: the capture as its own part) */
@@ -1612,16 +1613,22 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
         }
         tsn0 = now_ms() - tsn0;                           /* main's own time so far */
     }
+    double tsw0 = now_ms();                               /* (round 14) the sweep's parts timed (report: RING load sweep parts) */
     if (!pww_early) rg_pww(1);                            /* (rb-8ms) the write-watch questions on every copy thread */
+    double tsw1 = now_ms();
     rg_full_init();                                       /* (round 10, SSBU_RB_LINES) line loads for this load: not for an older frame than the last load's */
     g_rg_lnload = g_rg_full && !g_ln_off && !lc && lpipe <= 0 && !g_ls_active && frame >= g_rg_ln_last;
     if (g_ln_defer < 0) { const char *e = getenv("SSBU_RB_LINES_DEFER"); g_ln_defer = !(e && e[0] == '0'); }
     if (g_rg_full) { if (g_rg_lnload) g_ln_loads++; else g_ln_fall++; }
+    double tsw2 = now_ms();
     rg_stack_ww(NULL);                                    /* (Arena perf) the stack pages written since the newest capture */
+    double tsw3 = now_ms();
     if (g_ls_active) ls_each(rg_load_page); else rg_sweep(rg_load_page);      /* written since the newest capture (R4: the learned set) */
+    double tsw4 = now_ms();
     rgx_each(1, rgx_touch);                               /* the extras: (Arena perf) those written since the newest capture (write watch) */
     size_t pages = g_rg_ntl; g_rg_ldpg += (long long)pages;
     double tl1 = now_ms();
+    g_lsw[0] += tsw0 - tl0; g_lsw[1] += tsw1 - tsw0; g_lsw[2] += tsw2 - tsw1; g_lsw[3] += tsw3 - tsw2; g_lsw[4] += tsw4 - tsw3; g_lsw[5] += tl1 - tsw4; g_lsw_n++;
     if (piped) { cp_wait_async(); g_rg_lp_wait += now_ms() - tl1; g_cp_hmode = 0; g_cp_mw = 1.0; g_cp_cond = 0; g_cp_nt = 0; }
     if (g_rgpg_on > 0) { g_rgpg_lds++; for (size_t n = 0; n < g_rg_ntl; n++) { g_rgpg_ldn++; if (r1_in_pool(rg_addr(g_rg_tl[n]))) g_rgpg_ldpool++; } }      /* (rb-8ms, diagnosis) */
     int snap5 = 0; double tsn5 = 0;
@@ -2473,6 +2480,8 @@ static void rgs_report(void) {
     if (g_ln_loads + g_ln_fall) LOG("r1: RING line loads (SSBU_RB_LINES): %lld loads by lines, %lld whole (an older frame than the last load or not possible); pages: by lines %lld (%.1f lines each), whole: written by other writers %lld, no line mark %lld, other %lld; line-map commits %lld (failed %lld); lines written by main (=2) in %lld loads\n",
         g_ln_loads, g_ln_fall, g_ln_pg, g_ln_pg ? (double)g_ln_lines / (double)g_ln_pg : 0.0, g_ln_host, g_ln_zero, g_ln_whole, (long long)g_ln_commits, (long long)g_ln_commit_fail, g_ln_main);
     if (g_ln_check) LOG("r1: RING LINES CHECK (SSBU_RB_LINES_CHECK): %lld pages checked, %lld with a line that differed and had no mark (%lld lines)\n", (long long)g_ln_chk_pg, (long long)g_ln_chk_bad, (long long)g_ln_chk_badl);
+    if (g_lsw_n) LOG("r1: RING load sweep parts (means ms, %lld loads): up to the questions (snapshot start) %.4f, write-watch questions (rg_pww) %.4f, line-load set-up %.4f, stack write watch %.4f, mark sweep %.4f, extras %.4f\n",
+        g_lsw_n, g_lsw[0] / g_lsw_n, g_lsw[1] / g_lsw_n, g_lsw[2] / g_lsw_n, g_lsw[3] / g_lsw_n, g_lsw[4] / g_lsw_n, g_lsw[5] / g_lsw_n);
     if (g_ldp_n) LOG("r1: RING load parts (means ms): sweep (write watch questions, marks, extras) %.3f, page list %.3f, copy %.3f (%lld loads; SSBU_RB_LOADPIPE: %lld piped, main waited %.3f ms for their first part after its sweep; SSBU_RB_LOADSYNC: %lld waits for the render thread, %.3f ms mean)\n", g_ldp[0] / g_ldp_n, g_ldp[1] / g_ldp_n, g_ldp[2] / g_ldp_n, g_ldp_n, g_rg_lp_n, g_rg_lp_n ? g_rg_lp_wait / g_rg_lp_n : 0.0, g_rg_ls_n, g_rg_ls_n ? g_rg_ls_ms / g_rg_ls_n : 0.0);
     for (int k = 0; k < RG_MAXSLOT; k++) {
         int m = g_rgl_n[k]; if (!m) continue;
