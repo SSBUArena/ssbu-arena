@@ -476,6 +476,10 @@ static void rbg_pin(int on) {
         unsigned long long *m = g_rbg_pm;
         if (e) { if (sscanf(e, "%llx,%llx,%llx,%llx,%llx", &m[0], &m[1], &m[2], &m[3], &m[4]) != 5) return; }
         else if (!rbg_pin_topology(m)) return;
+        /* (round 14, TEST) SSBU_RB_PIN_TW=<hex mask>: the task workers' mask only (the rest, COPYCCX included, from the topology as by default).
+         * PMC r14_pmc_bf1: in the start of a real pass main runs ~58% of the render preparation jobs (71035c3fd0), TaskWorker1 / TaskWorker2
+         * the rest, on the copy helpers' 4 logical CPUs (2 cores) */
+        {   const char *t = getenv("SSBU_RB_PIN_TW"); if (t && *t) { unsigned long long tw = strtoull(t, NULL, 16); if (tw) m[2] = tw; } }
         rbg_pin_apply(m[0], m[1], m[2], m[3], m[4]); g_rbg_pinned = 1;
         LOG("r1: RB NET: threads placed: main %llx, copy helpers %llx, task workers %llx, render dispatch %llx, others %llx\n", m[0], m[1], m[2], m[3], m[4]);
     } else if (g_rbg_pinned) {
