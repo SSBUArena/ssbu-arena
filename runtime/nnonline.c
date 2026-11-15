@@ -43,7 +43,15 @@ int online_nex_on(void) {
 void account_uid(uint64_t *lo, uint64_t *hi);              /* nnfs.c */
 void os_init_event(uint64_t key, int autoclear);           /* os_threads.c */
 void os_signal_event(uint64_t key);
-static uint64_t nsa_id(void) { uint64_t lo, hi; account_uid(&lo, &hi); uint64_t id = lo ^ hi; return id ? id : 1; }
+static uint64_t nsa_id(void) {
+    uint64_t lo, hi; account_uid(&lo, &hi);
+    /* (a build without RECOMP_LDN_ONLINE keeps the SDK's fixed user id: every game would be the same account; tests of two
+     * games on one PC set SSBU_ACCOUNT_UID, taken here too) */
+    const char *e = getenv("SSBU_ACCOUNT_UID");
+    if (e && strlen(e) >= 32) { char h[17], l[17]; memcpy(h, e, 16); h[16] = 0; memcpy(l, e + 16, 16); l[16] = 0; hi = _strtoui64(h, NULL, 16); lo = _strtoui64(l, NULL, 16); }
+    uint64_t id = lo * 0x9e3779b97f4a7c15ull ^ hi;
+    return id ? id : 1;
+}
 
 /* ---------------------------------------------------------------- nn::nifm */
 static void on_true(Ctx *c) { RET(1); }
