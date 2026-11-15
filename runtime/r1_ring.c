@@ -643,10 +643,42 @@ static void rg_stack_one(uint64_t lo, uint64_t n, void **buf, size_t cap, long l
     for (ULONG_PTR k = 0; k < cnt; k++) map[((uint64_t)(uintptr_t)buf[k] - base) >> 12] = 1;
     *pages += (long long)cnt;
 }
+/* (round 15) SSBU_RB_STKSKIP (1 = on, 2 = control, 0 = off; default below): a thread's OWN stack is not asked again while the thread has
+ * not run since that stack's last question (QueryThreadCycleTime unchanged, ~1 us against ~3.7 us for a GetWriteWatch): its SP-relative
+ * stores are the only unmarked writes there, and it made none (the guest code of other threads marks what it writes). Fibres' stacks
+ * (a fibre can run on any thread) are always asked. The writes it did not see stay in the OS's watch and come with the next question.
+ * Control (=2): every stack asked, the pages found on those that would have been skipped counted (must stay 0: a host handler writing
+ * into a sleeping thread's stack for it would show there). Report line "RING stack questions".
+ * RESULT (round 15, loop BF r15h1, control): ~9.8 of ~56 stacks per question round would be skipped, but 2618 pages were found on them in
+ * 27659 such questions (the load's own copies into held threads' stacks show up at the next question): not proved safe, and the gain is
+ * at most ~10 x 2.7 us per round. OFF by default (0); do not turn on without handling the load's writes. */
+static int g_sk_on = -1; static uint64_t g_sk_cyc[1024], g_sk_lo[1024]; static uint8_t g_sk_have[1024], g_sk_flag;
+static long long g_sk_asked, g_sk_skipped, g_sk_ctl_n, g_sk_ctl_pages, g_sk_qfail;
+static void (*g_sk_inner)(uint64_t lo, uint64_t n);
+void os_r1_stacks_ex(void (*cb)(int idx, uint64_t lo, uint64_t n, HANDLE h));
+static void rg_sk_cb(int i, uint64_t lo, uint64_t n, HANDLE h) {
+    g_sk_flag = 0;
+    if (g_sk_on > 0 && h && i < 1024) {
+        ULONG64 cy = 0;
+        if (QueryThreadCycleTime(h, &cy)) {
+            if (g_sk_have[i] && cy == g_sk_cyc[i] && lo == g_sk_lo[i]) { if (g_sk_on == 1) { g_sk_skipped++; return; } g_sk_flag = 1; g_sk_ctl_n++; }
+            else { g_sk_cyc[i] = cy; g_sk_lo[i] = lo; g_sk_have[i] = 1; }
+        } else { g_sk_have[i] = 0; g_sk_qfail++; }
+    }
+    g_sk_asked++;
+    g_sk_inner(lo, n);
+}
+static void rg_stacks_each(void (*cb)(uint64_t lo, uint64_t n)) {
+    if (g_sk_on < 0) { const char *e = getenv("SSBU_RB_STKSKIP"); g_sk_on = e ? atoi(e) : 0; }
+    if (g_sk_on <= 0) { os_r1_stacks(cb); return; }                 /* (off: the plain list, as before) */
+    g_sk_inner = cb; os_r1_stacks_ex(rg_sk_cb); g_sk_flag = 0;
+}
 static void rg_stack_cb(uint64_t lo, uint64_t n) {
+    long long p0 = g_sw_pages; int fl = g_sk_flag;
     size_t np = (size_t)((((lo + n + 0xfff) & ~0xfffull) - (lo & ~0xfffull)) >> 12);
     if (g_sw_cap < np) { free(g_sw_addr); g_sw_cap = np + 256; g_sw_addr = malloc(g_sw_cap * sizeof *g_sw_addr); if (!g_sw_addr) { g_sw_cap = 0; return; } }
     rg_stack_one(lo, n, g_sw_addr, g_sw_cap, &g_sw_pages, &g_sw_fail);
+    if (fl) g_sk_ctl_pages += g_sw_pages - p0;
 }
 /* (rb-8ms 2026-11-11) THE WRITE-WATCH QUESTIONS ON EVERY COPY THREAD. A capture / load asked the OS one stack and one extras piece at a time
  * on main (~60 GetWriteWatch, 0.06 + 0.04 ms). rg_pww asks them all before the sweep, spread over main and the copy helpers: the stacks'
@@ -655,11 +687,12 @@ static void rg_stack_cb(uint64_t lo, uint64_t n) {
 static uint64_t g_pw_lo[1024], g_pw_n[1024]; static int g_pw_ns, g_pw_nx, g_pw_parts, g_pw_on = -1, g_pw_stacks_done, g_pw_x_ready;
 static void **g_pw_buf[PSW_MAX]; static size_t g_pw_bufcap; static long long g_pw_pages[PSW_MAX], g_pw_fail[PSW_MAX], g_pw_runs;
 static void **g_pw_xaddr; static size_t g_pw_xcap; static ULONG_PTR *g_pw_xcnt; static int8_t *g_pw_xok; static int g_pw_xn;
-static void rg_pw_collect(uint64_t lo, uint64_t n) { if (g_pw_ns < 1024) { g_pw_lo[g_pw_ns] = lo; g_pw_n[g_pw_ns] = n; g_pw_ns++; } }
+static uint8_t g_pw_cf[1024]; static long long g_pw_cpg[PSW_MAX];
+static void rg_pw_collect(uint64_t lo, uint64_t n) { if (g_pw_ns < 1024) { g_pw_lo[g_pw_ns] = lo; g_pw_n[g_pw_ns] = n; g_pw_cf[g_pw_ns] = g_sk_flag; g_pw_ns++; } }
 static void rg_pw_part(int k) {
-    g_pw_pages[k] = g_pw_fail[k] = 0;
+    g_pw_pages[k] = g_pw_fail[k] = g_pw_cpg[k] = 0;
     for (int t = k; t < g_pw_ns + g_pw_nx; t += g_pw_parts) {
-        if (t < g_pw_ns) { rg_stack_one(g_pw_lo[t], g_pw_n[t], g_pw_buf[k], g_pw_bufcap, &g_pw_pages[k], &g_pw_fail[k]); continue; }
+        if (t < g_pw_ns) { rg_stack_one(g_pw_lo[t], g_pw_n[t], g_pw_buf[k], g_pw_bufcap, g_pw_cf[t] ? &g_pw_cpg[k] : &g_pw_pages[k], &g_pw_fail[k]); continue; }
         int i = t - g_pw_ns; RgxSub *s = &g_rgx_sub[i]; size_t np = s->n / PG; ULONG_PTR cnt = np; ULONG gran = 0;
         if (s->ww == 0) { g_pw_xok[i] = -1; continue; }
         g_pw_xok[i] = GetWriteWatch(WRITE_WATCH_FLAG_RESET, s->a, s->n, g_pw_xaddr + s->e0, &cnt, &gran) == 0 && gran == PG && cnt <= np;
@@ -670,7 +703,7 @@ static void rg_pww(int extras) {                       /* extras: the extras' an
     g_pw_stacks_done = 0; g_pw_x_ready = 0;
     if (g_pw_on < 0) { const char *e = getenv("SSBU_RB_PWW"); g_pw_on = !(e && e[0] == '0'); }
     if (!g_pw_on || g_ncp <= 0 || g_ncp + 1 > PSW_MAX) return;
-    g_pw_ns = 0; os_r1_stacks(rg_pw_collect);
+    g_pw_ns = 0; rg_stacks_each(rg_pw_collect);
     if (g_pw_ns >= 1024) return;                        /* (more stacks than the list holds: the old way) */
     size_t mx = 0; for (int i = 0; i < g_pw_ns; i++) { size_t np = (size_t)((g_pw_n[i] + 0x2fff) >> 12); if (np > mx) mx = np; }
     if (mx + 256 > g_pw_bufcap) { for (int k = 0; k < PSW_MAX; k++) { free(g_pw_buf[k]); g_pw_buf[k] = NULL; } g_pw_bufcap = mx + 256; }
@@ -683,7 +716,7 @@ static void rg_pww(int extras) {                       /* extras: the extras' an
             if (g_pw_xaddr && g_pw_xcnt && g_pw_xok) g_pw_nx = g_rgx_nsub; else g_pw_xcap = 0; } }
     g_pw_parts = g_ncp + 1;
     if (!cp_par(rg_pw_part)) return;
-    for (int k = 0; k < g_pw_parts; k++) { g_sw_pages += g_pw_pages[k]; g_sw_fail += g_pw_fail[k]; }
+    for (int k = 0; k < g_pw_parts; k++) { g_sw_pages += g_pw_pages[k] + g_pw_cpg[k]; g_sw_fail += g_pw_fail[k]; g_sk_ctl_pages += g_pw_cpg[k]; }
     g_pw_stacks_done = 1; g_pw_x_ready = g_pw_nx > 0; g_pw_runs++;
 }
 static uint64_t g_sw_lo[1024], g_sw_hi[1024]; static int g_sw_n;
@@ -697,7 +730,7 @@ static void rg_sp_check(uint64_t sp, const char *who) {      /* an SP inside a w
 TT_DEFV(rg_stack_ww, (Ctx *main_c), (main_c), 9)
 static void rg_stack_ww_tt(Ctx *main_c) {
     double t = now_ms();
-    if (g_pw_stacks_done) g_pw_stacks_done = 0; else os_r1_stacks(rg_stack_cb);
+    if (g_pw_stacks_done) g_pw_stacks_done = 0; else rg_stacks_each(rg_stack_cb);
     g_sw_calls++;
     if ((g_sw_calls & 63) == 1) {                       /* every 64th call: every held thread's and main's SP checked */
         g_sw_n = 0; os_r1_stacks(rg_stack_list);
@@ -2444,6 +2477,8 @@ static void rgs_report(void) {
     int n = g_rgc_n; double pg = 0, xp = 0; for (int i = 0; i < n; i++) { pg += (double)g_rgc_pg[i]; xp += (double)g_rgc_xp[i]; }
     LOG("r1: RING stack write watch: %lld calls, %.4f ms each, %.1f pages each; ranges not watched %lld; SPs in no registered stack %lld\n",
         g_sw_calls, g_sw_calls ? g_sw_ms / g_sw_calls : 0.0, g_sw_calls ? (double)g_sw_pages / g_sw_calls : 0.0, g_sw_fail, g_sw_badsp);
+    LOG("r1: RING stack questions (SSBU_RB_STKSKIP=%d): asked %lld, skipped (owner thread not run since) %lld, control: would skip %lld with %lld pages written (must be 0), cycle-time failures %lld; per question round asked %.1f skipped %.1f\n",
+        g_sk_on, g_sk_asked, g_sk_skipped, g_sk_ctl_n, g_sk_ctl_pages, g_sk_qfail, g_sw_calls ? (double)g_sk_asked / g_sw_calls : 0.0, g_sw_calls ? (double)(g_sk_skipped + g_sk_ctl_n) / g_sw_calls : 0.0);
     LOG("r1: RING report: %lld captures (%lld skipped: a thread not at a wait), %lld loads, %u pool buffers made (%.1f MB), %u free; log overflows %lld\n",
         g_rg_caps, g_rg_cap_fail, g_rg_loads, g_rg_bump, g_rg_bump * (double)PG / 1048576.0, g_rg_nfree, g_rg_overflow);
     { void cxxrt_readable_report(FILE *out); if (g_log) cxxrt_readable_report(g_log); }      /* (rb-8ms) the C++ runtime's VirtualQuery count */

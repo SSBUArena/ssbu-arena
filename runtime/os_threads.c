@@ -347,20 +347,31 @@ static DWORD WINAPI thread_main(LPVOID arg) {
 
 /* (Arena perf) every guest stack handed to a thread or a fiber (r1_ring.c write-watches them: stores relative to the SP
  * carry no page mark). Kept for good (a stack's memory may be reused: asking about it then is harmless). */
-static struct { uint64_t lo, n; } g_r1_stk[1024]; static int g_r1_nstk; static SRWLOCK g_r1_stk_lock = SRWLOCK_INIT;
-static void r1_stack_note(uint64_t lo, uint64_t n) {
+static struct { uint64_t lo, n, key; } g_r1_stk[1024]; static int g_r1_nstk; static SRWLOCK g_r1_stk_lock = SRWLOCK_INIT;      /* key: the thread whose own stack it is (0: a fibre's) */
+static void r1_stack_note_k(uint64_t lo, uint64_t n, uint64_t key);
+static void r1_stack_note(uint64_t lo, uint64_t n) { r1_stack_note_k(lo, n, 0); }
+static void r1_stack_note_k(uint64_t lo, uint64_t n, uint64_t key) {
     if (!lo || !n) return;
     AcquireSRWLockExclusive(&g_r1_stk_lock);
-    int i; for (i = 0; i < g_r1_nstk; i++) if (g_r1_stk[i].lo == lo) { if (n > g_r1_stk[i].n) g_r1_stk[i].n = n; break; }
-    if (i == g_r1_nstk && g_r1_nstk < 1024) { g_r1_stk[i].lo = lo; g_r1_stk[i].n = n; g_r1_nstk++; }
+    int i; for (i = 0; i < g_r1_nstk; i++) if (g_r1_stk[i].lo == lo) { if (n > g_r1_stk[i].n) g_r1_stk[i].n = n; g_r1_stk[i].key = key; break; }
+    if (i == g_r1_nstk && g_r1_nstk < 1024) { g_r1_stk[i].lo = lo; g_r1_stk[i].n = n; g_r1_stk[i].key = key; g_r1_nstk++; }
     ReleaseSRWLockExclusive(&g_r1_stk_lock);
 }
 void os_r1_stacks(void (*cb)(uint64_t lo, uint64_t n)) {
     AcquireSRWLockShared(&g_r1_stk_lock); for (int i = 0; i < g_r1_nstk; i++) cb(g_r1_stk[i].lo, g_r1_stk[i].n); ReleaseSRWLockShared(&g_r1_stk_lock);
 }
+/* (round 15) the same list with each stack's place in it (stable: entries are only added or updated) and, for a thread's own stack, that
+ * thread's handle while it runs (NULL for a fibre's stack or a thread not started / finished): r1_ring.c SSBU_RB_STKSKIP */
+static Obj *obj_peek(uint64_t key);
+void os_r1_stacks_ex(void (*cb)(int idx, uint64_t lo, uint64_t n, HANDLE h)) {
+    AcquireSRWLockShared(&g_r1_stk_lock);
+    for (int i = 0; i < g_r1_nstk; i++) { HANDLE h = NULL; if (g_r1_stk[i].key) { Obj *o = obj_peek(g_r1_stk[i].key); if (o && o->thread && !o->finished && o->stack == g_r1_stk[i].lo) h = o->thread; }
+        cb(i, g_r1_stk[i].lo, g_r1_stk[i].n, h); }
+    ReleaseSRWLockShared(&g_r1_stk_lock);
+}
 static void os_CreateThread(Ctx *c) {                 /* (ThreadType*, fn, arg, stack, stackSize, priority[, core]) */
     Obj *o = obj(A0);
-    r1_stack_note(A3, A4);
+    r1_stack_note_k(A3, A4, A0);
     o->fn = A1; o->arg = A2; o->stack = A3; o->stack_size = A4; o->priority = (int)c->x[5];
     o->finished = 0; o->thread = NULL; o->name = 0;
     o->ideal_core = OS_DEFAULT_CORE; o->core_mask = 1ull << OS_DEFAULT_CORE; o->core_set = 1;
@@ -1371,3 +1382,77 @@ void register_thread_imports(void) {
     register_imports(thread_imports, (int)(sizeof thread_imports / sizeof thread_imports[0]));
 }
 int guest_thread_count(void) { return (int)g_thread_count; }
+
+/* (rb-8ms round 15, 2026-11-15) SSBU_JOB_WORKERS=<n> (default 0 = off, the game's own 3): n MORE task workers in the game's first job pool.
+ * The game's job system (pool init 0x7103549620, called twice at start-up from 0x7103750890 / 0x7103750904; pool table 0x7105332f58) makes
+ * one worker per console core 0..2 whose bit is in the pool's core mask (a loop to 2 written in the code): pool 0 has mask 6 (TaskWorker1
+ * and TaskWorker2, priority 8; core 0 is the main thread itself, its worker struct at pool + 0x48), pool 1 mask 7 (TaskWorker0..2, priority
+ * 23, almost idle in a match). Everything else of the pool is sized at run time: the per-core worker list (pool + 0x30, vector of worker
+ * structs, read by the kick 0x7103549170: a job for core i goes to entry i, a job for any core into the shared queue and EVERY entry's event
+ * is signalled), the thread list (pool + 0x18); a worker (0x7103549e20) makes its own struct, stores it at list[index], and runs the job loop
+ * 0x710354a120 (its own queue, the shared queue, its parked fibres) on a fibre. The game's code asks the core number in five places (an
+ * allocator's arena choice, 0x7103760d50, among them): the extra workers say they are on console core 1 / 2 (as TaskWorker1 / 2) so no
+ * per-core table is read past its 3 entries. Bench profile (round 14, r14_pmc_bf1): in the start of a real pass main runs ~58% of the
+ * render preparation jobs while TaskWorker1 is busy with its own and TaskWorker2 wakes late. Here, after the game's init of pool 0 (its two
+ * workers registered first: the list is grown while nobody else can read it, the pool is not published yet), the list is grown to 3 + n
+ * and n more threads "TaskWorker3".. are made exactly as the game's loop makes them (same closure, thread object, priority, stack size). The
+ * rollback runtime treats them like the others (held / placed / moved by the name "TaskWorker"). Both games of a room must use the same
+ * n (the heap at start-up differs). SSBU_JOB_WORKERS_CORE=<1|2|0>: the console core they claim (0 = alternate 1 / 2, default).
+ * RESULT (round 15, standard bench, r15m1): the workers run and take jobs (0.6-0.8 ms per frame each), 0 crashes in 3 benches, but the
+ * six-stage mean is WORSE: n=2 7.243 (n2) and n=4 7.157 against 7.048 (n2): every TaskWorker more is held / asked at every hold (pre
+ * +0.08..0.1 ms) and the re-run passes got slower; main's real-pass cycles did not fall (JOBSTAT: of main's job kicks ~40% are for core 0,
+ * i.e. main's own queue, and those are kicked and waited for one at a time). Kept as an option, OFF; not paired, no picture check. */
+int hook_install(uint64_t addr, void (*repl)(Ctx *, void *), void *user, ImportFn *orig);
+static ImportFn g_jw_orig; static int g_jw_n, g_jw_core, g_jw_made;
+static uint64_t jw_alloc(Ctx *c, uint64_t size) { c->x[0] = 0x10; c->x[1] = size; call_guest(c, GA(0x710392dce0ull)); return c->x[0]; }
+static int jw_vec_push(Ctx *c, uint64_t v, uint64_t val) {          /* libc++ vector<T *> at v: begin, end, capacity */
+    uint64_t b = rd64(v), e = rd64(v + 8), cap = rd64(v + 16);
+    if (e < cap) { wr64(e, val); wr64(v + 8, e + 8); return 1; }
+    uint64_t n = (e - b) / 8, nc = 2 * ((cap - b) / 8); if (nc < n + 1) nc = n + 1;
+    uint64_t nb = jw_alloc(c, nc * 8); if (!nb) return 0;
+    for (uint64_t i = 0; i < n; i++) wr64(nb + 8 * i, rd64(b + 8 * i));
+    wr64(nb + 8 * n, val); wr64(v, nb); wr64(v + 8, nb + 8 * (n + 1)); wr64(v + 16, nb + 8 * nc);
+    if (b) { c->x[0] = b; call_guest(c, GA(0x710392e590ull)); }
+    return 1;
+}
+static void jw_pool_init(Ctx *c, void *user) {
+    (void)user;
+    uint64_t pool = c->x[0], cfg = c->x[2]; uint32_t id = (uint32_t)c->x[1];
+    uint32_t mask = rd32(cfg); uint8_t pc = rd8(cfg + 4); uint32_t ss = rd32(cfg + 8);
+    g_jw_orig(c);
+    printf("job workers: pool %u at %llx: core mask %x, priority class %u, stack 0x%x\n", id, (unsigned long long)pool, mask, pc, ss);
+    if (id != 0 || g_jw_n <= 0 || g_jw_made) return;
+    uint64_t save[32]; memcpy(save, c->x, sizeof save);
+    ULONGLONG t0 = GetTickCount64(); int ok = 1;
+    for (int i = 0; i < 3; i++) {                                 /* the game's workers have stored their struct in the list */
+        if (!(mask >> i & 1)) continue;
+        while (!rd64(rd64(pool + 0x30) + 8 * (uint64_t)i)) { if (GetTickCount64() - t0 > 3000) { ok = 0; break; } Sleep(1); }
+    }
+    if (ok && (rd64(pool + 0x38) - rd64(pool + 0x30)) / 8 != 3) ok = 0;
+    for (int k = 0; ok && k < g_jw_n; k++) ok = jw_vec_push(c, pool + 0x30, 0);      /* every slot first: the new workers store into it */
+    uint64_t P = (c->x[31] - 0x200) & ~15ull; c->x[31] = P;        /* the parameter block on the guest stack, below the caller's frame */
+    for (int k = 0; ok && k < g_jw_n; k++) {
+        int i = 3 + k, core = g_jw_core ? g_jw_core : 1 + (k & 1);
+        for (int b = 0; b < 0x100; b += 8) wr64(P + b, 0);
+        wr64(P + 0x00, GA(0x710522ec50ull)); wr64(P + 0x08, pool); wr64(P + 0x10, (uint64_t)i); wr64(P + 0x20, P);   /* std::function of the worker body 0x7103549e20 (pool, index) */
+        wr32(P + 0x30, pc <= 2 ? pc + 2u : 3u); wr64(P + 0x38, 1ull << core);
+        const char nm[] = "TaskWorker"; for (int j = 0; j < 10; j++) wr8(P + 0x40 + j, (uint8_t)nm[j]);
+        wr8(P + 0x4a, (uint8_t)('0' + i)); wr8(P + 0x4b, 0); wr8(P + 0x81, 11); wr8(P + 0x82, 0); wr64(P + 0x88, ss);
+        uint64_t t = jw_alloc(c, 0x260); if (!t) { ok = 0; break; }
+        for (int b = 0; b < 0x260; b += 8) wr64(t + b, 0);
+        wr64(t, GA(0x71052410c8ull)); wr32(t + 0x40, 3);
+        c->x[0] = t; c->x[1] = P; c->x[8] = P + 0xf0; call_guest(c, GA(0x71037cc810ull));
+        ok = jw_vec_push(c, pool + 0x18, t);
+        if (ok) g_jw_made++;
+    }
+    memcpy(c->x, save, sizeof save);
+    printf("job workers: SSBU_JOB_WORKERS=%d: %d more task workers made in pool 0 (%s; console core %s)\n", g_jw_n, g_jw_made, ok ? "ok" : "STOPPED", g_jw_core ? (g_jw_core == 1 ? "1" : "2") : "1 / 2");
+    fflush(stdout);
+}
+int job_workers_extra(void) { return g_jw_made; }
+void job_workers_init(void) {                                      /* boot.c, before nnMain */
+    const char *e = getenv("SSBU_JOB_WORKERS"); g_jw_n = e ? atoi(e) : 0; if (g_jw_n > 6) g_jw_n = 6;
+    const char *k = getenv("SSBU_JOB_WORKERS_CORE"); g_jw_core = k ? atoi(k) : 0; if (g_jw_core < 0 || g_jw_core > 2) g_jw_core = 0;
+    if (g_jw_n <= 0) return;
+    if (!hook_install(GA(0x7103549620ull), jw_pool_init, NULL, &g_jw_orig)) { printf("job workers: hook on the pool init FAILED\n"); g_jw_n = 0; }
+}

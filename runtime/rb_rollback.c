@@ -717,7 +717,7 @@ static void rbg_step_body(Ctx *c) {
              * SSBU_RB_NET_KEEP=0: no capture, the load holds the threads itself */
             double tp = now_ms(); rbg_rpause(1, 1);
             if (g_rbg_keep == 1) { g_rg_keep = 1; if (!rbg_capture(i, c)) g_rbg_capfail++; g_rg_keep = 0; }
-            else if (g_rbg_keep == 2) r1_ring_hold();
+            else if (g_rbg_keep == 2) { g_hp_pre = 1; r1_ring_hold(); g_hp_pre = 0; }      /* (round 15: HOLD PROF rows of their own) */
             g_rbg_t_pre += now_ms() - tp;
             if (rbg_rollback(c, i, m)) return;
             rbg_rpause(1, 0);

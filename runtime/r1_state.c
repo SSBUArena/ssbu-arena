@@ -2173,8 +2173,12 @@ static int ra_free(const char *n) { return strstr(n, "nopus") != NULL; }      /*
 /* (R3 hs16, TEST ONLY) SSBU_RB_HOLD_PROF=1: where a hold's time goes, per thread (suspend + context + retries), and the
  * fiber check; printed in the rollback report */
 static int g_hp_on = -1; static struct { const char *n; double ms, mx; long long cnt, spins; } g_hp[64]; static int g_hp_n; static double g_hp_fib_ms; static long long g_hp_fib_n, g_hp_holds;
+static int g_hp_pre;                                  /* (round 15) the hold before a rollback's load (rb_rollback.c): its own rows */
 static void hp_add(const char *n, double ms, int spins) {
     if (g_ra_phase == 2 && ra_audio(n)) n = !strcmp(n, "nus3::audio update") ? "(re-run passes) nus3::audio update" : "(re-run passes) other sound thread";
+    if (g_hp_pre) { static char pn[64][72]; static const char *pk[64]; static int pc; int j; for (j = 0; j < pc; j++) if (pk[j] == n) break;
+        if (j == pc && pc < 64) { pk[pc] = n; snprintf(pn[pc], sizeof pn[pc], "(pre-load hold) %s", n); pc++; }
+        if (j < pc) n = pn[j]; }
     int i; for (i = 0; i < g_hp_n; i++) if (g_hp[i].n == n || !strcmp(g_hp[i].n, n)) break;
     if (i == g_hp_n) { if (g_hp_n >= 64) return; g_hp[g_hp_n++].n = n; }
     g_hp[i].ms += ms; g_hp[i].cnt++; g_hp[i].spins += spins; if (ms > g_hp[i].mx) g_hp[i].mx = ms;
@@ -2576,9 +2580,15 @@ static void ra_kd_flush(const Ctx *cur, int early) {      /* the kept kicks made
     g_ra_nkd = 0;
 }
 static void ra_kd_drop(void) { g_ra_kd_drop += g_ra_nkd; g_ra_nkd = 0; }      /* (a ring load: that real pass is thrown away) */
+/* (round 15, measure) SSBU_JOBSTAT=1: the job-group kicks of a match counted by target (x2: -1 any worker of the pool, i = the worker of
+ * console core i; 0 with no thread of its own = the main thread's queue), by pool (x0 + 0x14) and by kicking thread (main or not) */
+static int g_js_on = -1; static long long g_js[2][2][6], g_js_moved, g_js_lrn[64]; static DWORD g_js_main; static uint64_t g_js_lr[64]; static int g_js_lrt[64], g_js_nlr;
 static void ra_kick2(Ctx *c, void *user) {           /* hook on FUN 0x7103549170 (kick of a job group): points BEFORE the call */
     (void)user;
     uint64_t lr = c->x[30];
+    if (g_js_on < 0) { const char *e = getenv("SSBU_JOBSTAT"); g_js_on = e && atoi(e) > 0; }
+    if (g_js_on > 0 && lr == g_ra_site) g_js_main = GetCurrentThreadId();      /* (the main thread makes the save-point kick) */
+    if (g_js_on > 0 && ra_fight_on()) { int t = (int)(int32_t)c->x[2]; int k = t < 0 ? 0 : t < 4 ? t + 1 : 5; unsigned pl = rd32(c->x[0] + 0x14) & 1; g_js[pl][GetCurrentThreadId() == g_js_main][k]++; }
     /* (round 9) SSBU_RB_H1SKIP (default 1, 0 = off): no H1 in a re-run pass whose kick here is skipped (SSBU_RB_SIM_SKIP bit 16, preparation
      * list A: every re-run pass with the default masks and LASTLITE). H1 keeps the jobs of this kick from starting before the capture at H2;
      * with the kick skipped no job starts here, and a re-run pass is not captured at H2 (RECAP=7: the last one in the pacing wait, after
@@ -2611,6 +2621,15 @@ static void ra_kick2(Ctx *c, void *user) {           /* hook on FUN 0x7103549170
             g_ra_skipped_kicks++; return;
         }
     }
+    /* (round 15, TEST) SSBU_JOB_CORE0=1: in a fight, pool 0's job groups the main thread kicks for console core 0 (its own queue: only main
+     * runs them, inside its job-counter waits; JOBSTAT r15h1: 12730 such kicks against 17012 for any worker) go to the shared queue: every
+     * task worker may take them. =2: only those kicked from the place given by SSBU_JOB_CORE0_AT=<hex return address>. Measured (loop BF,
+     * r15c0..c3): no gain (rollback tick 6.59 / 6.56 against 6.55 / 6.42, main's cpu per frame the same): the logic tasks of 0x710374c5a0
+     * (~19 per pass, core 0 by their own setting) are kicked and waited for one after the other, main takes each one first. Not paired. */
+    {   static int c0 = -1; static uint64_t c0at; if (c0 < 0) { const char *e = getenv("SSBU_JOB_CORE0"); c0 = e ? atoi(e) : 0; const char *a = getenv("SSBU_JOB_CORE0_AT"); c0at = a ? GA(strtoull(a, NULL, 16)) : 0; }
+        if (c0 > 0 && (uint32_t)c->x[2] == 0 && !(rd32(c->x[0] + 0x14) & 1) && ra_fight_on() && (c0 == 1 || lr == c0at)) { c->x[2] = (uint64_t)-1 & 0xffffffffull; g_js_moved++; } }
+    if (g_js_on > 0 && ra_fight_on()) { int t = (int)(int32_t)c->x[2]; int j; for (j = 0; j < g_js_nlr; j++) if (g_js_lr[j] == lr && g_js_lrt[j] == t) break;
+        if (j == g_js_nlr && g_js_nlr < 64) { g_js_lr[j] = lr; g_js_lrt[j] = t; g_js_nlr++; } if (j < 64) g_js_lrn[j]++; }
     g_orig_kick2(c);
 }
 static void ra_line(Ctx *c, void *user) {           /* the fighters' frame line: a fight frame */
@@ -2641,6 +2660,10 @@ static void ra_frame_end(double te) {
 }
 static double pct(double *v, int n, int p) { static double wbuf[65536]; if (g_rep_win > 0 && n > g_rep_win) { int m = g_rep_win < 65536 ? g_rep_win : 65536; memcpy(wbuf, v + n - m, (size_t)m * sizeof *v); v = wbuf; n = m; } if (!n) return 0; qsort(v, (size_t)n, sizeof *v, cmp_d); return v[(size_t)n * p / 100 < (size_t)n ? (size_t)n * p / 100 : (size_t)n - 1]; }
 static void ra_report(void) {
+    if (g_js_on > 0 || g_js_moved) { char b[3000]; int at = 0; for (int j = 0; j < g_js_nlr && at < 2900; j++) at += snprintf(b + at, sizeof b - at, " %llx:%d %lld", (unsigned long long)g_js_lr[j], g_js_lrt[j], g_js_lrn[j]); b[at] = 0;
+        LOG("r1: JOBSTAT kicks moved from core 0 to any worker (SSBU_JOB_CORE0) %lld; kicks by place:target count:%s\n", g_js_moved, b); }
+    if (g_js_on > 0) for (int p = 0; p < 2; p++) LOG("r1: JOBSTAT pool %d kicks (fight): from main: any %lld, core0 %lld, core1 %lld, core2 %lld, core3 %lld, other %lld | from other threads: any %lld, core0 %lld, core1 %lld, core2 %lld, core3 %lld, other %lld\n", p,
+        g_js[p][1][0], g_js[p][1][1], g_js[p][1][2], g_js[p][1][3], g_js[p][1][4], g_js[p][1][5], g_js[p][0][0], g_js[p][0][1], g_js[p][0][2], g_js[p][0][3], g_js[p][0][4], g_js[p][0][5]);
     if (g_ra <= 0) return;
     double ps = 0, pr = 0; for (int i = 0; i < g_ra_ns; i++) ps += (double)g_ra_sp[i]; for (int i = 0; i < g_ra_nr; i++) pr += (double)g_ra_rp[i];
     LOG("r1: RA report: %lld speculative passes, %lld saves skipped (a thread not at a wait or a job running), %lld kicks; %lld holds waited for running jobs (%.3f ms in all at saves); spec pass mean %.3f ms, real pass mean %.3f ms (wall, kick to kick)\n",

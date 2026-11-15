@@ -284,6 +284,7 @@ static DWORD WINAPI guest_main(LPVOID arg) {
 
     { void debug_mode_init(void); debug_mode_init(); }       /* debug_mode.c: test-only fast mode, nothing without SSBU_* variables */
     { void display_frame_index_init(void); display_frame_index_init(); }      /* display.c: SSBU_FRAME_INDEX (rb-8ms, default off) */
+    { void job_workers_init(void); job_workers_init(); }      /* os_threads.c: SSBU_JOB_WORKERS (rb-8ms round 15, default off) */
     printf("[phase 3] nnMain\n");
     trace_printf("=== phase 3: nnMain\n");
     call_guest(&c, NN_MAIN);
