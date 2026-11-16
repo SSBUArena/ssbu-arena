@@ -625,8 +625,9 @@ namespace Arena
                 bool canCheck = FileCheck.HasList && FileCheck.CanRepair;
                 Show("Arena menu missing",
                      "The Arena menu files are missing from the game folder, so the game would start with the original Smash menu instead of Arena's. " +
-                     "This usually comes from an interrupted install or update, or an antivirus that moved the files. " +
-                     (canCheck ? "Check and repair makes them again." : "Running the setup again makes them again."), null,
+                     "The launcher tried to make them from your game dump and could not (" + Core.ArenaMenuOffReason() + "; details in build\\logs\\arena_menu.log). " +
+                     "An antivirus that moved the files, or a dump that was moved or deleted, can cause this. " +
+                     (canCheck ? "Check and repair tries again." : "Running the setup again makes them again."), null,
                      canCheck ? ("Check and repair", (Action)(() => { OpenSettings(SecFiles); FileCheck_Click(null, null); }), true)
                               : ("Run the setup again", (Action)(() => { OpenSettings(SecFiles); Reinstall_Click(null, null); }), true),
                      ("Play anyway", () => { Core.Ticket = null; go(); }, false));

@@ -592,8 +592,93 @@ namespace Arena
         /// <summary>(0.2.50) Arena's own menu (characters\arena_menu, made by the setup): the game is started as Arena
         /// (SSBU_COMPETITIVE_UI=1) only with it; without it the game would show the original menu and the full stats overlay</summary>
         public static string ArenaMenuDir => Path.Combine(Build, @"characters\arena_menu");
-        public static bool ArenaMenuOk => Competitive && Directory.Exists(ArenaMenuDir);
+        /// <summary>(0.2.50) the folder alone was not enough: a player's install (another install location) had the menu step fail
+        /// every time, and a folder left half made passed too. Now every file the menu tool makes must be there and not empty
+        /// (tools/ui/prepare_menu_classic.py; its marker arena_menu.json names them, the six below without it).</summary>
+        public static bool ArenaMenuOk => Competitive && ArenaMenuFiles(out _);
         public const string ArenaMenuMissingText = "Arena menu files missing (characters\\arena_menu): the game would start with the original menu";
+        static readonly string[] ArenaMenuNames = { @"ui\layout\menu\main_menu\main_menu\layout.arc", @"ui\layout\menu\pallet_menu\pallet_menu\layout.arc",
+            @"ui\layout\menu\main_menu_footer\main_menu_footer\layout.arc", @"ui\script\menu\main\main_menu_layer_top.lc", @"ui\script\menu\main\main_menu_common.lc", @"ui\message\msg_menu.msbt" };
+
+        /// <summary>(0.2.50) whether characters\arena_menu is complete; why not (for the log and the game: SSBU_ARENA_MENU_WHY)</summary>
+        public static bool ArenaMenuFiles(out string why)
+        {
+            try
+            {
+                if (!Directory.Exists(ArenaMenuDir)) { why = "no folder " + ArenaMenuDir; return false; }
+                var names = new List<string>(ArenaMenuNames);
+                string marker = Path.Combine(ArenaMenuDir, "arena_menu.json");
+                if (File.Exists(marker))
+                {
+                    // {"version": 1, "region": 2, "files": {"ui/layout/...": 1234, ...}}: read without a JSON library
+                    var listed = Regex.Matches(File.ReadAllText(marker), "\"(ui/[^\"]+)\"\\s*:\\s*(\\d+)");
+                    if (listed.Count > 0) names = listed.Cast<Match>().Select(m => m.Groups[1].Value.Replace('/', '\\')).ToList();
+                }
+                int bad = 0; string first = null;
+                foreach (var n in names)
+                {
+                    var f = new FileInfo(Path.Combine(ArenaMenuDir, n));
+                    if (!f.Exists || f.Length == 0) { bad++; if (first == null) first = n; }
+                }
+                if (bad > 0) { why = bad + " of " + names.Count + " menu files missing or empty (first: " + first + ")"; return false; }
+                why = names.Count + " files" + (File.Exists(marker) ? "" : ", no marker (made before 0.2.50)");
+                return true;
+            }
+            catch (Exception e) { why = "unreadable: " + e.Message; return false; }
+        }
+
+        /// <summary>(0.2.50) why the game would start without Arena's menu (null: it starts with it)</summary>
+        public static string ArenaMenuOffReason()
+        {
+            if (!Competitive) return "no competitive set-up (" + CompDir + " missing" + (RomFS == null ? ", no dump in state.json" : "") + ")";
+            return ArenaMenuFiles(out string why) ? null : why;
+        }
+
+        static readonly object menuLock = new object();
+        /// <summary>(0.2.50) the Arena menu (and the competitive set-up it needs) made here when it is missing or incomplete, from
+        /// this install's dump (tools/ui/prepare_menu_classic.py, a few seconds; build\logs\arena_menu.log). The setup did the same,
+        /// but failed for every install outside the repository's build folder until 0.2.50, and the launcher only checked the folder.
+        /// SSBU_ARENA_MENU_AUTO=0: not made here (0.2.49's way: only the warning at PLAY). Returns whether the menu is complete.</summary>
+        public static bool EnsureArenaMenu()
+        {
+            lock (menuLock)
+            {
+                if (ArenaMenuOk) return true;
+                if (Environment.GetEnvironmentVariable("SSBU_ARENA_MENU_AUTO") == "0") { Updater.Log("arena menu: not complete (" + ArenaMenuOffReason() + "); SSBU_ARENA_MENU_AUTO=0, not made"); return false; }
+                if (!Directory.Exists(CompDir)) { MakeCompetitive(); HasCompetitive = Directory.Exists(CompDir); Competitive = LightArc || HasCompetitive; }
+                string before = ArenaMenuOffReason();
+                if (before == null) return true;
+                bool ok = Competitive && MakeArenaMenu();
+                string after = ArenaMenuOffReason();
+                Updater.Log("arena menu: was " + before + "; made again here: " + (after == null ? "OK" : "FAILED (" + after + "), see " + Path.Combine(Build, @"logs\arena_menu.log")));
+                return ok && after == null;
+            }
+        }
+
+        static bool MakeArenaMenu()
+        {
+            try
+            {
+                string py = Repo == null ? null : Path.Combine(Repo, @"deps\python\python.exe"), script = Repo == null ? null : Path.Combine(Repo, @"tools\ui\prepare_menu_classic.py");
+                string arc = RomFS == null ? null : Path.Combine(RomFS, "data.arc");
+                if (py == null || !File.Exists(py) || !File.Exists(script)) { Updater.Log("arena menu: no python or menu tool in " + Repo); return false; }
+                if (arc == null || !File.Exists(arc)) { Updater.Log("arena menu: no data.arc (" + (arc ?? "no dump in state.json") + ")"); return false; }
+                Directory.CreateDirectory(Path.Combine(Build, "logs"));
+                var psi = new ProcessStartInfo(py, "-u \"" + script + "\" --out \"" + ArenaMenuDir + "\" --build \"" + Build + "\" --arc \"" + arc + "\"")
+                { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                using (var p = Process.Start(psi))
+                {
+                    var err = p.StandardError.ReadToEndAsync();
+                    var outp = p.StandardOutput.ReadToEndAsync();
+                    bool done = p.WaitForExit(180000);
+                    if (!done) { try { p.Kill(); } catch { } p.WaitForExit(5000); }
+                    File.WriteAllText(Path.Combine(Build, @"logs\arena_menu.log"), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + psi.FileName + " " + psi.Arguments + "\r\n"
+                        + outp.Result + err.Result + "\r\nexit " + (done ? p.ExitCode.ToString() : "timeout") + "\r\n");
+                    return done && p.ExitCode == 0;
+                }
+            }
+            catch (Exception e) { Updater.Log("arena menu: " + e.Message); return false; }
+        }
 
         public static List<Check> CheckFiles(out List<string> missingCodecs)
         {
@@ -606,6 +691,7 @@ namespace Arena
             bool arc = RomFS != null && (File.Exists(Path.Combine(RomFS, "data.arc")) || File.Exists(Path.Combine(RomFS, "data.arcp")));
             r.Add(new Check(arc, arc ? "Game data (" + (LightArc ? "light archive" : "data.arc") + ")" : "data.arc not found (RomFS of the dump)"));
             // (0.2.50) without Arena's menu the game starts as the original game (original menu, full stats overlay): never silently
+            if (!ArenaMenuOk) EnsureArenaMenu();      // (0.2.50) made here (this runs in the background) when missing or incomplete
             r.Add(ArenaMenuOk ? new Check(true, "Arena menu") : new Check(false, ArenaMenuMissingText));
             bool vk = File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "vulkan-1.dll"));
             r.Add(new Check(vk, vk ? "Vulkan" : "Vulkan not found: update the graphics driver"));
@@ -835,9 +921,10 @@ namespace Arena
         static void GameEnv(System.Collections.Specialized.StringDictionary env)
         {
             foreach (var v in new[] { "SSBU_ONLINE", "SSBU_ONLINE_CODE", "SSBU_ONLINE_NAME", "SSBU_ONLINE_DIRECT", "SSBU_NICKNAME", "SSBU_RB_NET", "SSBU_R1_GAMEDLL", "SSBU_NRO_BIN", "SSBU_NET_PING", "SSBU_COMPETITIVE_UI",
-                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_TICKET", "SSBU_ONLINE_TICKET_FILE", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG" })
+                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_TICKET", "SSBU_ONLINE_TICKET_FILE", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG", "SSBU_MENU", "SSBU_ARENA_MENU_WHY" })
                 env.Remove(v);
             env["SSBU_ROMFS"] = RomFS ?? "";
+            env["SSBU_LAUNCHER"] = Updater.Current.ToString(3);      // (0.2.50) the game logs whether the launcher started it (runtime/competitive.c)
             env["SSBU_USERDATA"] = Saves;
             env["SSBU_FONTS"] = Fonts;
             env["SSBU_LOOSE_FILES"] = Competitive ? "1" : "0";      // build\characters\competitive (runtime/loose_files.c)
@@ -919,11 +1006,14 @@ namespace Arena
             else env["SSBU_ONLINE"] = "off";
             // Arena's native menu uses the same game DLL (including the rollback pair selected above).
             // Keep the original hosts available when the optional menu override has not been prepared.
-            if (ArenaMenuOk)
+            string menuOff = ArenaMenuOffReason();      // (0.2.50) one line in the launcher's log; the reason also goes to the game's log
+            Updater.Log("PLAY: arena menu " + (menuOff == null ? "ON" : "OFF: " + menuOff));
+            if (menuOff == null)
             {
                 env["SSBU_COMPETITIVE_UI"] = "1";
                 env["SSBU_MENU"] = "1"; // the Settings tile opens the existing PC settings overlay
             }
+            else env["SSBU_ARENA_MENU_WHY"] = menuOff;
             psi.Arguments = "/d /c \"\"" + run + "\" \"" + MainElf + "\" 0 > \"" + GameLog + "\" 2>&1\"";
             var p = Process.Start(psi);
             p.EnableRaisingEvents = true;

@@ -4,7 +4,12 @@ the Arena destinations (menu_actions_classic.py): Smash, Battle Arena, Online Ra
 and Exit (the eShop button). A loose-file override built from the owner's
 dump (nothing of the game in this repository), like prepare_menu.py.
 
-    python tools/ui/prepare_menu_classic.py [--out DIR] [--region N]
+    python tools/ui/prepare_menu_classic.py [--out DIR] [--region N] [--arc data.arc] [--build DIR]
+
+(0.2.50) --build: the install's build folder (default: scripts/build_location.py, i.e. build_location.txt or <repo>/build).
+Before, the dump and the language were always read from <repo>/build: an install in another folder (the installer's
+"Install location") never got the Arena menu (state.json not found) and the game started with the original menu.
+The last file written is arena_menu.json (MARKER): the files made, their sizes, the region; the launcher checks it.
     python tools/ui/menu_probe.py --tag classic --loose build/characters_ui_classic
 """
 import argparse
@@ -17,6 +22,8 @@ import sys
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path.insert(0, str(HERE))
+sys.path.append(str(REPO / 'scripts'))
+import build_location  # noqa: E402  (0.2.50) the install's build folder, not always <repo>/build
 import bflyt_patch
 import menu_actions_classic
 import menu_recolor
@@ -33,6 +40,8 @@ SIDEBAR = 'ui/layout/menu/pallet_menu/pallet_menu/layout.arc'
 FOOTER = 'ui/layout/menu/main_menu_footer/main_menu_footer/layout.arc'
 MESSAGES = 'ui/message/msg_menu.msbt'
 SCRIPTS = 'ui/script/menu/main/'
+MARKER = 'arena_menu.json'      # (0.2.50) written last: the launcher (Core.ArenaMenuOk) checks the files it names
+MARKER_VERSION = 1
 NAVY = '0a1424ff'                                     # the launcher's page background
 
 
@@ -292,10 +301,10 @@ def tile_shapes(data):
     return replace_sarc_member(bytearray(data[:s] + bntx + data[e:]), 'timg/__Combined.bntx', replace_rgba(bntx, frames))
 
 
-def default_region():
+def default_region(build=None):
     """the message region of the language the game will use (nnmisc.c desired_language): graphics.ini language when set,
     else the Windows display language; US English for any other (Chinese, Japanese and Korean too)"""
-    ini = REPO / 'build' / 'config' / 'graphics.ini'
+    ini = Path(build or build_location.get(str(REPO))) / 'config' / 'graphics.ini'
     code = ''
     try:
         for line in ini.read_text(encoding='utf-8', errors='replace').splitlines():
@@ -378,10 +387,18 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--arc', type=Path)
     ap.add_argument('--out', type=Path, default=REPO / 'build' / 'characters_ui_classic' / 'ui_menu')
-    ap.add_argument('--region', type=int, default=default_region(), help='message file region (2 US English, 10 Italian)')
+    ap.add_argument('--region', type=int, default=None, help='message file region (2 US English, 10 Italian; default: the game language)')
+    ap.add_argument('--build', type=Path, default=None, help='the build folder (default: build_location.txt, else <repo>/build)')
     a = ap.parse_args()
-    state = json.loads((REPO / 'build' / 'state.json').read_text()) if not a.arc else None
+    build = a.build or Path(build_location.get(str(REPO)))
+    if a.region is None:
+        a.region = default_region(build)
+    marker = a.out / MARKER
+    if marker.exists():
+        marker.unlink()          # (0.2.50) a run that stops half way leaves no marker: the launcher makes the menu again
+    state = json.loads((build / 'state.json').read_text()) if not a.arc else None
     arc = Arc(str(a.arc or Path(state['dump']['romfs']) / 'data.arc'))
+    print('build folder %s, data.arc %s, region %d' % (build, a.arc or Path(state['dump']['romfs']) / 'data.arc', a.region))
     outputs = {}
     main_arc, _ = bflyt_patch.apply(arc.get(MAIN), EDIT_MAIN)
     main_arc = cursor_like(tile_shapes(icons(main_arc)))
@@ -405,6 +422,12 @@ def main():
         tmp.write_bytes(content)
         tmp.replace(dest)
         print('%s: %d bytes, sha256 %s' % (dest.relative_to(a.out), len(content), hashlib.sha256(content).hexdigest()[:16]))
+    # (0.2.50) the marker last: the files and their sizes (no game content: names and numbers only)
+    info = {'version': MARKER_VERSION, 'region': a.region, 'files': {r: len(c) for r, c in outputs.items()}}
+    tmp = marker.with_suffix('.json.tmp')
+    tmp.write_text(json.dumps(info, indent=1), encoding='utf-8')
+    tmp.replace(marker)
+    print('%s: %d files' % (MARKER, len(outputs)))
 
 
 if __name__ == '__main__':
