@@ -22,6 +22,7 @@ void rbn_pass_hash(long long f); void rbn_finalize(long long cur); double rbn_pa
 int rbn_delay(void); int rbn_rtt_ms(void); double rbn_offset_ms(void); void rbn_resend(void); void rbn_status(char *out, size_t n); void rbn_hello(void); int rbn_peer_started(void); void rbn_choose_delay(void);
 
 int rbn_match_cancelled(void); void rbn_match_reset(void); int rbn_match_number(void);      /* (hs12) */
+int rbn_online_rb(void);                                /* (online-mm A3) the game's Online match played with rollback: its own result screen */
 void rbn_set_lockstep(int on); int rbn_loop(void);      /* (hs13) */
 /* (hs13) a match WITHOUT the ring (r1_ring.c g_rg_nomem: not enough memory for the snapshot ring, e.g. a PC short of commit
  * memory: tw1j crashed there): the pads are still exchanged, but every real pass waits until the other player's pad of
@@ -603,6 +604,7 @@ static void rbg_step_body(Ctx *c) {
         return;
     }
     if (!g_rbg_in_match) {                              /* the base state: r1's full save (one hitch); (hs12) from the second match on: the ring's base made again */
+        { void dm_online_fight_start(Ctx *c); dm_online_fight_start(c); }      /* (online-mm A3, SSBU_ONLINE_RB_BIND=1 test) */
         if (g_rbg_basefix < 0) { const char *e = getenv("SSBU_RB_NET_BASEFIX"); g_rbg_basefix = !(e && e[0] == '0'); }
         if (g_rbg_ff_first < 0) g_rbg_ff_first = g_ff;
         {   static int tl = -1; if (tl < 0) { const char *e = getenv("SSBU_RB_NET_TEST_LATEBASE"); tl = e ? atoi(e) : 0; }     /* (net3, TEST ONLY) the base made n passes late */
@@ -1002,7 +1004,7 @@ static void rbg_fight_off(void) {
     else if (g_rbg_in_match == 3) LOG("r1: RB NET: the Local Wireless room fight is over\n");
     else LOG("r1: RB NET: the match that was not agreed is over after %.1f s (player 1 walked off)\n", (now_ms() - g_rbg_quit_t0) / 1000.0);
     if (g_rbg_in_match == 1) { void nnhid_vib_match_end(void); nnhid_vib_match_end(); }      /* (room fixes) the match's rumble mapping over (nnhid.c vib_port) */
-    if (g_rbg_in_match == 1 && rbn_room_rollback()) { void nnhid_room_after(int on); nnhid_room_after(1); }      /* (0.2.17) the result screen's second player (nnhid.c) */
+    if (g_rbg_in_match == 1 && rbn_room_rollback() && !rbn_online_rb()) { void nnhid_room_after(int on); nnhid_room_after(1); }      /* (0.2.17) the result screen's second player (nnhid.c) */
     if (g_rbg_in_match == 1) { void dm_room_restore(void); dm_room_restore(); }      /* (0.2.17) a room's match: the room's mode and panel states back (debug_mode.c); not at the end of the waiting-stage fight, which comes after the match's set-up (0.2.16 gave them back before the match) */
     if (g_rg_nomem == 1) g_rg_nomem = 0;                /* (hs13) nothing was kept: the next match tries the ring again */
     g_rbg_noring = 0;

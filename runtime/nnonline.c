@@ -49,6 +49,15 @@ static int online_nex_lobby(void) {
     if (v < 0) { const char *e = getenv("SSBU_ONLINE_NEX_LOBBY"); v = online_nex_on() && e && e[0] == '1'; }
     return v;
 }
+/* (online-mm A3) SSBU_ONLINE_RB=1 (default 0, with SSBU_ONLINE_NEX=1): the game's own Online match (melee mode 14) played with OUR
+ * rollback: the rollback session's messages go to the other station of the gathering (online_rb_peer: net_relay.c net_rb_send), the
+ * match set-up agrees with that game (rb_net.c rbn_handshake, debug_mode.c), every player a local one for the fight, the game's own
+ * records back for its results. A game whose opponent has it off is never heard there: the game's own netcode plays, as before. */
+int online_rb_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("SSBU_ONLINE_RB"); v = online_nex_on() && e && e[0] == '1'; }
+    return v;
+}
 
 void account_uid(uint64_t *lo, uint64_t *hi);              /* nnfs.c */
 void os_init_event(uint64_t key, int autoclear);           /* os_threads.c */
@@ -257,6 +266,7 @@ void online_peer_seen(uint32_t ip) {
     printf("online: Pia talks to the station 10.13.%u.%u (the other player of the gathering)\n", (ip >> 8) & 255, ip & 255); fflush(stdout);
 }
 uint32_t online_peer_vip(void) { return (uint32_t)g_online_peer; }
+uint32_t online_rb_peer(void) { return online_rb_on() ? (uint32_t)g_online_peer : 0; }      /* (A3) the rollback messages' destination, 0 = none */
 void online_nex_hooks(void) {
     if (!online_nex_on()) return;
     if (online_nex_lobby()) { g_nex_ip = 0x0A0D0001u; snprintf(g_nex_host, sizeof g_nex_host, "10.13.0.1"); }    /* (the lobby's own address) */

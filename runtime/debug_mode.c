@@ -542,6 +542,77 @@ static int g_bacss = -1, g_tc_native, g_tc_k; static uint16_t g_tc_lay[2][11];
 static int g_room_mode_was = -1, g_room_saved_n;
 static struct { uint64_t st; uint8_t b450[6]; uint32_t slot, prof; uint8_t lay[22]; uint8_t a4; } g_room_saved[2];      /* (R3 lwr) g_hs_lwr: a Local Wireless room's match played with rollback */
 static int g_hs_quick;
+/* (online-mm A3, SSBU_ONLINE_RB=1) the game's own Online match (melee mode 14) played with our rollback: the melee mode stays 14 (the
+ * game's Online scene, its results and its next search), the players are made local ones as in a Local Wireless room's match
+ * (g_hs_lwr's normalization), and the game's OWN records of both players (built here again from the panel states as the game left
+ * them, by the game's own record builder, into a buffer of ours) go back into the match block when the fight ends (dm_room_restore),
+ * so the results see the Online match the game set up (the other player a network player). Colours: each game shows its own player
+ * in its own pick and gives the other one another colour; with rollback both games need the same: player i's own pick (player 1's in
+ * the agreed match, player 2's with the LAYOUT message), player 2 the next colour when both picked the same fighter and colour. */
+static int g_onl_setup14, g_hs_onlrb, g_onl_orig_ok[2], g_onl_rec_ok[2], g_onl_restore;
+static uint8_t g_onl_orig[2][0x470]; static uint8_t g_onl_rec[2][0x260]; static uint64_t g_onl_rec_at[2];
+/* (A3, run r2: write watch on the other game's player's record) after the records the game's Online set-up writes the network player's
+ * fields again from its own station table, not from the panel: record + 0xc (0x71017893d0, from 0x710178e2e0) and + 0x1c (controller
+ * slot -1) / + 0xa0 .. + 0xa5 (network player 1) in the fight set-up 0x71014d8620; the two games then differed there (match block
+ * check: 23 bytes) and the fight read the other player's pads from the game's netcode (DESYNC at frame 44, then NO CONTEST, run r1).
+ * Writing the records back after the fight set-up (run r3, SSBU_ONLINE_RB_FIXREC=1 now, test only) crashed both games at the fight's
+ * end: the fight set-up's own masks of local players (its object + 0x40 / + 0x44) still had the other player as a network one.
+ * SSBU_ONLINE_RB_LOCALSET=1 (test, run r4): the station check of the fight set-up answers "local" for every player of an A3 match
+ * (station_local_hook, 0x710179eb70 called from 0x71014d8960) and record + 0xc is 0 for both: the set-up writes both records, and
+ * its masks, as for two local players, the same on both games; but the Online fight's loading then abort()ed (see the melee mode
+ * note in hs_apply). dm_online_fix only logs what differs from the records as built for the fight. */
+static int g_onl_fixrec = -1;
+static uint8_t g_onl_conv[2][0x260]; static int g_onl_conv_ok[2];
+static int onl_fix_byte(int k) { return k == 0xc || (k >= 0x1c && k < 0x20) || (k >= 0xa0 && k < 0xa6); }
+static void dm_online_fix(const char *when) {
+    if (!g_hs_onlrb || !g_onl_restore) return;
+    if (g_onl_fixrec < 0) { const char *e = getenv("SSBU_ONLINE_RB_FIXREC"); g_onl_fixrec = e && e[0] == '1'; }
+    for (int i = 0; i < 2; i++) {
+        uint64_t at = g_onl_rec_at[i]; if (!g_onl_conv_ok[i] || !at) continue;
+        int fixed = 0, other = 0; char t[300]; int n = 0;
+        for (int k = 0; k < 0x260; k++) {
+            uint8_t v = rd8(at + (uint64_t)k); if (v == g_onl_conv[i][k]) continue;
+            if (onl_fix_byte(k) && g_onl_fixrec > 0) { wr8(at + (uint64_t)k, g_onl_conv[i][k]); fixed++; }
+            else { other++; if (n < (int)sizeof t - 40) n += snprintf(t + n, sizeof t - n, " +%03x %02x->%02x", k, g_onl_conv[i][k], v); }
+        }
+        printf("[online] A3: %s: player %d's record: %d byte(s) of the network player fields written back as built for the fight (SSBU_ONLINE_RB_FIXREC); %d other byte(s) changed by the game since:%s\n", when, i + 1, fixed, other, other ? t : " none");
+    }
+    fflush(stdout);
+}
+/* (A3, runs r1 / r6: the game's records kept, the other game's player a network one: DESYNC, its pads came from the game's netcode)
+ * At the rollback match's base state (SSBU_ONLINE_RB_BIND=0: not; run r7: the slot is taken, still DESYNC at frame ~97: the fighter
+ * still follows the network flag, record + 0xa5 / + 0xc, see the plan), the game's own "player i plays with controller slot n"
+ * 0x7101754d80 (controls object [0x71052c40f0], i, n; it writes the controls object + 0x298, record + 0x1c / + 0xa0 and the
+ * fighter entry + 0x10) is called for the network player with slot i, so its fighter reads port i: the rollback's pads. */
+static int g_onl_bound;
+void dm_online_fight_start(Ctx *c) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_RB_BIND"); on = !(e && e[0] == '0'); }
+    if (!on || !g_hs_onlrb || !g_onl_restore || g_onl_bound) return;
+    g_onl_bound = 1;
+    uint64_t ctl = sr64(GA(0x71052c40f0ULL)); if (!ctl) return;
+    uint64_t save[32]; memcpy(save, c->x, sizeof save);
+    for (int i = 0; i < 2; i++) {
+        uint64_t r = MELEE_INFO + 0x580 + 0x260ull * (uint64_t)i;
+        if (!rd8(r + 0xa5)) continue;
+        int was = (int)rd32(r + 0x1c);
+        c->x[0] = ctl; c->x[1] = (uint64_t)i; c->x[2] = (uint64_t)i; call_guest(c, GA(0x7101754d80ULL));
+        printf("[online] A3: fight start: player %d (a network player in the game's records) bound to controller slot %d (was %d; record + 0x1c now %d)\n", i + 1, i, was, (int)rd32(r + 0x1c));
+    }
+    memcpy(c->x, save, sizeof save); fflush(stdout);
+}
+static void dm_online_restore(void) {
+    if (!g_onl_restore) return;
+    g_onl_restore = 0;
+    int n = 0;
+    for (int i = 0; i < 2; i++) {
+        uint64_t at = g_onl_rec_at[i];
+        if (!g_onl_rec_ok[i] || !at) continue;
+        for (int k = 0; k < 0x260; k++) wr8(at + (uint64_t)k, g_onl_rec[i][k]);
+        n++;
+    }
+    printf("[online] A3: the Online match's fight is over: the game's own records of %d player(s) back in the match block (melee mode %u) for its results\n", n, rd8(MELEE_INFO));
+    fflush(stdout);
+}
 /* (Arena, online matchmaking) a quick match from the Arena menu's Online Ranked tile (competitive.c comp_quickplay): both games
  * play the same locked rules whatever the player's own ruleset: stock (rule kind 1), 3 stocks, no items, no hazards (the
  * competitive mode keeps the FS meter, the item switch, hazards and stage morph off already). Written into this game's
@@ -566,6 +637,7 @@ static void scene_clean_hook(Ctx *c, void *user) {
 }
 static void bacss_after_match(void);
 void dm_room_restore(void) {
+    dm_online_restore();                                /* (online-mm A3) */
     if (g_room_mode_was < 0) return;
     bacss_after_match();
     int sq_native = g_bacss == 1 && dm_bacss_native();
@@ -594,7 +666,7 @@ void dm_room_restore(void) {
     fflush(stdout);
     g_room_mode_was = -1; g_room_saved_n = 0;
 }
-int dm_match_kind(void) { return !g_hs_wanted || !g_hs_ok || g_hs_local ? 0 : g_hs_lwr ? 2 : g_hs_quick ? 1 : 3; }
+int dm_match_kind(void) { return !g_hs_wanted || !g_hs_ok || g_hs_local ? 0 : g_hs_onlrb ? 1 : g_hs_lwr ? 2 : g_hs_quick ? 1 : 3; }      /* (A3: the game's Online match = matchmaking) */
 #define QUICK_RULE_KIND 1
 #define QUICK_STOCKS 3
 static RbhMatch g_hs_m;
@@ -657,6 +729,7 @@ static ImportFn g_orig_controls_fill;
 static void controls_fill_hook(Ctx *c, void *user) {
     (void)user;
     g_orig_controls_fill(c);
+    dm_online_fix("after the controls set-up");         /* (online-mm A3) */
     if (!g_hs_lwr || !g_lwr_ctl_ok || g_lwr_ctl_applied) return;
     uint64_t o = sr64(GA(0x71052c40f0ULL)); if (!o) return;
     for (int i = 0; i < 2; i++) {
@@ -700,6 +773,7 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
                 if (net) { printf("[squadcss] RESEARCH: net object %llx watched at %d place(s)\n", (unsigned long long)net, n); fflush(stdout); debug_watch(w, n); } } }
         g_hs_ok = rbn_handshake(&me, &g_hs_m); g_hs_local = 0;
         {   int rbn_room_rollback(void); g_hs_lwr = g_hs_ok && rbn_room_rollback(); }
+        {   int rbn_online_rb(void); g_hs_onlrb = g_hs_lwr && rbn_online_rb(); g_onl_restore = 0; }      /* (online-mm A3) */
         {   int rbn_match_cancelled(void); if (!g_hs_ok && rbn_match_cancelled() == 2) return; }      /* (R3 pub2) a Local Wireless room fight: nothing changed */
         if (!g_hs_ok) {                                   /* (hs12) not agreed: a local match of this game (player 2 = this player's fighter again), left at once by rb_rollback.c */
             g_hs_m = me; g_hs_m.chara[1] = me.chara[0]; g_hs_m.colour[1] = (uint8_t)((me.colour[0] + 1) & 7); g_hs_m.has_layout[1] = me.has_layout[0];
@@ -737,11 +811,25 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
              * at the set-up and at the fight start: rule + 0, + 1 and FighterManager impl + 0xc0 the only differences there). So the game's
              * own online netcode does not play this fight; both games run it as the local match rollback expects. SSBU_RB_NET_ROOM_MODE=<n>:
              * the mode written (test), -1 = not changed. */
-            if (g_hs_lwr) {
+            /* (online-mm A3) runs r3 / r4: with melee mode 14 kept the game's fight set-up 0x71014d8620 asks its station check for every
+             * player (0x710179eb70: the other game's one a network player, pads from the game's netcode: DESYNC, NO CONTEST); told "local"
+             * for both, the Online fight never let its fighters move and abort()ed after 440 .. 810 frames on both games. So the Online
+             * match is played as a Local Wireless room's: melee mode 0 for the fight (the fight set-up then takes every player as a local
+             * one, as in a room), the Online mode 14 and the game's own records back when the fight ends (dm_room_restore), before the
+             * results; the scene's clean-up as a local match's (scene_clean_hook). Run r5: the same abort() at the Online fight's
+             * loading (0x710138d270: the Online scene's table of the match's players found 1 of 2). So this is a TEST switch now
+             * (SSBU_ONLINE_RB_MODE0=1) and the default keeps melee mode 14 and the game's own records (the other game's player a network
+             * one), with its controller slot changed at the base state (dm_online_fight_start): run r7, rollback runs, DESYNC ~frame 97. */
+            int onl_keep14 = 0;
+            if (g_hs_onlrb) { const char *e = getenv("SSBU_ONLINE_RB_MODE0"); onl_keep14 = !(e && e[0] == '1'); }
+            if (g_hs_onlrb && onl_keep14) {
+                printf("[online] A3: the Online match is played with rollback: melee mode (match block + 0) %u kept (SSBU_ONLINE_RB_MODE0=1: 0 for the fight, test); the game's own records (player 1 = the gathering's owner)\n", rd8(MELEE_INFO));
+                fflush(stdout);
+            } else if (g_hs_lwr) {
                 const char *e = getenv("SSBU_RB_NET_ROOM_MODE"); int to = e && *e ? atoi(e) : 0; uint8_t was = rd8(MELEE_INFO);
                 if (!(g_tc_native && g_room_mode_was >= 0)) { g_room_mode_was = was; g_room_saved_n = 0; }      /* (0.2.15) given back when the fight ends (dm_room_restore); (Battle Arena, game's squad, run cssh5) the 2nd handshake (the squad's records) keeps what the room's records saved: else nothing was given back and the joiner's next select screen was broken */
                 if (to >= 0) wr8(MELEE_INFO, (uint8_t)to);
-                printf("[rbnet] room match: melee mode (match block + 0) %u -> %u: played as a local versus match with rollback (room maker = player 1)\n", was, rd8(MELEE_INFO));
+                printf("[rbnet] %s: melee mode (match block + 0) %u -> %u: played as a local versus match with rollback (%s = player 1)\n", g_hs_onlrb ? "the game's Online match (A3)" : "room match", was, rd8(MELEE_INFO), g_hs_onlrb ? "the gathering's owner" : "room maker");
                 fflush(stdout);
             }
         }
@@ -764,12 +852,30 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
             int rbn_local_player(void); int rbn_room_layout(const uint16_t mine[11], int has, const uint8_t mine_ctl[LWR_CTL + 2], uint16_t other[11], int *other_has, uint8_t other_ctl[LWR_CTL + 2]);
             int local = rbn_local_player(), has = 0; uint16_t lay[11]; memset(lay, 0, sizeof lay);
             if (idx == 0) { g_lwr_ctl_ok = 0; g_lwr_ctl_applied = 0; }
+            if (g_hs_onlrb && idx == 0) {                 /* (online-mm A3) player 1's colour: its own game's pick (the host's, in the agreed match) */
+                void rbn_online_own(uint64_t chara, uint8_t colour, uint32_t hdr);
+                if (local == 0) rbn_online_own(rd64(st + 0x88), rd8(st + 0x90), rd32(MELEE_INFO + 0x500));
+                if (rd8(st + 0x90) != g_hs_m.colour[0]) { printf("[online] A3: player 1's colour %u -> %u (its own game's pick)\n", rd8(st + 0x90), g_hs_m.colour[0]); fflush(stdout); }
+                wr8(st + 0x90, g_hs_m.colour[0]);
+            }
+            if (g_hs_onlrb && idx == 1 && local == 1) { void rbn_online_own(uint64_t chara, uint8_t colour, uint32_t hdr); rbn_online_own(rd64(st + 0x88), rd8(st + 0x90), rd32(MELEE_INFO + 0x500)); }
             if (idx == local) lwr_own_controls(st, g_lwr_ctl[idx]);      /* (before the state is changed below: its own profile and controller) */
             if (idx == 0) { if (local == 0) has = hs_layout(st, lay); else { has = g_hs_m.has_layout[0]; memcpy(lay, g_hs_m.layout[0], sizeof lay); } }
             else {
                 uint16_t own[11], other[11]; int own_has, other_has = 0;
                 if (local == 1) own_has = hs_layout(st, own); else { own_has = g_hs_m.has_layout[0]; memcpy(own, g_hs_m.layout[0], sizeof own); }
                 int got = rbn_room_layout(own, own_has, g_lwr_ctl[local], other, &other_has, g_lwr_ctl[1 - local]);
+                if (g_hs_onlrb) {                         /* (online-mm A3) player 2's colour: its own game's pick, the next one on a clash with player 1 */
+                    void rbn_online_peer(uint64_t *chara, uint8_t *colour, uint32_t *hdr); uint64_t pc = 0; uint8_t pcol = 0; uint32_t phdr = 0; rbn_online_peer(&pc, &pcol, &phdr);
+                    /* (run r1: match block + 0x503 differed, one byte each game sets for itself before the records) the host's, on both */
+                    printf("[online] A3: match block + 0x500 here %08x, %s %08x%s\n", rd32(MELEE_INFO + 0x500), local ? "the host's" : "the joiner's", phdr, local == 1 && got && rd32(MELEE_INFO + 0x500) != phdr ? ": the host's taken" : "");
+                    if (local == 1 && got) wr32(MELEE_INFO + 0x500, phdr);
+                    uint64_t ch1 = rd64(st + 0x88); uint8_t was = rd8(st + 0x90), c1 = local == 1 || !got ? was : pcol, c0 = g_hs_m.colour[0];
+                    if (local == 0 && got && pc != ch1) printf("[online] A3: player 2's fighter: %016llx here, %016llx on its own game (the match may differ)\n", (unsigned long long)ch1, (unsigned long long)pc);
+                    if (ch1 == g_hs_m.chara[0] && c1 == c0) c1 = (uint8_t)((c0 + 1) & 7);
+                    printf("[online] A3: player 2's colour %u -> %u (%s; player 1 %u)\n", was, c1, local == 1 ? "this game's own pick" : got ? "its own game's pick" : "NOT RECEIVED: kept (the match may differ)", c0);
+                    wr8(st + 0x90, c1); fflush(stdout);
+                }
                 g_lwr_ctl_ok = got;
                 {   int rbn_squad_agreed(void), rbn_room_squad(uint64_t chara[2], uint8_t colour[2]), rbn_ba_pick(int slot, uint64_t *chara, uint8_t *colour);
                     g_sq_want = 0;
@@ -964,6 +1070,16 @@ static void match_player_hook(Ctx *c, void *user) {
                    (int)rd32(st + 0x210), (int)rd32(st + 0x214), rd8(st + 0x450), rd8(st + 0x451), rd8(st + 0xa4));
             fflush(stdout);
         } }
+    {   int online_rb_on(void);                          /* (online-mm A3, SSBU_ONLINE_RB=1) */
+        if (g_hs_wanted && online_rb_on() && idx >= 0 && idx < 2) {
+            if (idx == 0) {
+                uint8_t mm = rd8(MELEE_INFO); int waiting = c->x[30] == GA(0x71017911dcULL);
+                int kind = mm == 14 && !waiting ? 2 : mm == 13 && waiting ? 1 : 0;
+                void rbn_set_online_setup(int kind, int local); rbn_set_online_setup(kind, rd8(st + 0x451) ? 1 : 0);
+                g_onl_setup14 = kind == 2; g_onl_bound = 0; g_onl_orig_ok[0] = g_onl_orig_ok[1] = 0; g_onl_rec_ok[0] = g_onl_rec_ok[1] = 0; g_onl_conv_ok[0] = g_onl_conv_ok[1] = 0;
+            }
+            if (g_onl_setup14) g_onl_orig_ok[idx] = safe_read(st, g_onl_orig[idx], sizeof g_onl_orig[idx]);
+        } }
     if (g_hs_wanted && g_tc_native && g_tc_k > 0) {     /* (Battle Arena, game's squad) fighters 2.. of a side: the room normalization only */
         if (g_hs_ok && g_hs_lwr) { wr8(st + 0x450, 1); wr8(st + 0x451, 0); wr32(st + 0x210, (uint32_t)idx); wr32(st + 0x214, 0xffffffffu);
             wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, g_tc_lay[idx][k]); }
@@ -988,6 +1104,29 @@ static void match_player_hook(Ctx *c, void *user) {
         if (idx == 1 && g_sq_st[0] == g_sq_st[1]) { static int said; if (!said++) { printf("[squad] both players' records are built from one panel state object (%llx): each player's own copy is used\n", (unsigned long long)st); fflush(stdout); } }
     }
     g_orig_player_record(c);
+    if (g_hs_wanted && g_hs_ok && !g_hs_local && g_hs_onlrb && idx >= 0 && idx < 2) g_onl_conv_ok[idx] = safe_read(rec, g_onl_conv[idx], sizeof g_onl_conv[idx]);      /* (A3) as built for the fight */
+    if (g_hs_wanted && g_hs_ok && !g_hs_local && g_hs_onlrb && idx >= 0 && idx < 2 && g_onl_orig_ok[idx]) {
+        /* (online-mm A3) the game's own record of this player, built by its own builder from the panel state as the game left it
+         * (a copy of ours, into a buffer of ours), for the results (dm_online_restore) */
+        static uint8_t tst[0x480] __attribute__((aligned(16))), trec[0x280] __attribute__((aligned(16)));
+        uint64_t save[32]; memcpy(save, c->x, sizeof save);
+        memcpy(tst, g_onl_orig[idx], sizeof g_onl_orig[idx]); memset(trec, 0, sizeof trec);
+        c->x[0] = (uint64_t)(uintptr_t)tst; c->x[1] = (uint64_t)idx; c->x[2] = save[2]; c->x[3] = (uint64_t)(uintptr_t)trec;
+        g_orig_player_record(c);
+        memcpy(c->x, save, sizeof save);
+        memcpy(g_onl_rec[idx], trec, sizeof g_onl_rec[idx]); g_onl_rec_ok[idx] = 1; g_onl_rec_at[idx] = rec;
+        uint64_t want = MELEE_INFO + 0x580 + 0x260ull * (uint64_t)idx;
+        printf("[online] A3: player %d: the game's own record kept for the results (record at %s; network player %u, controller slot %d there; %u / %d in the fight's)\n", idx + 1,
+               rec == want ? "the match block's place" : "ANOTHER place than the match block's", g_onl_rec[idx][0xa5], (int)*(int32_t *)(g_onl_rec[idx] + 0x1c), rd8(rec + 0xa5), (int)rd32(rec + 0x1c));
+        if (idx == 1) g_onl_restore = 1;
+        fflush(stdout);
+        if (idx == 1 && getenv("SSBU_ONLINE_RB_WATCH")) {    /* (RESEARCH) who writes the other game's player's record after the set-up */
+            int rbn_local_player(void); uint64_t r = MELEE_INFO + 0x580 + 0x260ull * (uint64_t)(1 - rbn_local_player());
+            uint64_t w[3] = {r + 0x1c, r + 0xa4, r + 0xc};
+            printf("[online] A3: RESEARCH: the other game's player's record %llx watched (+ 0x1c, + 0xa4, + 0xc)\n", (unsigned long long)r); fflush(stdout);
+            debug_watch(w, 3);
+        }
+    }
     if (g_tc_native) {                                  /* (Battle Arena, game's squad) */
         if (g_hs_lwr && g_lwr_ctl_ok) { wr8(rec + 0x48, g_lwr_ctl[idx][LWR_CTL]);
             if (idx == 1 && g_tc_k == 0) for (int j = 0; j < SQ_N; j++) wr8(SQ_TABLE + 8 + 0x268ull * (uint64_t)j + 0x48, g_lwr_ctl[0][LWR_CTL]); }
@@ -1511,6 +1650,17 @@ static void tc_vs_hook(Ctx *c, void *user) {
  * set-up (run cssm6: + 0x98 differed, DESYNC at frame 1). SSBU_BA_SQUAD_CSS=1 (SSBU_BA_SQUAD_RESEED=0 off): the generator is set
  * again from the agreed seed when the set-up starts. */
 static ImportFn g_orig_fight_setup; static int g_bacss_reseed;
+static ImportFn g_orig_station_local; static int g_onl_said_local, g_onl_localset = -1;
+static int onl_localset(void) { if (g_onl_localset < 0) { const char *e = getenv("SSBU_ONLINE_RB_LOCALSET"); g_onl_localset = e && e[0] == '1'; } return g_onl_localset; }      /* (A3, TEST =1, run r4: the station check answers "local", record + 0xc 0; default: as the game sets them) */
+static void station_local_hook(Ctx *c, void *user) {      /* (online-mm A3) 0x710179eb70: "this player's station is this console" */
+    (void)user;
+    uint64_t lr = c->x[30];
+    g_orig_station_local(c);
+    if (g_hs_onlrb && g_onl_restore && onl_localset() && lr == GA(0x71014d8964ULL) && !(c->x[0] & 1)) {
+        c->x[0] = 1;
+        if (g_onl_said_local++ < 2) { printf("[online] A3: fight set-up: the other game's player is taken as a local player (station check answered \"local\")\n"); fflush(stdout); }
+    }
+}
 static void fight_setup_hook(Ctx *c, void *user) {
     (void)user;
     if (g_bacss_reseed && g_hs_wanted && g_hs_ok && g_hs_lwr && !g_hs_local && rd32(GA(0x71053040f0ULL)) == 0x02020000u) {
@@ -1522,7 +1672,19 @@ static void fight_setup_hook(Ctx *c, void *user) {
         if (!rd8(MELEE_INFO + 0x9c)) { wr8(MELEE_INFO + 0x9c, 1); printf("[squadcss] fight set-up: match block + 0x9c 0 -> 1 (+ 0x98 %08x drawn again from the agreed generator)\n", rd32(MELEE_INFO + 0x98)); }
         fflush(stdout);
     }
+    uint8_t h500[8]; safe_read(MELEE_INFO + 0x500, h500, 8);
+    if (g_hs_onlrb && g_onl_restore && onl_localset()) {      /* (online-mm A3) record + 0xc: 1 for the other station's player (0x71017893d0): 0 for both, as two local players */
+        g_onl_said_local = 0;
+        for (int i = 0; i < 2; i++) { uint64_t r = MELEE_INFO + 0x580 + 0x260ull * (uint64_t)i;
+            if (rd8(r + 0xc)) { printf("[online] A3: fight set-up: player %d's record + 0xc %u -> 0 (a local player's)\n", i + 1, rd8(r + 0xc)); wr8(r + 0xc, 0); } }
+        fflush(stdout);
+    }
     g_orig_fight_setup(c);
+    if (g_hs_onlrb && g_onl_restore) {                   /* (online-mm A3) */
+        uint8_t a[8]; safe_read(MELEE_INFO + 0x500, a, 8);
+        printf("[online] A3: fight set-up: match block + 0x500 .. + 0x507 %02x%02x%02x%02x%02x%02x%02x%02x -> %02x%02x%02x%02x%02x%02x%02x%02x\n", h500[0], h500[1], h500[2], h500[3], h500[4], h500[5], h500[6], h500[7], a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
+        dm_online_fix("after the fight set-up");
+    }
     if (getenv("SSBU_DEBUG_SCENES") && rd32(GA(0x71053040f0ULL)) == 0x02020000u) { uint64_t g = GA(0x71052381c0ULL);
         printf("[squadcss] fight set-up done: match block + 0x98 %08x + 0x9c %u, generator %08x %08x %08x %08x\n", rd32(MELEE_INFO + 0x98), rd8(MELEE_INFO + 0x9c), rd32(g), rd32(g + 4), rd32(g + 8), rd32(g + 12)); fflush(stdout); }
 }
@@ -1604,6 +1766,9 @@ static void bacss_init(void) {
     if (g_bacss == 1) printf("[squadcss] Battle Arena rooms play the game's own Squad Strike: hooks %d %d\n", hook_install(GA(0x710232f690ULL), local_launch_hook, NULL, &g_orig_local_launch), hook_install(GA(0x710233cfd0ULL), tc_css_hook, NULL, &g_orig_tc_css));
     if (g_bacss == 1) { const char *r = getenv("SSBU_BA_SQUAD_RESEED"); g_bacss_reseed = !(r && r[0] == '0');
         if (g_bacss_reseed) printf("[squadcss] hook on the fight set-up 0x71014d8620: id %d (the global generator set again from the agreed seed)\n", hook_install(GA(0x71014d8620ULL), fight_setup_hook, NULL, &g_orig_fight_setup)); }
+    {   int online_rb_on(void);                         /* (online-mm A3) the network player fields of the records written back after the fight set-up */
+        if (online_rb_on() && !g_orig_fight_setup) printf("[online] A3: hook on the fight set-up 0x71014d8620: id %d\n", hook_install(GA(0x71014d8620ULL), fight_setup_hook, NULL, &g_orig_fight_setup));
+        if (online_rb_on()) printf("[online] A3: hook on the station check 0x710179eb70: id %d\n", hook_install(GA(0x710179eb70ULL), station_local_hook, NULL, &g_orig_station_local)); }
     if (g_bacss == 1) { const char *v = getenv("SSBU_BA_SQUAD_VS"); g_bacss_vs = !(v && v[0] == '0');
         printf("[squadcss] hook on the matchup's state 7 (0x710197d5f0): id %d (the VS screen ends as offline once this game is ready: %s)\n", hook_install(GA(0x710197d5f0ULL), tc_vs_hook, NULL, &g_orig_tc_vs), g_bacss_vs ? "on" : "off, SSBU_BA_SQUAD_VS=0"); }
     fflush(stdout);

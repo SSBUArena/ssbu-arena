@@ -513,9 +513,11 @@ int net_rb_send(const void *p, int n) {
     if (!net_rb_ready() || n <= 0 || n > 1400) return 0;
     uint32_t dst = nnldn_other_ip(), room = dst;
     if (!dst) dst = g_rb_match_peer;                    /* (R3 net3) the opponent the lobby found for this rollback match */
+    uint32_t online_rb_peer(void); uint32_t onl = room || dst ? 0 : online_rb_peer();      /* (online-mm A3, SSBU_ONLINE_RB=1) the other station of the game's Online gathering */
+    if (!dst) dst = onl;
     if (!dst) dst = g_rb_peer;
     if (!dst && g_mode == NET_MODE_LOBBY && !_stricmp(g_code, "public")) { InterlockedIncrement(&g_rb_nodst); return 0; }
-    if (dst && dst != g_rb_dst_said) { char a[16]; g_rb_dst_said = dst; printf("[rbnet] rollback messages go to %s (%s)\n", ip_text(dst, a), room ? "the other player of this Local Wireless room" : dst == g_rb_match_peer ? "the opponent the lobby found" : "the game that wrote to this one"); fflush(stdout); }
+    if (dst && dst != g_rb_dst_said) { char a[16]; g_rb_dst_said = dst; printf("[rbnet] rollback messages go to %s (%s)\n", ip_text(dst, a), room ? "the other player of this Local Wireless room" : dst == g_rb_match_peer ? "the opponent the lobby found" : onl ? "the other player of the game's Online match" : "the game that wrote to this one"); fflush(stdout); }
     uint8_t b[1500];
     hdr(b, T_RB); s64(b + 4, g_cookie); s32(b + 12, dst);
     memcpy(b + 16, p, (size_t)n);
