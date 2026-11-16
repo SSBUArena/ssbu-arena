@@ -895,6 +895,13 @@ static void mw_trywaitany(Ctx *c) { RET(mw_poll(obj(A0))); }
 /* ---------------------------------------------------------------- fibers */
 long long g_fib_made[4];                               /* (memory phase) host fibers made: fib_init, of which replacing; at a restore, of which replacing */
 void (*g_r1_fiber_born)(void *fiber);                 /* r1_state.c (R3 hs13): a new host fiber's stack is left out of the guest windows' state */
+/* (0.2.50, field crashes 11/11 and 15/11: commit exhausted after 40-50 min of local play) r1_ring.c fib_reap_out: outside a rollback
+ * session (no ring state kept, no run-ahead pass) a host fiber that no guest fiber object uses any more (finalized, or replaced by
+ * a new initialisation) goes to r1's deleter (main thread, frame end, never one a thread runs), as the ring's own reaper does in
+ * online rollback matches. Before, with R1 on (every Arena game) such fibers were kept for good outside the ring: ~1 MB of commit
+ * each, ~37 a second in fights. SSBU_FIB_REAP_OUT=0: as before. Both null without R1. */
+int (*g_r1_fiber_out)(void);
+void (*g_r1_fiber_dead)(void *fiber);
 static void CALLBACK fiber_main(void *arg);
 static int g_fib_lazy = -1; static volatile LONG g_fib_fail_said;
 static void *fib_make(Obj *o) {                        /* (field crash) a host fiber for o, tried again while the system refuses it */
@@ -939,6 +946,9 @@ static void CALLBACK fiber_main(void *arg) {
 }
 static void fib_init(Ctx *c) {                        /* (FiberType*, fn, arg, stack, stackSize, flags) */
     Obj *o = obj(A0);
+    /* (0.2.50) the host fiber this object had (finalized and kept, or initialised again without a finalize): outside a rollback
+     * session it goes to r1's deleter (never the one this thread runs on; the deleter also skips any a thread runs) */
+    if (o->fiber && g_r1_keep_fibers && g_r1_fiber_out && g_r1_fiber_out() && o->fiber != GetCurrentFiber()) { g_r1_fiber_dead(o->fiber); o->fiber = NULL; }
     o->fn = A1; o->arg = A2; o->stack = A3; o->stack_size = A4; r1_stack_note(A3, A4); o->fin = 0;
     g_fib_made[0]++; if (o->fiber) g_fib_made[1]++;      /* (memory phase, diagnosis) made / replacing one that was there */
     {   static long long ff = -1; if (ff < 0) { const char *e = getenv("SSBU_TEST_FIBFAIL"); ff = e ? atoll(e) : 0; }      /* (TEST ONLY) every Nth one fails, as when commit runs out */
@@ -1002,6 +1012,9 @@ long long g_fib_fin_n;                                 /* (stability phase) fibe
 static void fib_finalize(Ctx *c) {
     Obj *o = obj(A0);
     if (o->fiber && !g_r1_keep_fibers) { DeleteFiber(o->fiber); o->fiber = NULL; InterlockedIncrement(&g_fib_gen); }
+    else if (o->fiber && g_r1_fiber_out && g_r1_fiber_out() && o->fiber != GetCurrentFiber()) {      /* (0.2.50) outside a rollback session: as without R1, deleted by r1 (frame end) */
+        void *f = o->fiber; o->fin = 1; o->fiber = NULL; InterlockedIncrement(&g_fib_gen); g_r1_fiber_dead(f);
+    }
     else if (o->fiber && g_r1_keep_fibers) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_FIBFIN"); on = !(e && e[0] == '0'); } if (on) { o->fin = 1; g_fib_fin_n++; } }
 }
 
