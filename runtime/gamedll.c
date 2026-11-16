@@ -97,7 +97,8 @@ static DWORD WINAPI neon_chk_report(LPVOID p) {
         long long n = g_nchk[0];
         if (n == last) continue;
         last = n;
-        fprintf(stderr, "NEONCHK ops %lld | two ways differ %lld | differ from the old helper: with NaN / inf %lld, other %lld\n", n, g_nchk[1], g_nchk[2], g_nchk[3]);
+        fprintf(stderr, "NEONCHK ops %lld | two ways differ %lld | differ from the old helper: with NaN / inf %lld, other %lld | generator 2 forms checked: "
+                "folded loads %lld, fixed shuffles %lld, vector bit ops %lld\n", n, g_nchk[1], g_nchk[2], g_nchk[3], g_nchk[4], g_nchk[5], g_nchk[6]);
         if (g_nchk_op) { fprintf(stderr, "NEONCHK NaN/inf differences per op:"); for (int k = 0; k < 512; k++) if (g_nchk_op[k]) fprintf(stderr, " %d=%lld", k, g_nchk_op[k]); fputc(10, stderr); }
         for (int k = 0; k < (g_nchk_op ? 24 : 16); k++) {
             if (g_nchk_log[k][0] == 0 || (shown >> k) & 1) continue;

@@ -5,7 +5,9 @@
  *     from the Arm pseudocode (FPProcessNaNs(3), FPMulAdd, FPRecipStepFused, FPRSqrtStepFused) with the CPU's IEEE operations and
  *     FMA for the numbers; and against neon.h's old helper (counted apart: differences expected only where a NaN / infinity x zero
  *     is involved). Build (a CPU with FMA3): clang -O2 -ffp-contract=off -mfma -I runtime -DRECOMP_NEON_VEC -DR1_GAMEDLL tools/lifter/neon_vec_test.c
- * usage: neon_vec_test <millions of fma cases> <thousands of cases per op> <seed> */
+ * usage: neon_vec_test <millions of fma cases> <thousands of cases per op> <seed>
+ * (NEON generator 2) built with -DRECOMP_NEON_EST: neon_vec_test 0 0 0 est = nv_est against fpexact.h for every float (FRSQRTE / FRECPE /
+ * FCVTZS, 4 and 2 lanes; a few minutes) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <immintrin.h>
@@ -179,8 +181,38 @@ static long t_ops(long n) {
     }
     return nbad - nb0;
 }
+#ifdef RECOMP_NEON_EST
+/* (NEON generator 2) nv_est (FRSQRTE / FRECPE / FCVTZS, RECOMP_NEON_EST) against fpexact.h's per-lane code for EVERY float, 4 and 2 lanes */
+uint8_t rt_rsqrte_tab[384], rt_recpe_tab[256];
+static long long t_est(void) {
+    for (uint32_t a = 128; a < 512; a++) rt_rsqrte_tab[a - 128] = (uint8_t)recip_sqrt_estimate(a);
+    for (uint32_t a = 256; a < 512; a++) rt_recpe_tab[a - 256] = (uint8_t)recip_estimate(a);
+    int ops[3] = { F1_RSQRTE, F1_RECPE, F1_CVTZS };
+    long long bad = 0;
+    for (int k = 0; k < 3; k++)
+        for (int nl = 4; nl >= 2; nl -= 2)
+            for (uint64_t b = 0; b < (1ull << 32); b += (uint64_t)nl) {
+                V128 d, x;
+                for (int i = 0; i < 4; i++) x.w[i] = (uint32_t)(b + (uint64_t)i);
+                nv_est(&d, nl == 4 ? nv_ld(&x) : nv_ld2(&x), ops[k], nl);
+                for (int i = 0; i < 4; i++) {
+                    uint32_t want = i >= nl ? 0 : ops[k] == F1_RSQRTE ? (uint32_t)fp_rsqrte_bits(x.w[i], 0) : ops[k] == F1_RECPE ? (uint32_t)fp_recpe_bits(x.w[i], 0)
+                                  : f2s32(trunc((double)bf(x.w[i])));
+                    if (d.w[i] != want && bad++ < 8) printf("est op %d in %08x: %08x, fpexact.h %08x%c", ops[k], x.w[i], d.w[i], want, 10);
+                }
+            }
+    return bad;
+}
+#endif
 int main(int argc, char **argv) {
     long nf = argc > 1 ? atol(argv[1]) * 1000000 : 1000000, no = argc > 2 ? atol(argv[2]) * 1000 : 10000;
+#ifdef RECOMP_NEON_EST
+    if (argc > 4 && argv[4][0] == 'e') {          /* neon_vec_test 0 0 0 est (build with -DRECOMP_NEON_EST): only the exhaustive estimate test */
+        long long be = t_est();
+        printf("est: every float, FRSQRTE / FRECPE / FCVTZS, 4 and 2 lanes: %lld lanes differ from fpexact.h%c", be, 10);
+        return be != 0;
+    }
+#endif
     if (argc > 3) rs ^= (uint64_t)atoll(argv[3]) * 0x2545f4914f6cdd1dull;
     long b1 = t_swfma(nf);
     printf("swfma: %ld cases, %ld differ from the CPU's FMA\n", nf, b1);

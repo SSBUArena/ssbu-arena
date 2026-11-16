@@ -244,7 +244,53 @@ static __attribute__((noinline, cold)) void nv_cold_sqrt(V128 *d, nv_u4 a, int n
     }
     nv_st(d, r);
 }
+#ifdef RECOMP_NEON_EST
+/* (NEON generator 2, 16/11; build_opt.py RECOMP_NEON_EST) FRSQRTE / FRECPE / FCVTZS of single-precision lanes as vector code: neon.h's way is
+ * per lane (recip_sqrt_estimate: a square root and correction loops for every lane). Normal positive inputs (FRSQRTE), normal inputs
+ * with an exponent up to 252 (FRECPE: the result stays normal) and |x| < 2^31 (FCVTZS: cvttps2dq is exact there): the exponent and
+ * the top fraction bits as in fp_rsqrte_bits / fp_recpe_bits, the 8-bit estimate from rt_rsqrte_tab / rt_recpe_tab (game_shim.c fills
+ * them from fpexact.h's own functions); any other lane (zero, subnormal, negative, infinite, NaN, out of range) sends the operation to
+ * fpexact.h's per-lane code. Same bits as neon.h (tools/lifter/neon_vec_test.c: every float). */
+extern __declspec(dllexport) uint8_t rt_rsqrte_tab[384], rt_recpe_tab[256];
+static __attribute__((noinline, cold)) void nv_cold_est(V128 *d, nv_u4 a, int op, int n) {
+    nv_u4 r = { 0, 0, 0, 0 };
+    for (int i = 0; i < n; i++)
+        r[i] = op == F1_RSQRTE ? (uint32_t)fp_rsqrte_bits(a[i], 0) : op == F1_RECPE ? (uint32_t)fp_recpe_bits(a[i], 0) : f2s32(trunc((double)nv_bf(a[i])));
+    nv_st(d, r);
+}
+static inline void nv_est(V128 *d, nv_u4 A, int op, int n) {
+    nv_u4 e = (A >> 23) & 0xffu, f = A & 0x7fffffu, r;
+    nv_i4 ok;
+    if (op == F1_CVTZS) {
+        ok = (nv_i4)(e < 158u);
+        r = (nv_u4)_mm_cvttps_epi32((__m128)A);
+    } else {
+        nv_u4 ix;
+        if (op == F1_RSQRTE) {
+            ok = (nv_i4)((A >> 31) == 0) & (nv_i4)(e != 0) & (nv_i4)(e != 0xffu);
+            nv_u4 odd = (nv_u4)((e & 1) != 0);
+            ix = (~odd & (128 + (f >> 15))) | (odd & (f >> 16));
+        } else {
+            ok = (nv_i4)(e != 0) & (nv_i4)(e <= 252u);
+            ix = f >> 15;
+        }
+        ix &= (nv_u4)ok & 0x1ffu;                                     /* (a lane that goes the cold way reads entry 0) */
+        const uint8_t *tab = op == F1_RSQRTE ? rt_rsqrte_tab : rt_recpe_tab;
+        nv_u4 est = { tab[ix[0]], tab[ix[1]], tab[ix[2]], tab[ix[3]] };
+        r = op == F1_RSQRTE ? (((380 - e) >> 1) << 23) | (est << 15) : (A & 0x80000000u) | ((253 - e) << 23) | (est << 15);
+    }
+    int bad = ~_mm_movemask_ps((__m128)ok) & ((1 << n) - 1);
+    if (__builtin_expect(bad, 0)) { nv_cold_est(d, A, op, n); return; }
+    nv_st(d, r & nv_lomask(n));
+}
+#define NV_EST_OP(op) ((op) == F1_RSQRTE || (op) == F1_RECPE || (op) == F1_CVTZS)
+#else
+#define NV_EST_OP(op) 0
+#endif
 static inline void nv_f1v(V128 *d, const V128 *pn, int op, int dbl, int n) {
+#ifdef RECOMP_NEON_EST
+    if (!dbl && (n == 2 || n == 4) && NV_EST_OP(op)) { nv_est(d, n == 4 ? nv_ld(pn) : nv_ld2(pn), op, n); return; }
+#endif
     if (dbl || !(n == 2 || n == 4) || !(op == F1_ABS || op == F1_NEG || op == F1_SQRT || op == F1_SCVTF || (op >= F1_CMEQ0 && op <= F1_CMLE0))) {
         v_f1v(d, pn, op, dbl, n); return;
     }
@@ -337,6 +383,63 @@ static inline void nv_perm(V128 *d, const V128 *pn, const V128 *pm, int opcode, 
     else r = part ? __builtin_shufflevector(a, b, 2, 6, 3, 7) : __builtin_shufflevector(a, b, 0, 4, 1, 5);
     nv_st(d, r);
 }
+
+/* ---- (NEON generator 2, 16/11) the statements tools/lifter/neongen.py writes into the lifted code (RECOMP_NEON_CONST / RECOMP_NEON_BITS);
+ * none of them is used by code generated without those switches ----
+ * NVK_LDK(p, addr, n, w0..w3): a vector load from main's read-only data (addr, n bytes) whose bytes the generator read from main.elf:
+ *     the register set to them (n < 16: the rest zero, as the load), no memory access.
+ * NVK_TBL(c, rd, rn, len, rm, q, tbx, e): a TBL / TBX whose index vector the generator knows (folded load or MOVI in the same straight
+ *     piece of code): e is the result as a fixed shuffle of whole words of the table registers (and zeros / the destination's words).
+ * NVK_BITS(d, n, m, op, q): AND / EOR / BIC / ORR / ORN of vectors (op 0..4), one 16-byte write (recomp.py: two 64-bit halves).
+ * nv_st1f / nv_st1df / nv_st1w / nv_st1d: a scalar result written with the rest of the register zero, one 16-byte write (recomp.py:
+ *     vzero and a narrower store). */
+static inline nv_u4 nv_bitop(nv_u4 a, nv_u4 b, int op) { return op == 0 ? a & b : op == 1 ? a ^ b : op == 2 ? a & ~b : op == 3 ? a | b : a | ~b; }
+static inline void nv_bits(V128 *d, const V128 *pn, const V128 *pm, int op, int q) { nv_st(d, nv_bitop(nv_ld(pn), nv_ld(pm), op) & nv_lomask(q ? 4 : 2)); }
+static inline void nv_st1w(V128 *d, uint32_t x) { nv_u4 r = { x, 0, 0, 0 }; nv_st(d, r); }
+static inline void nv_st1f(V128 *d, float f) { nv_st1w(d, nv_fb(f)); }
+static inline void nv_st1d(V128 *d, uint64_t x) { nv_u4 r = { (uint32_t)x, (uint32_t)(x >> 32), 0, 0 }; nv_st(d, r); }
+static inline void nv_st1df(V128 *d, double f) { nv_st1d(d, nv_db(f)); }
+
+#ifdef RECOMP_NEON_CHECK
+/* (test DLL) the generator's forms checked: rt_nchk[4] folded loads (against the memory at run time), [5] fixed shuffles (against
+ * neon.h's v_tbl with the index register), [6] vector bit operations (against the 64-bit halves); a difference counts in [3] (op 500 /
+ * 501 / 502: must stay 0) */
+extern __declspec(dllexport) volatile long long rt_nchk[8];
+static __attribute__((noinline)) void nvc_bad(int kind, int op, const V128 *got, const V128 *other, const V128 *x, const V128 *y);
+static __attribute__((noinline)) void nvk_ldk(V128 *p, uint64_t a, int n, uint32_t w0, uint32_t w1, uint32_t w2, uint32_t w3) {
+    V128 m = rdv(a, n), k; k.w[0] = w0; k.w[1] = w1; k.w[2] = w2; k.w[3] = w3;
+    rt_nchk[0]++; rt_nchk[4]++;
+    if (memcmp(&m, &k, 16)) { V128 ad; ad.d[0] = a; ad.d[1] = (uint64_t)n; nvc_bad(3, 500, &k, &m, &ad, &ad); }
+    *p = k;
+}
+static __attribute__((noinline)) void nvk_tbl(Ctx *c, int rd, int rn, int len, int rm, int q, int tbx, nv_u4 r) {
+    V128 ix = c->v[rm], t0 = c->v[rn & 31], o, got;
+    rt_nchk[0]++; rt_nchk[5]++;
+    v_tbl(c, rd, rn, len, rm, q, tbx);                              /* neon.h's byte loop (the macro below is defined later) */
+    o = c->v[rd];
+    nv_st(&got, r);
+    if (memcmp(&o, &got, 16)) nvc_bad(3, 501, &got, &o, &ix, &t0);
+    c->v[rd] = got;
+}
+static __attribute__((noinline)) void nvk_bits(V128 *d, const V128 *pn, const V128 *pm, int op, int q) {
+    V128 a = *pn, b = *pm, o, got;
+    rt_nchk[0]++; rt_nchk[6]++;
+    for (int i = 0; i < 2; i++) {
+        uint64_t x = a.d[i], y = b.d[i];
+        o.d[i] = i && !q ? 0 : op == 0 ? x & y : op == 1 ? x ^ y : op == 2 ? x & ~y : op == 3 ? x | y : x | ~y;
+    }
+    nv_bits(&got, &a, &b, op, q);
+    if (memcmp(&o, &got, 16)) nvc_bad(3, 502, &got, &o, &a, &b);
+    *d = got;
+}
+#define NVK_LDK(p, a, n, w0, w1, w2, w3) nvk_ldk(p, a, n, w0, w1, w2, w3)
+#define NVK_TBL(c, rd, rn, len, rm, q, tbx, e) nvk_tbl(c, rd, rn, len, rm, q, tbx, e)
+#define NVK_BITS(d, n, m, op, q) nvk_bits(d, n, m, op, q)
+#else
+#define NVK_LDK(p, a, n, w0, w1, w2, w3) nv_st(p, (nv_u4){ w0, w1, w2, w3 })
+#define NVK_TBL(c, rd, rn, len, rm, q, tbx, e) nv_st(&(c)->v[rd], e)
+#define NVK_BITS(d, n, m, op, q) nv_bits(d, n, m, op, q)
+#endif
 
 #ifdef RECOMP_NEON_CHECK
 /* (test DLL only, build_opt.py RECOMP_NEON_CHECK) every NEON op of the game checked while it runs: the result of the way in use against

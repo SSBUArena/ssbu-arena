@@ -78,6 +78,13 @@ __declspec(dllexport) int rt_cpu_fma, rt_cpu_ssse3;
 __declspec(dllexport) volatile long long rt_nchk[8];
 __declspec(dllexport) volatile uint32_t rt_nchk_log[24][20];
 __declspec(dllexport) volatile long long rt_nchk_op[512];
+/* (NEON generator 2, 16/11) neon_vec.h with RECOMP_NEON_EST: the 8-bit results of fpexact.h's recip_sqrt_estimate (a = 128..511) and
+ * recip_estimate (a = 256..511), filled here once from those same functions: FRSQRTE / FRECPE of normal floats as a table lookup */
+__declspec(dllexport) uint8_t rt_rsqrte_tab[384], rt_recpe_tab[256];
+static void rt_est_tables(void) {
+    for (uint32_t a = 128; a < 512; a++) rt_rsqrte_tab[a - 128] = (uint8_t)recip_sqrt_estimate(a);
+    for (uint32_t a = 256; a < 512; a++) rt_recpe_tab[a - 256] = (uint8_t)recip_estimate(a);
+}
 static void rt_cpu_detect(void) {
 #if defined(__x86_64__) || defined(_M_X64)
     unsigned a = 1, b, c, d;
@@ -93,6 +100,7 @@ static void rt_cpu_detect(void) {
 __declspec(dllexport) void game_bind(const GameHost *h, GameTables *t) {
     host = *h;
     rt_cpu_detect();
+    rt_est_tables();
     t->fn_table = fn_table;
     t->fn_table_count = &fn_table_count;
     t->dyn_syms = dyn_syms;
