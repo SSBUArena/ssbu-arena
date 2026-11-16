@@ -813,6 +813,7 @@ static void do_send(Ctx *c, int fd, uint64_t buf, uint64_t len, uint64_t addr, u
     }
     int bcast = dst == ALL_ONES || dst == VNET_BROADCAST;
     if (!err && !bcast && dst != LOOPBACK && dst != me && ((dst & VNET_MASK) != VNET_SUBNET || !me)) err = E_NETUNREACH;
+    if (!err && !bcast && me && dst != me && (dst & VNET_MASK) == VNET_SUBNET) { void online_peer_seen(uint32_t ip); online_peer_seen(dst); }   /* (online-mm A3: nnonline.c, SSBU_ONLINE_NEX=1 only) */
     if (LOGL(3) || (LOGL(1) && err)) { char a[16]; ip_str(dst, a); printf("[online] sendto(%d, %llu bytes, %s:%u) from port %u = %d\n", fd, (unsigned long long)len, a, dport, sport, err ? -err : 0); }
     if (err) { fail(c, err); return; }
     const void *data = PTR(buf);

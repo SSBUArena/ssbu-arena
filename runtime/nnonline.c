@@ -39,6 +39,16 @@ int online_nex_on(void) {
     if (v < 0) { const char *e = getenv("SSBU_ONLINE_NEX"); v = e && e[0] == '1'; }
     return v;
 }
+/* SSBU_ONLINE_NEX_LOBBY=1 (default 0: the test path of A1/A2, a game server on this PC at 127.0.0.1): the product path. The game
+ * server (arena-server rb_nex) runs beside the lobby: NEX is told the lobby's own virtual address 10.13.0.1:60000, its stream
+ * goes to the lobby server's real host (net_relay.c net_lobby_real) on TCP SSBU_ONLINE_NEX_TCP (default 60000; the secure server
+ * the next port), and Pia's station port note goes as a datagram to 10.13.0.1 through the lobby, which stamps the sender's
+ * virtual address on it and hands it to the game server (rb_lobby.c nex_relay). */
+static int online_nex_lobby(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("SSBU_ONLINE_NEX_LOBBY"); v = online_nex_on() && e && e[0] == '1'; }
+    return v;
+}
 
 void account_uid(uint64_t *lo, uint64_t *hi);              /* nnfs.c */
 void os_init_event(uint64_t key, int autoclear);           /* os_threads.c */
@@ -237,8 +247,19 @@ int online_ncs_answer(uint32_t dst, uint16_t dport, uint32_t me, uint16_t sport,
     if (InterlockedIncrement(&g_ncs_said) <= 12) { printf("online: Pia NAT check %u answered (no NAT: the virtual address)\n", kind); fflush(stdout); }
     return 1;
 }
+/* (online-mm A3 prep) the other player of the gathering: the station Pia sends to on the virtual network (never the lobby's
+ * 10.13.0.1 / the NAT check's 10.13.255.254). nnldn.c tells every unicast datagram's destination; 0 = none yet. For A3's
+ * rollback handshake with the peer of the game's own Online match (rb_net.c). */
+static volatile LONG g_online_peer;
+void online_peer_seen(uint32_t ip) {
+    if (!online_nex_on() || ip == NCS1_IP || ip == NCS2_IP || (uint32_t)g_online_peer == ip) return;
+    InterlockedExchange(&g_online_peer, (LONG)ip);
+    printf("online: Pia talks to the station 10.13.%u.%u (the other player of the gathering)\n", (ip >> 8) & 255, ip & 255); fflush(stdout);
+}
+uint32_t online_peer_vip(void) { return (uint32_t)g_online_peer; }
 void online_nex_hooks(void) {
     if (!online_nex_on()) return;
+    if (online_nex_lobby()) { g_nex_ip = 0x0A0D0001u; snprintf(g_nex_host, sizeof g_nex_host, "10.13.0.1"); }    /* (the lobby's own address) */
     const char *e = getenv("SSBU_ONLINE_NEX_SERVER");
     if (e && *e) {
         unsigned a, b, d, f, port = 60000; char end = 0;
@@ -280,14 +301,33 @@ intptr_t online_stream_open(int fd, uint32_t ip, uint16_t port, OnlineDeliver de
     static int wsa; if (!wsa) { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); wsa = 1; }
     uint32_t rip = ip; uint16_t rport = port;
     const char *e = getenv("SSBU_ONLINE_NEX_REAL");
-    if (e && *e) { unsigned a, b, d, f, pp; if (sscanf(e, "%u.%u.%u.%u:%u", &a, &b, &d, &f, &pp) == 5) { rip = a << 24 | b << 16 | d << 8 | f; rport = (uint16_t)(pp + (port - g_nex_port)); } }
+    int via_lobby = 0;
+    if (online_nex_lobby()) {                                    /* (product path) the game server beside the lobby */
+        int net_lobby_real(uint32_t *ip, uint16_t *port);        /* net_relay.c */
+        uint16_t lport; unsigned base = 60000;
+        const char *t = getenv("SSBU_ONLINE_NEX_TCP"); if (t && atoi(t) > 0 && atoi(t) < 65535) base = (unsigned)atoi(t);
+        if (!net_lobby_real(&rip, &lport)) { printf("online: NEX stream (game fd %d): the lobby is not known yet\n", fd); fflush(stdout); return -1; }
+        rport = (uint16_t)(base + (port - g_nex_port)); via_lobby = 1;
+    } else if (e && *e) { unsigned a, b, d, f, pp; if (sscanf(e, "%u.%u.%u.%u:%u", &a, &b, &d, &f, &pp) == 5) { rip = a << 24 | b << 16 | d << 8 | f; rport = (uint16_t)(pp + (port - g_nex_port)); } }
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return -1;
     struct sockaddr_in sa; memset(&sa, 0, sizeof sa);
     sa.sin_family = AF_INET; sa.sin_port = htons(rport); sa.sin_addr.s_addr = htonl(rip);
-    int r = connect(s, (struct sockaddr *)&sa, sizeof sa);       /* (blocking: a test server on this PC answers at once; the lobby
-                                                                   * will carry the product's, with its own time limit) */
-    printf("online: NEX stream (game fd %d) to %u.%u.%u.%u:%u: %s\n", fd, rip >> 24, (rip >> 16) & 255, (rip >> 8) & 255, rip & 255, rport, r == 0 ? "connected" : "FAILED");
+    int r;
+    if (via_lobby) {                                             /* (a server far away: at most 5 s, then NEX's own error) */
+        u_long nb = 1; ioctlsocket(s, FIONBIO, &nb);
+        r = connect(s, (struct sockaddr *)&sa, sizeof sa);
+        if (r != 0 && WSAGetLastError() == WSAEWOULDBLOCK) {
+            fd_set w, x; FD_ZERO(&w); FD_ZERO(&x); FD_SET(s, &w); FD_SET(s, &x); struct timeval tv = {5, 0};
+            int err = 0, el = sizeof err;
+            r = select(0, NULL, &w, &x, &tv) == 1 && FD_ISSET(s, &w) && !getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&err, &el) && !err ? 0 : -1;
+        }
+        nb = 0; ioctlsocket(s, FIONBIO, &nb);
+        printf("online: NEX stream (game fd %d) to the lobby's host, TCP %u: %s\n", fd, rport, r == 0 ? "connected" : "FAILED");
+    } else {
+        r = connect(s, (struct sockaddr *)&sa, sizeof sa);       /* (blocking: a test server on this PC answers at once) */
+        printf("online: NEX stream (game fd %d) to %u.%u.%u.%u:%u: %s\n", fd, rip >> 24, (rip >> 16) & 255, (rip >> 8) & 255, rip & 255, rport, r == 0 ? "connected" : "FAILED");
+    }
     fflush(stdout);
     if (r != 0) { closesocket(s); return -1; }
 #ifdef TCP_NODELAY
@@ -316,6 +356,14 @@ static void pia_port_note(uint32_t me, uint16_t port) {
     static SOCKET s = INVALID_SOCKET; static uint16_t last_port; static uint64_t last_ms; static int said;
     uint64_t now = GetTickCount64();
     if (!me || (port == last_port && now - last_ms < 5000)) return;
+    if (online_nex_lobby()) {                                    /* (product path) through the lobby, which stamps who sent it */
+        void net_send(uint32_t src, uint16_t sport, uint32_t dst, uint16_t dport, const void *data, uint32_t len);   /* net_relay.c */
+        uint8_t m[12] = {'R', 'B', 'P', 'P', (uint8_t)(me >> 24), (uint8_t)(me >> 16), (uint8_t)(me >> 8), (uint8_t)me, (uint8_t)(port >> 8), (uint8_t)port, 0, 0};
+        net_send(me, port, g_nex_ip, g_nex_port, m, sizeof m);
+        if (port != last_port || said < 2) { printf("online: Pia's station port %u told to the game server (through the lobby)\n", port); fflush(stdout); said++; }
+        last_port = port; last_ms = now;
+        return;
+    }
     static int wsa; if (!wsa) { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); wsa = 1; }
     if (s == INVALID_SOCKET) s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) return;

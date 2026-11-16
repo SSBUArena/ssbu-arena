@@ -957,6 +957,13 @@ static void match_player_hook(Ctx *c, void *user) {
     {   uint64_t ra = c->x[30];
         g_tc_native = g_bacss == 1 && ra >= GA(0x7102311f00ULL) && ra <= GA(0x7102312620ULL) && idx >= 0 && idx < 2;
         g_tc_k = g_tc_native ? ((int)c->x[2] - idx) / 2 : 0; }
+    {   int online_nex_on(void);                         /* (online-mm A3 prep, SSBU_ONLINE_NEX=1 only) what the game's own Online match builds, for the log */
+        if (online_nex_on() && idx >= 0 && idx < 2) {
+            if (idx == 0) printf("[online] fight set-up: melee mode (match block + 0) %u, + 1 %u, sequence %08x, builder return %llx\n", rd8(MELEE_INFO), rd8(MELEE_INFO + 1), rd32(GA(0x71053040f0ULL)), (unsigned long long)c->x[30]);
+            printf("[online] fight set-up: player %d: ui_chara %016llx colour %u type %u controller slot %d profile %d local %u network %u number %u\n", idx + 1, (unsigned long long)rd64(st + 0x88), rd8(st + 0x90), rd32(st + 0x78),
+                   (int)rd32(st + 0x210), (int)rd32(st + 0x214), rd8(st + 0x450), rd8(st + 0x451), rd8(st + 0xa4));
+            fflush(stdout);
+        } }
     if (g_hs_wanted && g_tc_native && g_tc_k > 0) {     /* (Battle Arena, game's squad) fighters 2.. of a side: the room normalization only */
         if (g_hs_ok && g_hs_lwr) { wr8(st + 0x450, 1); wr8(st + 0x451, 0); wr32(st + 0x210, (uint32_t)idx); wr32(st + 0x214, 0xffffffffu);
             wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, g_tc_lay[idx][k]); }
