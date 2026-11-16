@@ -809,11 +809,19 @@ static void fib_reap_out(void) {                          /* main thread, every 
     }
     if (!g_fo_n || !fo_out()) return;
     static uint64_t cur[513]; int nc = 0; Ctx *tc; const char *nm; HANDLE h;
+    /* every guest thread's TEB FiberData (the fiber it runs now). The threads are NOT held here: one can end at any moment (a room's
+     * waiting-stage fight) and its TEB is freed (the release smoke test crashed reading one), so: ended threads are skipped (alive 0:
+     * the "ended?" question, no cached TEB taken blindly) and the TEB is read with ReadProcessMemory (no fault if it went away just
+     * now); a thread still running whose TEB cannot be read stops this frame's deleting (none deleted: the next frame end). */
     for (int i = 0; nc < 512 && guest_thread_info(i, &tc, &nm, &h); i++) {
         if (!h) continue;
-        uint8_t *t = live_teb_addr_k(h, guest_thread_tid(i, h), 1);
-        if (t) cur[nc++] = *(volatile uint64_t *)(t + 0x20);      /* TEB FiberData: the fiber that thread runs now */
+        uint8_t *t = live_teb_addr_k(h, guest_thread_tid(i, h), 0);
+        if (!t) continue;                                 /* ended */
+        uint64_t fd = 0; SIZE_T got = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), t + 0x20, &fd, sizeof fd, &got) && got == sizeof fd) cur[nc++] = fd;
+        else if (WaitForSingleObject(h, 0) != WAIT_OBJECT_0) { g_fo_waits++; return; }
     }
+    if (nc >= 512) return;                                /* (more threads than the list holds: not sure, nothing deleted) */
     cur[nc++] = (uint64_t)(uintptr_t)GetCurrentFiber();
     static void *del[512]; int nd = 0;
     AcquireSRWLockExclusive(&g_fo_lock);
