@@ -76,8 +76,10 @@ int sky_site_midhook(Ctx *c, uint64_t addr) { return host.site_midhook(c, addr);
 __declspec(dllexport) int rt_cpu_fma, rt_cpu_ssse3;
 /* (NEON generator, test DLL with RECOMP_NEON_CHECK) neon_vec.h's check counters and samples; read by the exe (gamedll.c NEONCHK) */
 __declspec(dllexport) volatile long long rt_nchk[8];
-__declspec(dllexport) volatile uint32_t rt_nchk_log[16][20];
+__declspec(dllexport) volatile uint32_t rt_nchk_log[24][20];
+__declspec(dllexport) volatile long long rt_nchk_op[512];
 static void rt_cpu_detect(void) {
+#if defined(__x86_64__) || defined(_M_X64)
     unsigned a = 1, b, c, d;
     __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d) : "c"(0));
     rt_cpu_ssse3 = (c >> 9) & 1;
@@ -86,6 +88,7 @@ static void rt_cpu_detect(void) {
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
         rt_cpu_fma = (lo & 6) == 6;                                      /* XMM and YMM state enabled by the OS */
     }
+#endif
 }
 __declspec(dllexport) void game_bind(const GameHost *h, GameTables *t) {
     host = *h;

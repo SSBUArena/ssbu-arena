@@ -89,18 +89,19 @@ static void *mo_sdk_longjmp_target(Ctx *c) { if (MO_REC()) mo_esc_note(12, -1, c
  * the CPU has them (game_shim.c rt_cpu_detect), the generic x86-64 ways otherwise; the same results bit for bit. SSBU_NEON_FMA=0 /
  * SSBU_NEON_SSSE3=0 (tests): the generic ways on this CPU too. A test DLL with RECOMP_NEON_CHECK counts its checks (rt_nchk): a
  * "NEONCHK" line on stderr every 10 s while they grow, with the first samples of any difference. An older DLL has none of these. */
-static volatile long long *g_nchk; static volatile uint32_t (*g_nchk_log)[20];
+static volatile long long *g_nchk, *g_nchk_op; static volatile uint32_t (*g_nchk_log)[20];
 static DWORD WINAPI neon_chk_report(LPVOID p) {
-    (void)p; long long last = 0; int shown = 0;
+    (void)p; long long last = 0; unsigned shown = 0;
     for (;;) {
         Sleep(10000);
         long long n = g_nchk[0];
         if (n == last) continue;
         last = n;
         fprintf(stderr, "NEONCHK ops %lld | two ways differ %lld | differ from the old helper: with NaN / inf %lld, other %lld\n", n, g_nchk[1], g_nchk[2], g_nchk[3]);
-        for (int k = 0; k < 16; k++) {
+        if (g_nchk_op) { fprintf(stderr, "NEONCHK NaN/inf differences per op:"); for (int k = 0; k < 512; k++) if (g_nchk_op[k]) fprintf(stderr, " %d=%lld", k, g_nchk_op[k]); fputc(10, stderr); }
+        for (int k = 0; k < (g_nchk_op ? 24 : 16); k++) {
             if (g_nchk_log[k][0] == 0 || (shown >> k) & 1) continue;
-            volatile uint32_t *l = g_nchk_log[k]; shown |= 1 << k;
+            volatile uint32_t *l = g_nchk_log[k]; shown |= 1u << k;
             fprintf(stderr, "NEONCHK sample kind %u op %u: got %08x %08x %08x %08x other %08x %08x %08x %08x in %08x %08x %08x %08x / %08x %08x %08x %08x\n",
                     l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7], l[8], l[9], l[10], l[11], l[12], l[13], l[14], l[15], l[16], l[17]);
         }
@@ -115,7 +116,7 @@ static void neon_bind(HMODULE m) {
     if (e1 && e1[0] == '0') *fma = 0;
     if (e2 && e2[0] == '0') *ss = 0;
     fprintf(stderr, "[neon] game DLL NEON: FMA3 %s, SSSE3 %s (used only by a DLL built with RECOMP_NEON_VEC)\n", *fma ? "on" : "off", *ss ? "on" : "off");
-    g_nchk = (volatile long long *)(void *)GetProcAddress(m, "rt_nchk"); g_nchk_log = (volatile uint32_t (*)[20])(void *)GetProcAddress(m, "rt_nchk_log");
+    g_nchk = (volatile long long *)(void *)GetProcAddress(m, "rt_nchk"); g_nchk_op = (volatile long long *)(void *)GetProcAddress(m, "rt_nchk_op"); g_nchk_log = (volatile uint32_t (*)[20])(void *)GetProcAddress(m, "rt_nchk_log");
     if (g_nchk && g_nchk_log) CloseHandle(CreateThread(NULL, 0, neon_chk_report, NULL, 0, NULL));
 }
 #endif

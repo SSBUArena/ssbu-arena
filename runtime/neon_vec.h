@@ -343,22 +343,23 @@ static inline void nv_perm(V128 *d, const V128 *pn, const V128 *pm, int opcode, 
  * the other way (FMA3 + SSSE3 against the generic one, when the CPU has them) and against neon.h's old helper on the same inputs.
  * rt_nchk (game_shim.c, read by the exe: gamedll.c "NEONCHK" lines): [0] ops checked, [1] the two ways differ (must stay 0),
  * [2] differ from the old helper with a NaN or an infinity among the inputs or in the old result (the Arm fixes above), [3] differ
- * from the old helper otherwise (must stay 0); rt_nchk_log: the first 8 of [1] and [3]
+ * from the old helper otherwise (must stay 0); rt_nchk_op: [2] per op (f3v op, 100 + f3e op, 200 + f1v op); rt_nchk_log: the first 8 of [1], [3], [2]
  * (kind, op, 4 words of the result, of the other result, of the first input, of the second). */
 extern __declspec(dllexport) volatile long long rt_nchk[8];
-extern __declspec(dllexport) volatile uint32_t rt_nchk_log[16][20];
+extern __declspec(dllexport) volatile uint32_t rt_nchk_log[24][20];
+extern __declspec(dllexport) volatile long long rt_nchk_op[512];
 static int nvc_special(const V128 *v) { for (int i = 0; i < 4; i++) if ((v->w[i] & 0x7f800000u) == 0x7f800000u) return 1; return 0; }
 static __attribute__((noinline)) void nvc_bad(int kind, int op, const V128 *got, const V128 *other, const V128 *x, const V128 *y) {
     long long k = __sync_fetch_and_add(&rt_nchk[kind], 1);
     if (k < 8) {
-        volatile uint32_t *l = rt_nchk_log[(kind == 1 ? 0 : 8) + k];
+        volatile uint32_t *l = rt_nchk_log[(kind == 1 ? 0 : kind == 3 ? 8 : 16) + k];
         l[0] = (uint32_t)kind; l[1] = (uint32_t)op;
         for (int i = 0; i < 4; i++) { l[2 + i] = got->w[i]; l[6 + i] = other->w[i]; l[10 + i] = x->w[i]; l[14 + i] = y->w[i]; }
     }
 }
 static __attribute__((noinline)) void nvc_old(int op, const V128 *got, const V128 *old, const V128 *x, const V128 *y, const V128 *z, int fp) {
     if (!memcmp(got, old, 16)) return;
-    if (fp && (nvc_special(x) || nvc_special(y) || nvc_special(z) || nvc_special(old))) { __sync_fetch_and_add(&rt_nchk[2], 1); return; }
+    if (fp && (nvc_special(x) || nvc_special(y) || nvc_special(z) || nvc_special(old))) { __sync_fetch_and_add(&rt_nchk_op[op & 511], 1); nvc_bad(2, op, got, old, x, y); return; }
     nvc_bad(3, op, got, old, x, y);
 }
 static inline void nvc_f3v(V128 *d, const V128 *pn, const V128 *pm, int op, int dbl, int n) {
