@@ -28,6 +28,9 @@
  * the slow fused cases never go to the C library (whose zero signs differed between CPUs with and without FMA3). */
 #ifndef RECOMP_NEON_VEC_H
 #define RECOMP_NEON_VEC_H
+#ifndef __MM_MALLOC_H
+#define __MM_MALLOC_H      /* (0.2.50) as neon_fast.h: mm_malloc.h needs <stdlib.h>, which a player's build does not have */
+#endif
 #include <emmintrin.h>
 
 typedef float nv_f4 __attribute__((vector_size(16)));
