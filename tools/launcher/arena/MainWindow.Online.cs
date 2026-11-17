@@ -16,6 +16,49 @@ namespace Arena
     {
         DispatcherTimer onlineTimer;
 
+        // ---- (server region) Settings > Online > SERVER REGION: Auto (the closest lobby by measured ping), or one region (Regions.cs)
+        /// <summary>the list and the texts under it, from Regions (no event: the caller's "loading" guard is set here)</summary>
+        void FillRegions()
+        {
+            bool was = loading; loading = true;
+            try
+            {
+                string byHand = Regions.Override;
+                ServerBox.Items.Clear();
+                if (byHand != null) ServerBox.Items.Add(byHand);
+                else
+                {
+                    ServerBox.Items.Add(Regions.Choice < 0 ? Regions.Text : "Auto (closest server)");
+                    foreach (var r in Regions.Table) ServerBox.Items.Add(r.Name);
+                }
+                bool env = Environment.GetEnvironmentVariable("SSBU_ONLINE_REGION") is string v && v.Trim() != "";
+                ServerBox.SelectedIndex = byHand != null ? 0 : Regions.Choice + 1;
+                ServerBox.IsEnabled = byHand == null && !env;
+                string pings = Regions.MsText();
+                RegionHelp.Text = (byHand != null ? "This server is set by hand (online_server / SSBU_ONLINE_SERVER): no region is chosen. "
+                                   : "Auto measures the ping to each server and uses the closest. " + (pings != "" ? "Now: " + pings + ". " : ""))
+                                  + "Players on different servers do not see each other: rooms and matchmaking are per server. To play with a friend, both pick the same region.";
+            }
+            finally { loading = was; }
+        }
+
+        /// <summary>Auto: the lobbies measured in the background (at the start, and when Auto is chosen); the pick is kept for the
+        /// next start (graphics.ini online_region_last) and used by the next PLAY</summary>
+        void MeasureRegions()
+        {
+            Regions.MeasureAsync(changed =>
+            {
+                if (changed) Core.SaveRegionLast();
+                FillRegions();
+            });
+        }
+
+        void RegionChanged()
+        {
+            FillRegions();
+            MeasureRegions();
+        }
+
         void StartOnlineCount()
         {
             ReadOnlineCount();

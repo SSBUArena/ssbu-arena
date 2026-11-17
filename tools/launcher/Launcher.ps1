@@ -38,7 +38,86 @@ $O = Read-Ini $OnlineIni
 $DefaultSaves = if ($Portable) { Join-Path (Split-Path $Build -Parent) 'saves' } else { Join-Path $Build 'saves' }
 $Saves = if ($L['saves']) { $L['saves'] } else { $DefaultSaves }
 $HasOnline = (Test-Path $Exe) -and ([System.IO.File]::ReadAllText($Exe, [System.Text.Encoding]::ASCII).Contains('SSBU_ONLINE'))
-$DefaultServer = 'eu-germany.ssbuarena.com:39010'                    # the SSBU Arena lobby (relay only)
+# ---- SSBU Arena's lobby servers by region (the PowerShell copy of the table; the game has the same one in
+# runtime/net_region.h and the Arena launcher in arena/Regions.cs: tools/net/test_regions.py checks that the three match).
+# Every lobby is ours, relay only, with the same accounts: players on different lobbies do not see each other.
+# graphics.ini (read by the launchers and by the game; SSBU_ONLINE_REGION wins): online_region = auto | eu | na-east;
+# online_region_last = Auto's last measured pick. A server written by hand (the box, SSBU_ONLINE_SERVER) wins: nothing is
+# measured. SSBU_ONLINE_REGION_PROBE=0: nothing is measured, Auto = the first region. Only names here, never addresses.
+$RegionPort = 39010
+$NA_EAST_HOST = 'na-east.ssbuarena.com'
+# REGION TABLE (id, name, host): the first one is the default and the fallback
+$Regions = @(
+    @{ id = 'eu'; name = 'Europe'; host = 'eu-germany.ssbuarena.com' },
+    @{ id = 'na-east'; name = 'NA East'; host = $NA_EAST_HOST }
+)
+$RegionKeepMs = 10; $RegionSamples = 3; $RegionGapMs = 60; $RegionTimeoutMs = 700
+function Get-RegionById($id) { for ($i = 0; $i -lt $Regions.Count; $i++) { if ($Regions[$i].id -eq "$id".Trim()) { return $i } }; return -1 }
+function Get-RegionByHost($server) { $h = "$server".Trim() -replace ':\d+$', ''; for ($i = 0; $i -lt $Regions.Count; $i++) { if ($Regions[$i].host -eq $h) { return $i } }; return -1 }
+# the pick from one measure ($ms[i] = lobby i's median round trip, -1 = no answer): the lowest wins; the last pick stays while it
+# answers and no lobby is more than $RegionKeepMs closer; nobody answered: the last pick, else the first region
+function Select-Region($ms, [int]$last) {
+    $best = -1
+    for ($i = 0; $i -lt $Regions.Count; $i++) { if ($ms[$i] -ge 0 -and ($best -lt 0 -or $ms[$i] -lt $ms[$best])) { $best = $i } }
+    if ($best -lt 0) { if ($last -ge 0 -and $last -lt $Regions.Count) { return $last }; return 0 }
+    if ($last -ge 0 -and $last -lt $Regions.Count -and $ms[$last] -ge 0 -and $ms[$last] -le $ms[$best] + $RegionKeepMs) { return $last }
+    return $best
+}
+# each lobby's median round trip in ms (-1 = no answer). The lobby answers a PING only to a game that has joined, so each probe
+# is a JOIN without a pass (runtime/net_relay.c send_join), refused at once with a REJECT carrying the probe's nonce
+function Measure-Regions {
+    $n = $Regions.Count; $ms = @(-1) * $n; $socks = @($null) * $n; $sent = @(); $rtt = @(); $left = 0; $next = 0
+    for ($i = 0; $i -lt $n; $i++) {
+        $sent += , @{}; $rtt += , (New-Object System.Collections.ArrayList)
+        try {
+            $ip = [System.Net.Dns]::GetHostAddresses($Regions[$i].host) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | Select-Object -First 1
+            if ($ip) {
+                $s = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Dgram, [System.Net.Sockets.ProtocolType]::Udp)
+                $s.Connect($ip, $RegionPort); $socks[$i] = $s; $left += $RegionSamples
+            }
+        } catch { $socks[$i] = $null }
+    }
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $clock = [System.Diagnostics.Stopwatch]::StartNew(); $buf = New-Object byte[] 256
+    while ($left -gt 0 -and $clock.Elapsed.TotalMilliseconds -le $RegionTimeoutMs) {
+        if ($next -lt $RegionSamples -and $clock.Elapsed.TotalMilliseconds -ge $next * $RegionGapMs) {
+            for ($i = 0; $i -lt $n; $i++) {
+                if (-not $socks[$i]) { continue }
+                # 'S' 'U' 1 JOIN | nonce u64 | code[32] | name[32] | build[40] | lan ip, port, direct | "CV" level u16
+                $p = New-Object byte[] 127; $p[0] = 0x53; $p[1] = 0x55; $p[2] = 1; $p[3] = 1
+                $nb = New-Object byte[] 8; $rng.GetBytes($nb); [Array]::Copy($nb, 0, $p, 4, 8)
+                $tag = [System.Text.Encoding]::ASCII.GetBytes('region-probe'); [Array]::Copy($tag, 0, $p, 12, $tag.Length); [Array]::Copy($tag, 0, $p, 44, $tag.Length)
+                $bld = [System.Text.Encoding]::ASCII.GetBytes('ssbu-recomp-ldn1'); [Array]::Copy($bld, 0, $p, 76, $bld.Length)
+                $p[123] = 0x43; $p[124] = 0x56; $p[125] = 0; $p[126] = 3
+                $sent[$i][[BitConverter]::ToUInt64($nb, 0)] = $clock.Elapsed.TotalMilliseconds
+                try { [void]$socks[$i].Send($p) } catch { }
+            }
+            $next++
+        }
+        $read = New-Object System.Collections.ArrayList; foreach ($s in $socks) { if ($s) { [void]$read.Add($s) } }
+        if ($read.Count -eq 0) { break }
+        [System.Net.Sockets.Socket]::Select($read, $null, $null, 5000)
+        foreach ($s in @($read)) {
+            $i = [Array]::IndexOf($socks, $s)
+            try { $got = $s.Receive($buf) } catch { continue }
+            $t = $clock.Elapsed.TotalMilliseconds
+            if ($got -lt 12 -or $buf[0] -ne 0x53 -or $buf[1] -ne 0x55 -or $buf[2] -ne 1 -or ($buf[3] -ne 3 -and $buf[3] -ne 2)) { continue }      # REJECT (3) or WELCOME (2)
+            $k = [BitConverter]::ToUInt64($buf, 4)
+            if (-not $sent[$i].ContainsKey($k)) { continue }
+            [void]$rtt[$i].Add($t - $sent[$i][$k]); $sent[$i].Remove($k); $left--
+            if ($buf[3] -eq 2 -and $got -ge 24) {      # a lobby without accounts took the probe in: it leaves at once (LEAVE = 7, its cookie)
+                $q = New-Object byte[] 12; $q[0] = 0x53; $q[1] = 0x55; $q[2] = 1; $q[3] = 7; [Array]::Copy($buf, 16, $q, 4, 8)
+                try { [void]$s.Send($q) } catch { }
+            }
+        }
+    }
+    for ($i = 0; $i -lt $n; $i++) {
+        if ($socks[$i]) { $socks[$i].Close() }
+        if ($rtt[$i].Count -eq 0) { continue }
+        $rtt[$i].Sort(); $ms[$i] = [int][Math]::Floor($rtt[$i][[int][Math]::Floor(($rtt[$i].Count - 1) / 2)] + 0.5)
+    }
+    return , $ms
+}
 # the rollback build: the game DLL and script modules with dirty-page marks (setup.py --rollback of upstream's recipe);
 # without it the normal build runs rollback too (upstream's learned-set save)
 $RbExe = Join-Path $Work 'ssbu_native_rb.exe'
@@ -95,9 +174,37 @@ $name.Add_TextChanged({ Update-Uid }); Update-Uid
 $go = Add-Group 'Online (tramite il server)' 100 150
 $onlineOn = New-Object System.Windows.Forms.CheckBox; $onlineOn.Text = 'Attiva'; $onlineOn.Location = New-Object System.Drawing.Point(12, 22)
 $onlineOn.Checked = $(if ($L['online']) { $L['online'] -eq 'on' } else { [bool]($O['server'] -and $O['room']) }); $go.Controls.Add($onlineOn)
-Add-Label $go 'Server (ip:porta)' 12 52 | Out-Null
-$server = Add-Box $go ($(if ($L['server']) { $L['server'] } else { $DefaultServer })) 130 49 250
-$tip.SetToolTip($server, 'Il server online (predefinito: ' + $DefaultServer + '). Tutto il traffico passa da li'': nessun giocatore vede l''indirizzo degli altri.')
+Add-Label $go 'Regione del server' 12 52 | Out-Null
+$region = New-Object System.Windows.Forms.ComboBox; $region.Location = New-Object System.Drawing.Point(130, 49); $region.Size = New-Object System.Drawing.Size(120, 22)
+$region.DropDownStyle = 'DropDownList'; [void]$region.Items.Add('Auto'); foreach ($r in $Regions) { [void]$region.Items.Add($r.name) }; $go.Controls.Add($region)
+$region.SelectedIndex = (Get-RegionById (Read-Ini (Join-Path $Cfg 'graphics.ini'))['online_region']) + 1
+$tip.SetToolTip($region, 'Auto: misura il ping verso ogni server e usa il piu'' vicino. Chi gioca su server diversi non si vede (stanze e matchmaking sono per server): per giocare con un amico scegliete la stessa regione.')
+Add-Label $go 'oppure server' 262 52 80 | Out-Null
+# (a server of the table saved by an older launcher is not a server written by hand: the region decides)
+$server = Add-Box $go ($(if ($L['server'] -and (Get-RegionByHost $L['server']) -lt 0) { $L['server'] } else { '' })) 345 49 165
+$tip.SetToolTip($server, 'Vuoto: il server della regione. Un server scritto a mano (indirizzo:porta) vince sulla regione. Tutto il traffico passa dal server: nessun giocatore vede l''indirizzo degli altri.')
+# the lobby the game is started with: the server written by hand, the chosen region, or Auto's last measured pick (none
+# yet: measured now, at most 0.7 s; otherwise measured again after the game has started, for the next time)
+function Get-OnlineServer {
+    $byHand = $(if ($env:SSBU_ONLINE_SERVER) { $env:SSBU_ONLINE_SERVER.Trim() } else { $server.Text.Trim() })
+    if ($byHand) { return @{ server = $byHand; auto = $false } }
+    $c = $(if ($env:SSBU_ONLINE_REGION) { Get-RegionById $env:SSBU_ONLINE_REGION } else { $region.SelectedIndex - 1 })
+    if ($c -ge 0) { return @{ server = $Regions[$c].host + ':' + $RegionPort; auto = $false } }
+    $c = 0
+    if ($env:SSBU_ONLINE_REGION_PROBE -notin @('0', 'off', 'no', 'false')) {
+        $last = Get-RegionById (Read-Ini $GfxIni)['online_region_last']
+        if ($last -lt 0) { $last = Update-RegionLast -1 } else { $script:regionAgain = $true }
+        $c = [Math]::Max(0, $last)
+    }
+    return @{ server = $Regions[$c].host + ':' + $RegionPort; auto = $true }
+}
+function Update-RegionLast([int]$last) {
+    $ms = Measure-Regions; $pick = Select-Region $ms $last
+    $txt = @(); for ($i = 0; $i -lt $Regions.Count; $i++) { $txt += $Regions[$i].name + $(if ($ms[$i] -ge 0) { ' ' + $ms[$i] + ' ms' } else { ' nessuna risposta' }) }
+    Say ('Server: ' + ($txt -join ', ') + '. Auto: ' + $Regions[$pick].name)
+    if (@($ms | Where-Object { $_ -ge 0 }).Count -gt 0 -and $pick -ne $last) { Set-IniValues $GfxIni $null @{ online_region_last = $Regions[$pick].id } }
+    return $pick
+}
 Add-Label $go 'Codice amici' 12 82 | Out-Null
 $room = Add-Box $go ($(if ($L['code']) { $L['code'] } elseif ($O['room']) { $O['room'] } else { '' })) 130 79 250
 $tip.SetToolTip($room, 'Chi usa lo stesso codice si trova: stesse stanze nel Wireless locale e avversari della partita rollback. Vuoto: pubblico (chiunque).')
@@ -109,7 +216,7 @@ $pingOn.Size = New-Object System.Drawing.Size(200, 22); $pingOn.Checked = ($L['p
 $tip.SetToolTip($pingOn, 'In ogni partita online: accanto a ogni giocatore il suo ping verso il server (verde fino a 60 ms, giallo fino a 120, rosso oltre).')
 $onlineHelp = Add-Label $go '' 12 128 500
 function Update-Online {
-    $e = $onlineOn.Checked -and $HasOnline; $server.Enabled = $e; $room.Enabled = $e; $rbOn.Enabled = $e; $pingOn.Enabled = $e
+    $e = $onlineOn.Checked -and $HasOnline; $server.Enabled = $e; $region.Enabled = $e; $room.Enabled = $e; $rbOn.Enabled = $e; $pingOn.Enabled = $e
     $onlineHelp.Text = $(if (-not $e) { 'Online spento: si gioca in locale.' } elseif ($rbOn.Checked) { 'Rollback: Smash > Versus. Stanze: Wireless locale (netcode del gioco).' } else { 'Stanze del Wireless locale tramite il server (netcode del gioco).' })
 }
 if (-not $HasOnline) { $onlineOn.Checked = $false; $onlineOn.Enabled = $false }
@@ -302,7 +409,8 @@ function Save-Settings {
         ('online = ' + $(if ($onlineOn.Checked) { 'on' } else { 'off' })), ('server = ' + $server.Text.Trim()), ('code = ' + $room.Text.Trim()),
         ('rollback = ' + $(if ($rbOn.Checked) { 'on' } else { 'off' })), ('ping = ' + $(if ($pingOn.Checked) { 'on' } else { 'off' })))
     $gfx = @{ aspect = @('keep', 'stretch')[[Math]::Max(0, $aspect.SelectedIndex)]; window = @('windowed', 'borderless', 'fullscreen')[[Math]::Max(0, $winMode.SelectedIndex)]
-             latency = 'normal' }      # input latency: always normal (the option is gone)
+             latency = 'normal'      # input latency: always normal (the option is gone)
+             online_region = $(if ($region.SelectedIndex -ge 1) { $Regions[$region.SelectedIndex - 1].id } else { 'auto' }) }
     if ($winSize.Text.Trim() -match '^(\d{3,5})\s*[xX*]\s*(\d{3,5})$') { $gfx['width'] = $Matches[1]; $gfx['height'] = $Matches[2] }
     Set-IniValues $GfxIni $null $gfx
     if ($p1.SelectedIndex -ge 0 -and $p2.SelectedIndex -ge 0) {
@@ -338,7 +446,7 @@ function Test-All([switch]$Quiet) {
     if ($onlineOn.Checked) {
         if (-not $name.Text.Trim()) { Say '[NO] online: scrivi un nome'; $bad++ }
         elseif ([System.Text.Encoding]::UTF8.GetByteCount($name.Text.Trim()) -gt 32) { Say '[NO] nome troppo lungo (max 32 byte)'; $bad++ }
-        if ($server.Text.Trim() -notmatch '^[^\s:]+:\d+$') { Say '[NO] online: server nel formato ip:porta'; $bad++ }
+        if ($server.Text.Trim() -and $server.Text.Trim() -notmatch '^[^\s:]+:\d+$') { Say '[NO] online: server nel formato ip:porta'; $bad++ }
         if ($room.Text.Trim() -match '\s') { Say '[NO] online: il codice amici non puo'' avere spazi'; $bad++ }
         elseif ([System.Text.Encoding]::UTF8.GetByteCount($room.Text.Trim()) -gt 31) { Say '[NO] online: codice amici troppo lungo (max 31)'; $bad++ }
         if ($rbOn.Checked) { Say $(if ($RbPair) { '[OK] rollback: build rollback' } else { '[--] rollback: manca la build rollback, si gioca col netcode del gioco' }) }
@@ -373,9 +481,11 @@ $play = Add-Button $f 'GIOCA' 392 746 140 {
     if ($cacheMark -eq 0) { Say 'Primo avvio: prima di giocare il gioco prepara gli shader per questa scheda video (qualche minuto).' }
     # online through the lobby server (runtime/net_relay.c), relay only; rollback (runtime/rb_net.c) in Smash > Versus
     $runExe = $Exe
-    foreach ($v in @('SSBU_ONLINE', 'SSBU_ONLINE_CODE', 'SSBU_ONLINE_NAME', 'SSBU_ONLINE_DIRECT', 'SSBU_NICKNAME', 'SSBU_RB_NET', 'SSBU_R1_GAMEDLL', 'SSBU_NRO_BIN', 'SSBU_NET_PING')) { Remove-Item "env:$v" -ErrorAction SilentlyContinue }
+    foreach ($v in @('SSBU_ONLINE', 'SSBU_ONLINE_REGION_AUTO', 'SSBU_ONLINE_CODE', 'SSBU_ONLINE_NAME', 'SSBU_ONLINE_DIRECT', 'SSBU_NICKNAME', 'SSBU_RB_NET', 'SSBU_R1_GAMEDLL', 'SSBU_NRO_BIN', 'SSBU_NET_PING')) { Remove-Item "env:$v" -ErrorAction SilentlyContinue }
     if ($onlineOn.Checked -and $HasOnline) {
-        $env:SSBU_ONLINE = $server.Text.Trim(); $env:SSBU_ONLINE_NAME = $name.Text.Trim(); $env:SSBU_NICKNAME = $name.Text.Trim()
+        $script:regionAgain = $false; $os = Get-OnlineServer
+        $env:SSBU_ONLINE_REGION_AUTO = $(if ($os.auto) { '1' } else { '0' })      # the in-game settings then say "Auto (Europe)"
+        $env:SSBU_ONLINE = $os.server; $env:SSBU_ONLINE_NAME = $name.Text.Trim(); $env:SSBU_NICKNAME = $name.Text.Trim()
         $env:SSBU_ONLINE_CODE = $(if ($room.Text.Trim()) { $room.Text.Trim() } else { 'public' })
         $env:SSBU_ONLINE_DIRECT = '0'                                          # never a direct path: no player sees another one's address
         $env:SSBU_NET_PING = $(if ($pingOn.Checked) { '1' } else { '0' })      # each player's ping to the server, next to the player (nvn_vk_draw.c)
@@ -390,6 +500,7 @@ $play = Add-Button $f 'GIOCA' 392 746 140 {
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
     $script:game = [System.Diagnostics.Process]::Start($psi)
     Say 'Gioco avviato (log: build\game.log).'
+    if ($script:regionAgain) { $script:regionAgain = $false; [void](Update-RegionLast (Get-RegionById (Read-Ini $GfxIni)['online_region_last'])) }
     $play.Enabled = $false; $f.WindowState = 'Minimized'; $timer.Start()
 }
 $play.Font = $bold

@@ -69,6 +69,8 @@ const char *nvn_vk_device_name(void);                                /* nvn_vk_m
 int osk_active(void);                                                /* osk.c */
 int osk_run(const wchar_t *header, const wchar_t *guide, const wchar_t *initial, int max_len, int min_len, int password, wchar_t *out);      /* osk.c */
 extern "C" void display_refresh_info(double *hz, int *lock_k);      /* display.c */
+#include "net_region.h"                                              /* SSBU Arena's lobbies by region (the table) */
+const char *net_region_text(void);                                   /* net_relay.c: "Europe", "Auto (Europe)", "" = another server */
 int net_online(void); int net_mode(void); const char *net_room_code(void); const char *net_lan_code(void); const char *net_upnp_result(void);      /* net_relay.c */
 int r1_ra_phase(void);                                               /* r1_state.c (read only): 0 = run-ahead not running now */
 }
@@ -1165,15 +1167,34 @@ static int online_differs(void);
  * signed-in account's name, an Arena server chosen by region, relay only (no player ever sees another's address),
  * rollback. Shown here, not changed: the other modes (LAN, host / join by code, any lobby, direct paths) stay in the
  * code for the plain build. 1 when it drew the section. */
-static const struct { const char *host, *name; } k_arena_servers[] = {{"eu-germany.ssbuarena.com", "Europe"}};
+/* (server region) the region setting, changed here too: graphics.ini online_region = auto | eu | na-east (net_region.h), the
+ * same key the launcher's Settings > Online writes and reads back when the game ends; used from the next start. */
+static int g_region_set = -2;                       /* -2: not read yet; -1 = auto; else the place in k_net_regions */
+static void arena_region_setting(void) {
+    char v[64];
+    if (g_region_set == -2) {
+        const char *e = getenv("SSBU_ONLINE_REGION");
+        if (e && *e) snprintf(v, sizeof v, "%s", e); else ini_read("online_region", v, sizeof v);
+        g_region_set = net_region_by_id(v);
+    }
+    const char *names[1 + NET_REGION_COUNT] = {"Auto (closest server)"};
+    for (int i = 0; i < NET_REGION_COUNT; i++) names[1 + i] = k_net_regions[i].name;
+    int sel = g_region_set + 1;
+    if (combo("Server region", &sel, names, 1 + NET_REGION_COUNT)) {
+        g_region_set = sel - 1;
+        ini("online_region", g_region_set < 0 ? "auto" : k_net_regions[g_region_set].id);
+        printf("menu: online_region = %s (used at the next start)\n", g_region_set < 0 ? "auto" : k_net_regions[g_region_set].id);
+        fflush(stdout);
+    }
+    help("Auto measures the ping to each server and uses the closest. Players on different servers do not see each other: rooms "
+         "and matchmaking are per server, so to play with a friend both pick the same region. Used from the next start of the game.");
+}
 static int arena_online(void) {
     const char *ui = getenv("SSBU_COMPETITIVE_UI");
     if (!ui || strcmp(ui, "1")) return 0;
     const char *srv = getenv("SSBU_ONLINE"), *name = getenv("SSBU_ONLINE_NAME"), *rb = getenv("SSBU_RB_NET");
     int on = srv && srv[0] && !off_word(srv);
-    const char *region = "another server";
-    for (size_t i = 0; on && i < sizeof k_arena_servers / sizeof k_arena_servers[0]; i++)
-        if (!_strnicmp(srv, k_arena_servers[i].host, strlen(k_arena_servers[i].host))) region = k_arena_servers[i].name;
+    const char *region = on && net_region_text()[0] ? net_region_text() : "another server";
     NetStats ns;
     net_stats_get(&ns);
     ImGui::Text("Online play"); ImGui::SameLine();
@@ -1188,6 +1209,7 @@ static int arena_online(void) {
         else ImGui::Text("Rollback netcode: %s", rb && rb[0] ? "on" : "off");
         ImGui::TextDisabled("Everything goes through the Arena server (relay only): no player ever sees another player's address.");
     }
+    arena_region_setting();
     help("These are set in the SSBU Arena launcher (Settings > Online) and used when the game starts.");
     return 1;
 }

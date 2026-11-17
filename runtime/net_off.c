@@ -21,6 +21,8 @@ void net_send(uint32_t src, uint16_t sport, uint32_t dst, uint16_t dport, const 
 int net_room_refusal(uint32_t host, char *why, size_t n) { (void)host; (void)why; (void)n; return 0; }
 /* the settings menu (menu.cpp: the Online pages, the stats overlay): what the online code answers when it is off */
 const char *net_room_code(void) { return ""; }
+const char *net_region_text(void) { return ""; }
+int net_region_measure(int *ms) { (void)ms; return 0; }
 const char *net_lan_code(void) { return ""; }
 const char *net_upnp_result(void) { return ""; }
 #include "net_stats.h"

@@ -68,7 +68,7 @@ namespace Arena
             xinput = Core.XInputCount();
             if (Environment.GetEnvironmentVariable("SSBU_ARENA_CRASH_TEST") == "1")      // (test) the newest crash file sent as after a game
                 Task.Run(() => { for (int w = 0; w < 60 && !Account.SignedIn; w++) System.Threading.Thread.Sleep(500); bool sent = CrashReport.SendIfCrashed(DateTime.MinValue, out bool crashed); Updater.Log("crash test: crashed " + crashed + ", sent " + sent); });
-            Loaded += (s, e) => { StartOnlineCount(); RunChecks(); FindPads(); OpenFromArgs(); OpenReplayFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); Task.Run(() => Core.MakeAvatars()).ContinueWith(t => FillAvatars(), TaskScheduler.FromCurrentSynchronizationContext()); };
+            Loaded += (s, e) => { StartOnlineCount(); MeasureRegions(); RunChecks(); FindPads(); OpenFromArgs(); OpenReplayFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); Task.Run(() => Core.MakeAvatars()).ContinueWith(t => FillAvatars(), TaskScheduler.FromCurrentSynchronizationContext()); };
             Scaled.SizeChanged += (s, e) => Rescale();
             SizeChanged += (s, e) => Rescale();
         }
@@ -292,9 +292,7 @@ namespace Arena
             DelayBox.SelectedIndex = Core.InputDelay == 0 ? 5 : Math.Max(0, Math.Min(4, Core.InputDelay - 1));      // (rb-8ms) item 5 = Auto
             RecMmBox.IsChecked = Core.RecMatchmaking; RecLdnBox.IsChecked = Core.RecLdn; RecArenaBox.IsChecked = Core.RecArena;
             RecLocalBox.IsChecked = Core.RecLocal;
-            ServerBox.Items.Clear();
-            foreach (var s in Core.Servers) ServerBox.Items.Add(s.Name);
-            ServerBox.SelectedIndex = Core.ServerIndex(Core.Server);
+            FillRegions();
             WinBox.SelectedIndex = Core.WindowMode;
             SizeBox.SelectedIndex = Math.Max(0, SizeBox.Items.Cast<ComboBoxItem>().ToList().FindIndex(i => (string)i.Content == Core.WindowSize.Replace(" ", "")));      // (0.2.8) our sizes only
             SizeBox.IsEnabled = Core.WindowMode == 0;
@@ -328,7 +326,7 @@ namespace Arena
             Core.InputDelay = DelayBox.SelectedIndex == 5 ? 0 : Math.Max(1, DelayBox.SelectedIndex + 1);
             Core.RecMatchmaking = RecMmBox.IsChecked == true; Core.RecLdn = RecLdnBox.IsChecked == true; Core.RecArena = RecArenaBox.IsChecked == true;
             Core.RecLocal = RecLocalBox.IsChecked == true;
-            Core.Server = Core.Servers[Math.Max(0, ServerBox.SelectedIndex)].Address;
+            if (ServerBox.IsEnabled) Regions.Setting = Math.Max(0, ServerBox.SelectedIndex) - 1;      // (server region) 0 = Auto
             Core.WindowMode = Math.Max(0, WinBox.SelectedIndex);
             if (SizeBox.SelectedIndex != filledSize) Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;      // (0.2.12) a size set in the game, not in this list, stays
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
@@ -444,7 +442,12 @@ namespace Arena
             Field_Changed(sender, e);
         }
 
-        void Server_Changed(object sender, SelectionChangedEventArgs e) { Field_Changed(sender, e); }
+        void Server_Changed(object sender, SelectionChangedEventArgs e)
+        {
+            if (loading) return;
+            Field_Changed(sender, e);
+            RegionChanged();      // (MainWindow.Online.cs) Auto chosen: measured again; the texts
+        }
 
         void FindPads_Click(object sender, RoutedEventArgs e) { FindPads(); }
 
