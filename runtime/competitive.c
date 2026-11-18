@@ -530,7 +530,26 @@ static void comp_scnend(Ctx *c, void *u) {
     fflush(stdout);
     g_scnend_orig(c);
 }
-static void comp_scn_b(Ctx *c, void *u) { (void)u; comp_scn_log(c, "controller's"); g_scn_b_orig(c); }
+/* (0.2.52, SSBU_NO_NOTICES, default 1) the game's notices of new things are not shown: UnlockSequenceScene (asked by the menus'
+ * sequence after the title screen and every time the main menu comes back, 0x710235cbc8: the "new fighter / stage / mode" and
+ * unlock notices) is not started; its caller marks the child scene as asked (+ 0x30) and goes on to the main menu when the
+ * scene manager is idle, as after an empty unlock scene. SSBU_NO_NOTICES=0: shown (0.2.51). */
+static int comp_no_notices(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_NO_NOTICES"); v = !(e && e[0] == '0'); } return v; }
+static int comp_scn_named(Ctx *c, const char *want) {
+    uint64_t p = c->x[1]; if (!p) return 0;
+    size_t n = strlen(want);
+    for (size_t k = 0; k <= n; k++) if (*(volatile char *)(uintptr_t)(p + 8 + (uint64_t)k) != want[k]) return 0;
+    return 1;
+}
+static void comp_scn_b(Ctx *c, void *u) {
+    (void)u;
+    const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && (w[0] == '3' || w[0] == '4')) comp_scn_log(c, "controller's");
+    if (comp_no_notices() && comp_scn_named(c, "UnlockSequenceScene")) {
+        static int n; if (n++ < 20) { printf("competitive UI: the game's notices of new things (UnlockSequenceScene) not shown (SSBU_NO_NOTICES)\n"); fflush(stdout); }
+        return;
+    }
+    g_scn_b_orig(c);
+}
 /* (0.2.52, RESEARCH, SSBU_ONLINE_SEQ_TRACE=1) the 13 state handlers of OnlineMeleeAnySequenceScene's machine (set up by its enter
  * 0x710236ab10: this + 0x30 + 0x10 * state; wanted states this + 0x100 + 4 * index, index + 0x14c): each change of the state run */
 static const uint64_t k_onl_states[13] = {0x71023675c0ull, 0x7102367780ull, 0x7102367d00ull, 0x7102367d90ull, 0x7102368280ull, 0x7102368e60ull,
@@ -575,7 +594,8 @@ static DWORD WINAPI comp_wait(LPVOID arg) {
         if (hook_install(GA(0x71014e58f0ull), comp_battle, NULL, &g_battle_orig)) {
             if (!hook_install(GA(0x710235cbf0ull), comp_scene, NULL, &g_scene_orig)) printf("competitive: scene hook FAILED: every mode can be opened\n");
             { const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && w[0] == '2' && comp_quick_native()) hook_install(GA(0x7102363970ull), comp_seqstep, NULL, &g_seqstep_orig);
-              if (w && (w[0] == '3' || w[0] == '4')) {      /* (also without SSBU_QUICK_NATIVE: the Smash versus flow, to compare) */ hook_install(GA(0x7103725c90ull), comp_scn_a, NULL, &g_scn_a_orig); hook_install(GA(0x7103726120ull), comp_scn_b, NULL, &g_scn_b_orig); }
+              if (w && (w[0] == '3' || w[0] == '4')) {      /* (also without SSBU_QUICK_NATIVE: the Smash versus flow, to compare) */ hook_install(GA(0x7103725c90ull), comp_scn_a, NULL, &g_scn_a_orig); }
+              if ((w && (w[0] == '3' || w[0] == '4')) || comp_no_notices()) hook_install(GA(0x7103726120ull), comp_scn_b, NULL, &g_scn_b_orig);      /* (0.2.52: SSBU_NO_NOTICES) */
               if (w && w[0] == '4') hook_install(GA(0x7103726540ull), comp_scnend, NULL, &g_scnend_orig);
               if ((w && w[0] == '4') || comp_quick_native()) hook_install(GA(0x71023675c0ull), comp_onl_state0, NULL, &g_onl0_orig);
               if (getenv("SSBU_ONLINE_SEQ_TRACE")) for (int k = 1; k < 13; k++) if (k != 3) hook_install(GA(k_onl_states[k]), comp_onl_st, (void *)(intptr_t)k, &g_onl_st_orig[k]);
