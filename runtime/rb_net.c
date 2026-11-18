@@ -537,7 +537,12 @@ static void hs_delay_agree(RbhMatch *m, const RbhMatch *peer) {      /* host: m 
     int mw = m->pad0 >> 4, ma = (m->pad0 & 0x08) != 0, pw = peer->pad0 >> 4, pa = (peer->pad0 & 0x08) != 0;
     int d = mw > pw ? mw : pw;
     m->pad0 &= 0x07;
-    if ((ma || pa) && d > 0) m->pad0 |= (uint8_t)(0x08 | (d << 4));
+    /* (0.2.52, SSBU_RB_NET_DELAY_AGREE_FIXED, default 1) both fixed: both games use the larger one too, so both show the same "<n>f"
+     * (the overlay) and play one delay; a peer that sent none (0: a 0.2.49 game, or no SSBU_RB_NET_DELAY) still keeps its own. A
+     * 0.2.50 / 0.2.51 joiner takes the agreed bit of this proposal (rbn_handshake: g_delay_agreed = pad0 bit 3 ? pad0 >> 4); a 0.2.51
+     * host never sets it for two fixed delays: each keeps its own, as before. =0: nothing agreed for two fixed delays (0.2.51). */
+    static int fixed = -1; if (fixed < 0) { const char *e = getenv("SSBU_RB_NET_DELAY_AGREE_FIXED"); fixed = !(e && e[0] == '0'); }
+    if ((ma || pa || (fixed && mw > 0 && pw > 0)) && d > 0) m->pad0 |= (uint8_t)(0x08 | (d << 4));
     printf("[rbnet] handshake: input delay: here %d%s, there %d%s -> %s%d\n", mw, ma ? " (auto)" : "", pw, pa ? " (auto)" : pw ? "" : " (none sent)",
            (m->pad0 & 0x08) ? "both games use " : "not agreed, each game its own; here ", (m->pad0 & 0x08) ? d : mw);
     fflush(stdout);

@@ -1812,6 +1812,15 @@ int net_ping_on(void) {
     return g_ping_on > 0;
 }
 void net_ping_set(int on) { InterlockedExchange(&g_ping_on, on ? 1 : 0); }
+/* (0.2.52, SSBU_NET_PING_DELAY, default 1; 0 = the ping alone as 0.2.51) the input delay in frames the running rollback match uses
+ * (rb_net.c rbn_delay: the agreed one, the fixed one or the auto rule's, as auto_delay chose it at the match's start and after the
+ * start barrier), shown next to the ping as "<n>f" (nvn_vk_draw.c ldn_ping_draw); 0 = no rollback match running. */
+int net_ping_delay(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_NET_PING_DELAY"); on = !(e && e[0] == '0'); }
+    if (!on || !net_ping_on()) return 0;
+    int rbn_started(void), rbn_delay(void);
+    return rbn_started() ? rbn_delay() : 0;
+}
 int net_ping_overlay(int *ms, int max) {
     if (!net_ping_on() || g_cfg <= 0 || !g_joined || max < 2) return 0;
     int rbn_started(void), rbn_local_player(void);

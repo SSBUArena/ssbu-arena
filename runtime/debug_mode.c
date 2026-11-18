@@ -585,6 +585,7 @@ static void dm_online_fix(const char *when) {
  * 0x7101754d80 (controls object [0x71052c40f0], i, n; it writes the controls object + 0x298, record + 0x1c / + 0xa0 and the
  * fighter entry + 0x10) is called for the network player with slot i, so its fighter reads port i: the rollback's pads. */
 static int g_onl_bound;
+volatile LONG g_shot_results;                          /* (TEST, SSBU_SHOT_RESULTS) the Online match's fight is over: nvn_vk_draw.c takes pictures */
 /* (18/11) g_onl_fight: from the rollback match's base state (the fight's "ready-go", rb_rollback.c) to the fight's end: the frames the
  * rollback plays. Before and after, the Online scene's frames are the game's own (its netcode's lockstep: the countdown, the end). */
 static int g_onl_fight, g_onl_rebind = -1;
@@ -620,14 +621,24 @@ static void dm_online_restore(void) {
     g_onl_fight = 0; g_onl_bound = 0;
     if (g_onl_pops) { printf("[online] A3: the fight's pads: %u frame(s) played with the rollback's pads (the game's own queue pop: %u with pads, %u empty = its netcode would have waited)\n", g_onl_pops, g_onl_pop_ok[1], g_onl_pop_ok[0]); g_onl_pops = g_onl_pop_ok[0] = g_onl_pop_ok[1] = 0; }
     int n = 0;
-    for (int i = 0; i < 2; i++) {
+    /* (0.2.52, owner's two-PC test 18/11: in the results one player's panel was white, the names, "P1 / P2" and the GSP change were
+     * missing and the screen went to the blurred "Gold Earned" one, i.e. the game's results for a match it could not read) The records
+     * written back here were built a second time by the game's builder into a buffer of ours (match_player_hook): good for the log, but
+     * not records the game's results can use (runs b3 / b4 / c4 / c8: always the broken results; c9 / c10, with the match block's own
+     * records left as they are: the game's normal Online results, names, panels, Global Smash Power, Rematch). The match block already
+     * holds the game's Online view after the fight set-up (it makes the other game's player a network one again, "after the fight
+     * set-up" lines), so nothing is written back by default. SSBU_ONLINE_RB_RECBACK=1: written back as 0.2.51 did. */
+    static int recback = -1; if (recback < 0) { const char *e = getenv("SSBU_ONLINE_RB_RECBACK"); recback = e && e[0] == '1'; }
+    for (int i = 0; i < 2 && recback; i++) {
         uint64_t at = g_onl_rec_at[i];
         if (!g_onl_rec_ok[i] || !at) continue;
         for (int k = 0; k < 0x260; k++) wr8(at + (uint64_t)k, g_onl_rec[i][k]);
         n++;
     }
-    printf("[online] A3: the Online match's fight is over: the game's own records of %d player(s) back in the match block (melee mode %u) for its results\n", n, rd8(MELEE_INFO));
+    if (recback) printf("[online] A3: the Online match's fight is over: the game's own records of %d player(s) back in the match block (melee mode %u) for its results (SSBU_ONLINE_RB_RECBACK=1)\n", n, rd8(MELEE_INFO));
+    else printf("[online] A3: the Online match's fight is over: the match block's records left as the game's fight set-up made them, for its results (melee mode %u; SSBU_ONLINE_RB_RECBACK)\n", rd8(MELEE_INFO));
     fflush(stdout);
+    {   extern volatile LONG g_shot_results; InterlockedExchange(&g_shot_results, 1); }      /* (TEST, SSBU_SHOT_RESULTS: nvn_vk_draw.c) */
 }
 /* (Arena, online matchmaking) a quick match from the Arena menu's Online Ranked tile (competitive.c comp_quickplay): both games
  * play the same locked rules whatever the player's own ruleset: stock (rule kind 1), 3 stocks, no items, no hazards (the
@@ -1088,9 +1099,30 @@ static void match_player_hook(Ctx *c, void *user) {
     {   int online_nex_on(void);                         /* (online-mm A3 prep, SSBU_ONLINE_NEX=1 only) what the game's own Online match builds, for the log */
         if (online_nex_on() && idx >= 0 && idx < 2) {
             if (idx == 0) printf("[online] fight set-up: melee mode (match block + 0) %u, + 1 %u, sequence %08x, builder return %llx\n", rd8(MELEE_INFO), rd8(MELEE_INFO + 1), rd32(GA(0x71053040f0ULL)), (unsigned long long)c->x[30]);
+            if (idx == 0 && getenv("SSBU_ONLINE_SEQ_TRACE")) { hex_lines("[online] RESEARCH match block", MELEE_INFO, 0x100); hex_lines("[online] RESEARCH panel state 1", st, 0x100); hex_lines("[online] RESEARCH screens table 1", GA(0x7105307770ULL), 0x20); hex_lines("[online] RESEARCH screens table 2", GA(0x7105307770ULL) + 0x1c8, 0x20); hex_lines("[online] RESEARCH rule 0", GA(0x710530454cULL) + 0x50, 0x20); hex_lines("[online] RESEARCH rule 1", GA(0x7105309924ULL) + 0x50, 0x20); hex_lines("[online] RESEARCH rule 2", GA(0x710530f49cULL) + 0x50, 0x20); }      /* (0.2.52, research: the rule header) */
             printf("[online] fight set-up: player %d: ui_chara %016llx colour %u type %u controller slot %d profile %d local %u network %u number %u\n", idx + 1, (unsigned long long)rd64(st + 0x88), rd8(st + 0x90), rd32(st + 0x78),
                    (int)rd32(st + 0x210), (int)rd32(st + 0x214), rd8(st + 0x450), rd8(st + 0x451), rd8(st + 0xa4));
             fflush(stdout);
+        } }
+    {   /* (0.2.52, SSBU_ONLINE_RULES, default 1) the game's Online match (melee mode 14, the match's own builder, not a Local Wireless
+         * room's) is played with SSBU Arena's competitive rules whatever the players' preferred rules (the gathering's): stock, 3 stocks,
+         * 7 minutes, no items, no hazards, one of the 6 stages in its normal form (competitive.c comp_online_stage; FS meter, stage morph
+         * and pause are off in every battle already). Read off the set-up (run b3): panel state + 5 the rule kind (1 stock), + 8 the time
+         * (u16, seconds), + 0xa the stocks; match block + 5 the rule kind, + 0x48 the time (u32, frames), + 0x4c the stocks, + 0x54 the
+         * item frequency; 0x7105309985 the hazards switch. Both games write the same values before the handshake (it compares them) and
+         * before the records are built. SSBU_ONLINE_RULES=0: the gathering's rules (0.2.51). */
+        static int rules = -1; if (rules < 0) { const char *e = getenv("SSBU_ONLINE_RULES"); rules = !(e && e[0] == '0'); }
+        int online_nex_on(void), nnldn_role(void);
+        if (rules && idx >= 0 && idx < 2 && online_nex_on() && rd8(MELEE_INFO) == 14 && c->x[30] != GA(0x71017911dcULL) && !nnldn_role()) {
+            if (idx == 0) {
+                int comp_online_stage(void); void comp_online_rule_copy(void); comp_online_stage(); comp_online_rule_copy();
+                printf("[online] rules: the Online match: rule kind %u -> 1, time %u s -> 420, stocks %u -> 3, items %u -> 0, hazards %u -> 0 (SSBU_ONLINE_RULES)\n",
+                       rd8(st + 5), rd16(st + 8), rd8(st + 0xa), rd32(MELEE_INFO + 0x54), rd8(GA(0x7105309985ULL)));
+                if (rd8(MELEE_INFO + 5) == rd8(st + 5)) wr8(MELEE_INFO + 5, 1);
+                wr32(MELEE_INFO + 0x48, 420u * 60u); wr32(MELEE_INFO + 0x4c, 3); wr32(MELEE_INFO + 0x54, 0); wr8(GA(0x7105309985ULL), 0);
+                fflush(stdout);
+            }
+            wr8(st + 5, 1); wr16(st + 8, 420); wr8(st + 0xa, 3);
         } }
     {   int online_rb_on(void);                          /* (online-mm A3, SSBU_ONLINE_RB=1) */
         if (g_hs_wanted && online_rb_on() && idx >= 0 && idx < 2) {
@@ -1758,6 +1790,61 @@ static void net_pre_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { 
 static void net_upd_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { g_onl_netskip[1]++; return; } uint64_t o = c->x[0]; g_orig_net_upd[1](c); net_state_note("after its update after the frame", o); }
 /* (online-mm A3, RESEARCH + log) 0x71016ce960 (net object, reason): the game's fight netcode ends the match itself (it sets the
  * object's + 0x63 = 2, + 0x64 = the reason); who asked and in which state, for the log (only with SSBU_ONLINE_RB=1) */
+/* (0.2.52, SSBU_ONLINE_NO_GOLD, default 1) no tokens in Online: the fight scene's result handler (0x7101511520 makes it from the
+ * melee mode; mode 14: the class of vtable 0x710506c038) gives the match's reward in its + 0xd0, 0x7101518820: 0x710176c1c0 adds
+ * gold to the save ([[[[[0x7105313510]] + 0x1b8]]], the lua get_gold) and keeps the amount for the results ("Gold Earned",
+ * 0x71052cb5ec; run c1, hardware watch on the gold). In the game's Online match (sequence 0x0701....) the save's gold is put back
+ * after it and the amount shown is 0. SSBU_ONLINE_NO_GOLD=0: as the game does (0.2.51). */
+static ImportFn g_orig_reward;
+static void reward_hook(Ctx *c, void *user) {
+    (void)user;
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_NO_GOLD"); on = !(e && e[0] == '0'); }
+    int online = (rd32(GA(0x71053040f0ULL)) >> 24) == 0x07 && rd8(MELEE_INFO) == 14;
+    uint64_t g = 0;
+    if (on && online) { g = sr64(GA(0x7105313510ULL)); g = g ? sr64(g) : 0; g = g ? sr64(g + 0x1b8) : 0; g = g ? sr64(g) : 0; g = g ? sr64(g) : 0; }
+    uint32_t was = g ? rd32(g) : 0;
+    g_orig_reward(c);
+    if (g) {
+        uint32_t now = rd32(g), shown = rd32(GA(0x71052cb5ecULL));
+        wr32(g, was); wr32(GA(0x71052cb5ecULL), 0);
+        printf("[online] the Online match's reward: gold %u -> %u given back to %u, \"Gold Earned\" %u -> 0 (SSBU_ONLINE_NO_GOLD)\n", was, now, was, shown); fflush(stdout);
+    }
+}
+/* (0.2.52, RESEARCH, SSBU_ONLINE_LYT_TRACE=1) the game's C++ layout helpers (parts / pane / animation / text by name: x1 = the name):
+ * each new (helper, name, caller) once while the current sequence is the Online Quickplay's (0x0701....) */
+static const uint64_t k_lyt_fns[6] = {0x7103776090ULL, 0x7103776360ULL, 0x7103777d50ULL, 0x7103779b70ULL, 0x7103777b30ULL, 0x71037781b0ULL};
+static ImportFn g_lyt_orig[6];
+static void lyt_trace_hook(Ctx *c, void *user) {
+    int k = (int)(intptr_t)user; static unsigned n; static uint64_t seen[3000]; static int nseen;
+    if ((rd32(GA(0x71053040f0ULL)) >> 16) == 0x0701 && nseen < 3000) {
+        char s[56]; memset(s, 0, sizeof s);
+        if (c->x[1] > 0x10000 && safe_read(c->x[1], s, 48)) {
+            int ok = s[0] != 0; for (int i = 0; i < 48 && s[i]; i++) if (s[i] < 0x20 || s[i] >= 0x7f) ok = 0;
+            if (ok) {
+                uint64_t key = (uint64_t)k << 60 ^ c->x[30] * 31 ^ (uint64_t)s[0] << 8 ^ (uint64_t)strlen(s);
+                int dup = 0; for (int i = 0; i < nseen && !dup; i++) dup = seen[i] == key;
+                if (!dup) { seen[nseen++] = key; n++; printf("[online] LYT TRACE %d: %s from %llx (obj %llx)\n", k, s, (unsigned long long)c->x[30], (unsigned long long)c->x[0]); fflush(stdout); }
+            }
+        }
+    }
+    g_lyt_orig[k](c);
+}
+/* (0.2.52, SSBU_ONLINE_ROOM_SLOTS, default 2; 4 = the game's own) the plates of the players at the bottom of the game's Online waiting
+ * room (Quickplay's practice stage): a container of 8 player plates (0x7101bcb6b0 builds each one: "player_%02d", animations
+ * size_p4 / frame_set_p4 / in_wanted / in_readyok / out_closed ...) whose layout is one of the animations "layout_def" and
+ * "layout_pn1" .. "layout_pn8" (0x7101bccbbc: table name -> id 0 .. 8, kept at container + 0x50 + 16 * id). 0x7101bccfc0
+ * (container, w1 = id) plays layout w1 and each plate's size animation; the waiting room's manager calls it (0x710140d090 /
+ * 0x710140d388) when its wanted layout ([manager + 4]) changes: the game asks layout 4 (layout_pn4, 4 plates; 0 = layout_def) also for a gathering of 2
+ * (runs u3 / u4, SSBU_ONLINE_LYT_TRACE). In the Online Quickplay (sequence 0x0701....) the layout asked is made layout_pn<slots>. */
+static ImportFn g_orig_plates;
+static void plates_hook(Ctx *c, void *user) {
+    (void)user;
+    static int slots = -2; if (slots == -2) { const char *e = getenv("SSBU_ONLINE_ROOM_SLOTS"); slots = e && *e ? atoi(e) : 2; if (slots < 1 || slots > 8) slots = 0; }
+    int was = (int)c->x[1], online = (rd32(GA(0x71053040f0ULL)) >> 16) == 0x0701;
+    if (slots && slots != 4 && online && (was == 0 || was == 4)) c->x[1] = (uint64_t)slots;
+    static int n; if (n++ < 20) { printf("[online] waiting room plates: layout %d asked (from %llx, container + 0x44 %d) -> %d (SSBU_ONLINE_ROOM_SLOTS)\n", was, (unsigned long long)c->x[30], (int)rd32(c->x[0] + 0x44), (int)c->x[1]); fflush(stdout); }
+    g_orig_plates(c);
+}
 static ImportFn g_orig_net_end;
 static void net_end_hook(Ctx *c, void *user) {
     (void)user; uint64_t o = c->x[0]; long long rbn_now(void);
@@ -1888,6 +1975,8 @@ static void bacss_init(void) {
     if (g_bacss == 1) printf("[squadcss] Battle Arena rooms play the game's own Squad Strike: hooks %d %d\n", hook_install(GA(0x710232f690ULL), local_launch_hook, NULL, &g_orig_local_launch), hook_install(GA(0x710233cfd0ULL), tc_css_hook, NULL, &g_orig_tc_css));
     if (g_bacss == 1) { const char *r = getenv("SSBU_BA_SQUAD_RESEED"); g_bacss_reseed = !(r && r[0] == '0');
         if (g_bacss_reseed) printf("[squadcss] hook on the fight set-up 0x71014d8620: id %d (the global generator set again from the agreed seed)\n", hook_install(GA(0x71014d8620ULL), fight_setup_hook, NULL, &g_orig_fight_setup)); }
+    {   int online_nex_on(void); if (online_nex_on()) printf("[online] hook on the waiting room's plate layout 0x7101bccfc0: id %d", hook_install(GA(0x7101bccfc0ULL), plates_hook, NULL, &g_orig_plates)); printf("%c", 10); }
+    if (getenv("SSBU_ONLINE_LYT_TRACE")) for (int k = 0; k < 6; k++) hook_install(GA(k_lyt_fns[k]), lyt_trace_hook, (void *)(intptr_t)k, &g_lyt_orig[k]);      /* (0.2.52, research) */
     if (getenv("SSBU_ONLINE_RB_PROBE")) printf("[online] A3 probe: hooks %d %d %d %d\n", hook_install(GA(0x71017547f0ULL), probe_h0, NULL, &g_orig_pr[0]), hook_install(GA(0x7101754990ULL), probe_h1, NULL, &g_orig_pr[1]),
                                                hook_install(GA(0x7101755300ULL), probe_h2, NULL, &g_orig_pr[2]), hook_install(GA(0x71016d78d0ULL), probe_h3, NULL, &g_orig_pr[3]));
     {   int online_rb_on(void);                         /* (online-mm A3) the network player fields of the records written back after the fight set-up */
@@ -1895,7 +1984,8 @@ static void bacss_init(void) {
         if (online_rb_on()) printf("[online] A3: hook on the station check 0x710179eb70: id %d\n", hook_install(GA(0x710179eb70ULL), station_local_hook, NULL, &g_orig_station_local));
         if (online_rb_on()) printf("[online] A3: hook on the controls object's queue pop 0x7101754990: id %d\n", hook_install(GA(0x7101754990ULL), ctl_pop_hook, NULL, &g_orig_ctl_pop));
         if (online_rb_on()) printf("[online] A3: hooks on the game's fight netcode 0x71016d5ff0 / 0x71016d78d0: ids %d %d\n", hook_install(GA(0x71016d5ff0ULL), net_pre_hook, NULL, &g_orig_net_upd[0]), hook_install(GA(0x71016d78d0ULL), net_upd_hook, NULL, &g_orig_net_upd[1]));
-        if (online_rb_on()) printf("[online] A3: hook on the game's fight netcode's end 0x71016ce960: id %d\n", hook_install(GA(0x71016ce960ULL), net_end_hook, NULL, &g_orig_net_end)); }
+        if (online_rb_on()) printf("[online] A3: hook on the game's fight netcode's end 0x71016ce960: id %d\n", hook_install(GA(0x71016ce960ULL), net_end_hook, NULL, &g_orig_net_end));
+        { int online_nex_on(void); if (online_nex_on()) printf("[online] hook on the result handler's reward 0x7101518820: id %d\n", hook_install(GA(0x7101518820ULL), reward_hook, NULL, &g_orig_reward)); } }
     if (g_bacss == 1) { const char *v = getenv("SSBU_BA_SQUAD_VS"); g_bacss_vs = !(v && v[0] == '0');
         printf("[squadcss] hook on the matchup's state 7 (0x710197d5f0): id %d (the VS screen ends as offline once this game is ready: %s)\n", hook_install(GA(0x710197d5f0ULL), tc_vs_hook, NULL, &g_orig_tc_vs), g_bacss_vs ? "on" : "off, SSBU_BA_SQUAD_VS=0"); }
     fflush(stdout);

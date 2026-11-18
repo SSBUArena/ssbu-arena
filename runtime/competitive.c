@@ -65,6 +65,25 @@ static void comp_stage(void) {
     }
 }
 
+/* (0.2.52, SSBU_ONLINE_RULES, debug_mode.c) the game's Online match is played on one of the 6 stages in their normal form: the
+ * current stage choice (the gathering's, the same on both games) is made one of them as comp_stage does (the same choice gives the
+ * same stage on both), and its form (+ 8: 1 Battlefield, 2 Omega) is 0. Returns 1 when something changed. */
+int comp_online_stage(void) {
+    uint32_t cur = *(volatile uint32_t *)(uintptr_t)GA(0x7105309968ull); if (cur >= 3) cur = 0;
+    volatile uint64_t *id = (volatile uint64_t *)(uintptr_t)(GA(0x71053097c0ull) + 0x20ull * cur);
+    volatile uint32_t *form = (volatile uint32_t *)(uintptr_t)(GA(0x71053097c0ull) + 0x20ull * cur + 8);
+    uint64_t was = *id; uint32_t fwas = *form; int ok = 0; char nm[48];
+    for (int k = 0; k < 6; k++) { snprintf(nm, sizeof nm, "ui_stage_%s", k_stages[k]); if ((was & 0xffffffffffull) == comp_h40(nm)) ok = 1; }
+    if (!ok) {
+        uint64_t mix = was ^ (uint64_t)cur * 0x9e3779b97f4a7c15ull ^ *(volatile uint64_t *)(uintptr_t)(GA(0x71053097c0ull) + 0x20ull * cur + 0x10);
+        mix ^= mix >> 29; mix *= 0xbf58476d1ce4e5b9ull; mix ^= mix >> 32;
+        snprintf(nm, sizeof nm, "ui_stage_%s", k_stages[mix % 6]);
+        *id = 0x6900000000000000ull | comp_h40(nm);
+    }
+    *form = 0;
+    printf("competitive: the Online match's stage: %llx form %u -> %llx form 0%s\n", (unsigned long long)was, fwas, (unsigned long long)*id, ok ? " (one of the 6)" : ""); fflush(stdout);
+    return !ok || fwas != 0;
+}
 /* The modes outside the competitive 1v1. The current sequence is a global of 13.0.4 (0x71053040f0: SEQUENCE_* ids, the
  * lua constants registered at 0x7101bf1930: 0x01000000 title / menus, 0x02010000 Smash (also local wireless), 0x03.. Spirits,
  * 0x04.. Games & More, 0x05.. Vault, 0x06.. Options, 0x07.. Online). The scene dispatcher 0x710235cbf0 reads it and
@@ -206,6 +225,21 @@ static void comp_quick_rules(void) {          /* (comp_keep, every 2 ms while th
         if (r[RULE_STOCK] != 3) r[RULE_STOCK] = 3;
     }
 }
+/* (0.2.52, SSBU_ONLINE_RULES, debug_mode.c) the screens of the game's Online match (the VS screen's time and stocks) read rule copy 1
+ * (0x7105309924: + 0x51 kind, + 0x54 time in s, + 0x56 stocks; run d2: the gathering's 180 s / 2 stocks there while the fight had
+ * 7 min / 3): written with the fixed rules at the match's set-up, the player's own values put back at the main menu. */
+static uint8_t g_onl_rule_saved[8]; static volatile LONG g_onl_rule_have;
+void comp_online_rule_copy(void) {
+    volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[1]);
+    if (!InterlockedExchange(&g_onl_rule_have, 1)) for (int k = 0; k < 8; k++) g_onl_rule_saved[k] = r[0x50 + k];
+    r[RULE_KIND] = 1; *(volatile uint16_t *)(r + RULE_TIME) = 420; r[RULE_STOCK] = 3;
+}
+static void comp_online_rule_back(void) {
+    if (!InterlockedExchange(&g_onl_rule_have, 0)) return;
+    volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[1]);
+    for (int k = 0; k < 8; k++) r[0x50 + k] = g_onl_rule_saved[k];
+    printf("competitive: the Online match's rules taken off rule copy 1 at the main menu (the player's own back)\n"); fflush(stdout);
+}
 static void comp_quick_end(const char *why) {
     if (!InterlockedExchange(&g_quick, 0)) return;
     if (g_quick_have) for (int k = 0; k < 2; k++) {             /* (twice: comp_keep may have been inside comp_quick_rules) */
@@ -277,6 +311,7 @@ static void comp_scene(Ctx *c, void *user) {
     const char *ui = getenv("SSBU_COMPETITIVE_UI");
     if (ui && ui[0] == '1') {
         if ((s >> 24) == 0x01 && g_quick) comp_quick_end("back at the main menu");
+        if ((s >> 24) == 0x01) comp_online_rule_back();      /* (0.2.52) */
         if ((s >> 24) == 0x01) g_native_asked = 0;
         if (s == SEQ_ONLINE_ANYONE && comp_quick_native() && comp_native_usable()) { static int said; if (!said++) { printf("competitive UI: Online Ranked -> the game's own Online mode (SSBU_QUICK_NATIVE=1, probe)\n"); fflush(stdout);
                 /* (online-mm 15/11, PROBE) SSBU_QUICK_NATIVE_WATCH=1: a hardware write watch on the current sequence (debug_mode.c debug_watch:
@@ -425,6 +460,7 @@ static void comp_scn_log(Ctx *c, const char *which) {
         n += snprintf(fr + n, sizeof fr - n, " %llx", (unsigned long long)lr);
         if (nfp <= fp) break; fp = nfp;
     }
+    if (!strcmp(name, "MeleeScene") && getenv("SSBU_SHOT_RESULTS_MELEE")) { extern volatile LONG g_shot_results; InterlockedCompareExchange(&g_shot_results, 2, 0); }      /* (TEST: pictures of the results without A3, nvn_vk_draw.c) */
     printf("competitive probe: scene %s asked (%s) from %llx, frames%s; sequence %08x\n", name, which, (unsigned long long)c->x[30], fr,
            *(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE);
     fflush(stdout);
@@ -510,7 +546,61 @@ static void comp_scnend(Ctx *c, void *u) {
     fflush(stdout);
     g_scnend_orig(c);
 }
-static void comp_scn_b(Ctx *c, void *u) { (void)u; comp_scn_log(c, "controller's"); g_scn_b_orig(c); }
+/* (0.2.52, SSBU_NO_NOTICES, default 1) the game's notices of new things are not shown: UnlockSequenceScene (asked by the menus'
+ * sequence after the title screen and every time the main menu comes back, 0x710235cbc8: the "new fighter / stage / mode" and
+ * unlock notices) is not started; its caller marks the child scene as asked (+ 0x30) and goes on to the main menu when the
+ * scene manager is idle, as after an empty unlock scene. SSBU_NO_NOTICES=0: shown (0.2.51). */
+static int comp_no_notices(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_NO_NOTICES"); v = !(e && e[0] == '0'); } return v; }
+static int comp_scn_named(Ctx *c, const char *want) {
+    uint64_t p = c->x[1]; if (!p) return 0;
+    size_t n = strlen(want);
+    for (size_t k = 0; k <= n; k++) if (*(volatile char *)(uintptr_t)(p + 8 + (uint64_t)k) != want[k]) return 0;
+    return 1;
+}
+static void comp_scn_b(Ctx *c, void *u) {
+    (void)u;
+    const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && (w[0] == '3' || w[0] == '4')) comp_scn_log(c, "controller's");
+    if (comp_no_notices() && comp_scn_named(c, "UnlockSequenceScene")) {
+        static int n; if (n++ < 20) { printf("competitive UI: the game's notices of new things (UnlockSequenceScene) not shown (SSBU_NO_NOTICES)\n"); fflush(stdout); }
+        return;
+    }
+    g_scn_b_orig(c);
+}
+/* (0.2.52, RESEARCH, SSBU_ONLINE_SEQ_TRACE=1) the 13 state handlers of OnlineMeleeAnySequenceScene's machine (set up by its enter
+ * 0x710236ab10: this + 0x30 + 0x10 * state; wanted states this + 0x100 + 4 * index, index + 0x14c): each change of the state run */
+static const uint64_t k_onl_states[13] = {0x71023675c0ull, 0x7102367780ull, 0x7102367d00ull, 0x7102367d90ull, 0x7102368280ull, 0x7102368e60ull,
+    0x7102368f10ull, 0x7102368fe0ull, 0x7102369620ull, 0x710236a200ull, 0x710236a460ull, 0x710236a4d0ull, 0x710236a590ull};
+static ImportFn g_onl_st_orig[13];
+/* (0.2.52, SSBU_ONLINE_SOLO, default 1 with the game's own Online mode) Quickplay's first screen (In singolo / Cooperativa / Regole
+ * prioritarie: OnlineMeleeAnyScene) is not shown. Its state, 3 = 0x7102367d90, asks for that scene on its first frame (this + 0x154
+ * = 0, the frames in the state) and, once the scene is over, reads its result at [this] + 0x40: 2 back (the machine starts again at
+ * state 1, which ends the Online scene: back to the Arena menu), 3 Solo (current sequence 0x07010101, next state 4 = the character
+ * select), 4 Co-op (0x07010102), 5 the preferred rules screen. Here the first frame gives the state the result at once: Solo, or Back
+ * when the state is entered again from the character select (+ 0x158 = 4, the player pressed B there: Quickplay is left instead of
+ * opening Solo again). The rules are SSBU Arena's in any case (debug_mode.c SSBU_ONLINE_RULES). SSBU_ONLINE_SOLO=0: the screen as
+ * the game shows it (0.2.51). */
+static ImportFn g_onl_menu_orig;
+static void comp_onl_menu(Ctx *c, void *u) {
+    (void)u;
+    static int solo = -1; if (solo < 0) { const char *e = getenv("SSBU_ONLINE_SOLO"); solo = !(e && e[0] == '0'); }
+    uint64_t o = c->x[0], scene = o ? *(volatile uint64_t *)(uintptr_t)o : 0;
+    if (solo && scene && *(volatile int32_t *)(uintptr_t)(o + 0x154) == 0) {
+        int prev = *(volatile int32_t *)(uintptr_t)(o + 0x158), res = prev == 4 ? 2 : 3;
+        *(volatile int32_t *)(uintptr_t)(scene + 0x40) = res;
+        *(volatile int32_t *)(uintptr_t)(o + 0x154) = 1;
+        printf("competitive UI: Quickplay: the Solo / Co-op / preferred rules screen skipped: %s (state entered from %d; SSBU_ONLINE_SOLO)\n", res == 3 ? "Solo" : "back from the character select: Quickplay left", prev); fflush(stdout);
+    }
+    g_onl_menu_orig(c);
+}
+static void comp_onl_st(Ctx *c, void *u) {
+    int k = (int)(intptr_t)u; static int last = -1; static unsigned n;
+    uint64_t o = c->x[0]; int idx = *(volatile int32_t *)(uintptr_t)(o + 0x14c);
+    if (k != last && n++ < 400) { printf("[online] SEQ TRACE: state %d (was %d), wanted index %d: %d; +0x150 %d +0x154 %d +0x158 %d +0x15c %u; sequence %08x\n", k, last, idx,
+        idx >= 0 && idx < 0x13 ? *(volatile int32_t *)(uintptr_t)(o + 0x100 + 4ull * (unsigned)idx) : -1, *(volatile int32_t *)(uintptr_t)(o + 0x150), *(volatile int32_t *)(uintptr_t)(o + 0x154),
+        *(volatile int32_t *)(uintptr_t)(o + 0x158), *(volatile uint8_t *)(uintptr_t)(o + 0x15c), *(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE); fflush(stdout); }
+    last = k;
+    g_onl_st_orig[k](c);
+}
 static DWORD WINAPI comp_wait(LPVOID arg) {
     (void)arg;
     /* started by a constructor, before main.elf is read: GA() needs the game build (it stops the program before that) */
@@ -520,9 +610,12 @@ static DWORD WINAPI comp_wait(LPVOID arg) {
         if (hook_install(GA(0x71014e58f0ull), comp_battle, NULL, &g_battle_orig)) {
             if (!hook_install(GA(0x710235cbf0ull), comp_scene, NULL, &g_scene_orig)) printf("competitive: scene hook FAILED: every mode can be opened\n");
             { const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && w[0] == '2' && comp_quick_native()) hook_install(GA(0x7102363970ull), comp_seqstep, NULL, &g_seqstep_orig);
-              if (w && (w[0] == '3' || w[0] == '4')) {      /* (also without SSBU_QUICK_NATIVE: the Smash versus flow, to compare) */ hook_install(GA(0x7103725c90ull), comp_scn_a, NULL, &g_scn_a_orig); hook_install(GA(0x7103726120ull), comp_scn_b, NULL, &g_scn_b_orig); }
+              if (w && (w[0] == '3' || w[0] == '4')) {      /* (also without SSBU_QUICK_NATIVE: the Smash versus flow, to compare) */ hook_install(GA(0x7103725c90ull), comp_scn_a, NULL, &g_scn_a_orig); }
+              if ((w && (w[0] == '3' || w[0] == '4')) || comp_no_notices()) hook_install(GA(0x7103726120ull), comp_scn_b, NULL, &g_scn_b_orig);      /* (0.2.52: SSBU_NO_NOTICES) */
               if (w && w[0] == '4') hook_install(GA(0x7103726540ull), comp_scnend, NULL, &g_scnend_orig);
               if ((w && w[0] == '4') || comp_quick_native()) hook_install(GA(0x71023675c0ull), comp_onl_state0, NULL, &g_onl0_orig);
+              if (getenv("SSBU_ONLINE_SEQ_TRACE")) for (int k = 1; k < 13; k++) if (k != 3) hook_install(GA(k_onl_states[k]), comp_onl_st, (void *)(intptr_t)k, &g_onl_st_orig[k]);
+              if (comp_quick_native()) hook_install(GA(k_onl_states[3]), comp_onl_menu, NULL, &g_onl_menu_orig);      /* (0.2.52, SSBU_ONLINE_SOLO) */
               { void online_nex_hooks(void); online_nex_hooks(); } }      /* nnonline.c: SSBU_ONLINE_NEX=1 only */
             const char *arena_ui = getenv("SSBU_COMPETITIVE_UI");
             if (arena_ui && arena_ui[0] == '1') {
