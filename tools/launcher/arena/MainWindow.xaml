@@ -55,7 +55,7 @@
     <!-- header: logo, tabs, settings -->
     <Grid Grid.Row="0" Margin="40,0">
       <Border VerticalAlignment="Bottom" Height="1" Background="{StaticResource LineSoft}"/>
-      <StackPanel Orientation="Horizontal">
+      <StackPanel x:Name="NavBar" Orientation="Horizontal">
         <Button Style="{StaticResource Bare}" Click="Home_Click" VerticalAlignment="Center">
           <StackPanel Orientation="Horizontal">
             <Path Data="{StaticResource BrandMarkGeometry}" Fill="{StaticResource Accent}" Width="62" Height="53" Stretch="Uniform"/>
@@ -66,8 +66,13 @@
           </StackPanel>
         </Button>
         <Border Width="1" Height="36" Background="{StaticResource Line}" Margin="34,0,26,0" VerticalAlignment="Center"/>
+        <!-- the tabs, left to right. (0.2.52) Leaderboard (SSBU_LEADERBOARD=0 hides it). The OpenSmash tab (opens OpenSmash
+             Ultimate: its launcher or its site) goes right after Leaderboard, as TabOpenSmash: a Button styled like NavTab
+             (it opens something else, it is not a page here), so it never takes the selection from these RadioButtons. -->
         <RadioButton x:Name="TabHome" Style="{StaticResource NavTab}" Content="Home" IsChecked="True" Checked="Tab_Checked"/>
         <RadioButton x:Name="TabReplays" Style="{StaticResource NavTab}" Content="Replays" Checked="Tab_Checked"/>
+        <RadioButton x:Name="TabLeaderboard" Style="{StaticResource NavTab}" Content="Leaderboard" Checked="Tab_Checked"/>
+        <!-- (0.2.52) TabOpenSmash here -->
         <RadioButton x:Name="TabCommunity" Style="{StaticResource NavTab}" Content="Community" Checked="Tab_Checked" Visibility="Collapsed"/>
         <RadioButton x:Name="TabChanges" Style="{StaticResource NavTab}" Content="What's new" Checked="Tab_Checked" Visibility="Collapsed"/>
         <RadioButton x:Name="TabSettings" Style="{StaticResource NavTab}" Content="Settings" Checked="Tab_Checked" Visibility="Collapsed"/>
@@ -617,6 +622,111 @@
             </Border>
           </Grid>
         </Grid>
+      </Grid>
+
+      <!-- ============================================================ LEADERBOARD -->
+      <!-- (0.2.52) SSBU Arena's ranked 1v1 board: public.ranked_leaderboard() with the publishable key, the same data as
+           ssbuarena.com/leaderboard (MainWindow.Leaderboard.cs). The signed-in player's row is highlighted. -->
+      <Grid x:Name="PageLeaderboard" Visibility="Collapsed">
+        <Border Style="{StaticResource Panel}" Padding="26,18,26,14">
+          <DockPanel>
+            <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
+              <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="LEADERBOARD" Style="{StaticResource SectionTitle}" FontSize="36"/>
+                <TextBlock Text="Ranked 1v1 on SSBU Arena, by elo. Wins and losses count ranked matches with a result." Style="{StaticResource Small}" FontSize="15" Margin="0,2,0,0"/>
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <Button Style="{StaticResource Outline}" Height="36" Padding="14,0" Click="LbWeb_Click" Margin="0,0,8,0" ToolTip="The same leaderboard on ssbuarena.com">
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="On the website" FontSize="15"/>
+                    <Path Data="{StaticResource IcoExternal}" Stroke="{StaticResource Muted}" StrokeThickness="1.7" Width="13" Height="13" Stretch="Uniform" Margin="8,0,0,0" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                  </StackPanel>
+                </Button>
+                <Button x:Name="LbRefresh" Style="{StaticResource Outline}" Height="36" Padding="14,0" Click="LbRefresh_Click" Content="Refresh" FontSize="15" ToolTip="Read the leaderboard again"/>
+              </StackPanel>
+            </Grid>
+            <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="230"/></Grid.ColumnDefinitions>
+              <Grid>
+                <TextBox x:Name="LbSearch" Padding="22,0,30,0" MaxLength="32" TextChanged="LbSearch_Changed" ToolTip="A player's name, or name#tag"/>
+                <Path Data="{StaticResource IcoSearch}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="15" Height="15" Stretch="Uniform" HorizontalAlignment="Left" Margin="13,0,0,0" IsHitTestVisible="False" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                <TextBlock x:Name="LbSearchHint" Text="Find a player (name or name#tag)" Foreground="{StaticResource Dim}" FontSize="16" VerticalAlignment="Center" Margin="37,0,0,0" IsHitTestVisible="False"/>
+                <Button x:Name="LbSearchClear" Style="{StaticResource Bare}" HorizontalAlignment="Right" Margin="0,0,8,0" Padding="4" Click="LbSearchClear_Click" Visibility="Collapsed" ToolTip="Clear">
+                  <Path Data="{StaticResource IcoCross}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="10" Height="10" Stretch="Uniform"/>
+                </Button>
+              </Grid>
+              <ComboBox x:Name="LbRegionBox" Grid.Column="1" Margin="10,0,0,0" FontSize="15" SelectionChanged="LbRegion_Changed" ToolTip="Only the ranked matches played on this region's server (the elo is the same everywhere)"/>
+            </Grid>
+            <!-- your position: signed in, the player's own row (even when it is not in the list below); not signed in, a way to sign in -->
+            <Border x:Name="LbMeBox" DockPanel.Dock="Top" Margin="0,0,0,12" Padding="16,10" CornerRadius="6" BorderThickness="1" BorderBrush="#2F5C80" Background="#0F1E2D" Visibility="Collapsed">
+              <Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                  <TextBlock Text="YOUR POSITION" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="15" Foreground="{StaticResource Accent}" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="LbMeText" FontSize="16" Margin="16,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+                <Button x:Name="LbSignIn" Style="{StaticResource Link}" HorizontalAlignment="Right" VerticalAlignment="Center" Click="Profile_Click" Visibility="Collapsed"><TextBlock Text="Sign in" FontSize="15"/></Button>
+              </Grid>
+            </Border>
+            <Grid x:Name="LbHead" DockPanel.Dock="Top" Margin="13,0,23,6">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/><ColumnDefinition Width="120"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+              <TextBlock Text="#" Style="{StaticResource Small}" FontSize="13"/>
+              <TextBlock Grid.Column="1" Text="PLAYER" Style="{StaticResource Small}" FontSize="13"/>
+              <TextBlock Grid.Column="2" Text="MAIN" Style="{StaticResource Small}" FontSize="13" ToolTip="The fighter played most in ranked"/>
+              <TextBlock Grid.Column="3" Text="W–L" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
+              <TextBlock Grid.Column="4" Text="ELO" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
+            </Grid>
+            <Grid DockPanel.Dock="Bottom" Margin="0,8,0,0">
+              <TextBlock x:Name="LbStatus" Style="{StaticResource Small}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+            </Grid>
+            <Grid>
+              <ItemsControl x:Name="LbList" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.ScrollUnit="Pixel" VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True">
+                <ItemsControl.Template>
+                  <ControlTemplate TargetType="ItemsControl">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" Focusable="False" CanContentScroll="True"><ItemsPresenter Margin="0,0,10,0"/></ScrollViewer>
+                  </ControlTemplate>
+                </ItemsControl.Template>
+                <ItemsControl.ItemsPanel><ItemsPanelTemplate><VirtualizingStackPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate DataType="{x:Type local:LeaderRow}">
+                    <Border Margin="0,0,0,6" Padding="12,7" CornerRadius="6" BorderThickness="1" Background="{Binding RowBack}" BorderBrush="{Binding RowBorder}" ToolTip="{Binding RowTip}">
+                      <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/><ColumnDefinition Width="120"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding RankText}" FontFamily="{StaticResource Display}" FontStyle="Italic" FontWeight="ExtraBold" FontSize="24" Foreground="{Binding RankBrush}" VerticalAlignment="Center"/>
+                        <Grid Grid.Column="1" Margin="0,0,8,0">
+                          <Grid.ColumnDefinitions><ColumnDefinition Width="50"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                          <Grid Width="38" Height="38" HorizontalAlignment="Left">
+                            <Ellipse Fill="#16202C"/>
+                            <TextBlock Text="{Binding Initials}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="15" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Ellipse Stroke="{Binding RowBorder}" StrokeThickness="1"><Ellipse.Fill><ImageBrush ImageSource="{Binding Icon}" Stretch="UniformToFill"/></Ellipse.Fill></Ellipse>
+                          </Grid>
+                          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Name}" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding TagText}" Style="{StaticResource Small}" FontSize="15" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                            <Border Background="#1B3A55" CornerRadius="3" Padding="7,0" Margin="10,0,0,0" VerticalAlignment="Center" Visibility="{Binding YouVisible}">
+                              <TextBlock Text="YOU" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="14" Foreground="{StaticResource Accent}"/>
+                            </Border>
+                          </StackPanel>
+                        </Grid>
+                        <TextBlock Grid.Column="2" Text="{Binding Fighter}" FontSize="15" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                        <StackPanel Grid.Column="3" VerticalAlignment="Center" HorizontalAlignment="Right">
+                          <TextBlock Text="{Binding Record}" FontSize="16" HorizontalAlignment="Right"/>
+                          <TextBlock Text="{Binding RateText}" Style="{StaticResource Small}" FontSize="12.5" HorizontalAlignment="Right"/>
+                        </StackPanel>
+                        <TextBlock Grid.Column="4" Text="{Binding EloText}" FontSize="19" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <!-- loading, empty, no match, error -->
+              <StackPanel x:Name="LbEmpty" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="600" Visibility="Collapsed">
+                <TextBlock x:Name="LbEmptyTitle" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"/>
+                <TextBlock x:Name="LbEmptyText" Style="{StaticResource Small}" FontSize="16" TextAlignment="Center" Margin="0,8,0,0"/>
+                <Button x:Name="LbRetry" Style="{StaticResource Outline}" Height="36" Padding="16,0" Margin="0,16,0,0" HorizontalAlignment="Center" Click="LbRefresh_Click" Content="Try again" FontSize="15" Visibility="Collapsed"/>
+              </StackPanel>
+            </Grid>
+          </DockPanel>
+        </Border>
       </Grid>
 
       <!-- ============================================================ COMMUNITY -->

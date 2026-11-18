@@ -35,6 +35,7 @@ namespace Arena
             // (0.2.8) resizing keeps the window's proportions (the page is laid out for one shape)
             SourceInitialized += (s0, e0) => System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(this).Handle).AddHook(KeepAspect);
             Core.Load();
+            InitLeaderboard();
             SpaceOut(this);
             FillSettings();
             loading = false;
@@ -178,6 +179,7 @@ namespace Arena
 
         void RefreshPlayer()
         {
+            LeaderboardAccountChanged();
             string n = Core.Nickname.Trim();
             if (Account.SignedIn)
             {
@@ -515,7 +517,7 @@ namespace Arena
         // ---------------------------------------------------------------- navigation
         void ShowPage(UIElement page)
         {
-            foreach (var p in new UIElement[] { PageHome, PageReplays, PageCommunity, PageChanges, PageSettings }) p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
+            foreach (var p in new UIElement[] { PageHome, PageReplays, PageLeaderboard, PageCommunity, PageChanges, PageSettings }) p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
             if (page != PageSettings) { SaveQuiet(); PadLiveStop(); }
             else if (SecPads.IsChecked == true) PadLiveStart();
         }
@@ -523,9 +525,10 @@ namespace Arena
         void Tab_Checked(object sender, RoutedEventArgs e)
         {
             if (PageHome == null) return;
-            ShowPage(sender == TabReplays ? PageReplays : sender == TabCommunity ? PageCommunity : sender == TabChanges ? PageChanges : sender == TabSettings ? (UIElement)PageSettings : PageHome);
+            ShowPage(sender == TabReplays ? PageReplays : sender == TabLeaderboard ? PageLeaderboard : sender == TabCommunity ? PageCommunity : sender == TabChanges ? PageChanges : sender == TabSettings ? (UIElement)PageSettings : PageHome);
             if (sender == TabReplays) ReplaysShown();
             if (sender == TabChanges) ChangesShown();
+            if (sender == TabLeaderboard) LeaderboardShown();
         }
 
         void Section_Checked(object sender, RoutedEventArgs e)
@@ -542,7 +545,7 @@ namespace Arena
             TabSettings.IsChecked = true;
         }
 
-        /// <summary>--page replays | community | settings[:player|online|video|controllers|saves|dlc|files] (for screenshots)</summary>
+        /// <summary>--page replays | leaderboard | community | settings[:player|online|video|controllers|saves|dlc|files] (for screenshots)</summary>
         void OpenFromArgs()
         {
             var args = Environment.GetCommandLineArgs();
@@ -556,6 +559,7 @@ namespace Arena
             if (i < 0 || i + 1 >= args.Length) return;
             var parts = args[i + 1].Split(':');
             if (parts[0] == "replays") TabReplays.IsChecked = true;
+            else if (parts[0] == "leaderboard" && TabLeaderboard.Visibility == Visibility.Visible) TabLeaderboard.IsChecked = true;
             else if (parts[0] == "community") TabCommunity.IsChecked = true;
             else if (parts[0] == "changes") TabChanges.IsChecked = true;
             else if (parts[0] == "settings")
