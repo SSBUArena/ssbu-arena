@@ -74,7 +74,9 @@ static void os_GetSystemTick(Ctx *c) {
     { uint64_t m = host_match_clock(c->x[30]); if (m) { RET(m * TICK_HZ); return; } }
     QueryPerformanceCounter(&now);
     QueryPerformanceFrequency(&freq);
-    RET((uint64_t)((double)now.QuadPart * (double)TICK_HZ / (double)freq.QuadPart));
+    {   uint64_t dm_online_net_clock_bias(uint64_t lr);      /* (online-mm A3, SSBU_ONLINE_RB=1: debug_mode.c) 0 unless a rollback fight of the game's Online match was played */
+        uint64_t lr = c->x[30], t = (uint64_t)((double)now.QuadPart * (double)TICK_HZ / (double)freq.QuadPart);
+        RET(t - dm_online_net_clock_bias(lr)); }
 }
 static void os_GetSystemTickFrequency(Ctx *c) { RET(TICK_HZ); }
 

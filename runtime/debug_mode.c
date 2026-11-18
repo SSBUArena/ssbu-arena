@@ -589,7 +589,7 @@ static int g_onl_bound;
  * rollback plays. Before and after, the Online scene's frames are the game's own (its netcode's lockstep: the countdown, the end). */
 static int g_onl_fight, g_onl_rebind = -1;
 void dm_online_fight_start(Ctx *c) {
-    if (g_hs_onlrb && g_onl_restore && !g_onl_fight) { g_onl_fight = 1; long long rbn_now(void);
+    if (g_hs_onlrb && g_onl_restore && !g_onl_fight) { g_onl_fight = 1; long long rbn_now(void); void dm_online_clock(int on); dm_online_clock(1);
         printf("[online] A3: the rollback match's base state: from here the fight's pads are the rollback's and the game's own fight netcode is not run (frame %lld)\n", rbn_now()); fflush(stdout); }
     static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_RB_BIND"); on = e && e[0] == '1'; }      /* (18/11: default off, the pads come from ctl_pop_hook) */
     if (!on || !g_hs_onlrb || !g_onl_restore || g_onl_bound) return;
@@ -616,6 +616,7 @@ static void dm_online_restore(void) {
      * game's context). SSBU_ONLINE_RB_REBIND=0: not. */
     {   static int rb = -1; if (rb < 0) { const char *e = getenv("SSBU_ONLINE_RB_REBIND"); rb = !(e && e[0] == '0'); }
         int rbn_local_player(void); if (g_onl_fight && rb) g_onl_rebind = rbn_local_player() & 1; }
+    if (g_onl_fight) { void dm_online_clock(int on); dm_online_clock(0); }
     g_onl_fight = 0; g_onl_bound = 0;
     if (g_onl_pops) { printf("[online] A3: the fight's pads: %u frame(s) played with the rollback's pads (the game's own queue pop: %u with pads, %u empty = its netcode would have waited)\n", g_onl_pops, g_onl_pop_ok[1], g_onl_pop_ok[0]); g_onl_pops = g_onl_pop_ok[0] = g_onl_pop_ok[1] = 0; }
     int n = 0;
@@ -1725,8 +1726,34 @@ static void ctl_pop_hook(Ctx *c, void *user) {
  * (SSBU_ONLINE_RB_NETSKIP=0: run, as a3x2). */
 static ImportFn g_orig_net_upd[2];
 static int onl_netskip(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_RB_NETSKIP"); on = !(e && e[0] == '0'); } return on && g_onl_fight; }
-static void net_pre_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { g_onl_netskip[0]++; return; } g_orig_net_upd[0](c); }
-static void net_upd_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { g_onl_netskip[1]++; return; } g_orig_net_upd[1](c); }
+/* (run a3x5: with the netcode not run for the fight's ~33 s, both games' netcode closed the session when it ran again) the clock
+ * of the game's fight netcode stops while it is not run: nnsdk.c os_GetSystemTick takes off, for the call sites inside the
+ * netcode's code (0x71016cd000 .. 0x71016e0000), the time of the rollback fights so far (SSBU_ONLINE_RB_CLOCK=0: not). */
+static uint64_t g_onl_clk_bias, g_onl_clk_t0;
+static uint64_t onl_qpc_ticks(void) { LARGE_INTEGER now, freq; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&freq); return (uint64_t)((double)now.QuadPart * 19200000.0 / (double)freq.QuadPart); }
+uint64_t dm_online_net_clock_bias(uint64_t lr) {
+    if (!g_onl_clk_bias || lr < GA(0x71016cd000ULL) || lr >= GA(0x71016e0000ULL)) return 0;
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_RB_CLOCK"); on = !(e && e[0] == '0'); }
+    if (on) { static int said; if (!said++) { printf("[online] A3: the fight netcode's clock: first read after a rollback fight (call site %llx), %.2f s taken off\n", (unsigned long long)lr, (double)g_onl_clk_bias / 19200000.0); fflush(stdout); } }
+    return on ? g_onl_clk_bias : 0;
+}
+void dm_online_clock(int on) {
+    if (on) { g_onl_clk_t0 = onl_qpc_ticks(); return; }
+    if (g_onl_clk_t0) { uint64_t d = onl_qpc_ticks() - g_onl_clk_t0; g_onl_clk_bias += d; g_onl_clk_t0 = 0;
+        printf("[online] A3: the fight netcode's clock was stopped for %.2f s (%.2f s in all; SSBU_ONLINE_RB_CLOCK)\n", (double)d / 19200000.0, (double)g_onl_clk_bias / 19200000.0); fflush(stdout); }
+}
+static void net_state_note(const char *when, uint64_t o) {      /* the net object's state changes, for the log */
+    static uint32_t last = 0xffffffffu; static int n;
+    if (!o) return;
+    uint32_t v = rd8(o + 0x62) | (uint32_t)rd8(o + 0x63) << 8 | (uint32_t)rd16(o + 0x64) << 16;
+    if (v == last) return;
+    uint64_t ctl = sr64(GA(0x71052c40f0ULL)); long long rbn_now(void);
+    if (n++ < 60) { printf("[online] A3: net object %s: state + 0x62 %u, end + 0x63 %u reason + 0x64 %04x (was %08x); frames + 2 %u + 4 %u; controls + 8 %d masks %02x %02x %02x; rollback fight %d\n", when, v & 255, v >> 8 & 255, v >> 16, last,
+                        rd16(o + 2), rd16(o + 4), ctl ? (int)rd32(ctl + 8) : -1, ctl ? rd8(ctl + 0xc) : 0, ctl ? rd8(ctl + 0xd) : 0, ctl ? rd8(ctl + 0xe) : 0, g_onl_fight); fflush(stdout); }
+    last = v;
+}
+static void net_pre_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { g_onl_netskip[0]++; return; } uint64_t o = c->x[0]; g_orig_net_upd[0](c); net_state_note("after its update before the frame", o); }
+static void net_upd_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { g_onl_netskip[1]++; return; } uint64_t o = c->x[0]; g_orig_net_upd[1](c); net_state_note("after its update after the frame", o); }
 /* (online-mm A3, RESEARCH + log) 0x71016ce960 (net object, reason): the game's fight netcode ends the match itself (it sets the
  * object's + 0x63 = 2, + 0x64 = the reason); who asked and in which state, for the log (only with SSBU_ONLINE_RB=1) */
 static ImportFn g_orig_net_end;
