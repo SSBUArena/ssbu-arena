@@ -2250,6 +2250,18 @@ static void test_tick(void) {
     }
     fflush(stdout);
 }
+/* (0.2.53) TEST SWITCH SSBU_SHOT_POPUPS=1 (default off): 1 s after each online popup is drawn (e.g. the ranked elo notice of
+ * online_elo.c), a picture of the window WITH the popup (SSBU_SHOT_DIR/menu_test_popup_<n>.bmp): the results pictures of
+ * SSBU_SHOT_RESULTS are taken before the menu layer is drawn. */
+static void popup_shot_tick(void) {
+    static int on = -1, n, seen; static ULONGLONG t0;
+    if (on < 0) { const char *e = getenv("SSBU_SHOT_POPUPS"); on = e && e[0] == '1'; }
+    if (!on) return;
+    ULONGLONG t = GetTickCount64();
+    if (g_popup_drawn && !seen) { seen = 1; t0 = t; }
+    else if (seen == 1 && t - t0 >= 1000) { char w[24]; snprintf(w, sizeof w, "popup_%d", ++n); test_shot(w); printf("menu: picture of the popup %d (SSBU_SHOT_POPUPS)\n", n); fflush(stdout); seen = 2; }
+    if (seen == 2 && !g_popup_drawn) seen = 0;
+}
 /* TEST SWITCH SSBU_MENU_ROOMS_TEST=popup (O1, default off): 1 s after the first online popup is drawn, a picture of it
  * (SSBU_SHOT_DIR/menu_test_popup.bmp); then F1 opens on Online rooms, 3 s later its rooms go to the log ("menu: rooms
  * test:") with a picture (menu_test_rooms.bmp), and the menu closes. */
@@ -2297,7 +2309,7 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
         if (fresh) g_last_t = now; }
     if (!g_sections_inited) { settings_init(width, height); g_sections_inited = 1; CreateThread(NULL, 0, redraw_thread, NULL, 0, NULL); }
     test_tick();
-    rooms_test_tick();
+    rooms_test_tick(); popup_shot_tick();
     uint64_t b = nnhid_menu_buttons(), down = b & ~g_pad_prev;
     g_pad_prev = b;
     {   /* U2: - and + held together for 1 s open the menu too: a controller whose Home / Guide button is taken (the Steam

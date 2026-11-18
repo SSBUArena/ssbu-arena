@@ -24,10 +24,14 @@
  *     game server with DataStore 82): the game's Glicko update is run as always, then OUR result replaces the new rating and its
  *     copy (the panel's "after"): Elo with the database's formula against the opponent's rating, K from the rated games the game
  *     server put in the record's second value (rb_nex --elo-records 1: 200 + rated games), score 0 for the set-up's value and
- *     the fight's result at the end (this file's own result of the fight; else the direction of the game's own change).
+ *     the game's own result of that member at the end (the direction of its own Glicko change: the update runs for every member).
  *   The game server gives every fighter's record from the database's elo at login (rb_nex --elo-records 1), so the panel starts
  *   from the real number; the database's number stays the truth (a match over the pair limit or disputed can differ until the
  *   next login). "Global Smash Power" is renamed "Arena Elo" by the menu's text patch (tools/ui/prepare_menu_classic.py).
+ *   Seen in the local tests (elo_test, 19/11): the Online select shows the record's rating itself (also without the hooks: "GSP 1014"),
+ *   with the text patch "Elo 1014"; the update hook gives the database's numbers at the set-up and the end (pairs IDENTICAL). The
+ *   results page with the GSP panel did not come up in the local runs (with or without the hooks), so the conversion hook was not
+ *   seen running there: SSBU_ONLINE_ELO_TRACE=1 (test) logs every call of 0x71017d14c0.
  *   Read off the 13.0.4 binary (elo_re study, 19/11): addresses and fields only. Never inside the fight (results / select). */
 #include <stdio.h>
 #include <stdlib.h>
@@ -156,6 +160,8 @@ static ImportFn g_oe_orig_conv, g_oe_orig_upd;
 static long long g_oe_conv_n, g_oe_upd_n;
 static void oe_conv_hook(Ctx *c, void *user) {          /* 0x71017d14c0 (table, u16 category, u32 rating) -> u32 shown */
     (void)user;
+    {   static int tr = -1, n; if (tr < 0) { const char *e = getenv("SSBU_ONLINE_ELO_TRACE"); tr = e && e[0] == '1'; }      /* (TEST) every call, the first 60 */
+        if (tr && n++ < 60) { printf("[elo] trace: the rating shown: category %u, rating %u, caller %llx\n", (unsigned)(c->x[1] & 0xffff), (unsigned)c->x[2], (unsigned long long)c->x[30]); fflush(stdout); } }
     if ((c->x[1] & 0xffff) == 0x15) {
         uint32_t r = (uint32_t)c->x[2]; c->x[0] = r ? r : 1;
         if (g_oe_conv_n++ < 6) { printf("[elo] the game's rating %u shown as it is (Arena Elo, SSBU_ONLINE_ELO_UI)\n", r); fflush(stdout); }
@@ -184,8 +190,9 @@ static void oe_upd_hook(Ctx *c, void *user) {
     int old = (int)rd32(mine + 0x60), op = (int)rd32(opp + 0x60), dev = (int)rd32(mine + 0x68), glicko = (int)rd32(pr);
     int games = dev >= 200 ? dev - 200 : 10;
     int provisional = fvt == GA(0x71050823a0ULL), s;
+    /* the score: 0 for the set-up's "if I lose" value; at the end the game's own result for THIS member (the update runs once per
+     * member: its Glicko change goes up for a win, down for a loss, never 0 with the deviation of 200 and more rb_nex gives) */
     if (provisional) s = 0;
-    else if ((uint32_t)g_oe_last_mid == rbn_match_id() && g_oe_last_winner >= 0 && g_oe_last_side >= 0) s = g_oe_last_winner == g_oe_last_side;
     else s = glicko > old;
     double e = 1.0 / (1.0 + pow(10.0, (op - old) / 400.0));
     int nv = old + oe_round(oe_k(games, old) * (s - e)); if (nv < 100) nv = 100;

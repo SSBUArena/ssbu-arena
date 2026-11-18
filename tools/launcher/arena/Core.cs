@@ -608,6 +608,9 @@ namespace Arena
         public static bool ArenaMenuOk => Competitive && ArenaMenuFiles(out _);
         /// <summary>(0.2.53) the menu tool's marker version this launcher wants (tools/ui/prepare_menu_classic.py MARKER_VERSION)</summary>
         const int ArenaMenuVersion = 2;
+        /// <summary>(0.2.53) the menu was made again once for an older marker: from then on its version is not asked (a menu tool older than
+        /// this launcher, e.g. sources not updated yet, would else be run at every check and the game started without Arena's menu)</summary>
+        static volatile bool menuVersionTried;
         public const string ArenaMenuMissingText = "Arena menu files missing (characters\\arena_menu): the game would start with the original menu";
         static readonly string[] ArenaMenuNames = { @"ui\layout\menu\main_menu\main_menu\layout.arc", @"ui\layout\menu\pallet_menu\pallet_menu\layout.arc",
             @"ui\layout\menu\main_menu_footer\main_menu_footer\layout.arc", @"ui\script\menu\main\main_menu_layer_top.lc", @"ui\script\menu\main\main_menu_common.lc", @"ui\message\msg_menu.msbt" };
@@ -626,7 +629,7 @@ namespace Arena
                     string mtext = File.ReadAllText(marker);
                     // (0.2.53) a menu of an older tool (version < 2: no "Arena Elo" texts) is made again once
                     var mv = Regex.Match(mtext, "\"version\"\\s*:\\s*(\\d+)");
-                    if (mv.Success && int.Parse(mv.Groups[1].Value) < ArenaMenuVersion && Environment.GetEnvironmentVariable("SSBU_ARENA_MENU_VERSION_CHECK") != "0")
+                    if (mv.Success && int.Parse(mv.Groups[1].Value) < ArenaMenuVersion && !menuVersionTried && Environment.GetEnvironmentVariable("SSBU_ARENA_MENU_VERSION_CHECK") != "0")
                     { why = "made by an older menu tool (version " + mv.Groups[1].Value + ", now " + ArenaMenuVersion + ")"; return false; }
                     var listed = Regex.Matches(mtext, "\"(ui/[^\"]+)\"\\s*:\\s*(\\d+)");
                     if (listed.Count > 0) names = listed.Cast<Match>().Select(m => m.Groups[1].Value.Replace('/', '\\')).ToList();
@@ -665,6 +668,7 @@ namespace Arena
                 if (!Directory.Exists(CompDir)) { MakeCompetitive(); HasCompetitive = Directory.Exists(CompDir); Competitive = LightArc || HasCompetitive; }
                 string before = ArenaMenuOffReason();
                 if (before == null) return true;
+                menuVersionTried = true;
                 bool ok = Competitive && MakeArenaMenu();
                 string after = ArenaMenuOffReason();
                 Updater.Log("arena menu: was " + before + "; made again here: " + (after == null ? "OK" : "FAILED (" + after + "), see " + Path.Combine(Build, @"logs\arena_menu.log")));
