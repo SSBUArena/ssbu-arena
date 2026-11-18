@@ -286,12 +286,10 @@
           <Button Grid.Row="4" Style="{StaticResource CardButton}" Padding="20,12" Click="Community_Click">
             <Grid>
               <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-              <Path Data="{StaticResource IcoPeople}" Width="38" Height="32" Stretch="Uniform" VerticalAlignment="Center">
-                <Path.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#8AD5FF" Offset="0"/><GradientStop Color="#3FA9EE" Offset="1"/></LinearGradientBrush></Path.Fill>
-              </Path>
+              <Path Data="{StaticResource IcoDiscord}" Width="38" Height="32" Stretch="Uniform" VerticalAlignment="Center" Fill="#5865F2"/>
               <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
                 <TextBlock Text="Join the community" FontSize="18" FontWeight="SemiBold"/>
-                <TextBlock Text="The OpenSmash Discord: find players, follow the project." FontSize="15.5" Foreground="{StaticResource Muted}" Margin="0,4,0,0"/>
+                <TextBlock Text="Find players on Discord." FontSize="15.5" Foreground="{StaticResource Muted}" Margin="0,4,0,0"/>
               </StackPanel>
               <Path Grid.Column="2" Data="{StaticResource IcoExternal}" Stroke="{StaticResource Accent}" StrokeThickness="1.8" Width="18" Height="18" Stretch="Uniform" VerticalAlignment="Center"
                     StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
