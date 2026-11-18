@@ -1104,6 +1104,26 @@ static void match_player_hook(Ctx *c, void *user) {
                    (int)rd32(st + 0x210), (int)rd32(st + 0x214), rd8(st + 0x450), rd8(st + 0x451), rd8(st + 0xa4));
             fflush(stdout);
         } }
+    {   /* (0.2.52, SSBU_ONLINE_RULES, default 1) the game's Online match (melee mode 14, the match's own builder, not a Local Wireless
+         * room's) is played with SSBU Arena's competitive rules whatever the players' preferred rules (the gathering's): stock, 3 stocks,
+         * 7 minutes, no items, no hazards, one of the 6 stages in its normal form (competitive.c comp_online_stage; FS meter, stage morph
+         * and pause are off in every battle already). Read off the set-up (run b3): panel state + 5 the rule kind (1 stock), + 8 the time
+         * (u16, seconds), + 0xa the stocks; match block + 5 the rule kind, + 0x48 the time (u32, frames), + 0x4c the stocks, + 0x54 the
+         * item frequency; 0x7105309985 the hazards switch. Both games write the same values before the handshake (it compares them) and
+         * before the records are built. SSBU_ONLINE_RULES=0: the gathering's rules (0.2.51). */
+        static int rules = -1; if (rules < 0) { const char *e = getenv("SSBU_ONLINE_RULES"); rules = !(e && e[0] == '0'); }
+        int online_nex_on(void), nnldn_role(void);
+        if (rules && idx >= 0 && idx < 2 && online_nex_on() && rd8(MELEE_INFO) == 14 && c->x[30] != GA(0x71017911dcULL) && !nnldn_role()) {
+            if (idx == 0) {
+                int comp_online_stage(void); comp_online_stage();
+                printf("[online] rules: the Online match: rule kind %u -> 1, time %u s -> 420, stocks %u -> 3, items %u -> 0, hazards %u -> 0 (SSBU_ONLINE_RULES)\n",
+                       rd8(st + 5), rd16(st + 8), rd8(st + 0xa), rd32(MELEE_INFO + 0x54), rd8(GA(0x7105309985ULL)));
+                if (rd8(MELEE_INFO + 5) == rd8(st + 5)) wr8(MELEE_INFO + 5, 1);
+                wr32(MELEE_INFO + 0x48, 420u * 60u); wr32(MELEE_INFO + 0x4c, 3); wr32(MELEE_INFO + 0x54, 0); wr8(GA(0x7105309985ULL), 0);
+                fflush(stdout);
+            }
+            wr8(st + 5, 1); wr16(st + 8, 420); wr8(st + 0xa, 3);
+        } }
     {   int online_rb_on(void);                          /* (online-mm A3, SSBU_ONLINE_RB=1) */
         if (g_hs_wanted && online_rb_on() && idx >= 0 && idx < 2) {
             if (idx == 0) {

@@ -65,6 +65,25 @@ static void comp_stage(void) {
     }
 }
 
+/* (0.2.52, SSBU_ONLINE_RULES, debug_mode.c) the game's Online match is played on one of the 6 stages in their normal form: the
+ * current stage choice (the gathering's, the same on both games) is made one of them as comp_stage does (the same choice gives the
+ * same stage on both), and its form (+ 8: 1 Battlefield, 2 Omega) is 0. Returns 1 when something changed. */
+int comp_online_stage(void) {
+    uint32_t cur = *(volatile uint32_t *)(uintptr_t)GA(0x7105309968ull); if (cur >= 3) cur = 0;
+    volatile uint64_t *id = (volatile uint64_t *)(uintptr_t)(GA(0x71053097c0ull) + 0x20ull * cur);
+    volatile uint32_t *form = (volatile uint32_t *)(uintptr_t)(GA(0x71053097c0ull) + 0x20ull * cur + 8);
+    uint64_t was = *id; uint32_t fwas = *form; int ok = 0; char nm[48];
+    for (int k = 0; k < 6; k++) { snprintf(nm, sizeof nm, "ui_stage_%s", k_stages[k]); if ((was & 0xffffffffffull) == comp_h40(nm)) ok = 1; }
+    if (!ok) {
+        uint64_t mix = was ^ (uint64_t)cur * 0x9e3779b97f4a7c15ull ^ *(volatile uint64_t *)(uintptr_t)(GA(0x71053097c0ull) + 0x20ull * cur + 0x10);
+        mix ^= mix >> 29; mix *= 0xbf58476d1ce4e5b9ull; mix ^= mix >> 32;
+        snprintf(nm, sizeof nm, "ui_stage_%s", k_stages[mix % 6]);
+        *id = 0x6900000000000000ull | comp_h40(nm);
+    }
+    *form = 0;
+    printf("competitive: the Online match's stage: %llx form %u -> %llx form 0%s\n", (unsigned long long)was, fwas, (unsigned long long)*id, ok ? " (one of the 6)" : ""); fflush(stdout);
+    return !ok || fwas != 0;
+}
 /* The modes outside the competitive 1v1. The current sequence is a global of 13.0.4 (0x71053040f0: SEQUENCE_* ids, the
  * lua constants registered at 0x7101bf1930: 0x01000000 title / menus, 0x02010000 Smash (also local wireless), 0x03.. Spirits,
  * 0x04.. Games & More, 0x05.. Vault, 0x06.. Options, 0x07.. Online). The scene dispatcher 0x710235cbf0 reads it and
@@ -517,6 +536,27 @@ static void comp_scn_b(Ctx *c, void *u) { (void)u; comp_scn_log(c, "controller's
 static const uint64_t k_onl_states[13] = {0x71023675c0ull, 0x7102367780ull, 0x7102367d00ull, 0x7102367d90ull, 0x7102368280ull, 0x7102368e60ull,
     0x7102368f10ull, 0x7102368fe0ull, 0x7102369620ull, 0x710236a200ull, 0x710236a460ull, 0x710236a4d0ull, 0x710236a590ull};
 static ImportFn g_onl_st_orig[13];
+/* (0.2.52, SSBU_ONLINE_SOLO, default 1 with the game's own Online mode) Quickplay's first screen (In singolo / Cooperativa / Regole
+ * prioritarie: OnlineMeleeAnyScene) is not shown. Its state, 3 = 0x7102367d90, asks for that scene on its first frame (this + 0x154
+ * = 0, the frames in the state) and, once the scene is over, reads its result at [this] + 0x40: 2 back (the machine starts again at
+ * state 1, which ends the Online scene: back to the Arena menu), 3 Solo (current sequence 0x07010101, next state 4 = the character
+ * select), 4 Co-op (0x07010102), 5 the preferred rules screen. Here the first frame gives the state the result at once: Solo, or Back
+ * when the state is entered again from the character select (+ 0x158 = 4, the player pressed B there: Quickplay is left instead of
+ * opening Solo again). The rules are SSBU Arena's in any case (debug_mode.c SSBU_ONLINE_RULES). SSBU_ONLINE_SOLO=0: the screen as
+ * the game shows it (0.2.51). */
+static ImportFn g_onl_menu_orig;
+static void comp_onl_menu(Ctx *c, void *u) {
+    (void)u;
+    static int solo = -1; if (solo < 0) { const char *e = getenv("SSBU_ONLINE_SOLO"); solo = !(e && e[0] == '0'); }
+    uint64_t o = c->x[0], scene = o ? *(volatile uint64_t *)(uintptr_t)o : 0;
+    if (solo && scene && *(volatile int32_t *)(uintptr_t)(o + 0x154) == 0) {
+        int prev = *(volatile int32_t *)(uintptr_t)(o + 0x158), res = prev == 4 ? 2 : 3;
+        *(volatile int32_t *)(uintptr_t)(scene + 0x40) = res;
+        *(volatile int32_t *)(uintptr_t)(o + 0x154) = 1;
+        printf("competitive UI: Quickplay: the Solo / Co-op / preferred rules screen skipped: %s (state entered from %d; SSBU_ONLINE_SOLO)\n", res == 3 ? "Solo" : "back from the character select: Quickplay left", prev); fflush(stdout);
+    }
+    g_onl_menu_orig(c);
+}
 static void comp_onl_st(Ctx *c, void *u) {
     int k = (int)(intptr_t)u; static int last = -1; static unsigned n;
     uint64_t o = c->x[0]; int idx = *(volatile int32_t *)(uintptr_t)(o + 0x14c);
@@ -539,6 +579,7 @@ static DWORD WINAPI comp_wait(LPVOID arg) {
               if (w && w[0] == '4') hook_install(GA(0x7103726540ull), comp_scnend, NULL, &g_scnend_orig);
               if ((w && w[0] == '4') || comp_quick_native()) hook_install(GA(0x71023675c0ull), comp_onl_state0, NULL, &g_onl0_orig);
               if (getenv("SSBU_ONLINE_SEQ_TRACE")) for (int k = 1; k < 13; k++) if (k != 3) hook_install(GA(k_onl_states[k]), comp_onl_st, (void *)(intptr_t)k, &g_onl_st_orig[k]);
+              if (comp_quick_native()) hook_install(GA(k_onl_states[3]), comp_onl_menu, NULL, &g_onl_menu_orig);      /* (0.2.52, SSBU_ONLINE_SOLO) */
               { void online_nex_hooks(void); online_nex_hooks(); } }      /* nnonline.c: SSBU_ONLINE_NEX=1 only */
             const char *arena_ui = getenv("SSBU_COMPETITIVE_UI");
             if (arena_ui && arena_ui[0] == '1') {
