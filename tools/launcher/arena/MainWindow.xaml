@@ -717,21 +717,18 @@
                           </StackPanel>
                         </Grid>
                         <!-- (0.2.52) the fighters: the game's stock icons from this PC's game files (else the portrait, else a text badge), the main first;
-                             each with its own elo under it when the server gives one per fighter -->
+                             all 32 px (half of the 64 px stock icons), the elo of each in its tooltip -->
                         <TextBlock Grid.Column="2" Text="–" FontSize="15" Foreground="{StaticResource Dim}" VerticalAlignment="Center" Visibility="{Binding NoFighterVisible}"/>
-                        <ItemsControl Grid.Column="2" ItemsSource="{Binding Fighters}" VerticalAlignment="Center" Focusable="False">
+                        <ItemsControl Grid.Column="2" ItemsSource="{Binding Fighters}" VerticalAlignment="Center" Focusable="False" UseLayoutRounding="True">
                           <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                           <ItemsControl.ItemTemplate>
                             <DataTemplate DataType="{x:Type local:LeaderFighter}">
-                              <StackPanel Margin="0,0,10,0" VerticalAlignment="Center" ToolTip="{Binding Tip}" Background="Transparent">
-                                <Grid Width="{Binding Size}" Height="{Binding Size}" HorizontalAlignment="Center">
-                                  <Border CornerRadius="6" Background="#1A2634" BorderBrush="#2C3B4E" BorderThickness="1" Visibility="{Binding BadgeVisible}">
-                                    <TextBlock Text="{Binding Badge}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="{Binding BadgeFont}" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                  </Border>
-                                  <Rectangle RadiusX="6" RadiusY="6"><Rectangle.Fill><ImageBrush ImageSource="{Binding Icon}" Stretch="Uniform"/></Rectangle.Fill></Rectangle>
-                                </Grid>
-                                <TextBlock Text="{Binding EloText}" Visibility="{Binding EloVisible}" FontSize="11.5" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,1,0,0"/>
-                              </StackPanel>
+                              <Grid Width="32" Height="32" Margin="0,0,8,0" VerticalAlignment="Center" ToolTip="{Binding Tip}" Background="Transparent">
+                                <Border CornerRadius="6" Background="#1A2634" BorderBrush="#2C3B4E" BorderThickness="1" Visibility="{Binding BadgeVisible}">
+                                  <TextBlock Text="{Binding Badge}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="12.5" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <Rectangle RadiusX="6" RadiusY="6" RenderOptions.BitmapScalingMode="HighQuality"><Rectangle.Fill><ImageBrush ImageSource="{Binding Icon}" Stretch="Uniform"/></Rectangle.Fill></Rectangle>
+                              </Grid>
                             </DataTemplate>
                           </ItemsControl.ItemTemplate>
                         </ItemsControl>

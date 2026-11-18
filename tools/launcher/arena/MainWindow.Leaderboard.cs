@@ -9,7 +9,7 @@
 // text badge: no game art is shipped. The server names fighters as arena-server's arena_results.c does ("Mario", "Pyra / Mythra", or
 // the hex id it had no name for): ReplayNames.FighterKeyOfLabel maps that to the game's key. Today the function gives main_fighter
 // only; a row may also carry "fighters", a list (json array, or its text) of {fighter, elo, games, wins, losses} with the player's
-// most played first (elo per fighter, not there yet): then each icon shows its own elo, and the fighter filter ranks by it. The
+// most played first (elo per fighter, not there yet): then each icon's tooltip gives its own elo, and the fighter filter ranks by it. The
 // fighter filter appears once the board has rows: it works on the rows read (the first LbLimit), on main_fighter / fighters.
 using System;
 using System.Collections;
@@ -53,13 +53,7 @@ namespace Arena
                 return w.Count == 1 ? (w[0].Length >= 2 ? char.ToUpperInvariant(w[0][0]) + w[0].Substring(1, 1) : w[0].ToUpperInvariant()) : "?";
             }
         }
-        /// <summary>the first icon of the row, a little bigger: the main, or the fighter the filter chose</summary>
-        public bool Lead { get; set; }
-        public double Size => Lead ? 34 : 28;
-        public double BadgeFont => Lead ? 13 : 11.5;
-        public LeaderFighter Copy(bool lead) { var c = (LeaderFighter)MemberwiseClone(); c.Lead = lead; return c; }
-        public string EloText => HasElo ? Elo.ToString(CultureInfo.InvariantCulture) : "";
-        public Visibility EloVisible => HasElo ? Visibility.Visible : Visibility.Collapsed;
+        // (every icon the same size, 32 px in MainWindow.xaml: half of the game's 64 px stock icons; the main only first; its elo in the tooltip)
         public string Tip => Name + (Main ? " (main)" : "") + (HasElo ? ": " + Elo + " elo" : "")
                              + (Games > 0 ? (HasElo ? ", " : ": ") + Games + (Games == 1 ? " ranked match" : " ranked matches") + (Wins + Losses > 0 ? " (" + Wins + "–" + Losses + ")" : "") : "");
         /// <summary>the same fighter, the same player: one key, or one label when the key is not known</summary>
@@ -155,7 +149,7 @@ namespace Arena
                 if (there != null) all.Remove(there);
                 all.Insert(0, there ?? m);
             }
-            if (all.Count > 0) all[0].Main = all[0].Lead = true;
+            if (all.Count > 0) all[0].Main = true;
             return all;
         }
 
@@ -368,7 +362,7 @@ namespace Arena
                 if (perFighter) with = with.OrderByDescending(x => x.f.Elo).ThenByDescending(x => x.f.Games).ThenBy(x => x.row.Rank).ToList();
                 shown = with.Select((x, i) =>
                 {
-                    var fl = new List<LeaderFighter> { x.f.Copy(true) }.Concat(x.row.Fighters.Where(y => y != x.f).Select(y => y.Copy(false))).Take(LeaderRow.MaxFighters).ToList();
+                    var fl = new List<LeaderFighter> { x.f }.Concat(x.row.Fighters.Where(y => y != x.f)).Take(LeaderRow.MaxFighters).ToList();
                     return x.row.View(perFighter ? i + 1 : x.row.Rank, perFighter ? x.f.Elo : x.row.Elo, fl);
                 }).ToList();
             }
@@ -376,7 +370,7 @@ namespace Arena
             LbHead.Visibility = shown.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             LbEloHead.Text = perFighter ? "FIGHTER ELO" : "ELO";
             LbEloHead.ToolTip = perFighter ? "Their " + fighterName + " elo" : "The player's elo";
-            LbFightersHead.ToolTip = rows.Any(r => r.Fighters.Any(f => f.HasElo)) ? "The fighters played most in ranked, the main first, each with its own elo" : "The fighter played most in ranked (the main)";
+            LbFightersHead.ToolTip = rows.Any(r => r.Fighters.Any(f => f.HasElo)) ? "The fighters played most in ranked, the main first (each one's elo: hover it)" : "The fighter played most in ranked (the main)";
             if (shown.Count == 0)
             {
                 if (rows.Count > 0) ShowLbState("No player of this list plays " + fighterName, "Choose All fighters to see everyone.", false);
