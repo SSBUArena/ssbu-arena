@@ -162,14 +162,29 @@ static void async_move_assign(Ctx *c) {
     if (g_async_move_assign) g_async_move_assign(c); else RET(A0);
 }
 
+/* (0.2.51) Local Wireless rooms are not the game's Online mode: while nn::ldn is in use (nnldn.c: the Local Wireless menu, a
+ * room) every nn::nifm answer is the one from before this file (the offline handler, kept at registration), so rooms see the
+ * console they saw without SSBU_ONLINE_NEX. SSBU_ONLINE_NEX_LDN_KEEP=1: the online answers there too (test). */
+int nnldn_in_use(void);
+static ImportFn g_nifm_was[8];
+static int ldn_offline(void) { static int keep = -1; if (keep < 0) { const char *e = getenv("SSBU_ONLINE_NEX_LDN_KEEP"); keep = e && e[0] == '1'; } return !keep && nnldn_in_use(); }
+#define NIFM_WRAP(k, fn) static void fn##_w(Ctx *c) { if (ldn_offline() && g_nifm_was[k]) { g_nifm_was[k](c); return; } fn(c); }
+static void on_true0(Ctx *c) { on_true(c); }
+static void on_false0(Ctx *c) { on_false(c); }
+static void on_keep0(Ctx *c) { on_keep(c); }
+static void on_keep1(Ctx *c) { on_keep(c); }
+static void on_false1(Ctx *c) { on_false(c); }
+NIFM_WRAP(0, on_true0) NIFM_WRAP(1, on_false0) NIFM_WRAP(2, on_keep0) NIFM_WRAP(3, on_wait_lobby) NIFM_WRAP(4, on_keep1) NIFM_WRAP(5, on_false1)
+NIFM_WRAP(6, nifm_PrimaryIp) NIFM_WRAP(7, nifm_IpConfig)
 #define NI(n) "_ZN2nn4nifm" n
 #define AC(n) "_ZN2nn7account" n
 static const ImportDef online_imports[] = {
-    {NI("18IsNetworkAvailableEv"), on_true}, {NI("22IsNetworkRequestOnHoldEv"), on_false},
-    {NI("20SubmitNetworkRequestEv"), on_keep}, {NI("27SubmitNetworkRequestAndWaitEv"), on_wait_lobby}, {NI("20CancelNetworkRequestEv"), on_keep},
-    {NI("31HandleNetworkRequestErrorResultEv"), on_false},
-    {NI("26GetCurrentPrimaryIpAddressEP7in_addr"), nifm_PrimaryIp},
-    {NI("22GetCurrentIpConfigInfoEP7in_addrS2_S2_S2_S2_"), nifm_IpConfig},
+    /* (the first 8: nn::nifm, in the order of g_nifm_was) */
+    {NI("18IsNetworkAvailableEv"), on_true0_w}, {NI("22IsNetworkRequestOnHoldEv"), on_false0_w},
+    {NI("20SubmitNetworkRequestEv"), on_keep0_w}, {NI("27SubmitNetworkRequestAndWaitEv"), on_wait_lobby_w}, {NI("20CancelNetworkRequestEv"), on_keep1_w},
+    {NI("31HandleNetworkRequestErrorResultEv"), on_false1_w},
+    {NI("26GetCurrentPrimaryIpAddressEP7in_addr"), nifm_PrimaryIp_w},
+    {NI("22GetCurrentIpConfigInfoEP7in_addrS2_S2_S2_S2_"), nifm_IpConfig_w},
     {AC("32IsNetworkServiceAccountAvailableEPbRKNS0_10UserHandleE"), acc_out_true},
     {AC("36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE"), acc_ok},
     {AC("26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE"), acc_GetNsaId},
@@ -185,6 +200,7 @@ void register_online_imports(void) {
     if (!online_nex_on()) return;
     g_async_dtor = import_lookup(AC("12AsyncContextD1Ev"));
     g_async_move_assign = import_lookup(AC("12AsyncContextaSEOS1_"));
+    for (int k = 0; k < 8; k++) g_nifm_was[k] = import_lookup(online_imports[k].name);      /* (0.2.51) the offline answers, for Local Wireless */
     register_imports(online_imports, (int)(sizeof online_imports / sizeof online_imports[0]));
     printf("online: SSBU_ONLINE_NEX=1: the console answers of an online machine (network, network service account, id token) for the game's own Online mode (test)\n");
     fflush(stdout);

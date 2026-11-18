@@ -1097,6 +1097,7 @@ static void match_player_hook(Ctx *c, void *user) {
             if (idx == 0) {
                 uint8_t mm = rd8(MELEE_INFO); int waiting = c->x[30] == GA(0x71017911dcULL);
                 int kind = mm == 14 && !waiting ? 2 : mm == 13 && waiting ? 1 : 0;
+                {   int nnldn_role(void); if (nnldn_role()) kind = 0; }      /* (0.2.51) a Local Wireless room's fights (its waiting stage is melee mode 13 with the same builder, runs rq1 / rq3) stay the room path's */
                 void rbn_set_online_setup(int kind, int local); rbn_set_online_setup(kind, rd8(st + 0x451) ? 1 : 0);
                 g_onl_setup14 = kind == 2; g_onl_bound = 0; g_onl_orig_ok[0] = g_onl_orig_ok[1] = 0; g_onl_rec_ok[0] = g_onl_rec_ok[1] = 0; g_onl_conv_ok[0] = g_onl_conv_ok[1] = 0;
             }
