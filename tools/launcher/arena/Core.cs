@@ -715,7 +715,7 @@ namespace Arena
         {
             var bad = new List<string>();
             if (!Online) return bad;
-            if (!Account.SignedIn) bad.Add("Online play needs your SSBU Arena account: sign in (Settings > Player), or turn online off");
+            if (!Account.SignedIn) bad.Add("Online play needs your account (the same for SSBU Arena and OpenSmash): sign in (Settings > Player), or turn online off");
             if (!Regex.IsMatch(Server.Trim(), @"^[^\s:]+:\d+$")) bad.Add("Online: server must be address:port");
             return bad;
         }
