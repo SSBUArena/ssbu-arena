@@ -34,9 +34,35 @@
 #define ACC_NO_INTERNET 0x767cu                     /* 124-0059 (nnsvc_c5a.inc) */
 #define ONLINE_ASYNC_DONE 0x0000454e494c4e4full     /* "ONLINE": the finished request's marker at +0x18 */
 
+/* (0.2.51) SSBU_ONLINE_MM: what the Arena menu's Online Matchmaking tile plays.
+ *   unset / "native" (default): the game's own Online mode (Quickplay: its menu, its one-panel select, its waiting room, its
+ *       Online match against the other player, its results and Rematch) through the SSBU Arena lobby and the game server beside
+ *       it, the match played with our rollback: SSBU_QUICK_NATIVE, SSBU_ONLINE_NEX, SSBU_ONLINE_NEX_LOBBY and SSBU_ONLINE_RB are
+ *       then on unless each is set (=0 / =1 still decides for itself). Only for a game on the online lobby (SSBU_ONLINE = a
+ *       server) with Arena's menu (SSBU_COMPETITIVE_UI=1) and the whole data.arc (the light archive has no Online mode).
+ *       When the game server does not answer, the tile falls back to "classic" (competitive.c comp_native_usable).
+ *   "classic" (or 0): as 0.2.50, the Smash versus select screens with a placeholder CPU as player 2 and a local versus match
+ *       with rollback against the lobby's opponent; none of the four switches is on by default. */
+int online_mm_native(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *m = getenv("SSBU_ONLINE_MM"), *on = getenv("SSBU_ONLINE"), *ui = getenv("SSBU_COMPETITIVE_UI"), *rf = getenv("SSBU_ROMFS");
+        const char *why = NULL;
+        if (m && (!strcmp(m, "classic") || m[0] == '0')) why = "SSBU_ONLINE_MM=classic";
+        else if (!on || !*on || !strcmp(on, "off") || !strcmp(on, "0") || !strchr(on, '.')) why = "no online lobby (SSBU_ONLINE)";
+        else if (!(ui && ui[0] == '1')) why = "not Arena's menu (SSBU_COMPETITIVE_UI)";
+        else if (rf && *rf) {
+            char a[600], b[600]; snprintf(a, sizeof a, "%s\\data.arc", rf); snprintf(b, sizeof b, "%s\\data.arcp", rf);
+            if (GetFileAttributesA(a) == INVALID_FILE_ATTRIBUTES && GetFileAttributesA(b) != INVALID_FILE_ATTRIBUTES) why = "the light archive has no Online mode";
+        }
+        v = !why;
+        if (m || v) { printf("online: matchmaking mode: %s%s%s\n", v ? "native (the game's own Online mode; SSBU_ONLINE_MM=classic for the 0.2.50 one)" : "classic (", v ? "" : why, v ? "" : ")"); fflush(stdout); }
+    }
+    return v;
+}
 int online_nex_on(void) {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("SSBU_ONLINE_NEX"); v = e && e[0] == '1'; }
+    if (v < 0) { const char *e = getenv("SSBU_ONLINE_NEX"); v = e && *e ? e[0] == '1' : online_mm_native(); }
     return v;
 }
 /* SSBU_ONLINE_NEX_LOBBY=1 (default 0: the test path of A1/A2, a game server on this PC at 127.0.0.1): the product path. The game
@@ -46,7 +72,7 @@ int online_nex_on(void) {
  * virtual address on it and hands it to the game server (rb_lobby.c nex_relay). */
 static int online_nex_lobby(void) {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("SSBU_ONLINE_NEX_LOBBY"); v = online_nex_on() && e && e[0] == '1'; }
+    if (v < 0) { const char *e = getenv("SSBU_ONLINE_NEX_LOBBY"), *x = getenv("SSBU_ONLINE_NEX"); v = online_nex_on() && (e && *e ? e[0] == '1' : !(x && *x) && online_mm_native()); }
     return v;
 }
 /* (online-mm A3) SSBU_ONLINE_RB=1 (default 0, with SSBU_ONLINE_NEX=1): the game's own Online match (melee mode 14) played with OUR
@@ -55,7 +81,7 @@ static int online_nex_lobby(void) {
  * records back for its results. A game whose opponent has it off is never heard there: the game's own netcode plays, as before. */
 int online_rb_on(void) {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("SSBU_ONLINE_RB"); v = online_nex_on() && e && e[0] == '1'; }
+    if (v < 0) { const char *e = getenv("SSBU_ONLINE_RB"), *x = getenv("SSBU_ONLINE_NEX"); v = online_nex_on() && (e && *e ? e[0] == '1' : !(x && *x) && online_mm_native()); }
     return v;
 }
 
@@ -305,6 +331,30 @@ static DWORD WINAPI online_stream_reader(LPVOID p) {
     }
     free(st);
     return 0;
+}
+/* (0.2.51) whether the game server beside the lobby answers: a TCP connection to the lobby's host on the game server's port,
+ * closed at once; at most ms. competitive.c asks before the Online Matchmaking tile opens the game's own Online mode: a lobby
+ * without the game server (not deployed yet, or down) plays the classic matchmaking instead. 1 = it answers. */
+int online_nex_reachable(int ms) {
+    static int wsa; if (!wsa) { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); wsa = 1; }
+    if (!online_nex_on()) return 0;
+    uint32_t rip = g_nex_ip; uint16_t rport = g_nex_port;
+    if (online_nex_lobby()) {
+        int net_lobby_real(uint32_t *ip, uint16_t *port); uint16_t lport; unsigned base = 60000;
+        const char *t = getenv("SSBU_ONLINE_NEX_TCP"); if (t && atoi(t) > 0 && atoi(t) < 65535) base = (unsigned)atoi(t);
+        if (!net_lobby_real(&rip, &lport)) return 0;
+        rport = (uint16_t)base;
+    } else { const char *e = getenv("SSBU_ONLINE_NEX_REAL"); unsigned a, b, d, f, pp; if (e && sscanf(e, "%u.%u.%u.%u:%u", &a, &b, &d, &f, &pp) == 5) { rip = a << 24 | b << 16 | d << 8 | f; rport = (uint16_t)pp; } }
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); if (s == INVALID_SOCKET) return 0;
+    struct sockaddr_in sa; memset(&sa, 0, sizeof sa); sa.sin_family = AF_INET; sa.sin_port = htons(rport); sa.sin_addr.s_addr = htonl(rip);
+    u_long nb = 1; ioctlsocket(s, FIONBIO, &nb);
+    int ok = connect(s, (struct sockaddr *)&sa, sizeof sa) == 0;
+    if (!ok && WSAGetLastError() == WSAEWOULDBLOCK) {
+        fd_set w, x; FD_ZERO(&w); FD_ZERO(&x); FD_SET(s, &w); FD_SET(s, &x); struct timeval tv = { ms / 1000, (ms % 1000) * 1000 };
+        ok = select(0, NULL, &w, &x, &tv) > 0 && FD_ISSET(s, &w);
+    }
+    closesocket(s);
+    return ok;
 }
 int online_stream_wanted(uint32_t ip, uint16_t port) { return online_nex_on() && ip == g_nex_ip && (port == g_nex_port || port == (uint16_t)(g_nex_port + 1)); }
 intptr_t online_stream_open(int fd, uint32_t ip, uint16_t port, OnlineDeliver deliver) {

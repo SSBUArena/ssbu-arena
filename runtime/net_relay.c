@@ -164,8 +164,10 @@ static char g_ticket[320];
 /* (0.2.37) this game's online level, sent after the ticket as "CV" + u16: the SSBU Arena lobby refuses games below its
  * min_client_level (a game without it, 0.2.36 and older, is level 1). 2: renews its pass, shows the lobby's states 7 / 8.
  * 3 (0.2.50): rollback handshake protocol 6 (Smashville at a fixed hour, light villagers) and the game code block "GC":
- * the VPS lobby.conf min_client_level = 3 keeps 0.2.49 and older (level 2) out of rooms and matchmaking. */
-#define NET_CLIENT_LEVEL 3
+ * the VPS lobby.conf min_client_level = 3 keeps 0.2.49 and older (level 2) out of rooms and matchmaking.
+ * 4 (0.2.51): Online Matchmaking is the game's own Online mode through the game server beside the lobby (SSBU_ONLINE_MM): a
+ * 0.2.50 game searches in the lobby's classic queue and would never meet one; min_client_level = 4 keeps 0.2.50 out. */
+#define NET_CLIENT_LEVEL 4
 /* (0.2.37) SSBU_ONLINE_TICKET_FILE: a file the launcher writes again with a fresh ticket while the game runs (its pass is short);
  * read again when it changes (every 5 s at most) and sent at once with the same nonce: the lobby takes it as a renewal */
 static char g_ticket_file[MAX_PATH];

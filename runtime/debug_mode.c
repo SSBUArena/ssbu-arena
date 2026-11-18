@@ -1296,7 +1296,8 @@ static void panel_copy_hook(Ctx *c, void *user) {
     int nnldn_in_use(void);
     /* (0.2.17) nnldn_in_use, not nnldn_role: the game opens the room's fighter select before it creates the room, so the room maker
      * saw "CPU Lv. 3" in player 2's box and not the second player */
-    if (g_autop2 > 0 && rd32(e + 0x30) == 3 && !nnldn_in_use()) {        /* the CPU panel a save brings (run pnB); (R3 pub2) never in Local Wireless: its fights are the game's own */
+    int comp_quickplay(void);
+    if (g_autop2 > 0 && (g_autop2 != 2 || comp_quickplay()) && rd32(e + 0x30) == 3 && !nnldn_in_use()) {        /* the CPU panel a save brings (run pnB); (R3 pub2) never in Local Wireless: its fights are the game's own */
         wr8(e, 0xff); wr32(e + 0x28, 2); wr32(e + 0x34, 0xffffffffu);
         wr64(e + 0x38, 0xc100000fd5f7fa78ull); wr64(e + 0x40, 0xc100000fd5f7fa78ull); wr8(e + 0x48, 0); wr8(e + 0x49, 3);
         wr32(e + 0x30, 1);
@@ -1914,7 +1915,7 @@ void debug_mode_init(void) {
     if (g_dm_list && !getenv("SSBU_DEBUG_MATCH")) snprintf(g_dm.text, sizeof g_dm.text, "(list)");
     g_hs_wanted = rbn_handshake_wanted();
     {   const char *e = getenv("SSBU_RB_NET_P2NONE"), *a = getenv("SSBU_RB_NET_AUTOP2");      /* (hs12) the select screen's player 2 for an online match */
-        g_p2none = e && atoi(e) > 0; int online_nex_on(void); g_autop2 = a && a[0] ? atoi(a) > 0 : g_hs_wanted && !online_nex_on();      /* (online-mm A2) not in the game's own Online select (SSBU_ONLINE_NEX=1): its panels are the game's */
+        g_p2none = e && atoi(e) > 0; int online_nex_on(void); g_autop2 = a && a[0] ? atoi(a) > 0 : g_hs_wanted ? (online_nex_on() ? 2 : 1) : 0;      /* (0.2.51) 2: only in a classic quick match (the fallback of SSBU_ONLINE_MM) */      /* (online-mm A2) not in the game's own Online select (SSBU_ONLINE_NEX=1): its panels are the game's */
         if (g_p2none || g_autop2) printf("debug match: hook on the select screen's table copy %llx: id %d (auto player 2 %s%s)\n", GA(0x710179e440ULL), hook_install(GA(0x710179e440ULL), panel_copy_hook, NULL, &g_orig_panel_copy),
                                          g_autop2 ? "on" : "off", g_p2none ? "; test: entry 1 copied as none" : ""); }
     if (getenv("SSBU_DEBUG_MATCH") || g_dm_list || g_hs_wanted) {

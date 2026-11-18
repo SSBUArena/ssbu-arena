@@ -164,7 +164,8 @@ int comp_in_options(void) {           /* menu.cpp: the game's own options screen
 /* (field 15/11, matchmaking "like the real online", PROBE ONLY) SSBU_QUICK_NATIVE=1: the Online Ranked tile's sequence (and any
  * 0x07 Online one) is NOT turned into the Smash versus one: the game's own Online mode runs, to see how far it gets on this
  * runtime (scenes, nn:: services, missing files of the light archive). Not for play: there is no NEX server behind it. */
-static int comp_quick_native(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_QUICK_NATIVE"); v = e && e[0] == '1'; } return v; }
+int online_mm_native(void);                          /* nnonline.c: (0.2.51) SSBU_ONLINE_MM, the product default */
+static int comp_quick_native(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_QUICK_NATIVE"); v = e && *e ? e[0] == '1' : online_mm_native(); } return v; }
 static int comp_seq_allowed(uint32_t s) { return (s >> 24) == 0x01 || s == 0x02010000u || (s >> 24) == 0x06 || s == 0 || ((s >> 24) == 0x07 && comp_quick_native()); }
 
 /* ---- Online matchmaking (no rating yet), the Arena menu's "Online Ranked" tile. The tile asks for SEQUENCE_ONLINE_MELEE_ANYONE
@@ -189,6 +190,7 @@ static volatile LONG g_quick, g_quick_skip_rules;
 static uint8_t g_quick_saved[3][8], g_quick_saved_4b; static int g_quick_have;      /* (+ 0x4b of copy 1: comp_stage_state) */
 static int g_quick_kind = -1, g_quick_time = -1;            /* the values written (-1 = not written) */
 int comp_quickplay(void) { return g_quick != 0; }
+static int g_native_asked;                             /* (0.2.51) comp_native_usable */
 static void comp_rule_dump(const char *why) {
     for (int i = 0; i < 3; i++) {
         volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[i]);
@@ -244,6 +246,26 @@ static int comp_quick_begin(void) {           /* 1 = the quick match starts (the
     menu_popup("Online matchmaking", "Choose your fighter, then start: the game finds an opponent in the online lobby (no rating yet). Player 2 (shown as a CPU on the select screen) is only a placeholder: your online opponent takes that place. Rules: 1 on 1, 3 stocks, 7 minutes, no items, no hazards.");
     return 1;
 }
+/* (0.2.51) the Online Matchmaking tile with the game's own Online mode as the default (SSBU_ONLINE_MM): it is opened when the
+ * game server beside the lobby answers now (the game logs in when it starts; if it is not logged in the scene's state 0 logs
+ * in: comp_online_login); otherwise the classic matchmaking of 0.2.50 is played (a lobby without the game server, or the server
+ * down), and the log says so. SSBU_ONLINE_MM_PROBE_MS: the longest wait for the answer (default 1500). */
+static uint64_t comp_online_obj(void);
+static int comp_native_usable(void) {
+    int online_nex_reachable(int ms);
+    static uint32_t last_seq_seen; static int last = -1;
+    uint64_t o = comp_online_obj();
+    int logged = o && *(volatile uint8_t *)(uintptr_t)(o + 0x244);
+    const char *e = getenv("SSBU_ONLINE_MM_PROBE_MS"); int ms = e && atoi(e) > 0 ? atoi(e) : 1500;
+    (void)last_seq_seen;
+    if (g_native_asked) return last;                    /* (asked once per press of the tile: comp_scene clears it at the main menu) */
+    g_native_asked = 1;
+    int ok = online_nex_reachable(ms);
+    printf("competitive UI: Online Matchmaking: the game's online session is %s, the game server %s: %s\n", logged ? "logged in" : "not logged in", ok ? "answers" : "does NOT answer",
+           ok ? "the game's own Online mode" : "the classic matchmaking (as 0.2.50) this time");
+    fflush(stdout);
+    return last = ok;
+}
 static void comp_scene(Ctx *c, void *user) {
     (void)user;
     volatile uint32_t *seq = (volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE;
@@ -255,7 +277,8 @@ static void comp_scene(Ctx *c, void *user) {
     const char *ui = getenv("SSBU_COMPETITIVE_UI");
     if (ui && ui[0] == '1') {
         if ((s >> 24) == 0x01 && g_quick) comp_quick_end("back at the main menu");
-        if (s == SEQ_ONLINE_ANYONE && comp_quick_native()) { static int said; if (!said++) { printf("competitive UI: Online Ranked -> the game's own Online mode (SSBU_QUICK_NATIVE=1, probe)\n"); fflush(stdout);
+        if ((s >> 24) == 0x01) g_native_asked = 0;
+        if (s == SEQ_ONLINE_ANYONE && comp_quick_native() && comp_native_usable()) { static int said; if (!said++) { printf("competitive UI: Online Ranked -> the game's own Online mode (SSBU_QUICK_NATIVE=1, probe)\n"); fflush(stdout);
                 /* (online-mm 15/11, PROBE) SSBU_QUICK_NATIVE_WATCH=1: a hardware write watch on the current sequence (debug_mode.c debug_watch:
                  * every thread, the guest functions of each write): who sends the Online mode back to the main menu */
                 { const char *w = getenv("SSBU_QUICK_NATIVE_WATCH"); if (w && w[0] == '1') { void debug_watch(const uint64_t *a, int n); uint64_t a = CURRENT_SEQUENCE; debug_watch(&a, 1); }      /* (=2: comp_seqstep) */ } } }
