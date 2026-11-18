@@ -237,19 +237,28 @@
                 </StackPanel>
               </StackPanel>
               <Border Height="1" Background="{StaticResource Line}" Margin="0,10,0,8"/>
-              <StackPanel Orientation="Horizontal">
+              <!-- (0.2.53) the badge of the player's main fighter's tier (MainWindow.Ranked.cs): the hexagon in the tier's colour, "GOLD · 1.184" or
+                   "UNRANKED · 3/5", the main's stock icon, the details in the tooltip. Not signed in, no ranked game or SSBU_RANKED_ELO=0: as 0.2.52 -->
+              <Grid x:Name="RankBadge" Background="Transparent" ToolTipService.ShowDuration="30000">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <!-- the rank badge, unranked: a hexagon in steel with an empty diamond (no rank yet) -->
                 <Canvas Width="56" Height="62"><Canvas.LayoutTransform><ScaleTransform ScaleX="0.68" ScaleY="0.68"/></Canvas.LayoutTransform>
-                  <Path Data="M28,1 L54,16 L54,46 L28,61 L2,46 L2,16 Z" StrokeThickness="2" StrokeLineJoin="Round">
+                  <Path x:Name="RankHex" Data="M28,1 L54,16 L54,46 L28,61 L2,46 L2,16 Z" StrokeThickness="2" StrokeLineJoin="Round">
                     <Path.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#22344A" Offset="0"/><GradientStop Color="#0D1724" Offset="1"/></LinearGradientBrush></Path.Fill>
                     <Path.Stroke><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#C3CEDA" Offset="0"/><GradientStop Color="#56657A" Offset="1"/></LinearGradientBrush></Path.Stroke>
                   </Path>
-                  <Path Data="M28,7 L49,19 L49,43 L28,55 L7,43 L7,19 Z" Stroke="#33B6D4E8" StrokeThickness="1" StrokeLineJoin="Round"/>
-                  <Path Data="M28,18 L39,31 L28,44 L17,31 Z" Stroke="#AAB6C4" StrokeThickness="2" StrokeLineJoin="Round" Fill="#14FFFFFF"/>
-                  <Path Data="M28,26 L32.5,31 L28,36 L23.5,31 Z" Fill="#7D8C9E"/>
+                  <Path x:Name="RankHexIn" Data="M28,7 L49,19 L49,43 L28,55 L7,43 L7,19 Z" Stroke="#33B6D4E8" StrokeThickness="1" StrokeLineJoin="Round"/>
+                  <Path x:Name="RankGem" Data="M28,18 L39,31 L28,44 L17,31 Z" Stroke="#AAB6C4" StrokeThickness="2" StrokeLineJoin="Round" Fill="#14FFFFFF"/>
+                  <Path x:Name="RankGemCore" Data="M28,26 L32.5,31 L28,36 L23.5,31 Z" Fill="#7D8C9E"/>
                 </Canvas>
-                <TextBlock x:Name="RankText" Tag="sp" Text="UNRANKED" FontSize="16" FontWeight="SemiBold" Margin="16,0,0,0" VerticalAlignment="Center"/>
-              </StackPanel>
+                <TextBlock x:Name="RankText" Grid.Column="1" Tag="sp" Text="UNRANKED" FontSize="16" FontWeight="SemiBold" Margin="16,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                <Grid x:Name="RankFighter" Grid.Column="2" Width="32" Height="32" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed" UseLayoutRounding="True">
+                  <Border x:Name="RankFighterBadgeBox" CornerRadius="6" Background="#1A2634" BorderBrush="#2C3B4E" BorderThickness="1">
+                    <TextBlock x:Name="RankFighterBadge" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="12.5" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                  </Border>
+                  <Rectangle RadiusX="6" RadiusY="6" RenderOptions.BitmapScalingMode="HighQuality"><Rectangle.Fill><ImageBrush x:Name="RankFighterIcon" Stretch="Uniform"/></Rectangle.Fill></Rectangle>
+                </Grid>
+              </Grid>
               <Button Style="{StaticResource Link}" HorizontalAlignment="Right" Margin="0,0,0,0" Click="Profile_Click">
                 <StackPanel Orientation="Horizontal">
                   <TextBlock Text="View profile" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="16"/>
@@ -653,7 +662,7 @@
               </StackPanel>
             </Grid>
             <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
-              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="230"/><ColumnDefinition x:Name="LbFilterCol" Width="0"/></Grid.ColumnDefinitions>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="230"/><ColumnDefinition x:Name="LbFilterCol" Width="0"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <Grid>
                 <TextBox x:Name="LbSearch" Padding="22,0,30,0" MaxLength="32" TextChanged="LbSearch_Changed" ToolTip="A player's name, or name#tag"/>
                 <Path Data="{StaticResource IcoSearch}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="15" Height="15" Stretch="Uniform" HorizontalAlignment="Left" Margin="13,0,0,0" IsHitTestVisible="False" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
@@ -665,6 +674,9 @@
               <ComboBox x:Name="LbRegionBox" Grid.Column="1" Margin="10,0,0,0" FontSize="15" SelectionChanged="LbRegion_Changed" ToolTip="Only the ranked matches played on this region's server (the elo is the same everywhere)"/>
               <!-- (0.2.52) the players of the list who play a fighter; shown once the board has rows -->
               <ComboBox x:Name="LbFighterBox" Grid.Column="2" Margin="10,0,0,0" FontSize="15" SelectionChanged="LbFighter_Changed" Visibility="Collapsed" ToolTip="Only the players of this list who play this fighter"/>
+              <!-- (0.2.53) only the players whose shown fighter has its placement games (the row's "placed"); hidden with SSBU_RANKED_ELO=0 -->
+              <CheckBox x:Name="LbPlacedBox" Grid.Column="3" Style="{StaticResource RvChip}" Margin="5,0,0,0" Height="34" VerticalAlignment="Center" Content="Placed only" Visibility="Collapsed"
+                        Checked="LbPlaced_Changed" Unchecked="LbPlaced_Changed" ToolTip="Only the players who finished their placement games (a tier other than Unranked)"/>
             </Grid>
             <!-- your position: signed in, the player's own row (even when it is not in the list below); not signed in, a way to sign in -->
             <Border x:Name="LbMeBox" DockPanel.Dock="Top" Margin="0,0,0,12" Padding="16,10" CornerRadius="6" BorderThickness="1" BorderBrush="#2F5C80" Background="#0F1E2D" Visibility="Collapsed">
@@ -736,7 +748,14 @@
                           <TextBlock Text="{Binding Record}" FontSize="16" HorizontalAlignment="Right"/>
                           <TextBlock Text="{Binding RateText}" Style="{StaticResource Small}" FontSize="12.5" HorizontalAlignment="Right"/>
                         </StackPanel>
-                        <TextBlock Grid.Column="4" Text="{Binding EloText}" FontSize="19" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        <!-- (0.2.53) the elo, and under it the tier of the row's fighter in its colour (rank_tiers) -->
+                        <StackPanel Grid.Column="4" HorizontalAlignment="Right" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding EloText}" FontSize="19" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+                          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Visibility="{Binding TierVisible}" ToolTip="{Binding TierTip}" Background="Transparent">
+                            <Path Data="M28,1 L54,16 L54,46 L28,61 L2,46 L2,16 Z" Fill="{Binding TierBrush}" Width="9" Height="10.5" Stretch="Fill" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding TierText}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="13" Foreground="{Binding TierBrush}" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                          </StackPanel>
+                        </StackPanel>
                       </Grid>
                     </Border>
                   </DataTemplate>
@@ -834,6 +853,77 @@
                   <TextBlock Text="SIGNED IN AS" Style="{StaticResource FieldLabel}"/>
                   <TextBlock x:Name="AccountName" Style="{StaticResource SectionTitle}" FontSize="40" Foreground="{StaticResource Accent}"/>
                   <TextBlock x:Name="AccountEmail" Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,0"/>
+                  <!-- (0.2.53) ranked, elo per fighter: public.my_ranked() (MainWindow.Ranked.cs); hidden with SSBU_RANKED_ELO=0 -->
+                  <StackPanel x:Name="RankedBox" Visibility="Collapsed" Margin="0,24,0,0">
+                    <TextBlock Text="RANKED" Style="{StaticResource FieldLabel}"/>
+                    <TextBlock x:Name="RankedSummary" FontSize="17" TextWrapping="Wrap" Margin="0,0,0,4"/>
+                    <TextBlock x:Name="RankedNote" Style="{StaticResource Small}" FontSize="15" TextWrapping="Wrap" MaxWidth="760" HorizontalAlignment="Left"/>
+                    <StackPanel x:Name="RankedTables">
+                      <Grid Margin="13,14,13,6">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="150"/><ColumnDefinition Width="80"/><ColumnDefinition Width="80"/><ColumnDefinition Width="110"/></Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="1" Text="FIGHTER" Style="{StaticResource Small}" FontSize="13"/>
+                        <TextBlock Grid.Column="2" Text="TIER" Style="{StaticResource Small}" FontSize="13"/>
+                        <TextBlock Grid.Column="3" Text="ELO" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
+                        <TextBlock Grid.Column="4" Text="PEAK" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
+                        <TextBlock Grid.Column="5" Text="RATED GAMES" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right" ToolTip="Rated matches with this fighter (wins–losses)"/>
+                      </Grid>
+                      <ItemsControl x:Name="RankedFighters" Focusable="False">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate DataType="{x:Type local:MyFighter}">
+                            <Border Margin="0,0,0,6" Padding="12,6" CornerRadius="6" BorderThickness="1" Background="#0F1620" BorderBrush="#233041">
+                              <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="150"/><ColumnDefinition Width="80"/><ColumnDefinition Width="80"/><ColumnDefinition Width="110"/></Grid.ColumnDefinitions>
+                                <Grid Width="32" Height="32" HorizontalAlignment="Left" VerticalAlignment="Center" UseLayoutRounding="True">
+                                  <Border CornerRadius="6" Background="#1A2634" BorderBrush="#2C3B4E" BorderThickness="1" Visibility="{Binding BadgeVisible}">
+                                    <TextBlock Text="{Binding Badge}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="12.5" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                  </Border>
+                                  <Rectangle RadiusX="6" RadiusY="6" RenderOptions.BitmapScalingMode="HighQuality"><Rectangle.Fill><ImageBrush ImageSource="{Binding Icon}" Stretch="Uniform"/></Rectangle.Fill></Rectangle>
+                                </Grid>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                  <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding Name}" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                    <Border Background="#1B3A55" CornerRadius="3" Padding="7,0" Margin="10,0,0,0" VerticalAlignment="Center" Visibility="{Binding MainVisible}">
+                                      <TextBlock Text="MAIN" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="14" Foreground="{StaticResource Accent}"/>
+                                    </Border>
+                                  </StackPanel>
+                                  <TextBlock Text="{Binding RankOfFighter}" Style="{StaticResource Small}" FontSize="13"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                  <Path Data="M28,1 L54,16 L54,46 L28,61 L2,46 L2,16 Z" Fill="{Binding TierBrush}" Width="13" Height="15" Stretch="Fill" VerticalAlignment="Center"/>
+                                  <TextBlock Text="{Binding TierText}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="16" Foreground="{Binding TierBrush}" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock Grid.Column="3" Text="{Binding EloText}" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="4" Text="{Binding PeakText}" FontSize="16" Foreground="{StaticResource Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                <StackPanel Grid.Column="5" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                  <TextBlock Text="{Binding GamesText}" FontSize="16" HorizontalAlignment="Right"/>
+                                  <TextBlock Text="{Binding RecordText}" Style="{StaticResource Small}" FontSize="12.5" HorizontalAlignment="Right"/>
+                                </StackPanel>
+                              </Grid>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                      <TextBlock Text="LAST RATED MATCHES" Style="{StaticResource FieldLabel}" Margin="0,18,0,6"/>
+                      <TextBlock x:Name="RankedNoRecent" Style="{StaticResource Small}" FontSize="15" Text="No rated match yet." Visibility="Collapsed"/>
+                      <ItemsControl x:Name="RankedRecent" Focusable="False">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate DataType="{x:Type local:MyMatch}">
+                            <Border Margin="0,0,0,4" Padding="12,5" CornerRadius="6" BorderThickness="1" Background="#0F1620" BorderBrush="#233041" Opacity="{Binding RowOpacity}" ToolTip="{Binding Tip}">
+                              <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/><ColumnDefinition Width="130"/><ColumnDefinition Width="64"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding WhenText}" Style="{StaticResource Small}" FontSize="14" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="{Binding VsText}" FontSize="15" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <TextBlock Grid.Column="2" Text="{Binding ResultText}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="15" Foreground="{Binding ResultBrush}" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="3" Text="{Binding EloText}" FontSize="15" Foreground="{StaticResource Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="4" Text="{Binding DeltaText}" FontSize="16" FontWeight="SemiBold" Foreground="{Binding DeltaBrush}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                              </Grid>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </StackPanel>
+                    <TextBlock x:Name="RankedLegend" Style="{StaticResource Small}" FontSize="13" TextWrapping="Wrap" Margin="0,12,0,0" MaxWidth="760" HorizontalAlignment="Left"/>
+                  </StackPanel>
                   <TextBlock Text="PROFILE PICTURE" Style="{StaticResource FieldLabel}" Margin="0,22,0,4"/>
                   <TextBlock x:Name="AvatarNote" Style="{StaticResource Small}" Margin="0,0,0,10" TextWrapping="Wrap" MaxWidth="700" HorizontalAlignment="Left"/>
                   <Border x:Name="AvatarTabsWell" Background="{StaticResource BgDeep}" CornerRadius="6" Padding="2" Margin="0,0,0,12" HorizontalAlignment="Left">
