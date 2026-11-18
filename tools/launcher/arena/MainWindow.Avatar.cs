@@ -99,6 +99,7 @@ namespace Arena
             bool newIcons = fighterIcons.Values.Any(v => v == null);      // (the replay list's portraits were made after it asked)
             fighterIcons.Clear();
             if (newIcons && PageReplays.Visibility == Visibility.Visible) ShowReplayRows();
+            LeaderboardIconsChanged();      // (0.2.52) the Leaderboard's stock icons
             var entries = AvatarEntries();
             AvatarNote.Text = entries.Count == 0 ? "The pictures come from your game files: they appear here once they are ready."
                                                  : "Your picture, in the launcher and in the game's rooms, where the other players see it too. Used from the next start of the game. It comes from your own game files: your account stores only which one it is.";

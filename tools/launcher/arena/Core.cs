@@ -473,8 +473,11 @@ namespace Arena
         {
             try
             {
-                if ((File.Exists(Path.Combine(AvatarsDir, "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "more", "done.txt")) && File.Exists(Path.Combine(AvatarsDir, "all", "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "all", "v2.txt"))) || Repo == null || RomFS == null) return;      // (0.2.34: all, every profile icon; 0.2.37: v2, with the Assist Trophies)
+                if (Repo == null || RomFS == null) return;
                 string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\ui\extract_fighter_icons.py"), arc = Path.Combine(RomFS, "data.arc");
+                // (0.2.52) stock: the small stock icons of the Leaderboard, once the sources have the script that makes them
+                bool stockDone = File.Exists(Path.Combine(AvatarsDir, "stock", "done.txt")) || !File.Exists(script) || !File.ReadAllText(script).Contains("chara_2");
+                if (File.Exists(Path.Combine(AvatarsDir, "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "more", "done.txt")) && File.Exists(Path.Combine(AvatarsDir, "all", "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "all", "v2.txt")) && stockDone) return;      // (0.2.34: all, every profile icon; 0.2.37: v2, with the Assist Trophies)
                 if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return;
                 var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + AvatarsDir + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
                 using (var p = Process.Start(psi)) p.WaitForExit(120000);

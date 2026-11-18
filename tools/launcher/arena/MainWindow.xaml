@@ -653,7 +653,7 @@
               </StackPanel>
             </Grid>
             <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
-              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="230"/></Grid.ColumnDefinitions>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="230"/><ColumnDefinition x:Name="LbFilterCol" Width="0"/></Grid.ColumnDefinitions>
               <Grid>
                 <TextBox x:Name="LbSearch" Padding="22,0,30,0" MaxLength="32" TextChanged="LbSearch_Changed" ToolTip="A player's name, or name#tag"/>
                 <Path Data="{StaticResource IcoSearch}" Stroke="{StaticResource Muted}" StrokeThickness="1.8" Width="15" Height="15" Stretch="Uniform" HorizontalAlignment="Left" Margin="13,0,0,0" IsHitTestVisible="False" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
@@ -663,6 +663,8 @@
                 </Button>
               </Grid>
               <ComboBox x:Name="LbRegionBox" Grid.Column="1" Margin="10,0,0,0" FontSize="15" SelectionChanged="LbRegion_Changed" ToolTip="Only the ranked matches played on this region's server (the elo is the same everywhere)"/>
+              <!-- (0.2.52) the players of the list who play a fighter; shown once the board has rows -->
+              <ComboBox x:Name="LbFighterBox" Grid.Column="2" Margin="10,0,0,0" FontSize="15" SelectionChanged="LbFighter_Changed" Visibility="Collapsed" ToolTip="Only the players of this list who play this fighter"/>
             </Grid>
             <!-- your position: signed in, the player's own row (even when it is not in the list below); not signed in, a way to sign in -->
             <Border x:Name="LbMeBox" DockPanel.Dock="Top" Margin="0,0,0,12" Padding="16,10" CornerRadius="6" BorderThickness="1" BorderBrush="#2F5C80" Background="#0F1E2D" Visibility="Collapsed">
@@ -675,12 +677,12 @@
               </Grid>
             </Border>
             <Grid x:Name="LbHead" DockPanel.Dock="Top" Margin="13,0,23,6">
-              <Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/><ColumnDefinition Width="120"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/><ColumnDefinition Width="110"/><ColumnDefinition Width="100"/></Grid.ColumnDefinitions>
               <TextBlock Text="#" Style="{StaticResource Small}" FontSize="13"/>
               <TextBlock Grid.Column="1" Text="PLAYER" Style="{StaticResource Small}" FontSize="13"/>
-              <TextBlock Grid.Column="2" Text="MAIN" Style="{StaticResource Small}" FontSize="13" ToolTip="The fighter played most in ranked"/>
+              <TextBlock x:Name="LbFightersHead" Grid.Column="2" Text="FIGHTERS" Style="{StaticResource Small}" FontSize="13" ToolTip="The fighter played most in ranked (the main)"/>
               <TextBlock Grid.Column="3" Text="W–L" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
-              <TextBlock Grid.Column="4" Text="ELO" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
+              <TextBlock x:Name="LbEloHead" Grid.Column="4" Text="ELO" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
             </Grid>
             <Grid DockPanel.Dock="Bottom" Margin="0,8,0,0">
               <TextBlock x:Name="LbStatus" Style="{StaticResource Small}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
@@ -697,7 +699,7 @@
                   <DataTemplate DataType="{x:Type local:LeaderRow}">
                     <Border Margin="0,0,0,6" Padding="12,7" CornerRadius="6" BorderThickness="1" Background="{Binding RowBack}" BorderBrush="{Binding RowBorder}" ToolTip="{Binding RowTip}">
                       <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/><ColumnDefinition Width="120"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/><ColumnDefinition Width="110"/><ColumnDefinition Width="100"/></Grid.ColumnDefinitions>
                         <TextBlock Text="{Binding RankText}" FontFamily="{StaticResource Display}" FontStyle="Italic" FontWeight="ExtraBold" FontSize="24" Foreground="{Binding RankBrush}" VerticalAlignment="Center"/>
                         <Grid Grid.Column="1" Margin="0,0,8,0">
                           <Grid.ColumnDefinitions><ColumnDefinition Width="50"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -714,7 +716,25 @@
                             </Border>
                           </StackPanel>
                         </Grid>
-                        <TextBlock Grid.Column="2" Text="{Binding Fighter}" FontSize="15" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                        <!-- (0.2.52) the fighters: the game's stock icons from this PC's game files (else the portrait, else a text badge), the main first;
+                             each with its own elo under it when the server gives one per fighter -->
+                        <TextBlock Grid.Column="2" Text="–" FontSize="15" Foreground="{StaticResource Dim}" VerticalAlignment="Center" Visibility="{Binding NoFighterVisible}"/>
+                        <ItemsControl Grid.Column="2" ItemsSource="{Binding Fighters}" VerticalAlignment="Center" Focusable="False">
+                          <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type local:LeaderFighter}">
+                              <StackPanel Margin="0,0,10,0" VerticalAlignment="Center" ToolTip="{Binding Tip}" Background="Transparent">
+                                <Grid Width="{Binding Size}" Height="{Binding Size}" HorizontalAlignment="Center">
+                                  <Border CornerRadius="6" Background="#1A2634" BorderBrush="#2C3B4E" BorderThickness="1" Visibility="{Binding BadgeVisible}">
+                                    <TextBlock Text="{Binding Badge}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="{Binding BadgeFont}" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                  </Border>
+                                  <Rectangle RadiusX="6" RadiusY="6"><Rectangle.Fill><ImageBrush ImageSource="{Binding Icon}" Stretch="Uniform"/></Rectangle.Fill></Rectangle>
+                                </Grid>
+                                <TextBlock Text="{Binding EloText}" Visibility="{Binding EloVisible}" FontSize="11.5" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,1,0,0"/>
+                              </StackPanel>
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                         <StackPanel Grid.Column="3" VerticalAlignment="Center" HorizontalAlignment="Right">
                           <TextBlock Text="{Binding Record}" FontSize="16" HorizontalAlignment="Right"/>
                           <TextBlock Text="{Binding RateText}" Style="{StaticResource Small}" FontSize="12.5" HorizontalAlignment="Right"/>

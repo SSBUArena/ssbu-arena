@@ -7,7 +7,8 @@ Writes <fighter>.png (ui/replace/chara/chara_4/chara_4_<fighter>_00.bntx, 162 x 
 icon in the game's own profile icons, ui_profile_icon_db: what the launcher writes in the save, Core.ApplyProfileIcon). icons.txt is
 written last: it also marks the work as done. more/<fighter>.png: the portraits of the fighters not offered as pictures (the ones from
 the updates, the select screen's shared panels), for the replay list; more/done.txt marks them as done. (0.2.34) all/: every other
-icon of the game's profile icons (fighters' other colours, spirits, series emblems), all_icons()."""
+icon of the game's profile icons (fighters' other colours, spirits, series emblems), all_icons(). (0.2.52) stock/: the fighters'
+small stock icons for the launcher's Leaderboard, stock_icons()."""
 import argparse
 from pathlib import Path
 import struct
@@ -245,6 +246,27 @@ def main():
     (more / 'done.txt').write_text('ok')
     if not (a.out / 'all' / 'icons.txt').exists() or not (a.out / 'all' / 'v2.txt').exists():
         print('all the profile icons: %d' % all_icons(arc, a.out))
+    if not (a.out / 'stock' / 'done.txt').exists():
+        print('stock icons: %d' % stock_icons(arc, a.out))
+
+
+# (0.2.52) the small fighter icons of the game's stock display (ui/replace/chara/chara_2, 64 x 64): the launcher's Leaderboard
+STOCK = ('ui/replace/chara/chara_2/chara_2_%s_00.bntx', 'ui/replace_patch/chara/chara_2/chara_2_%s_00.bntx')
+STOCK_NAMES = MORE + 'pzenigame pfushigisou plizardon ptrainer_low'.split()
+
+
+def stock_icons(arc, out):
+    """stock/<fighter>.png for every fighter whose stock icon is found, then stock/done.txt (marks the work as done)"""
+    dst = out / 'stock'
+    dst.mkdir(parents=True, exist_ok=True)
+    made = 0
+    for f in dict.fromkeys(STOCK_NAMES):
+        im = first_image(arc, STOCK, f)
+        if im is not None:
+            im.save(dst / (f + '.png'))
+            made += 1
+    (dst / 'done.txt').write_text('ok')
+    return made
 
 
 if __name__ == '__main__':

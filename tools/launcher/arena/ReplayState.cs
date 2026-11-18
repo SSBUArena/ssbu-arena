@@ -461,6 +461,22 @@ namespace Arena
             if (fighterIx == null) fighterIx = Index(Fighters, "ui_chara_");
             return fighterIx.TryGetValue(uiChara & 0xffffffffffUL, out int i) ? Fighters[i, 0] : null;
         }
+        /// <summary>(0.2.52) the fighter of a label the Arena server stores (public.matches p1_fighter / p2_fighter, the leaderboard's
+        /// main_fighter): its English name as arena-server's arena_results.c writes it ("Mario", "Pyra / Mythra"), or an id it had no
+        /// name for ("c100000f0b0f0b0f", the low 40 bits are ui_chara_*), or a key ("mario", "ui_chara_mario"). null: not a fighter.
+        /// A name several keys share gives the first of them (Ice Climbers: ice_climber, Pyra: eflame).</summary>
+        public static string FighterKeyOfLabel(string label)
+        {
+            if (string.IsNullOrWhiteSpace(label)) return null;
+            string s = label.Trim();
+            for (int i = 0; i < Fighters.GetLength(0); i++)
+                if (string.Equals(Fighters[i, 1], s, StringComparison.OrdinalIgnoreCase) || Fighters[i, 0] == s.ToLowerInvariant()) return Fighters[i, 0];
+            if (s.StartsWith("ui_chara_", StringComparison.OrdinalIgnoreCase)) return FighterKeyOfLabel(s.Substring(9));
+            string hex = s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s.Substring(2) : s;
+            if (hex.Length >= 10 && hex.Length <= 16 && ulong.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out ulong id))
+                return FighterKey(id);
+            return null;
+        }
         public static string FighterName(ulong uiChara, int kind)
         {
             if (fighterIx == null) fighterIx = Index(Fighters, "ui_chara_");
