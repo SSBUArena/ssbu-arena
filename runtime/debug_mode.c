@@ -1790,6 +1790,26 @@ static void net_pre_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { 
 static void net_upd_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { g_onl_netskip[1]++; return; } uint64_t o = c->x[0]; g_orig_net_upd[1](c); net_state_note("after its update after the frame", o); }
 /* (online-mm A3, RESEARCH + log) 0x71016ce960 (net object, reason): the game's fight netcode ends the match itself (it sets the
  * object's + 0x63 = 2, + 0x64 = the reason); who asked and in which state, for the log (only with SSBU_ONLINE_RB=1) */
+/* (0.2.52, SSBU_ONLINE_NO_GOLD, default 1) no tokens in Online: the fight scene's result handler (0x7101511520 makes it from the
+ * melee mode; mode 14: the class of vtable 0x710506c038) gives the match's reward in its + 0xd0, 0x7101518820: 0x710176c1c0 adds
+ * gold to the save ([[[[[0x7105313510]] + 0x1b8]]], the lua get_gold) and keeps the amount for the results ("Gold Earned",
+ * 0x71052cb5ec; run c1, hardware watch on the gold). In the game's Online match (sequence 0x0701....) the save's gold is put back
+ * after it and the amount shown is 0. SSBU_ONLINE_NO_GOLD=0: as the game does (0.2.51). */
+static ImportFn g_orig_reward;
+static void reward_hook(Ctx *c, void *user) {
+    (void)user;
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_NO_GOLD"); on = !(e && e[0] == '0'); }
+    int online = (rd32(GA(0x71053040f0ULL)) >> 24) == 0x07 && rd8(MELEE_INFO) == 14;
+    uint64_t g = 0;
+    if (on && online) { g = sr64(GA(0x7105313510ULL)); g = g ? sr64(g) : 0; g = g ? sr64(g + 0x1b8) : 0; g = g ? sr64(g) : 0; g = g ? sr64(g) : 0; }
+    uint32_t was = g ? rd32(g) : 0;
+    g_orig_reward(c);
+    if (g) {
+        uint32_t now = rd32(g), shown = rd32(GA(0x71052cb5ecULL));
+        wr32(g, was); wr32(GA(0x71052cb5ecULL), 0);
+        printf("[online] the Online match's reward: gold %u -> %u given back to %u, \"Gold Earned\" %u -> 0 (SSBU_ONLINE_NO_GOLD)\n", was, now, was, shown); fflush(stdout);
+    }
+}
 static ImportFn g_orig_net_end;
 static void net_end_hook(Ctx *c, void *user) {
     (void)user; uint64_t o = c->x[0]; long long rbn_now(void);
@@ -1927,7 +1947,8 @@ static void bacss_init(void) {
         if (online_rb_on()) printf("[online] A3: hook on the station check 0x710179eb70: id %d\n", hook_install(GA(0x710179eb70ULL), station_local_hook, NULL, &g_orig_station_local));
         if (online_rb_on()) printf("[online] A3: hook on the controls object's queue pop 0x7101754990: id %d\n", hook_install(GA(0x7101754990ULL), ctl_pop_hook, NULL, &g_orig_ctl_pop));
         if (online_rb_on()) printf("[online] A3: hooks on the game's fight netcode 0x71016d5ff0 / 0x71016d78d0: ids %d %d\n", hook_install(GA(0x71016d5ff0ULL), net_pre_hook, NULL, &g_orig_net_upd[0]), hook_install(GA(0x71016d78d0ULL), net_upd_hook, NULL, &g_orig_net_upd[1]));
-        if (online_rb_on()) printf("[online] A3: hook on the game's fight netcode's end 0x71016ce960: id %d\n", hook_install(GA(0x71016ce960ULL), net_end_hook, NULL, &g_orig_net_end)); }
+        if (online_rb_on()) printf("[online] A3: hook on the game's fight netcode's end 0x71016ce960: id %d\n", hook_install(GA(0x71016ce960ULL), net_end_hook, NULL, &g_orig_net_end));
+        { int online_nex_on(void); if (online_nex_on()) printf("[online] hook on the result handler's reward 0x7101518820: id %d\n", hook_install(GA(0x7101518820ULL), reward_hook, NULL, &g_orig_reward)); } }
     if (g_bacss == 1) { const char *v = getenv("SSBU_BA_SQUAD_VS"); g_bacss_vs = !(v && v[0] == '0');
         printf("[squadcss] hook on the matchup's state 7 (0x710197d5f0): id %d (the VS screen ends as offline once this game is ready: %s)\n", hook_install(GA(0x710197d5f0ULL), tc_vs_hook, NULL, &g_orig_tc_vs), g_bacss_vs ? "on" : "off, SSBU_BA_SQUAD_VS=0"); }
     fflush(stdout);
