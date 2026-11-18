@@ -1099,7 +1099,7 @@ static void match_player_hook(Ctx *c, void *user) {
     {   int online_nex_on(void);                         /* (online-mm A3 prep, SSBU_ONLINE_NEX=1 only) what the game's own Online match builds, for the log */
         if (online_nex_on() && idx >= 0 && idx < 2) {
             if (idx == 0) printf("[online] fight set-up: melee mode (match block + 0) %u, + 1 %u, sequence %08x, builder return %llx\n", rd8(MELEE_INFO), rd8(MELEE_INFO + 1), rd32(GA(0x71053040f0ULL)), (unsigned long long)c->x[30]);
-            if (idx == 0 && getenv("SSBU_ONLINE_SEQ_TRACE")) { hex_lines("[online] RESEARCH match block", MELEE_INFO, 0x100); hex_lines("[online] RESEARCH panel state 1", st, 0x100); }      /* (0.2.52, research: the rule header) */
+            if (idx == 0 && getenv("SSBU_ONLINE_SEQ_TRACE")) { hex_lines("[online] RESEARCH match block", MELEE_INFO, 0x100); hex_lines("[online] RESEARCH panel state 1", st, 0x100); hex_lines("[online] RESEARCH screens table 1", GA(0x7105307770ULL), 0x20); hex_lines("[online] RESEARCH screens table 2", GA(0x7105307770ULL) + 0x1c8, 0x20); hex_lines("[online] RESEARCH rule 0", GA(0x710530454cULL) + 0x50, 0x20); hex_lines("[online] RESEARCH rule 1", GA(0x7105309924ULL) + 0x50, 0x20); hex_lines("[online] RESEARCH rule 2", GA(0x710530f49cULL) + 0x50, 0x20); }      /* (0.2.52, research: the rule header) */
             printf("[online] fight set-up: player %d: ui_chara %016llx colour %u type %u controller slot %d profile %d local %u network %u number %u\n", idx + 1, (unsigned long long)rd64(st + 0x88), rd8(st + 0x90), rd32(st + 0x78),
                    (int)rd32(st + 0x210), (int)rd32(st + 0x214), rd8(st + 0x450), rd8(st + 0x451), rd8(st + 0xa4));
             fflush(stdout);
@@ -1115,7 +1115,7 @@ static void match_player_hook(Ctx *c, void *user) {
         int online_nex_on(void), nnldn_role(void);
         if (rules && idx >= 0 && idx < 2 && online_nex_on() && rd8(MELEE_INFO) == 14 && c->x[30] != GA(0x71017911dcULL) && !nnldn_role()) {
             if (idx == 0) {
-                int comp_online_stage(void); comp_online_stage();
+                int comp_online_stage(void); void comp_online_rule_copy(void); comp_online_stage(); comp_online_rule_copy();
                 printf("[online] rules: the Online match: rule kind %u -> 1, time %u s -> 420, stocks %u -> 3, items %u -> 0, hazards %u -> 0 (SSBU_ONLINE_RULES)\n",
                        rd8(st + 5), rd16(st + 8), rd8(st + 0xa), rd32(MELEE_INFO + 0x54), rd8(GA(0x7105309985ULL)));
                 if (rd8(MELEE_INFO + 5) == rd8(st + 5)) wr8(MELEE_INFO + 5, 1);

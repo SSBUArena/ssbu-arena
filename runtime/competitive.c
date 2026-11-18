@@ -225,6 +225,21 @@ static void comp_quick_rules(void) {          /* (comp_keep, every 2 ms while th
         if (r[RULE_STOCK] != 3) r[RULE_STOCK] = 3;
     }
 }
+/* (0.2.52, SSBU_ONLINE_RULES, debug_mode.c) the screens of the game's Online match (the VS screen's time and stocks) read rule copy 1
+ * (0x7105309924: + 0x51 kind, + 0x54 time in s, + 0x56 stocks; run d2: the gathering's 180 s / 2 stocks there while the fight had
+ * 7 min / 3): written with the fixed rules at the match's set-up, the player's own values put back at the main menu. */
+static uint8_t g_onl_rule_saved[8]; static volatile LONG g_onl_rule_have;
+void comp_online_rule_copy(void) {
+    volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[1]);
+    if (!InterlockedExchange(&g_onl_rule_have, 1)) for (int k = 0; k < 8; k++) g_onl_rule_saved[k] = r[0x50 + k];
+    r[RULE_KIND] = 1; *(volatile uint16_t *)(r + RULE_TIME) = 420; r[RULE_STOCK] = 3;
+}
+static void comp_online_rule_back(void) {
+    if (!InterlockedExchange(&g_onl_rule_have, 0)) return;
+    volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[1]);
+    for (int k = 0; k < 8; k++) r[0x50 + k] = g_onl_rule_saved[k];
+    printf("competitive: the Online match's rules taken off rule copy 1 at the main menu (the player's own back)\n"); fflush(stdout);
+}
 static void comp_quick_end(const char *why) {
     if (!InterlockedExchange(&g_quick, 0)) return;
     if (g_quick_have) for (int k = 0; k < 2; k++) {             /* (twice: comp_keep may have been inside comp_quick_rules) */
@@ -296,6 +311,7 @@ static void comp_scene(Ctx *c, void *user) {
     const char *ui = getenv("SSBU_COMPETITIVE_UI");
     if (ui && ui[0] == '1') {
         if ((s >> 24) == 0x01 && g_quick) comp_quick_end("back at the main menu");
+        if ((s >> 24) == 0x01) comp_online_rule_back();      /* (0.2.52) */
         if ((s >> 24) == 0x01) g_native_asked = 0;
         if (s == SEQ_ONLINE_ANYONE && comp_quick_native() && comp_native_usable()) { static int said; if (!said++) { printf("competitive UI: Online Ranked -> the game's own Online mode (SSBU_QUICK_NATIVE=1, probe)\n"); fflush(stdout);
                 /* (online-mm 15/11, PROBE) SSBU_QUICK_NATIVE_WATCH=1: a hardware write watch on the current sequence (debug_mode.c debug_watch:
