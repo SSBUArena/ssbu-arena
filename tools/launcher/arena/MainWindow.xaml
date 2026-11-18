@@ -694,7 +694,7 @@
               <!-- player -->
               <StackPanel x:Name="BoxPlayer">
                 <TextBlock Text="ACCOUNT" Style="{StaticResource SectionTitle}"/>
-                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,26" Text="Your SSBU Arena account: its name is the one other players see online."/>
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,26" Text="One account for SSBU Arena and OpenSmash Ultimate: its name is the one other players see online."/>
                 <!-- signed in -->
                 <StackPanel x:Name="AccountBox">
                   <TextBlock Text="SIGNED IN AS" Style="{StaticResource FieldLabel}"/>
@@ -1070,7 +1070,7 @@
             <TextBlock Text="SIGN IN" Style="{StaticResource SectionTitle}" FontSize="52" Margin="18,0,0,0" VerticalAlignment="Center"/>
           </StackPanel>
           <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,10,0,28" TextWrapping="Wrap"
-                     Text="Your SSBU Arena account, the same as on ssbuarena.com. Online play needs it. You sign in on ssbuarena.com in your browser (it checks that you are not a bot), then come back here."/>
+                     Text="One account for SSBU Arena and OpenSmash Ultimate (Discord or e-mail). Online play needs it. You sign in on account.opensmashultimate.com in your browser, then come back here."/>
           <TextBlock x:Name="LoginError" Foreground="{StaticResource Bad}" FontSize="15" TextWrapping="Wrap" Margin="0,0,0,12" Visibility="Collapsed"/>
           <Button x:Name="LoginButton" Style="{StaticResource Primary}" Height="58" Margin="0,4,0,0" Click="Login_Click" AutomationProperties.Name="Sign in in the browser">
             <StackPanel Orientation="Horizontal">
