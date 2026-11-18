@@ -3782,7 +3782,7 @@ static struct { VkImage img; VMem mem; int made, on; float frac; int thick; void
  * one blit of the overlay's light layer; no game asset. */
 static int g_ovl_text_layer;                       /* 0 light dots (default), 1 dark dots (the ping text's shadow) */
 static void ovl_text(uint32_t index, int x, int y, int dot, const char *s) {
-    static const char k_ch[] = "0123456789%/:.-ABCDEFGHIKLMNOPRSTUVWXY";
+    static const char k_ch[] = "0123456789%/:.-ABCDEFGHIKLMNOPRSTUVWXYf";      /* (0.2.52: f, the delay's "<n>f") */
     static const uint8_t k_gl[][7] = {
         {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}, {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, {0x1F,0x02,0x04,0x02,0x01,0x11,0x0E}, {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02},
         {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E}, {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}, {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}, {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C},
@@ -3791,7 +3791,8 @@ static void ovl_text(uint32_t index, int x, int y, int dot, const char *s) {
         {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}, {0x0E,0x11,0x10,0x17,0x11,0x11,0x0F}, {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}, {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E}, {0x11,0x12,0x14,0x18,0x14,0x12,0x11},
         {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}, {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}, {0x11,0x19,0x15,0x13,0x11,0x11,0x11}, {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}, {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10},
         {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11}, {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}, {0x1F,0x04,0x04,0x04,0x04,0x04,0x04}, {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}, {0x11,0x11,0x11,0x11,0x11,0x0A,0x04},
-        {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}, {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}, {0x11,0x11,0x11,0x0A,0x04,0x04,0x04}};
+        {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}, {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}, {0x11,0x11,0x11,0x0A,0x04,0x04,0x04},
+        {0x06,0x09,0x08,0x1C,0x08,0x08,0x08}};
     int W = (int)V.extent.width, H = (int)V.extent.height;
     for (; *s; s++, x += 6 * dot) {
         const char *q = strchr(k_ch, *s);
@@ -3937,6 +3938,7 @@ int ldn_ping_overlay(int *ms, int max);                 /* ldn_online.inc (nnnet
 static int ldn_ping_overlay(int *ms, int max) { (void)ms; (void)max; return 0; }
 #endif
 int net_ping_overlay(int *ms, int max);                 /* net_relay.c: the same values online through the lobby server */
+int net_ping_delay(void);                              /* net_relay.c: (0.2.52) the rollback match's input delay in frames, 0 = none */
 /* 2026-10-19: drawn the way fighting games show it next to the player (the owner's picture): a signal icon of four
  * bars and the number, both in the colour of the quality (green up to 60 ms, yellow up to 120, red above, or no answer),
  * with a dark outline; bars lit: 4 up to 40 ms, 3 up to 80, 2 up to 130, else 1. */
@@ -3986,11 +3988,15 @@ static void ldn_ping_draw(uint32_t index) {
     int dot = H / 540 > 1 ? H / 540 : 1;              /* 2 px at 1080 (the owner: half the first size) */
     if (g_in_fight && n == 2) {                        /* measured at 1280x720: stock icons P1 x 318-350, P2 x 812-860, row y 692-704: left of them, as under the portrait */
         static const float fx[2] = {0.243f, 0.628f};
+        int dl = net_ping_delay(); char df[8] = ""; if (dl > 0) snprintf(df, sizeof df, "%df", dl > 99 ? 99 : dl);      /* (0.2.52) "<n>f" after the ping, in the light text */
+        {   static int said = -1; if (dl != said) { said = dl; printf("ping overlay: in the fight: pings %d / %d, input delay %s%s\n", ms[0], ms[1], df[0] ? df : "not shown", df[0] ? " shown next to each" : ""); fflush(stdout); } }
         for (int i = 0; i < 2; i++) {
             if (ms[i] == -2) continue;
             char t[16]; snprintf(t, sizeof t, "%d", ms[i] < 0 ? 0 : ms[i] > 999 ? 999 : ms[i]);
             if (ms[i] < 0) snprintf(t, sizeof t, "--");
-            ldn_ping_item(index, X0 + (int)(fx[i] * W) - ldn_ping_width(dot, t), Y0 + (int)(0.978f * H) - 7 * dot, dot, ms[i]);      /* the bottom on the stock icons' bottom (y 704 of 720) */
+            int dw = df[0] ? 3 * dot + (int)strlen(df) * 6 * dot : 0, x = X0 + (int)(fx[i] * W) - ldn_ping_width(dot, t) - dw, y = Y0 + (int)(0.978f * H) - 7 * dot;
+            ldn_ping_item(index, x, y, dot, ms[i]);      /* the bottom on the stock icons' bottom (y 704 of 720) */
+            if (df[0]) ldn_ping_text(index, x + ldn_ping_width(dot, t) + 3 * dot, y, dot, df, 0);
         }
         return;
     }
@@ -3998,9 +4004,12 @@ static void ldn_ping_draw(uint32_t index) {
         if (ms[i] == -2) continue;
         char p[8], t[16]; snprintf(p, sizeof p, "P%d", i + 1);
         if (ms[i] < 0) snprintf(t, sizeof t, "--"); else snprintf(t, sizeof t, "%d", ms[i] > 999 ? 999 : ms[i]);
-        int w = 3 * 6 * dot + ldn_ping_width(dot, t), x = X0 + W - w - W / 90, y = Y0 + H / 60 + row++ * 11 * dot;
+        int dl = net_ping_delay(); char df[8] = ""; if (dl > 0) snprintf(df, sizeof df, "%df", dl > 99 ? 99 : dl);      /* (0.2.52) as in the fight */
+        int dw = df[0] ? 3 * dot + (int)strlen(df) * 6 * dot : 0;
+        int w = 3 * 6 * dot + ldn_ping_width(dot, t) + dw, x = X0 + W - w - W / 90, y = Y0 + H / 60 + row++ * 11 * dot;
         ldn_ping_text(index, x, y, dot, p, 0);
         ldn_ping_item(index, x + 3 * 6 * dot, y, dot, ms[i]);
+        if (df[0]) ldn_ping_text(index, x + 3 * 6 * dot + ldn_ping_width(dot, t) + 3 * dot, y, dot, df, 0);
     }
 }
 static void vk_present2(void *arg, int progress);
