@@ -79,6 +79,7 @@ enum { T_JOIN = 1, T_WELCOME, T_REJECT, T_PING, T_PONG, T_DATA, T_LEAVE, T_LIST,
        T_PEERS, T_PUNCH, T_DIRECT, T_BCAST };
 enum { T_ROOMS = 17, T_ROOM_INFO, T_ROOMS_END };      /* O1 room browser */
 enum { T_MATCH = 20, T_MATCH_STATE };                 /* O2 matchmaking */
+enum { T_RESULT = 22, T_VERDICT = 23 };               /* (0.2.53) a ranked Online match's result (online_elo.c) and the lobby's verdict (rb_ranked.c) */
 #define PROTO 1
 #define NAME_LEN 32
 #define BUILD_LEN 40
@@ -170,7 +171,7 @@ static char g_ticket[320];
  * 5 (0.2.52): the Online match with SSBU Arena's fixed rules and stages, its normal results, 1v1 gatherings (rb_nex of 0.2.52).
  * A 0.2.51 game never meets a 0.2.52 one anyway (another game code: the lobby's and rb_nex's partitions, the handshake's code
  * check); min_client_level = 5 tells it to update instead of leaving it searching alone. A lobby at 4 takes both. */
-#define NET_CLIENT_LEVEL 5
+#define NET_CLIENT_LEVEL 6
 /* (0.2.37) SSBU_ONLINE_TICKET_FILE: a file the launcher writes again with a fresh ticket while the game runs (its pass is short);
  * read again when it changes (every 5 s at most) and sent at once with the same nonce: the lobby takes it as a renewal */
 static char g_ticket_file[MAX_PATH];
@@ -1142,6 +1143,42 @@ static void mm_send(int op) {                           /* (client thread) */
     s32(p + 13, g_mm_id);
     tx(p, sizeof p, &g_lobby);
 }
+/* (0.2.53, SSBU_ONLINE_RESULT) a ranked Online match's RESULT (online_elo.c builds the body): sent every second until the lobby's final
+ * VERDICT (verdict 1..4) or 30 s; each VERDICT (and the second one with the database's elo, "EL" flag 2) goes to online_elo_verdict
+ * once per verdict and elo kind. An older lobby answers nothing: the game just stops after 30 s. NET_CLIENT_LEVEL 6 tells the
+ * lobby this game sends it (rk_native_min_level). */
+static SRWLOCK g_rk_lock = SRWLOCK_INIT;
+static uint8_t g_rk_body[61]; static uint64_t g_rk_gid, g_rk_t0, g_rk_tx; static volatile LONG g_rk_on;
+static uint64_t g_rk_shown_gid; static int g_rk_shown_key = -1;
+void online_elo_verdict(uint64_t gid, int v, int winner, int reason, const char *text, const uint8_t *el, int el_n);      /* online_elo.c */
+void net_ranked_result(const uint8_t body[61], uint64_t gid) {
+    AcquireSRWLockExclusive(&g_rk_lock);
+    memcpy(g_rk_body, body, 61); g_rk_gid = gid; g_rk_t0 = 0; g_rk_tx = 0;
+    ReleaseSRWLockExclusive(&g_rk_lock);
+    InterlockedExchange(&g_rk_on, 1);
+}
+static void rk_tick(uint64_t t) {                       /* (client thread, joined) */
+    if (!g_rk_on) return;
+    uint8_t p[4 + 8 + 61];
+    AcquireSRWLockExclusive(&g_rk_lock);
+    if (!g_rk_t0) g_rk_t0 = t;
+    int stop = t - g_rk_t0 > 30000, due = t - g_rk_tx >= 1000;
+    if (due && !stop) { hdr(p, T_RESULT); s64(p + 4, g_cookie); memcpy(p + 12, g_rk_body, 61); g_rk_tx = t; }
+    uint64_t gid = g_rk_gid;
+    ReleaseSRWLockExclusive(&g_rk_lock);
+    if (stop) { InterlockedExchange(&g_rk_on, 0); say("ranked: no verdict from the lobby for match %08x in 30 s (an older lobby?)", (unsigned)gid); return; }
+    if (due) tx(p, (int)sizeof p, &g_lobby);
+}
+static void rk_verdict(const uint8_t *b, int n) {      /* (client thread) a VERDICT body: id u64, version, verdict, winner, reason, text[64], "EL" block */
+    uint64_t gid = g64(b); int v = b[9], w = b[10], why = b[11];
+    char text[65]; memcpy(text, b + 12, 64); text[64] = 0;
+    if (v == 0) return;                                 /* (pending: the other game's result is awaited) */
+    if (gid == g_rk_gid) InterlockedExchange(&g_rk_on, 0);
+    int has_el = n >= 76 + 4 + 68 && b[76] == 'E' && b[77] == 'L', key = v * 256 + (has_el ? b[79] : 0);
+    if (gid == g_rk_shown_gid && key == g_rk_shown_key) return;      /* (every RESULT sent gets the same answer) */
+    g_rk_shown_gid = gid; g_rk_shown_key = key;
+    online_elo_verdict(gid, v, w, why, text, has_el ? b + 76 : NULL, has_el ? n - 76 : 0);
+}
 static void mm_tick(uint64_t t) {                       /* (client thread, joined) */
     static int test = -1;
     if (test < 0) { const char *e = getenv("SSBU_MATCH_TEST"); test = e && e[0] == '1'; if (test) { say("match: TEST: searching by itself (SSBU_MATCH_TEST=1)"); net_match_find(); } }
@@ -1666,6 +1703,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
         if (g_joined && t - last_tick >= 50) { peers_tick(t); last_tick = t; }
         if (g_joined && t - (uint64_t)g_rooms_wanted < 5000 && t - g_rooms_sent >= 2000) rooms_ask(t);     /* O1: while someone looks */
         if (g_joined) mm_tick(t);                                                                         /* O2 */
+        if (g_joined) rk_tick(t);                                                                         /* (0.2.53) a ranked RESULT */
         struct sockaddr_in from;
         int flen = sizeof from;
         int n = recvfrom(g_sock, (char *)buf, sizeof buf, 0, (struct sockaddr *)&from, &flen);
@@ -1706,6 +1744,9 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             break;
         case T_MATCH_STATE:
             if (n >= 4 + 49 && g_joined) mm_state(buf + 4, ms_now());
+            break;
+        case T_VERDICT:                                  /* (0.2.53) */
+            if (n >= 4 + 76 && g_joined) rk_verdict(buf + 4, n - 4);
             break;
         case T_LISTING:
             if (n >= 12 + NI_SIZE && g_joined) {

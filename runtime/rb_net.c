@@ -113,7 +113,14 @@ static RbPad bot_pad0(unsigned seed, long long f) {
     /* segments of 6..29 frames; each segment one action. Walking alternates sides around the middle of the stage. */
     RbPad p; memset(&p, 0, sizeof p);
     {   static long long off = -2; if (off == -2) { const char *e = getenv("SSBU_RB_NET_BOT_WALKOFF"); off = e && *e ? atoll(e) : -1; }      /* (R3 lwr, test) from that frame on: left held (the fighter walks off the stage: the match ends) */
-        if (off >= 0 && f >= off) { p.lx = -32767; return p; }
+        static int wj0 = -1; if (wj0 < 0) { const char *e = getenv("SSBU_RB_NET_BOT_WALKJUMP"); wj0 = e && e[0] == '1'; }
+        if (off >= 0 && f >= off && !wj0) { p.lx = -32767; return p; }
+        if (off >= 0 && f >= off) {                     /* (0.2.53, TEST) WALKOFF + WALKJUMP: dash and jump off the ledge (left held alone stops at the ledge) */
+            long long t = f - off;
+            if (t % 300 < 2) return p;
+            p.lx = (t / 300) % 2 ? 32767 : -32767;
+            if (t % 40 >= 20 && t % 40 < 22) p.buttons = 1ull << 2;
+            return p; }
         if (g_bot_walkoff_at >= 0 && f >= g_bot_walkoff_at) {
             /* (round 14, TEST) SSBU_RB_NET_BOT_WALKJUMP=1 (default 0 = left held, as before): the stick first neutral for 2 frames (the next
              * left is a flick: a dash, not a walk) and a jump every 40 frames: with player 2 human (bench LISTX=",p2=human") the walking
@@ -898,6 +905,7 @@ static uint64_t g_hacc = 0xcbf29ce484222325ull; static int g_hlines;
 #define HR 512
 static uint64_t g_hash[HR]; static long long g_hframe[HR], g_hfinal_upto; static long long g_desync, g_check_ok, g_desync_first = -1;
 static long long g_peer_check_f; static uint32_t g_peer_check;
+static long long g_agree_f; static uint32_t g_agree_ck;      /* (0.2.53, online_elo.c) the newest frame whose checksum both games had the same */
 
 /* (hs13) g_lockstep: a match without the rollback ring: every frame waits for the other pad */
 void rbn_set_lockstep(int on) { g_lockstep = on; }
@@ -1022,7 +1030,7 @@ static void desync_sample(long long f);                  /* below */
 static void on_check(long long cf, uint32_t ck) {
     if (cf <= 0 || cf > g_hfinal_upto || g_hframe[cf % HR] != cf) { g_peer_check_f = cf; g_peer_check = ck; return; }      /* not final here yet: kept for later */
     uint32_t mine = (uint32_t)(g_hash[cf % HR] ^ (g_hash[cf % HR] >> 32));
-    if (mine == ck) g_check_ok++;
+    if (mine == ck) { g_check_ok++; if (cf > g_agree_f) { g_agree_f = cf; g_agree_ck = ck; } }
     else { g_desync++; if (g_desync_first < 0) { g_desync_first = cf; printf("[rbnet] DESYNC: frame %lld checksum here %08x, the other game %08x\n", cf, mine, ck);
         desync_sample(cf); fflush(stdout);
         static int note = -1; if (note < 0) { const char *e = getenv("SSBU_RB_NET_DESYNC_NOTE"); note = !(e && e[0] == '0'); }      /* (OpenSmash phase, idea: Rsoto95 f04166e) */
@@ -1240,7 +1248,7 @@ void rbn_match_reset(void) {
     g_stat_pred = g_stat_padget = g_stat_mis = 0; g_ts_n = 0; g_ts_extra = 0; g_ts_left = 0;
     g_hacc = 0xcbf29ce484222325ull; g_hlines = 0; g_lacc_n = 0;
     memset(g_hash, 0, sizeof g_hash); memset(g_hframe, 0, sizeof g_hframe); g_hfinal_upto = 0;
-    g_desync = 0; g_check_ok = 0; g_desync_first = -1; g_peer_check_f = 0; g_peer_check = 0;
+    g_desync = 0; g_check_ok = 0; g_desync_first = -1; g_peer_check_f = 0; g_peer_check = 0; g_agree_f = 0; g_agree_ck = 0;
     memset(g_acc_n, 0, sizeof g_acc_n); memset(g_acc_var, 0, sizeof g_acc_var); memset(g_un, 0, sizeof g_un); memset(g_unl, 0, sizeof g_unl);
     g_padcheck_bad = 0; g_padcheck_first = -1;
     AcquireSRWLockExclusive(&g_hs_lock); g_hs_mine_ok = 0; g_hs_blk_done = 0; memset(g_hs_peer_have, 0, sizeof g_hs_peer_have); ReleaseSRWLockExclusive(&g_hs_lock);
@@ -1252,6 +1260,16 @@ void rbn_match_reset(void) {
     fflush(stdout);
 }
 int rbn_match_number(void) { return g_match_n; }
+/* (0.2.53, online_elo.c: the RESULT of a ranked Online match) the last final frame and its checksum (as PADS sends it), the newest frame
+ * whose checksums both games had equal, the desyncs, the agreed match's two ui_chara and stage */
+void rbn_result_info(uint32_t *fin_f, uint32_t *fin_ck, uint32_t *agree_f, uint32_t *agree_ck, int *desyncs, uint64_t chara[2], uint64_t *stage) {
+    long long cf = g_hfinal_upto;
+    *fin_f = (uint32_t)cf; *fin_ck = cf > 0 && g_hframe[cf % HR] == cf ? (uint32_t)(g_hash[cf % HR] ^ (g_hash[cf % HR] >> 32)) : 0;
+    *agree_f = (uint32_t)g_agree_f; *agree_ck = g_agree_ck; *desyncs = (int)g_desync;
+    AcquireSRWLockShared(&g_hs_lock);
+    if (g_hs_have_prop) { chara[0] = g_hs_prop.m.chara[0]; chara[1] = g_hs_prop.m.chara[1]; memcpy(stage, g_hs_prop.m.stage, 8); }
+    ReleaseSRWLockShared(&g_hs_lock);
+}
 void rbn_report(FILE *o, long long frames) {
     if (g_on <= 0) return;
     if (g_hlog) fflush(g_hlog);

@@ -606,6 +606,8 @@ namespace Arena
         /// every time, and a folder left half made passed too. Now every file the menu tool makes must be there and not empty
         /// (tools/ui/prepare_menu_classic.py; its marker arena_menu.json names them, the six below without it).</summary>
         public static bool ArenaMenuOk => Competitive && ArenaMenuFiles(out _);
+        /// <summary>(0.2.53) the menu tool's marker version this launcher wants (tools/ui/prepare_menu_classic.py MARKER_VERSION)</summary>
+        const int ArenaMenuVersion = 2;
         public const string ArenaMenuMissingText = "Arena menu files missing (characters\\arena_menu): the game would start with the original menu";
         static readonly string[] ArenaMenuNames = { @"ui\layout\menu\main_menu\main_menu\layout.arc", @"ui\layout\menu\pallet_menu\pallet_menu\layout.arc",
             @"ui\layout\menu\main_menu_footer\main_menu_footer\layout.arc", @"ui\script\menu\main\main_menu_layer_top.lc", @"ui\script\menu\main\main_menu_common.lc", @"ui\message\msg_menu.msbt" };
@@ -621,7 +623,12 @@ namespace Arena
                 if (File.Exists(marker))
                 {
                     // {"version": 1, "region": 2, "files": {"ui/layout/...": 1234, ...}}: read without a JSON library
-                    var listed = Regex.Matches(File.ReadAllText(marker), "\"(ui/[^\"]+)\"\\s*:\\s*(\\d+)");
+                    string mtext = File.ReadAllText(marker);
+                    // (0.2.53) a menu of an older tool (version < 2: no "Arena Elo" texts) is made again once
+                    var mv = Regex.Match(mtext, "\"version\"\\s*:\\s*(\\d+)");
+                    if (mv.Success && int.Parse(mv.Groups[1].Value) < ArenaMenuVersion && Environment.GetEnvironmentVariable("SSBU_ARENA_MENU_VERSION_CHECK") != "0")
+                    { why = "made by an older menu tool (version " + mv.Groups[1].Value + ", now " + ArenaMenuVersion + ")"; return false; }
+                    var listed = Regex.Matches(mtext, "\"(ui/[^\"]+)\"\\s*:\\s*(\\d+)");
                     if (listed.Count > 0) names = listed.Cast<Match>().Select(m => m.Groups[1].Value.Replace('/', '\\')).ToList();
                 }
                 int bad = 0; string first = null;

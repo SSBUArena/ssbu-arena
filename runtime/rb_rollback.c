@@ -816,6 +816,7 @@ static void rbg_step_body(Ctx *c) {
     if (stalled) g_rbg_stall_ms += now_ms() - ts;
     r1_ring_let_go();
     rbn_finalize(g_rbg_pend > 0 && g_rbg_pend - 1 < i ? g_rbg_pend - 1 : i);      /* (R3 pub1) a refused load: its frames are not final yet */
+    {   void online_elo_sample(long long real_frames); online_elo_sample(g_rbg_real); }      /* (0.2.53) the fighters' stocks, read only: the ranked result */
     if (g_rbg_gc_late < 0) { const char *e = getenv("SSBU_RB_GC_LATE"); g_rbg_gc_late = !(e && e[0] == '0'); }
     if (!gorb) { if (g_rbg_gc_late > 0) g_rbg_gc_want = i; else rbg_gc_idle(c, i); }      /* (rollback 8 ms) the Lua collector's work of this frame, in the idle part of the tick (crash phase: at the end of the wait) */
     {   /* (Arena perf) the task workers let go here, before the pacing wait (no load or capture follows in this tick): the
@@ -1000,6 +1001,7 @@ static void rbg_report(void);
  * emptied, the session reset for the next match (whose first safe point makes the ring's base again: r1_ring_rebase) */
 static void rbg_fight_off(void) {
     if (!g_rbg_in_match) return;
+    if (g_rbg_in_match == 1) { void online_elo_fight_end(long long real_frames); online_elo_fight_end(g_rbg_real); }      /* (0.2.53) the ranked RESULT, before the session forgets the match */
     if (g_rbg_in_match == 1) { rbg_report(); r1_ring_let_go(); if (g_rg_ready) r1_ring_release(); g_rbg_rebase = 1; }
     else if (g_rbg_in_match == 3) LOG("r1: RB NET: the Local Wireless room fight is over\n");
     else LOG("r1: RB NET: the match that was not agreed is over after %.1f s (player 1 walked off)\n", (now_ms() - g_rbg_quit_t0) / 1000.0);

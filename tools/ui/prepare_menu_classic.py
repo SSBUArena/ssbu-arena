@@ -41,7 +41,15 @@ FOOTER = 'ui/layout/menu/main_menu_footer/main_menu_footer/layout.arc'
 MESSAGES = 'ui/message/msg_menu.msbt'
 SCRIPTS = 'ui/script/menu/main/'
 MARKER = 'arena_menu.json'      # (0.2.50) written last: the launcher (Core.ArenaMenuOk) checks the files it names
-MARKER_VERSION = 1
+MARKER_VERSION = 2              # (0.2.53) 2: the elo texts below too (the launcher makes the menu again for a marker below 2)
+# (0.2.53, ranked elo per fighter) the game's own Global Smash Power panel shows the elo (runtime online_elo.c, SSBU_ONLINE_ELO_UI): its
+# name becomes "Arena Elo". Written from the player's own message files into characters/arena_elo_text (beside arena_menu), a folder
+# the loose-file layer leaves out with SSBU_ONLINE_ELO_UI=0. Labels read off the game's msg_common / msg_melee (results item, the
+# character select's "GSP" and "Roster GSP"); a label a region does not have is skipped. Nothing of the game is in this file.
+ELO_DIR = 'arena_elo_text'
+ELO_TEXT = {'ui/message/msg_common.msbt': {'cmn_world_pw': 'Arena Elo'},
+            'ui/message/msg_melee.msbt': {'mel_result_item_36': 'Arena Elo', 'mel_chara_select_world_pw': 'Elo',
+                                          'mel_chara_select_synthesize_world_pw': 'Roster Elo'}}
 NAVY = '0a1424ff'                                     # the launcher's page background
 
 
@@ -383,6 +391,25 @@ def icons(data):
     return bytes(d)
 
 
+def elo_texts(arc, region, out):
+    """(0.2.53) "Global Smash Power" -> "Arena Elo" in the player's own msg_common / msg_melee (ELO_TEXT) into out; a failure is only
+    said (the elo still shows, under the game's own name)"""
+    for path, edits in ELO_TEXT.items():
+        try:
+            data = arc.get(path, region)
+            names, _ = msbt_patch.messages(data)
+            have = {k: v for k, v in edits.items() if k in names}
+            content = msbt_patch.apply_grow(data, have)
+            dest = out / path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_suffix(dest.suffix + '.tmp')
+            tmp.write_bytes(content)
+            tmp.replace(dest)
+            print('%s: %d of %d elo labels, %d bytes' % (dest.relative_to(out.parent), len(have), len(edits), len(content)))
+        except Exception as e:      # (cosmetic: never stops the menu)
+            print('elo texts: %s not written (%s)' % (path, e))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--arc', type=Path)
@@ -422,6 +449,7 @@ def main():
         tmp.write_bytes(content)
         tmp.replace(dest)
         print('%s: %d bytes, sha256 %s' % (dest.relative_to(a.out), len(content), hashlib.sha256(content).hexdigest()[:16]))
+    elo_texts(arc, a.region, a.out.parent / ELO_DIR)
     # (0.2.50) the marker last: the files and their sizes (no game content: names and numbers only)
     info = {'version': MARKER_VERSION, 'region': a.region, 'files': {r: len(c) for r, c in outputs.items()}}
     tmp = marker.with_suffix('.json.tmp')

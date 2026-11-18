@@ -39,3 +39,4 @@ int net_ping_overlay(int *ms, int max) { (void)ms; (void)max; return 0; }      /
 int net_ping_delay(void) { return 0; }
 int net_ping_on(void) { return 0; }
 void net_ping_set(int on) { (void)on; }
+void net_ranked_result(const uint8_t body[61], uint64_t gid) { (void)body; (void)gid; }      /* (0.2.53) no online play: no ranked result */
