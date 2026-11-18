@@ -571,7 +571,7 @@ namespace Arena
         void Profile_Click(object sender, RoutedEventArgs e) { OpenSettings(SecPlayer); }
         void Controller_Click(object sender, RoutedEventArgs e) { OpenSettings(SecPads); FindPads(); }
         void Files_Click(object sender, RoutedEventArgs e) { OpenSettings(SecFiles); }
-        void Community_Click(object sender, RoutedEventArgs e) { TabCommunity.IsChecked = true; }
+        void Community_Click(object sender, RoutedEventArgs e) { Core.Open(Core.CommunityDiscord); }      // (0.2.51) the home card: the OpenSmash-Ultimate Discord
         void Changes_Click(object sender, RoutedEventArgs e) { TabChanges.IsChecked = true; }      // (0.2.34) the home page's What's new card
         void Site_Click(object sender, RoutedEventArgs e) { Core.Open(Core.Site); }
         void Project_Click(object sender, RoutedEventArgs e) { Core.Open(Core.Site + "project"); }

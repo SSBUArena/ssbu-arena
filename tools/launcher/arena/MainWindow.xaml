@@ -291,7 +291,7 @@
               </Path>
               <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
                 <TextBlock Text="Join the community" FontSize="18" FontWeight="SemiBold"/>
-                <TextBlock Text="Find players. Follow the project." FontSize="15.5" Foreground="{StaticResource Muted}" Margin="0,4,0,0"/>
+                <TextBlock Text="The OpenSmash Discord: find players, follow the project." FontSize="15.5" Foreground="{StaticResource Muted}" Margin="0,4,0,0"/>
               </StackPanel>
               <Path Grid.Column="2" Data="{StaticResource IcoExternal}" Stroke="{StaticResource Accent}" StrokeThickness="1.8" Width="18" Height="18" Stretch="Uniform" VerticalAlignment="Center"
                     StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>

@@ -81,6 +81,7 @@ namespace Arena
         public static double RumbleStrength = 1.0;                        // (0.2.31) [general] rumble_strength (0..2)
         public static bool[] Invert = new bool[4];                        // (0.2.31) [general] invert.LX / LY / RX / RY (on top of a device's own setting)
         public static int ShaderLoad;                                     // (0.2.19) launcher.ini shader_load: 0 automatic, 1 all at the start, 2 per match (graphics.ini shader_load)
+        public const string CommunityDiscord = "https://discord.gg/pkgyYGf3YB";   // (0.2.51) the OpenSmash-Ultimate Discord (their README's invite): Arena's players meet there
         public static bool CrashReports = true;                           // (0.2.18) launcher.ini crash_reports (CrashReport.cs)
         public static int InputDelay = 2;                                 // (0.2.14) launcher.ini input_delay: 1..5 frames (SSBU_RB_NET_DELAY); (0.2.38) no automatic any more, 2 by default; (rb-8ms) 0 = "Auto": the game chooses from the ping and agrees one delay with the other player (ini "automatic", SSBU_RB_NET_DELAY=auto)
         public static bool Fps;                                           // graphics.ini stats_overlay: the FPS counter in the game                                   // graphics.ini volume (0..100), the game's start volume
