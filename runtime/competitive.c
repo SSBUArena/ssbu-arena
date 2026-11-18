@@ -425,6 +425,7 @@ static void comp_scn_log(Ctx *c, const char *which) {
         n += snprintf(fr + n, sizeof fr - n, " %llx", (unsigned long long)lr);
         if (nfp <= fp) break; fp = nfp;
     }
+    if (!strcmp(name, "MeleeScene") && getenv("SSBU_SHOT_RESULTS_MELEE")) { extern volatile LONG g_shot_results; InterlockedCompareExchange(&g_shot_results, 2, 0); }      /* (TEST: pictures of the results without A3, nvn_vk_draw.c) */
     printf("competitive probe: scene %s asked (%s) from %llx, frames%s; sequence %08x\n", name, which, (unsigned long long)c->x[30], fr,
            *(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE);
     fflush(stdout);
@@ -511,6 +512,20 @@ static void comp_scnend(Ctx *c, void *u) {
     g_scnend_orig(c);
 }
 static void comp_scn_b(Ctx *c, void *u) { (void)u; comp_scn_log(c, "controller's"); g_scn_b_orig(c); }
+/* (0.2.52, RESEARCH, SSBU_ONLINE_SEQ_TRACE=1) the 13 state handlers of OnlineMeleeAnySequenceScene's machine (set up by its enter
+ * 0x710236ab10: this + 0x30 + 0x10 * state; wanted states this + 0x100 + 4 * index, index + 0x14c): each change of the state run */
+static const uint64_t k_onl_states[13] = {0x71023675c0ull, 0x7102367780ull, 0x7102367d00ull, 0x7102367d90ull, 0x7102368280ull, 0x7102368e60ull,
+    0x7102368f10ull, 0x7102368fe0ull, 0x7102369620ull, 0x710236a200ull, 0x710236a460ull, 0x710236a4d0ull, 0x710236a590ull};
+static ImportFn g_onl_st_orig[13];
+static void comp_onl_st(Ctx *c, void *u) {
+    int k = (int)(intptr_t)u; static int last = -1; static unsigned n;
+    uint64_t o = c->x[0]; int idx = *(volatile int32_t *)(uintptr_t)(o + 0x14c);
+    if (k != last && n++ < 400) { printf("[online] SEQ TRACE: state %d (was %d), wanted index %d: %d; +0x150 %d +0x154 %d +0x158 %d +0x15c %u; sequence %08x\n", k, last, idx,
+        idx >= 0 && idx < 0x13 ? *(volatile int32_t *)(uintptr_t)(o + 0x100 + 4ull * (unsigned)idx) : -1, *(volatile int32_t *)(uintptr_t)(o + 0x150), *(volatile int32_t *)(uintptr_t)(o + 0x154),
+        *(volatile int32_t *)(uintptr_t)(o + 0x158), *(volatile uint8_t *)(uintptr_t)(o + 0x15c), *(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE); fflush(stdout); }
+    last = k;
+    g_onl_st_orig[k](c);
+}
 static DWORD WINAPI comp_wait(LPVOID arg) {
     (void)arg;
     /* started by a constructor, before main.elf is read: GA() needs the game build (it stops the program before that) */
@@ -523,6 +538,7 @@ static DWORD WINAPI comp_wait(LPVOID arg) {
               if (w && (w[0] == '3' || w[0] == '4')) {      /* (also without SSBU_QUICK_NATIVE: the Smash versus flow, to compare) */ hook_install(GA(0x7103725c90ull), comp_scn_a, NULL, &g_scn_a_orig); hook_install(GA(0x7103726120ull), comp_scn_b, NULL, &g_scn_b_orig); }
               if (w && w[0] == '4') hook_install(GA(0x7103726540ull), comp_scnend, NULL, &g_scnend_orig);
               if ((w && w[0] == '4') || comp_quick_native()) hook_install(GA(0x71023675c0ull), comp_onl_state0, NULL, &g_onl0_orig);
+              if (getenv("SSBU_ONLINE_SEQ_TRACE")) for (int k = 1; k < 13; k++) if (k != 3) hook_install(GA(k_onl_states[k]), comp_onl_st, (void *)(intptr_t)k, &g_onl_st_orig[k]);
               { void online_nex_hooks(void); online_nex_hooks(); } }      /* nnonline.c: SSBU_ONLINE_NEX=1 only */
             const char *arena_ui = getenv("SSBU_COMPETITIVE_UI");
             if (arena_ui && arena_ui[0] == '1') {

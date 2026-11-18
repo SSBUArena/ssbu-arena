@@ -585,6 +585,7 @@ static void dm_online_fix(const char *when) {
  * 0x7101754d80 (controls object [0x71052c40f0], i, n; it writes the controls object + 0x298, record + 0x1c / + 0xa0 and the
  * fighter entry + 0x10) is called for the network player with slot i, so its fighter reads port i: the rollback's pads. */
 static int g_onl_bound;
+volatile LONG g_shot_results;                          /* (TEST, SSBU_SHOT_RESULTS) the Online match's fight is over: nvn_vk_draw.c takes pictures */
 /* (18/11) g_onl_fight: from the rollback match's base state (the fight's "ready-go", rb_rollback.c) to the fight's end: the frames the
  * rollback plays. Before and after, the Online scene's frames are the game's own (its netcode's lockstep: the countdown, the end). */
 static int g_onl_fight, g_onl_rebind = -1;
@@ -620,14 +621,24 @@ static void dm_online_restore(void) {
     g_onl_fight = 0; g_onl_bound = 0;
     if (g_onl_pops) { printf("[online] A3: the fight's pads: %u frame(s) played with the rollback's pads (the game's own queue pop: %u with pads, %u empty = its netcode would have waited)\n", g_onl_pops, g_onl_pop_ok[1], g_onl_pop_ok[0]); g_onl_pops = g_onl_pop_ok[0] = g_onl_pop_ok[1] = 0; }
     int n = 0;
-    for (int i = 0; i < 2; i++) {
+    /* (0.2.52, owner's two-PC test 18/11: in the results one player's panel was white, the names, "P1 / P2" and the GSP change were
+     * missing and the screen went to the blurred "Gold Earned" one, i.e. the game's results for a match it could not read) The records
+     * written back here were built a second time by the game's builder into a buffer of ours (match_player_hook): good for the log, but
+     * not records the game's results can use (runs b3 / b4 / c4 / c8: always the broken results; c9 / c10, with the match block's own
+     * records left as they are: the game's normal Online results, names, panels, Global Smash Power, Rematch). The match block already
+     * holds the game's Online view after the fight set-up (it makes the other game's player a network one again, "after the fight
+     * set-up" lines), so nothing is written back by default. SSBU_ONLINE_RB_RECBACK=1: written back as 0.2.51 did. */
+    static int recback = -1; if (recback < 0) { const char *e = getenv("SSBU_ONLINE_RB_RECBACK"); recback = e && e[0] == '1'; }
+    for (int i = 0; i < 2 && recback; i++) {
         uint64_t at = g_onl_rec_at[i];
         if (!g_onl_rec_ok[i] || !at) continue;
         for (int k = 0; k < 0x260; k++) wr8(at + (uint64_t)k, g_onl_rec[i][k]);
         n++;
     }
-    printf("[online] A3: the Online match's fight is over: the game's own records of %d player(s) back in the match block (melee mode %u) for its results\n", n, rd8(MELEE_INFO));
+    if (recback) printf("[online] A3: the Online match's fight is over: the game's own records of %d player(s) back in the match block (melee mode %u) for its results (SSBU_ONLINE_RB_RECBACK=1)\n", n, rd8(MELEE_INFO));
+    else printf("[online] A3: the Online match's fight is over: the match block's records left as the game's fight set-up made them, for its results (melee mode %u; SSBU_ONLINE_RB_RECBACK)\n", rd8(MELEE_INFO));
     fflush(stdout);
+    {   extern volatile LONG g_shot_results; InterlockedExchange(&g_shot_results, 1); }      /* (TEST, SSBU_SHOT_RESULTS: nvn_vk_draw.c) */
 }
 /* (Arena, online matchmaking) a quick match from the Arena menu's Online Ranked tile (competitive.c comp_quickplay): both games
  * play the same locked rules whatever the player's own ruleset: stock (rule kind 1), 3 stocks, no items, no hazards (the
@@ -1088,6 +1099,7 @@ static void match_player_hook(Ctx *c, void *user) {
     {   int online_nex_on(void);                         /* (online-mm A3 prep, SSBU_ONLINE_NEX=1 only) what the game's own Online match builds, for the log */
         if (online_nex_on() && idx >= 0 && idx < 2) {
             if (idx == 0) printf("[online] fight set-up: melee mode (match block + 0) %u, + 1 %u, sequence %08x, builder return %llx\n", rd8(MELEE_INFO), rd8(MELEE_INFO + 1), rd32(GA(0x71053040f0ULL)), (unsigned long long)c->x[30]);
+            if (idx == 0 && getenv("SSBU_ONLINE_SEQ_TRACE")) { hex_lines("[online] RESEARCH match block", MELEE_INFO, 0x100); hex_lines("[online] RESEARCH panel state 1", st, 0x100); }      /* (0.2.52, research: the rule header) */
             printf("[online] fight set-up: player %d: ui_chara %016llx colour %u type %u controller slot %d profile %d local %u network %u number %u\n", idx + 1, (unsigned long long)rd64(st + 0x88), rd8(st + 0x90), rd32(st + 0x78),
                    (int)rd32(st + 0x210), (int)rd32(st + 0x214), rd8(st + 0x450), rd8(st + 0x451), rd8(st + 0xa4));
             fflush(stdout);

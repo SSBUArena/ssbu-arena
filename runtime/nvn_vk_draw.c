@@ -4173,6 +4173,17 @@ static void vk_present2(void *arg, int progress) {
     { int step = nvn_front_take_step_shot(); if (step && vt) { char path[300]; const char *dir = getenv("SSBU_SHOT_DIR"); snprintf(path, sizeof path, "%s%sstep_%03d.bmp", dir ? dir : "", dir ? "/" : "", step - 1); save_bmp_vk(path, vt); } }
     nvn_front_draw_tag_clear();
     if (j->shot_fight && vt) { char path[300]; const char *dir = getenv("SSBU_SHOT_DIR"); snprintf(path, sizeof path, "%s%sfight_%05d.bmp", dir ? dir : "", dir ? "/" : "", j->shot_fight); save_bmp_vk(path, vt); printf("shot: fight frame %d saved at presented frame %lld (Vulkan)\n", j->shot_fight, (long long)frame); }      /* session 13, SSBU_SHOT_FIGHT */
+    {   /* (0.2.52, TEST) SSBU_SHOT_RESULTS=<every>[,<count>]: pictures every <every> presented frames once the game's Online match's fight is
+         * over (debug_mode.c g_shot_results), <count> of them (default 40): the results without pictures during the fight */
+        extern volatile LONG g_shot_results; static int rev = -2, rcount = 40; static LONG64 rfrom = -1;
+        if (rev == -2) { const char *e = getenv("SSBU_SHOT_RESULTS"); rev = 0; if (e) sscanf(e, "%d,%d", &rev, &rcount); }
+        if (rev > 0 && g_shot_results && rfrom < 0) { const char *dl = getenv("SSBU_SHOT_RESULTS_MELEE"); rfrom = frame + (g_shot_results == 2 && dl ? atoll(dl) : 0); }      /* (2: the fight scene began, competitive.c; + the delay) */
+        if (rev > 0 && rfrom >= 0 && frame >= rfrom && vt && rcount > 0 && (frame - rfrom) % rev == 0) {
+            char path[300]; const char *dir = getenv("SSBU_SHOT_DIR"); rcount--;
+            snprintf(path, sizeof path, "%s%sresults_%lld.bmp", dir ? dir : "", dir ? "/" : "", (long long)frame); save_bmp_vk(path, vt);
+            if (!rcount) { rfrom = -1; InterlockedExchange(&g_shot_results, 0); rcount = 40; }
+        }
+    }
     if (vt && (frame == shot || (every > 0 && frame >= shot_from && frame % every == 0))) {
         char path[300];
         const char *dir = getenv("SSBU_SHOT_DIR");
