@@ -190,6 +190,9 @@ namespace Arena
         /// <summary>(0.2.48) a public read without signing in (the publishable key): lobby_status</summary>
         public static string Anon(string path) { return Http("GET", path, null, Key); }
 
+        /// <summary>(0.2.52) a public database function without signing in (the publishable key): ranked_leaderboard</summary>
+        public static string AnonPost(string path, string body) { return Http("POST", path, body, Key); }
+
         static string Http(string method, string path, string body, string bearer)
         {
             var rq = (HttpWebRequest)WebRequest.Create(Url + path);
