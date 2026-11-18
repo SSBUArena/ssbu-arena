@@ -297,16 +297,150 @@ static void mods_scan(void) {
  * HOST = no server, over the internet: this game runs the lobby inside itself and shows a room code (its public
  * address, learnt by STUN and/or a UPnP port mapping); JOIN = no server: the lobby is the host's game named by the code.
  *   SSBU_ONLINE = 0|off  1|on|auto  lan  host[:<port>]  join:<code or ip:port>  <host:port> (= lobby)
+ *                 arena (= the SSBU Arena lobby of online_region / SSBU_ONLINE_REGION: auto | eu | na-east, net_region.h)
  *   graphics.ini: online_mode = off|auto|lobby|lan|host|join, online_server, online_join, online_peer, online_upnp,
  *   online_stun, online_port. auto: online_server given -> LOBBY (no answer for 5 s -> LAN), otherwise LAN. */
 static int g_mode, g_auto, g_upnp = 1, g_list_other = 1;     /* g_list_other: online_list_other (O1) */
 static uint16_t g_host_port;                    /* HOST mode: the in-game lobby's UDP port (default 39500) */
 static char g_join[64], g_peer[256], g_stun[128] = "stun.l.google.com:19302";
 
+/* ---------------------------------------------------------------- SSBU Arena regions (net_region.h)
+ * SSBU_ONLINE=arena (or online_mode = arena): lobby mode on the region of the setting (online_region / SSBU_ONLINE_REGION:
+ * auto | eu | na-east). Auto starts at once with the last measured pick (online_region_last, else the first region) and
+ * measures again in a background thread for the next start: no wait at the start, and the lobby never changes while the
+ * game runs. An explicit server (SSBU_ONLINE=<host:port>, SSBU_ONLINE_SERVER, online_server) wins: nothing is measured
+ * (the SSBU Arena launcher measures by itself and starts the game with the lobby it picked).
+ * The measure: the lobby answers a PING only to a game that has joined, so each probe is a JOIN without a pass, which
+ * the lobby refuses at once with a REJECT carrying the probe's nonce (no place taken, nothing logged): the time to
+ * that answer is the round trip. NET_REGION_SAMPLES probes per lobby, all lobbies at once, the median of each.
+ * SSBU_ONLINE_REGION_PROBE=0: nothing measured, Auto = the first region. */
+#include "net_region.h"
+static int g_region = -1, g_region_auto;        /* g_server's region (-1: not one of ours); picked by Auto */
+static char g_region_text[48];
+static int lookup(const char *text, uint16_t default_port, struct sockaddr_in *out);
+static void configure(void);
+static double region_ms(void) {
+    LARGE_INTEGER c, f;
+    QueryPerformanceCounter(&c); QueryPerformanceFrequency(&f);
+    return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
+}
+/* ms[i] = lobby i's median round trip in ms, -1 = no answer; returns how many lobbies answered. Blocks for at most
+ * NET_REGION_TIMEOUT_MS after the names are resolved. */
+int net_region_measure(int *ms) {
+    enum { N = NET_REGION_COUNT, S = NET_REGION_SAMPLES, BASE = 4 + 8 + 2 * NAME_LEN + BUILD_LEN + 4 + 2 + 1 };
+    SOCKET s[N];
+    uint64_t nonce[N][S];
+    double sent[N][S], rtt[N][S];
+    int got[N], left = 0, answered = 0, next = 0;
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    for (int i = 0; i < N; i++) {
+        struct sockaddr_in at;
+        ms[i] = -1; got[i] = 0; s[i] = INVALID_SOCKET;
+        if (!lookup(k_net_regions[i].host, NET_REGION_PORT, &at)) continue;
+        s[i] = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (s[i] == INVALID_SOCKET) continue;
+        if (connect(s[i], (struct sockaddr *)&at, sizeof at)) { closesocket(s[i]); s[i] = INVALID_SOCKET; continue; }
+        left += S;
+    }
+    double t0 = region_ms();
+    while (left > 0) {
+        double t = region_ms();
+        if (t - t0 > NET_REGION_TIMEOUT_MS) break;
+        if (next < S && t - t0 >= next * NET_REGION_GAP_MS) {
+            for (int i = 0; i < N; i++) {
+                if (s[i] == INVALID_SOCKET) continue;
+                uint8_t p[BASE + 4] = {0};
+                nonce[i][next] = rnd64();
+                hdr(p, T_JOIN);
+                s64(p + 4, nonce[i][next]);
+                memcpy(p + 12, "region-probe", 12);
+                memcpy(p + 12 + NAME_LEN, "region-probe", 12);
+                memcpy(p + 12 + 2 * NAME_LEN, NET_BUILD_DEFAULT, sizeof NET_BUILD_DEFAULT - 1);
+                p[BASE] = 'C'; p[BASE + 1] = 'V'; s16(p + BASE + 2, NET_CLIENT_LEVEL);
+                sent[i][next] = region_ms();
+                send(s[i], (const char *)p, sizeof p, 0);
+            }
+            next++;
+        }
+        fd_set rd;
+        struct timeval tv = {0, 5000};
+        FD_ZERO(&rd);
+        for (int i = 0; i < N; i++) if (s[i] != INVALID_SOCKET) FD_SET(s[i], &rd);
+        if (select(0, &rd, NULL, NULL, &tv) <= 0) continue;
+        for (int i = 0; i < N; i++) {
+            uint8_t b[256];
+            if (s[i] == INVALID_SOCKET || !FD_ISSET(s[i], &rd)) continue;
+            int n = recv(s[i], (char *)b, sizeof b, 0);
+            t = region_ms();
+            if (n < 12 || b[0] != 'S' || b[1] != 'U' || b[2] != PROTO || (b[3] != T_REJECT && b[3] != T_WELCOME)) continue;
+            for (int k = 0; k < next; k++) {
+                if (g64(b + 4) != nonce[i][k]) continue;
+                nonce[i][k] = 0;
+                rtt[i][got[i]++] = t - sent[i][k]; left--;
+                if (b[3] == T_WELCOME && n >= 24) {              /* a lobby without accounts took the probe in: it leaves at once */
+                    uint8_t q[12];
+                    hdr(q, T_LEAVE); memcpy(q + 4, b + 16, 8);
+                    send(s[i], (const char *)q, sizeof q, 0);
+                }
+                break;
+            }
+        }
+    }
+    for (int i = 0; i < N; i++) {
+        if (s[i] != INVALID_SOCKET) closesocket(s[i]);
+        if (!got[i]) continue;
+        for (int a = 1; a < got[i]; a++) for (int b = a; b > 0 && rtt[i][b] < rtt[i][b - 1]; b--) { double x = rtt[i][b]; rtt[i][b] = rtt[i][b - 1]; rtt[i][b - 1] = x; }
+        ms[i] = (int)(rtt[i][(got[i] - 1) / 2] + 0.5);
+        answered++;
+    }
+    WSACleanup();
+    return answered;
+}
+static DWORD WINAPI region_thread(LPVOID arg) {
+    int ms[NET_REGION_COUNT], last = (int)(intptr_t)arg;
+    char line[200] = "";
+    int n = net_region_measure(ms), pick = net_region_choose(ms, last);
+    for (int i = 0; i < NET_REGION_COUNT; i++) {
+        size_t l = strlen(line);
+        if (ms[i] >= 0) snprintf(line + l, sizeof line - l, "%s%s %d ms", i ? ", " : "", k_net_regions[i].name, ms[i]);
+        else snprintf(line + l, sizeof line - l, "%s%s no answer", i ? ", " : "", k_net_regions[i].name);
+    }
+    printf("[online] regions measured: %s; Auto picks %s%s\n", line, k_net_regions[pick].name,
+           !n ? " (nobody answered: kept)" : pick == g_region ? "" : " from the next start");
+    fflush(stdout);
+    if (n && pick != last) gfx_ini_set("online_region_last", k_net_regions[pick].id);
+    return 0;
+}
+/* arena mode without an explicit server: g_server from the region setting */
+static void region_pick(void) {
+    char v[64] = "";
+    const char *e = getenv("SSBU_ONLINE_REGION");
+    if (e && *e) snprintf(v, sizeof v, "%s", e); else ini_value("online_region", v, sizeof v);
+    int r = net_region_by_id(v);
+    if (r < 0) {                                    /* auto (also: no setting, or a region this game does not know) */
+        int probe = !((e = getenv("SSBU_ONLINE_REGION_PROBE")) && is_off(e)), last = -1;
+        if (probe && ini_value("online_region_last", v, sizeof v)) last = net_region_by_id(v);
+        r = last >= 0 ? last : 0;
+        g_region_auto = 1;
+        if (probe) { HANDLE th = CreateThread(NULL, 0, region_thread, (LPVOID)(intptr_t)last, 0, NULL); if (th) CloseHandle(th); }
+    }
+    g_region = r;
+    snprintf(g_server, sizeof g_server, "%s:%d", k_net_regions[r].host, NET_REGION_PORT);
+}
+/* the region this game plays on, as the settings show it: "Europe", "Auto (Europe)"; "" = not one of our lobbies */
+const char *net_region_text(void) {
+    configure();
+    if (g_cfg <= 0 || g_mode != NET_MODE_LOBBY || g_region < 0) return "";
+    if (!g_region_text[0]) snprintf(g_region_text, sizeof g_region_text, g_region_auto ? "Auto (%s)" : "%s", k_net_regions[g_region].name);
+    return g_region_text;
+}
+
 static void configure(void) {
     if (g_cfg >= 0) return;
     char v[256] = "", mode[64] = "";
     const char *e = getenv("SSBU_ONLINE");
+    int arena = 0;                                  /* mode "arena": our lobby of the region setting (net_region.h) */
     g_cfg = 0;
     if (e) {
         if (is_off(e)) return;
@@ -329,10 +463,16 @@ static void configure(void) {
     else if (!_strnicmp(mode, "host", 4)) { g_mode = NET_MODE_HOST; if (mode[4] == ':') g_host_port = (uint16_t)atoi(mode + 5); }
     else if (!_strnicmp(mode, "join", 4)) { g_mode = NET_MODE_JOIN; if (mode[4] == ':') snprintf(g_join, sizeof g_join, "%s", mode + 5); }
     else if (!_stricmp(mode, "lobby")) g_mode = NET_MODE_LOBBY;
+    else if (!_stricmp(mode, "arena")) { g_mode = NET_MODE_LOBBY; arena = 1; }
     else { g_mode = NET_MODE_LOBBY; snprintf(g_server, sizeof g_server, "%s", mode); }
     if (!g_server[0]) {
         if ((e = getenv("SSBU_ONLINE_SERVER")) && *e) snprintf(g_server, sizeof g_server, "%s", e);
         else if (ini_value("online_server", v, sizeof v) && !is_off(v)) snprintf(g_server, sizeof g_server, "%s", v);
+    }
+    if (arena && !g_server[0]) region_pick();       /* (an explicit server above wins: nothing measured) */
+    else if (g_server[0]) {                         /* a server by name: shown by its region when it is one of ours */
+        g_region = net_region_by_host(g_server);
+        g_region_auto = (e = getenv("SSBU_ONLINE_REGION_AUTO")) && !strcmp(e, "1");      /* (the launcher's Auto picked it) */
     }
     if (g_auto) g_mode = g_server[0] ? NET_MODE_LOBBY : NET_MODE_LAN;
     if (g_mode == NET_MODE_LOBBY && !g_server[0]) snprintf(g_server, sizeof g_server, "127.0.0.1:%d", VNET_DEFAULT_PORT);

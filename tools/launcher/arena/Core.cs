@@ -31,16 +31,9 @@ namespace Arena
 
     public static class Core
     {
-        public const string DefaultServer = "eu-germany.ssbuarena.com:39010";      // the SSBU Arena lobby (relay only)
-        /// <summary>the Arena servers the player picks from (Settings > Online), by region: relay only, never another
-        /// player's address</summary>
-        public static readonly (string Name, string Address)[] Servers = { ("Europe", DefaultServer) };
-        /// <summary>a saved server -> its place in Servers (an address no longer offered: the first one)</summary>
-        public static int ServerIndex(string address)
-        {
-            for (int i = 0; i < Servers.Length; i++) if (string.Equals(Servers[i].Address, (address ?? "").Trim(), StringComparison.OrdinalIgnoreCase)) return i;
-            return 0;
-        }
+        /// <summary>the SSBU Arena lobby the game is started with (relay only, never another player's address): the one of the
+        /// region chosen in Settings > Online, or Auto's measured pick (Regions.cs)</summary>
+        public static string Server => Regions.Server;
         public const string Site = "https://ssbuarena.com/";
 
         // the exe at the repository's root (the downloaded launcher after its first install) or in its build\ folder (setup.py
@@ -68,7 +61,7 @@ namespace Arena
         public static bool HasOnline, RbPair, HasCompetitive, LightArc;
 
         // settings (launcher.ini and the game's ini files)
-        public static string Nickname = "", Server = DefaultServer, Saves;
+        public static string Nickname = "", Saves;
         public static bool Online = true, Ping = true, Competitive = true;
         // (replays) which matches the game records (runtime: SSBU_REPLAY_MODES), and whether online ones go to the Arena server
         public static bool RecMatchmaking = true, RecLdn = true, RecArena = true, RecLocal = true;      // (0.2.37) no upload switches: a replay goes to the server only when made public
@@ -88,6 +81,7 @@ namespace Arena
         public static double RumbleStrength = 1.0;                        // (0.2.31) [general] rumble_strength (0..2)
         public static bool[] Invert = new bool[4];                        // (0.2.31) [general] invert.LX / LY / RX / RY (on top of a device's own setting)
         public static int ShaderLoad;                                     // (0.2.19) launcher.ini shader_load: 0 automatic, 1 all at the start, 2 per match (graphics.ini shader_load)
+        public const string CommunityDiscord = "https://discord.gg/pkgyYGf3YB";   // (0.2.51) the OpenSmash-Ultimate Discord (their README's invite): Arena's players meet there
         public static bool CrashReports = true;                           // (0.2.18) launcher.ini crash_reports (CrashReport.cs)
         public static int InputDelay = 2;                                 // (0.2.14) launcher.ini input_delay: 1..5 frames (SSBU_RB_NET_DELAY); (0.2.38) no automatic any more, 2 by default; (rb-8ms) 0 = "Auto": the game chooses from the ping and agrees one delay with the other player (ini "automatic", SSBU_RB_NET_DELAY=auto)
         public static bool Fps;                                           // graphics.ini stats_overlay: the FPS counter in the game                                   // graphics.ini volume (0..100), the game's start volume
@@ -179,7 +173,9 @@ namespace Arena
             Saves = Get(L, "saves") ?? defSaves;
             Nickname = Get(O, "nickname") ?? Get(L, "nickname") ?? "";
             Online = Get(L, "online_choice") == "1" ? Get(L, "online") != "off" : true;      // (0.2.8) on by default; a choice made since is kept
-            Server = Servers[ServerIndex(Get(L, "server") ?? DefaultServer)].Address;
+            // (server region) "server" of 0.2.50 and older is not read any more (it only ever held the Europe lobby): the region is
+            // graphics.ini online_region (LoadGfx); online_server = host:port, written by hand, is a server that wins over it
+            Regions.IniServer = string.IsNullOrWhiteSpace(Get(L, "online_server")) ? null : Get(L, "online_server").Trim();
             Ping = Get(L, "ping") != "off";
             StageBg = Get(L, "stage_bg") == "off" ? 1 : Get(L, "stage_bg") == "custom" ? 2 : 0;
             CloseToTray = Get(L, "close_to_tray") == "on";
@@ -236,6 +232,8 @@ namespace Arena
             Volume = int.TryParse(Get(G, "volume"), out var vol) ? Math.Max(0, Math.Min(100, vol)) : 100;
             Fps = Get(G, "stats_overlay") == "on";
             if (Get(G, "ping_overlay") != null) Ping = Get(G, "ping_overlay") != "off";      // (0.2.8) the in-game menu's choice wins: one switch in both places
+            Regions.Setting = Regions.ById(Get(G, "online_region"));      // (server region) one key for the launcher and the game; the in-game menu's choice wins
+            if (Regions.ById(Get(G, "online_region_last")) >= 0) Regions.Last = Regions.ById(Get(G, "online_region_last"));
             gfxSeen = GfxValues().Where(kv => Get(G, kv.Key) != null).ToDictionary(kv => kv.Key, kv => kv.Value);      // a key not in the file yet is written
             if (Get(G, "shader_load") != null) gfxSeen["shader_load"] = Get(G, "shader_load");      // (0.2.19) as it is in the file: automatic may want another value
         }
@@ -257,13 +255,20 @@ namespace Arena
                 { "aspect", Aspect == 1 ? "stretch" : "keep" },
                 { "window", new[] { "windowed", "borderless", "fullscreen" }[Math.Max(0, Math.Min(2, WindowMode))] },
                 { "latency", "normal" },        // input latency: always normal (the option is gone)
-                { "shader_load", ShaderLoadValue() }, { "volume", Volume.ToString() }, { "stats_overlay", Fps ? "on" : "off" }, { "ping_overlay", Ping ? "on" : "off" } };
+                { "shader_load", ShaderLoadValue() }, { "volume", Volume.ToString() }, { "stats_overlay", Fps ? "on" : "off" }, { "ping_overlay", Ping ? "on" : "off" },
+                { "online_region", Regions.Id(Regions.Setting) } };
             var m = Regex.Match(WindowSize.Trim(), @"^(\d{3,5})\s*[xX*]\s*(\d{3,5})$");
             if (m.Success) { gfx["width"] = m.Groups[1].Value; gfx["height"] = m.Groups[2].Value; }
             return gfx;
         }
 
         /// <summary>(0.2.20) the game reloads controllers.ini within a second</summary>
+        /// <summary>(server region) Auto's measured pick, kept for the next start of the launcher and of the game</summary>
+        public static void SaveRegionLast()
+        {
+            try { if (Regions.Last >= 0 && Directory.Exists(Cfg)) SetIniValues(GfxIni, null, new Dictionary<string, string> { { "online_region_last", Regions.Id(Regions.Last) } }); } catch { }
+        }
+
         public static void SaveDeadZone() { SetIniValues(PadIni, "general", new Dictionary<string, string> { { "deadzone", DeadZone.ToString("0.00", CultureInfo.InvariantCulture) } }); }
         public static readonly string[] StickAxes = { "LX", "LY", "RX", "RY" };
         /// <summary>(0.2.31) the other [general] keys of controllers.ini the Controllers page shows (the game reloads the file within a second)</summary>
@@ -293,7 +298,7 @@ namespace Arena
             File.WriteAllLines(LauncherIni, new[] {
                 "# written by the launcher", "saves = " + Saves, "nickname = " + n,
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
-                "server = " + Server.Trim(), "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + (InputDelay == 0 ? "automatic" : InputDelay.ToString()), "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "complete_save = " + (CompleteSave ? "on" : "off"), "complete_save_choice = " + (CompleteSaveChosen ? "1" : "0"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
+                "server = " + Server.Trim(), Regions.IniServer != null ? "online_server = " + Regions.IniServer : "# online_server = host:port   (a server set by hand: wins over the region)", "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + (InputDelay == 0 ? "automatic" : InputDelay.ToString()), "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "complete_save = " + (CompleteSave ? "on" : "off"), "complete_save_choice = " + (CompleteSaveChosen ? "1" : "0"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off") }, Encoding.ASCII);
             var gfx = GfxValues();
@@ -921,7 +926,7 @@ namespace Arena
         static void GameEnv(System.Collections.Specialized.StringDictionary env)
         {
             foreach (var v in new[] { "SSBU_ONLINE", "SSBU_ONLINE_CODE", "SSBU_ONLINE_NAME", "SSBU_ONLINE_DIRECT", "SSBU_NICKNAME", "SSBU_RB_NET", "SSBU_R1_GAMEDLL", "SSBU_NRO_BIN", "SSBU_NET_PING", "SSBU_COMPETITIVE_UI",
-                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_TICKET", "SSBU_ONLINE_TICKET_FILE", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG", "SSBU_MENU", "SSBU_ARENA_MENU_WHY" })
+                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_REGION_AUTO", "SSBU_ONLINE_TICKET", "SSBU_ONLINE_TICKET_FILE", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG", "SSBU_MENU", "SSBU_ARENA_MENU_WHY" })
                 env.Remove(v);
             env["SSBU_ROMFS"] = RomFS ?? "";
             env["SSBU_LAUNCHER"] = Updater.Current.ToString(3);      // (0.2.50) the game logs whether the launcher started it (runtime/competitive.c)
@@ -991,7 +996,9 @@ namespace Arena
                 if (string.IsNullOrWhiteSpace(n)) throw new Exception("Your Arena name could not be read. Sign in again from the account page, then press PLAY.");      // never online without the player's own name
                 env["SSBU_ONLINE_TICKET"] = Ticket ?? "";              // the lobby takes the player's name from it
                 if (Ticket != null && WriteTicketFile(Ticket)) env["SSBU_ONLINE_TICKET_FILE"] = TicketFile;      // (0.2.37) renewed while the game runs
-                env["SSBU_ONLINE"] = Server.Trim();
+                env["SSBU_ONLINE"] = Server.Trim();                  // (server region) the chosen region's lobby, or Auto's measured pick
+                env["SSBU_ONLINE_REGION_AUTO"] = Regions.Auto ? "1" : "0";      // the in-game settings then say "Auto (Europe)"
+                Updater.Log("PLAY: online server " + Regions.Text + (Regions.Ms != null ? " (" + Regions.MsText() + ")" : ""));
                 env["SSBU_ONLINE_NAME"] = n;
                 env["SSBU_NICKNAME"] = n;
                 env["SSBU_ONLINE_CODE"] = "public";                  // (0.2.8) no friend codes: one public pool

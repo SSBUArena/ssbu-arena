@@ -27,6 +27,10 @@ int net_online(void);                   /* asked for (config read on the first c
 int net_mode(void);                     /* NET_MODE_* (valid when net_online()) */
 const char *net_room_code(void);        /* HOST mode: the room code to give the other player ("" until known); JOIN mode: this
                                            player's own code (for online_peer on the host when its router blocks) */
+/* SSBU Arena regions (net_region.h): the region this game plays on as the settings show it ("Europe", "Auto (Europe)";
+ * "" = not one of our lobbies); net_region_measure: each lobby's median round trip in ms (-1 = no answer), blocks < 1 s */
+const char *net_region_text(void);
+int net_region_measure(int *ms);
 int net_log_level(void);                /* SSBU_ONLINE_LOG: 0 quiet .. 3 every datagram */
 void net_start(void);                   /* opens the socket, starts the client thread (idempotent) */
 uint32_t net_my_ip(void);               /* this player's virtual address (host order), 0 until the lobby answered */

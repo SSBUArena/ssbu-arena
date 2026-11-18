@@ -743,6 +743,8 @@ static void rg_stack_ww_tt(Ctx *main_c) {
  * after they are let go: a fiber no guest fiber object (g_fib, just saved), no ring slot (its fibers' host fibers and objects), no
  * held thread (TEB FiberData) and not main uses, made more than 4 rings ago, can never be switched to again. */
 static void *g_fr_pick[256]; static int g_fr_npick; static volatile LONG g_lb_active;      /* (below) */
+static long long g_fo_fin_forgot, g_fo_stale;
+static int fo_fin_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_FIB_REAP_FIN"); on = !(e && e[0] == '0'); } return on; }
 TT_DEFV(fib_reap_pick, (void), (), 14)
 static void fib_reap_pick_tt(void) {
     static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_FIBREAP"); on = !(e && e[0] == '0'); }
@@ -762,6 +764,10 @@ static void fib_reap_pick_tt(void) {
         g_fr_f[j] = g_fr_f[g_fr_n - 1]; g_fr_t[j] = g_fr_t[g_fr_n - 1]; g_fr_n--;
     }
     ReleaseSRWLockExclusive(&g_fr_lock);
+    /* (0.2.51, field crashes 17/11) a fiber object finalized in this session still points at its host fiber (left out of the saved
+     * lists, so it is picked here): it forgets it now, with the threads held, or after the session fib_init / fib_finalize would
+     * hand the deleted fiber to fib_reap_out: DeleteFiber twice. SSBU_FIB_REAP_FIN=0: as 0.2.50. */
+    if (g_fr_npick && fo_fin_on()) { int os_r1_fiber_reaped(void *f); for (int i = 0; i < g_fr_npick; i++) g_fo_fin_forgot += os_r1_fiber_reaped(g_fr_pick[i]); }
 }
 static void fo_forget(void *f);                          /* (0.2.50) below */
 static void fib_reap_delete(void) {                      /* threads running again */
@@ -799,13 +805,28 @@ static void fo_forget(void *f) {                         /* the ring's reaper de
     for (int j = 0; j < g_fo_n; ) if (g_fo_q[j] == f) g_fo_q[j] = g_fo_q[--g_fo_n]; else j++;
     ReleaseSRWLockExclusive(&g_fo_lock);
 }
+/* (0.2.51, field crashes 17/11: three access violations inside DeleteFiber, the fiber's block already freed and used again) the
+ * last check before a delete outside a session: the block is readable and its stack (CreateFiberEx: one reservation, base at
+ * + 0x20, top at + 0x10) is still that reservation. A fiber deleted before has its stack released: refused, counted, said
+ * (the first 20), never deleted again. SSBU_FIB_REAP_CHECK=0: no check, as 0.2.50. */
+static int fo_alive(void *f, uint64_t *plo, uint64_t *phi) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_FIB_REAP_CHECK"); on = !(e && e[0] == '0'); }
+    uint64_t v[5] = { 0 }; SIZE_T got = 0; MEMORY_BASIC_INFORMATION mb;
+    if (!on) { *plo = *(uint64_t *)((uint8_t *)f + 0x20); *phi = *(uint64_t *)((uint8_t *)f + 0x10); return 1; }
+    if (!ReadProcessMemory(GetCurrentProcess(), f, v, sizeof v, &got) || got != sizeof v) return 0;
+    uint64_t lo = v[4], hi = v[2]; *plo = lo; *phi = hi;
+    if (!lo || (lo & 0xffff) || hi <= lo || hi - lo > (1ull << 32)) return 0;
+    if (!VirtualQuery((void *)(uintptr_t)lo, &mb, sizeof mb) || mb.State == MEM_FREE || (uint64_t)(uintptr_t)mb.AllocationBase != lo) return 0;
+    if (!VirtualQuery((void *)(uintptr_t)(hi - 0x1000), &mb, sizeof mb) || mb.State != MEM_COMMIT || (uint64_t)(uintptr_t)mb.AllocationBase != lo) return 0;
+    return 1;
+}
 static void fib_reap_out(void) {                          /* main thread, every frame end */
     static long long nfe; if (fo_on() && ++nfe % 3600 == 1) {      /* about once a minute: the counts and this process's private memory */
         typedef BOOL (WINAPI *PmiFn)(HANDLE, void *, DWORD); static PmiFn pmi; if (!pmi) pmi = (PmiFn)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "K32GetProcessMemoryInfo");
         struct { DWORD cb, pf; SIZE_T peak_ws, ws, a, b, c, d, pagefile, peak_pagefile, priv; } pm; memset(&pm, 0, sizeof pm); pm.cb = sizeof pm;
         if (pmi) pmi(GetCurrentProcess(), &pm, pm.cb);
-        LOG("r1: FIBREAP OUT (SSBU_FIB_REAP_OUT): host fibers handed over %lld, deleted %lld, waits (a thread ran it) %lld, queued now %d; registry %d; private memory %.0f MB\n",
-            g_fo_queued, g_fo_deleted, g_fo_waits, g_fo_n, g_fr_n, pm.priv / 1048576.0);
+        LOG("r1: FIBREAP OUT (SSBU_FIB_REAP_OUT): host fibers handed over %lld, deleted %lld, waits (a thread ran it) %lld, queued now %d; registry %d; private memory %.0f MB; pointers to fibers the ring's reaper took, forgotten %lld; stale fibers refused %lld\n",
+            g_fo_queued, g_fo_deleted, g_fo_waits, g_fo_n, g_fr_n, pm.priv / 1048576.0, g_fo_fin_forgot, g_fo_stale);
     }
     if (!g_fo_n || !fo_out()) return;
     static uint64_t cur[513]; int nc = 0; Ctx *tc; const char *nm; HANDLE h;
@@ -834,12 +855,15 @@ static void fib_reap_out(void) {                          /* main thread, every 
     }
     ReleaseSRWLockExclusive(&g_fo_lock);
     for (int d = 0; d < nd; d++) {
-        void *f = del[d]; int mine = 0;
+        void *f = del[d]; int mine = 0; uint64_t lo, hi;
+        if (!fo_alive(f, &lo, &hi)) {                    /* (0.2.51) not a live host fiber any more: left alone (the registry too) */
+            if (g_fo_stale++ < 20) LOG("r1: FIBREAP OUT: host fiber %p refused: not a live fiber any more (stack %llx .. %llx); not deleted (stale fibers refused so far %lld)\n", f, (unsigned long long)lo, (unsigned long long)hi, g_fo_stale);
+            continue;
+        }
         AcquireSRWLockExclusive(&g_fr_lock);
         for (int j = 0; j < g_fr_n; j++) if (g_fr_f[j] == f) { g_fr_f[j] = g_fr_f[g_fr_n - 1]; g_fr_t[j] = g_fr_t[g_fr_n - 1]; g_fr_n--; mine = 1; break; }
         ReleaseSRWLockExclusive(&g_fr_lock);
         (void)mine;      /* (not in the registry: born before the ring's first setup made the registry; the ring's reaper never sees it) */
-        uint64_t lo = *(uint64_t *)((uint8_t *)f + 0x20), hi = *(uint64_t *)((uint8_t *)f + 0x10);
         { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)lo, (size_t)(hi - lo), 2); } DeleteFiber(f); hs_unexclude(lo, hi); g_fo_deleted++; g_fr_deleted++;
     }
 }

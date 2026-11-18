@@ -10,7 +10,8 @@ both players down.
 
 1. **Sign in in the launcher** with your Arena account ([create one](https://www.ssbuarena.com/signup)). Online play is
    on by default; it needs a signed-in player, whose player name is the one the other players see.
-2. **Press Play.** The game joins our server (`eu-germany.ssbuarena.com`, UDP port 39010) as it starts.
+2. **Press Play.** The game joins our server of your region (UDP port 39010) as it starts. See
+   [Server region](#server-region).
 3. In the Arena menu choose **Online Rooms**: it opens the game's own Local Wireless rooms, played over the internet.
    - **Host:** create a room. When someone asks to join ("wants to join!"), accept.
    - **Guest:** find the room in the Rooms List and join it.
@@ -22,6 +23,27 @@ both players down.
 pick a fighter and a stage, the server pairs you with another player searching, and the match plays with rollback and
 competitive rules (no ranking yet). **Battle Arena** is coming: Arena lobbies with friends and invites
 ([roadmap](https://www.ssbuarena.com/project)).
+
+## Server region
+
+There is one Arena server per region, all ours, relay only, with the same accounts and results: one account plays on all
+of them.
+
+| Region | Server |
+|---|---|
+| Europe | `eu-germany.ssbuarena.com` |
+| NA East | `na-east.ssbuarena.com` |
+
+**Launcher > Settings > Online > Server region** (also in the in-game Arena settings; used from the next start of the
+game):
+
+- **Auto** (default): the launcher measures the ping to each server and uses the closest; the box shows the result, for
+  example "Auto (Europe)". The last result is remembered, so nothing waits at the start; it is measured again in the
+  background each time the launcher starts.
+- **Europe** / **NA East**: always that server.
+
+**Players on different servers do not see each other**: Online Rooms and Online Matchmaking are per server. To play
+with a friend, both pick the same region.
 
 ## Rollback in rooms
 
@@ -66,7 +88,12 @@ environment variables or keys in `config\graphics.ini`; environment variables ar
 
 | Variable / graphics.ini key | What it does |
 |---|---|
-| `SSBU_ONLINE=<host:port>` / `online_server` | The server to join. `off` (or `online_mode = off`): offline |
+| `SSBU_ONLINE=<host:port>` / `online_server` | The server to join (it wins over the region: nothing is measured). `off` (or `online_mode = off`): offline |
+| `SSBU_ONLINE=arena` / `online_mode = arena` | The Arena server of the region below (a game started without the launcher) |
+| `SSBU_ONLINE_REGION` / `online_region` | `auto` (default), `eu`, `na-east`: the server region. The launcher and the game read the same key |
+| `online_region_last` | Auto's last measured pick (`eu`, `na-east`): what Auto starts with; written by the launcher and the game |
+| `SSBU_ONLINE_REGION_PROBE=0` | Nothing is measured: Auto is Europe, as in 0.2.50 and older |
+| `SSBU_ONLINE_SERVER` (launcher: also `online_server` in `launcher.ini`) | A server written by hand for the launcher: it wins over the region |
 | `SSBU_ONLINE_NAME` / `online_name` | Your name in the room and in the server's log |
 | `SSBU_ONLINE_CODE` / `online_code` | The server's pool of players; the launcher uses `public` |
 | `SSBU_ONLINE_DIRECT=0` / `online_direct = off` | Relay only: no direct connection between players. **The launcher always sets it** |
