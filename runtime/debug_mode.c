@@ -585,8 +585,13 @@ static void dm_online_fix(const char *when) {
  * 0x7101754d80 (controls object [0x71052c40f0], i, n; it writes the controls object + 0x298, record + 0x1c / + 0xa0 and the
  * fighter entry + 0x10) is called for the network player with slot i, so its fighter reads port i: the rollback's pads. */
 static int g_onl_bound;
+/* (18/11) g_onl_fight: from the rollback match's base state (the fight's "ready-go", rb_rollback.c) to the fight's end: the frames the
+ * rollback plays. Before and after, the Online scene's frames are the game's own (its netcode's lockstep: the countdown, the end). */
+static int g_onl_fight, g_onl_rebind = -1;
 void dm_online_fight_start(Ctx *c) {
-    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_RB_BIND"); on = !(e && e[0] == '0'); }
+    if (g_hs_onlrb && g_onl_restore && !g_onl_fight) { g_onl_fight = 1; long long rbn_now(void);
+        printf("[online] A3: the rollback match's base state: from here the fight's pads are the rollback's and the game's own fight netcode is not run (frame %lld)\n", rbn_now()); fflush(stdout); }
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_RB_BIND"); on = e && e[0] == '1'; }      /* (18/11: default off, the pads come from ctl_pop_hook) */
     if (!on || !g_hs_onlrb || !g_onl_restore || g_onl_bound) return;
     g_onl_bound = 1;
     uint64_t ctl = sr64(GA(0x71052c40f0ULL)); if (!ctl) return;
@@ -600,9 +605,19 @@ void dm_online_fight_start(Ctx *c) {
     }
     memcpy(c->x, save, sizeof save); fflush(stdout);
 }
+static unsigned g_onl_pops, g_onl_pop_ok[2], g_onl_netskip[2];      /* (ctl_pop_hook, net_upd_hook) */
 static void dm_online_restore(void) {
     if (!g_onl_restore) return;
     g_onl_restore = 0;
+    if (g_onl_fight) { printf("[online] A3: the fight is over: the game's own fight netcode runs again (its updates not run during the fight: %u before the frame, %u after)\n", g_onl_netskip[0], g_onl_netskip[1]); g_onl_netskip[0] = g_onl_netskip[1] = 0; }
+    /* (run a3x3: the joiner's result screen did not take its pad) the room normalization gave this game's player controller slot =
+     * its index (port i = the rollback's pads of player i); after the fight the game's own Online scene goes on (lockstep, results,
+     * Rematch) and this game's player must read its own controller again, slot 0: done at the next pop (ctl_pop_hook, it has the
+     * game's context). SSBU_ONLINE_RB_REBIND=0: not. */
+    {   static int rb = -1; if (rb < 0) { const char *e = getenv("SSBU_ONLINE_RB_REBIND"); rb = !(e && e[0] == '0'); }
+        int rbn_local_player(void); if (g_onl_fight && rb) g_onl_rebind = rbn_local_player() & 1; }
+    g_onl_fight = 0; g_onl_bound = 0;
+    if (g_onl_pops) { printf("[online] A3: the fight's pads: %u frame(s) played with the rollback's pads (the game's own queue pop: %u with pads, %u empty = its netcode would have waited)\n", g_onl_pops, g_onl_pop_ok[1], g_onl_pop_ok[0]); g_onl_pops = g_onl_pop_ok[0] = g_onl_pop_ok[1] = 0; }
     int n = 0;
     for (int i = 0; i < 2; i++) {
         uint64_t at = g_onl_rec_at[i];
@@ -903,7 +918,13 @@ static void hs_apply(uint64_t st, int idx, uint32_t type_was) {
                 g_room_saved[idx].st = st; safe_read(st + 0x450, g_room_saved[idx].b450, sizeof g_room_saved[idx].b450);
                 g_room_saved[idx].slot = rd32(st + 0x210); g_room_saved[idx].prof = rd32(st + 0x214); safe_read(st + 0x54, g_room_saved[idx].lay, sizeof g_room_saved[idx].lay); g_room_saved[idx].a4 = rd8(st + 0xa4);
                 if (g_room_saved_n < idx + 1) g_room_saved_n = idx + 1; }
-            wr8(st + 0x450, 1); wr8(st + 0x451, 0); wr32(st + 0x210, (uint32_t)idx); wr32(st + 0x214, 0xffffffffu);
+            /* (online-mm A3, run a3x3 / a3x4: the joiner's result screen did not take its pad: its player read controller slot 1, the
+             * rollback's port, also after the fight) in the game's Online match this game's player keeps ITS controller slot (0, as
+             * the game set it) on both games: the fight's pads come from ctl_pop_hook (player i <- port i for the poll only), and
+             * before / after the fight the game's own scene reads this game's controller. SSBU_ONLINE_RB_SLOT=0: slot = index, as a room */
+            static int onl_slot = -1; if (onl_slot < 0) { const char *e = getenv("SSBU_ONLINE_RB_SLOT"); onl_slot = !(e && e[0] == '0'); }
+            uint32_t slot_to = g_hs_onlrb && onl_slot && idx == local ? 0u : (uint32_t)idx;
+            wr8(st + 0x450, 1); wr8(st + 0x451, 0); wr32(st + 0x210, slot_to); wr32(st + 0x214, 0xffffffffu);
             wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, lay[k]);
             fflush(stdout);
         }
@@ -1661,6 +1682,60 @@ static void station_local_hook(Ctx *c, void *user) {      /* (online-mm A3) 0x71
         if (g_onl_said_local++ < 2) { printf("[online] A3: fight set-up: the other game's player is taken as a local player (station check answered \"local\")\n"); fflush(stdout); }
     }
 }
+/* (online-mm A3, 18/11) where a mode-14 fight takes its pads. The fight scene's frame (0x710135f... , the call at 0x710135f874)
+ * asks the controls object [0x71052c40f0] for this frame's pads through one of three functions, by the object's + 8:
+ *   0 -> 0x71017547f0 "poll": every player i's pad from its controller slot (+ 0x298 + 4 * i; -1 = none: zero) into + 0x2b8 + 8 * i;
+ *   1 -> 0x7101754990 "pop": the players of the mask + 0xd take the next pad of their queue (+ 0x2f8 + 0x48 * i: the game's own
+ *        netcode fills them, the delayed local pads and the ones Pia brought); a queue empty = return 0 = this frame is NOT played
+ *        (the stall of the game's delay netcode; + 0x14 counts the frames waited, the game ends the match on that);
+ *   2 -> 0x7101754d50 (a replay's).
+ * The fighters read + 0x2b8 + 8 * (player index) (0x71003f7240). A game's Online match runs with 1: both fighters followed the
+ * game's netcode, not the rollback's pads (runs r1 / r6 / r7: DESYNC). With SSBU_ONLINE_RB=1 and an agreed A3 match the pop is
+ * answered by the POLL with player i on controller slot i for that call only (ports 1 / 2 = the rollback's pads of players 1 / 2
+ * on both games, as in a Local Wireless room's match): never a stall, the same pads on both games; the slots, the records and the
+ * game's "network player" view stay as the game made them (SSBU_ONLINE_RB_PADS=0: the game's pop, as before). */
+static ImportFn g_orig_ctl_pop;
+static void ctl_pop_hook(Ctx *c, void *user) {
+    (void)user;
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_RB_PADS"); on = !(e && e[0] == '0'); }
+    if (g_onl_rebind >= 0 && !g_onl_fight) {            /* the fight is over: this game's player on its own controller again (see dm_online_restore) */
+        uint64_t ctl0 = c->x[0]; int p = g_onl_rebind; g_onl_rebind = -1;
+        int was = (int)rd32(ctl0 + 0x298 + 4ull * (uint64_t)p);
+        if (was != 0) { uint64_t save[32]; memcpy(save, c->x, sizeof save);
+            c->x[0] = ctl0; c->x[1] = (uint64_t)p; c->x[2] = 0; call_guest(c, GA(0x7101754d80ULL));
+            memcpy(c->x, save, sizeof save);
+            printf("[online] A3: after the fight: this game's player %d on controller slot 0 again (was %d: the rollback's port; the game's own 0x7101754d80)\n", p + 1, was); fflush(stdout); }
+    }
+    if (!on || !g_onl_fight) { g_orig_ctl_pop(c); return; }
+    uint64_t ctl = c->x[0];
+    static int drain = -1; if (drain < 0) { const char *e = getenv("SSBU_ONLINE_RB_DRAIN"); drain = e && e[0] == '1'; }      /* (test, run a3x2) */
+    if (drain) { g_orig_ctl_pop(c); g_onl_pop_ok[c->x[0] & 1]++; c->x[0] = ctl; }      /* the game's own pop first: its queues move as in its own match (what it gives is not used) */
+    uint32_t s0 = rd32(ctl + 0x298), s1 = rd32(ctl + 0x29c);
+    wr32(ctl + 0x298, 0); wr32(ctl + 0x29c, 1);
+    call_guest(c, GA(0x71017547f0ULL));
+    wr32(ctl + 0x298, s0); wr32(ctl + 0x29c, s1);
+    c->x[0] = 1;
+    if (!g_onl_pops++) { printf("[online] A3: the fight's pads: the game's queue pop 0x7101754990 answered by the poll with player i on controller slot i (the rollback's pads; slots of the game %d / %d kept; SSBU_ONLINE_RB_PADS)\n", (int)s0, (int)s1); fflush(stdout); }
+}
+/* (online-mm A3, 18/11) the game's own fight netcode: 0x71016d5ff0 (before the frame) and 0x71016d78d0 (after it; it reads the local
+ * pads with 0x7101755300, sends them, fills the queues of the controls object), both called by the fight scene's frame with the
+ * net object [[0x71052c3d08] + 8]. Run a3x2 (pads from the rollback, this netcode still running, each game at its own frame): the
+ * game itself closed the match ~6 frames after ready-go. During the rollback's frames (g_onl_fight) they are not run: the game's
+ * netcode stays where it was at ready-go on both games (the same lockstep frame) and goes on from there when the fight is over
+ * (SSBU_ONLINE_RB_NETSKIP=0: run, as a3x2). */
+static ImportFn g_orig_net_upd[2];
+static int onl_netskip(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_RB_NETSKIP"); on = !(e && e[0] == '0'); } return on && g_onl_fight; }
+static void net_pre_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { g_onl_netskip[0]++; return; } g_orig_net_upd[0](c); }
+static void net_upd_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { g_onl_netskip[1]++; return; } g_orig_net_upd[1](c); }
+/* (online-mm A3, RESEARCH + log) 0x71016ce960 (net object, reason): the game's fight netcode ends the match itself (it sets the
+ * object's + 0x63 = 2, + 0x64 = the reason); who asked and in which state, for the log (only with SSBU_ONLINE_RB=1) */
+static ImportFn g_orig_net_end;
+static void net_end_hook(Ctx *c, void *user) {
+    (void)user; uint64_t o = c->x[0]; long long rbn_now(void);
+    static int n; if (n++ < 12) { printf("[online] A3: the game's fight netcode ends the match: reason %u, asked from %llx; net object state + 0x62 %u, + 0x63 %u, + 0x5e %u, + 0x5f %u, + 0x39 %u, + 0x48 %04x, + 0x4c %04x, frames + 2 %u + 4 %u; rollback fight %d, frame %lld\n",
+        (unsigned)(c->x[1] & 0xff), (unsigned long long)c->x[30], rd8(o + 0x62), rd8(o + 0x63), rd8(o + 0x5e), rd8(o + 0x5f), rd8(o + 0x39), rd16(o + 0x48), rd16(o + 0x4c), rd16(o + 2), rd16(o + 4), g_onl_fight, rbn_now()); fflush(stdout); }
+    g_orig_net_end(c);
+}
 static void fight_setup_hook(Ctx *c, void *user) {
     (void)user;
     if (g_bacss_reseed && g_hs_wanted && g_hs_ok && g_hs_lwr && !g_hs_local && rd32(GA(0x71053040f0ULL)) == 0x02020000u) {
@@ -1688,6 +1763,24 @@ static void fight_setup_hook(Ctx *c, void *user) {
     if (getenv("SSBU_DEBUG_SCENES") && rd32(GA(0x71053040f0ULL)) == 0x02020000u) { uint64_t g = GA(0x71052381c0ULL);
         printf("[squadcss] fight set-up done: match block + 0x98 %08x + 0x9c %u, generator %08x %08x %08x %08x\n", rd32(MELEE_INFO + 0x98), rd8(MELEE_INFO + 0x9c), rd32(g), rd32(g + 4), rd32(g + 8), rd32(g + 12)); fflush(stdout); }
 }
+/* (online-mm A3, RESEARCH, SSBU_ONLINE_RB_PROBE=1) the controls object [0x71052c40f0]: its poll 0x71017547f0 (every player's mapped pad
+ * from its controller slot, + 0x2b8 + 8 * i), its queue pop 0x7101754990 (players of the mask + 0xd: pads from the queues + 0x2f8 +
+ * 0x48 * i, 0 = a queue is empty), the single player read 0x7101755300 and the game's net update 0x71016d78d0: who calls them when */
+static ImportFn g_orig_pr[4]; static unsigned g_pr_n[4];
+static void probe_note(int k, Ctx *c, uint64_t lr, uint64_t a1, uint64_t a2) {
+    static const char *nm[4] = {"poll 71017547f0", "pop 7101754990", "read 7101755300", "net update 71016d78d0"};
+    unsigned n = ++g_pr_n[k]; if (!(n <= 4 || n % 240 == 0)) return;
+    long long rbn_now(void); uint64_t ctl = sr64(GA(0x71052c40f0ULL)); if (!ctl) return;
+    printf("[online] A3 probe: %s #%u ret %llx lr %llx a1 %llx a2 %llx frame %lld mode %u | ctl +c %02x %02x %02x %02x slots %d %d pads %016llx %016llx queues %llu %llu over %u %u +5a7 %u +5a8 %d +5c0 %u\n", nm[k], n,
+           (unsigned long long)c->x[0], (unsigned long long)lr, (unsigned long long)a1, (unsigned long long)a2, rbn_now(), rd8(MELEE_INFO), rd8(ctl + 0xc), rd8(ctl + 0xd), rd8(ctl + 0xe), rd8(ctl + 0xf),
+           (int)rd32(ctl + 0x298), (int)rd32(ctl + 0x29c), (unsigned long long)rd64(ctl + 0x2b8), (unsigned long long)rd64(ctl + 0x2c0), (unsigned long long)rd64(ctl + 0x308), (unsigned long long)rd64(ctl + 0x350),
+           rd8(ctl + 0x580), rd8(ctl + 0x581), rd8(ctl + 0x5a7), (int)rd32(ctl + 0x5a8), rd8(ctl + 0x5c0));
+    fflush(stdout);
+}
+static void probe_h0(Ctx *c, void *u) { (void)u; uint64_t lr = c->x[30], a1 = c->x[1], a2 = c->x[2]; g_orig_pr[0](c); probe_note(0, c, lr, a1, a2); }
+static void probe_h1(Ctx *c, void *u) { (void)u; uint64_t lr = c->x[30], a1 = c->x[1], a2 = c->x[2]; g_orig_pr[1](c); probe_note(1, c, lr, a1, a2); }
+static void probe_h2(Ctx *c, void *u) { (void)u; uint64_t lr = c->x[30], a1 = c->x[1], a2 = c->x[2]; g_orig_pr[2](c); probe_note(2, c, lr, a1, a2); }
+static void probe_h3(Ctx *c, void *u) { (void)u; uint64_t lr = c->x[30], a1 = c->x[1], a2 = c->x[2]; g_orig_pr[3](c); probe_note(3, c, lr, a1, a2); }
 /* (RESEARCH, SSBU_SQ_MSGLOG=1) the room's messages: 0x7101685cb0 (net, w1 id, x2 data, w3 size) sends one, 0x7101698160 (net, x1 station,
  * w2 id, x3 {size, data}) handles one received (ids 0xa3 .. 0xce; 0x71016f0550 the ones 0xb3 .. 0xce) */
 static ImportFn g_orig_msg_send, g_orig_msg_recv;
@@ -1766,9 +1859,14 @@ static void bacss_init(void) {
     if (g_bacss == 1) printf("[squadcss] Battle Arena rooms play the game's own Squad Strike: hooks %d %d\n", hook_install(GA(0x710232f690ULL), local_launch_hook, NULL, &g_orig_local_launch), hook_install(GA(0x710233cfd0ULL), tc_css_hook, NULL, &g_orig_tc_css));
     if (g_bacss == 1) { const char *r = getenv("SSBU_BA_SQUAD_RESEED"); g_bacss_reseed = !(r && r[0] == '0');
         if (g_bacss_reseed) printf("[squadcss] hook on the fight set-up 0x71014d8620: id %d (the global generator set again from the agreed seed)\n", hook_install(GA(0x71014d8620ULL), fight_setup_hook, NULL, &g_orig_fight_setup)); }
+    if (getenv("SSBU_ONLINE_RB_PROBE")) printf("[online] A3 probe: hooks %d %d %d %d\n", hook_install(GA(0x71017547f0ULL), probe_h0, NULL, &g_orig_pr[0]), hook_install(GA(0x7101754990ULL), probe_h1, NULL, &g_orig_pr[1]),
+                                               hook_install(GA(0x7101755300ULL), probe_h2, NULL, &g_orig_pr[2]), hook_install(GA(0x71016d78d0ULL), probe_h3, NULL, &g_orig_pr[3]));
     {   int online_rb_on(void);                         /* (online-mm A3) the network player fields of the records written back after the fight set-up */
         if (online_rb_on() && !g_orig_fight_setup) printf("[online] A3: hook on the fight set-up 0x71014d8620: id %d\n", hook_install(GA(0x71014d8620ULL), fight_setup_hook, NULL, &g_orig_fight_setup));
-        if (online_rb_on()) printf("[online] A3: hook on the station check 0x710179eb70: id %d\n", hook_install(GA(0x710179eb70ULL), station_local_hook, NULL, &g_orig_station_local)); }
+        if (online_rb_on()) printf("[online] A3: hook on the station check 0x710179eb70: id %d\n", hook_install(GA(0x710179eb70ULL), station_local_hook, NULL, &g_orig_station_local));
+        if (online_rb_on()) printf("[online] A3: hook on the controls object's queue pop 0x7101754990: id %d\n", hook_install(GA(0x7101754990ULL), ctl_pop_hook, NULL, &g_orig_ctl_pop));
+        if (online_rb_on()) printf("[online] A3: hooks on the game's fight netcode 0x71016d5ff0 / 0x71016d78d0: ids %d %d\n", hook_install(GA(0x71016d5ff0ULL), net_pre_hook, NULL, &g_orig_net_upd[0]), hook_install(GA(0x71016d78d0ULL), net_upd_hook, NULL, &g_orig_net_upd[1]));
+        if (online_rb_on()) printf("[online] A3: hook on the game's fight netcode's end 0x71016ce960: id %d\n", hook_install(GA(0x71016ce960ULL), net_end_hook, NULL, &g_orig_net_end)); }
     if (g_bacss == 1) { const char *v = getenv("SSBU_BA_SQUAD_VS"); g_bacss_vs = !(v && v[0] == '0');
         printf("[squadcss] hook on the matchup's state 7 (0x710197d5f0): id %d (the VS screen ends as offline once this game is ready: %s)\n", hook_install(GA(0x710197d5f0ULL), tc_vs_hook, NULL, &g_orig_tc_vs), g_bacss_vs ? "on" : "off, SSBU_BA_SQUAD_VS=0"); }
     fflush(stdout);

@@ -971,6 +971,9 @@ static int vib_map_active(void) {
 static int vib_port(uint32_t id) {
     int rbn_local_player(void);
     if (id > 1 || !vib_map_active()) return (int)id;
+    {   int rbn_online_rb(void);                         /* (online-mm A3) the game's Online match: this game's player has controller slot 0 on both games (debug_mode.c SSBU_ONLINE_RB_SLOT) */
+        static int onl_slot = -1; if (onl_slot < 0) { const char *e = getenv("SSBU_ONLINE_RB_SLOT"); onl_slot = !(e && e[0] == '0'); }
+        if (rbn_online_rb() && onl_slot) return id == 0 ? 0 : -1; }
     return (int)id == rbn_local_player() ? 0 : -1;
 }
 static void vib_apply_port(uint32_t id, int port);
