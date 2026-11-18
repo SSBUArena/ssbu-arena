@@ -17,7 +17,8 @@
  *   picture, e.g. "Pikachu   1016 -> 1032  (+16)   Gold" (or "Unranked 3/5", "provisional" until the database's own number is
  *   there, the reason of a no contest / forfeit / a match that is not ranked).
  *
- * PHASE 2 (SSBU_ONLINE_ELO_UI; its default is in online_elo_ui_on below) the game's own Global Smash Power panel shows the elo:
+ * PHASE 2 (SSBU_ONLINE_ELO_UI=1 turns it on; OFF by default in 0.2.53: the results page with the GSP panel never came up in the local
+ * tests, so it is not published as verified; off = the game's GSP exactly as 0.2.52) the game's own Global Smash Power panel shows the elo:
  *   - 0x71017d14c0 (rating -> the number shown, per category; the fighter GSP is category 0x15): for 0x15 the rating itself
  *     (1:1), every other category as the game does it;
  *   - 0x71017a55e0 (the rating update: the "if I lose" value at the match set-up and the real one at its end, both posted to the
@@ -56,7 +57,7 @@ void net_ranked_result(const uint8_t body[61], uint64_t game_id);
 static int env_on(const char *name, int dflt) { const char *e = getenv(name); return e && *e ? e[0] != '0' : dflt; }
 int online_elo_result_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_RESULT", 1); return v; }
 static int toast_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_TOAST", 1); return v; }
-int online_elo_ui_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_UI", 1); return v; }
+int online_elo_ui_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_UI", 0); return v; }      /* (0.2.53: OFF by default, the owner's decision: never seen on the results page) */
 
 static int oe_read(uint64_t addr, void *buf, size_t n) {
     SIZE_T got = 0;

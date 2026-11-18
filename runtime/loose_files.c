@@ -1513,8 +1513,8 @@ static int loose_files_scan(void (*log)(const char *)) {
         do {
             if (fd.cFileName[0] == '.' || !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
             /* (0.2.53) "Global Smash Power" -> "Arena Elo" (tools/ui/prepare_menu_classic.py): only with the elo in the game's own
-             * panel (online_elo.c SSBU_ONLINE_ELO_UI, default on: the same default here); =0 gives the game's own texts back */
-            if (!_stricmp(fd.cFileName, "arena_elo_text")) { const char *u = getenv("SSBU_ONLINE_ELO_UI"); if (u && u[0] == '0') { lf_logf("[loose] folder %s\\%s left out (SSBU_ONLINE_ELO_UI=0)", root, fd.cFileName); continue; } }
+             * panel (online_elo.c SSBU_ONLINE_ELO_UI=1; OFF by default, the same default here): else the game's own texts */
+            if (!_stricmp(fd.cFileName, "arena_elo_text")) { const char *u = getenv("SSBU_ONLINE_ELO_UI"); if (!(u && u[0] == '1')) { lf_logf("[loose] folder %s\\%s left out (SSBU_ONLINE_ELO_UI is not 1: the game's own GSP texts)", root, fd.cFileName); continue; } }
             char sub[MAX_PATH * 2], mf[MAX_PATH * 2], js[4096]; snprintf(sub, sizeof sub, "%s\\%s", root, fd.cFileName);
             int before = g_lf_count, owner = -1;
             snprintf(mf, sizeof mf, "%s\\fighter.json", sub);
