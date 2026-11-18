@@ -380,12 +380,12 @@ namespace Arena
         {
             SetupSteps.ItemsSource = setupSteps.Where(s => s.Est > 0).Select(s =>
             {
-                string mark = s.State == "done" || s.State == "dry" ? "ok" : s.State == "skip" ? "good" : s.State == "fail" ? "bad" : s.State == "run" ? "busy" : null;
+                string mark = s.State == "done" || s.State == "dry" ? "ok" : s.State == "skip" ? "good" : s.State == "warn" ? "warn" : s.State == "fail" ? "bad" : s.State == "run" ? "busy" : null;      // (0.2.50) warn: a step that did not make its files (the Arena menu), shown as such
                 var sp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 5) };
                 sp.Children.Add(mark != null ? Mark(mark, 20) : new Border { Width = 20, Height = 20, CornerRadius = new CornerRadius(10), BorderBrush = Res("Line"), BorderThickness = new Thickness(2) });
                 sp.Children.Add(new TextBlock
                 {
-                    Text = s.Title + (s.State == "skip" ? "  (already done)" : s.Secs >= 1 && s.State == "done" ? "  " + Dur(s.Secs) : ""),
+                    Text = s.Title + (s.State == "skip" ? "  (already done)" : s.State == "warn" ? "  (not made: see the log)" : s.Secs >= 1 && s.State == "done" ? "  " + Dur(s.Secs) : ""),
                     FontSize = 16, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
                     Foreground = s.State == "wait" ? Res("Dim") : s.State == "fail" ? Res("Bad") : Res("Text"),
                     FontWeight = s.State == "run" ? FontWeights.SemiBold : FontWeights.Normal,
@@ -405,7 +405,7 @@ namespace Arena
             {
                 tot += s.Est;
                 double f = s.Total > 0 ? Math.Min(1, s.Done / s.Total) : s.T0 != default(DateTime) ? Math.Min(0.95, (DateTime.Now - s.T0).TotalSeconds / Math.Max(1, s.Est)) : 0;
-                if (s.State == "done" || s.State == "skip" || s.State == "dry") { done += s.Est; if (s.State == "done" && s.Secs > 0) { rs += s.Secs; re += s.Est; } }
+                if (s.State == "done" || s.State == "skip" || s.State == "dry" || s.State == "warn") { done += s.Est; if (s.State == "done" && s.Secs > 0) { rs += s.Secs; re += s.Est; } }
                 else if (s.State == "run" || s.State == "fail") { done += s.Est * f; left += s.Est * (1 - f); }
                 else wait += s.Est;
             }
@@ -497,6 +497,7 @@ namespace Arena
             FileCheckText.Text = FileCheck.HasList ? "Checking..." : "No list of the files yet: making it from the files as they are now...";
             Task.Run(() =>
             {
+                Core.EnsureArenaMenu();      // (0.2.50) the Arena menu is not in the file list when the setup could not make it: made here
                 if (!FileCheck.HasList) return Tuple.Create((List<FileProblem>)null, FileCheck.Write());
                 var bad = FileCheck.Check(!full, (i, n) => { if (i % 10 == 0 || i == n) Dispatcher.BeginInvoke(new Action(() => FileCheckText.Text = "Checking " + i + " / " + n + "...")); });
                 return Tuple.Create(bad, 0);
@@ -510,6 +511,13 @@ namespace Arena
                 {
                     FileCheckText.Foreground = Res("Good");
                     FileCheckText.Text = "List made: " + t.Result.Item2 + " files, taken as they are now. The next check compares against it.";
+                    return;
+                }
+                if (bad.Count == 0 && !Core.ArenaMenuOk)
+                {
+                    // (0.2.50) the listed files are fine but the Arena menu could not be made (EnsureArenaMenu above): say so, never "fine"
+                    FileCheckText.Foreground = Res("Warn");
+                    FileCheckText.Text = "The game files are fine, but the Arena menu could not be made (" + Core.ArenaMenuOffReason() + "). See build\\logs\\arena_menu.log.";
                     return;
                 }
                 if (bad.Count == 0)

@@ -510,5 +510,8 @@ static inline void v_fcvtn(V128 *d, const V128 *pn, int dbl, int upper) {
 #ifdef R1_GAMEDLL
 #include "neon_fast.h"      /* (rb-8ms) the vector forms, used only by the copies tu_prepare.py makes (RECOMP_NF_FNS) */
 #endif
+#if defined(RECOMP_NEON_VEC) && (defined(__x86_64__) || defined(_M_X64))
+#include "neon_vec.h"       /* (NEON generator 16/11) whole-register vector forms of the hot helpers (build_opt.py RECOMP_NEON_VEC) */
+#endif
 
 #endif

@@ -70,19 +70,24 @@ def rule_db(src, dst):
 
 def main():
     root = os.path.normpath(os.path.join(HERE, '..', '..'))
+    # (0.2.50) the install's build folder (build_location.txt, else <repo>/build): before, always <repo>/build, so an install
+    # in another folder found no state.json here
+    sys.path.append(os.path.join(root, 'scripts'))
+    import build_location
+    build = build_location.get(root)
     ap = argparse.ArgumentParser()
-    ap.add_argument('--arc', default=None, help='data.arc (default: SSBU_ARC, or the romfs of build/state.json)')
-    ap.add_argument('--out', default=os.path.join(root, 'build', 'characters'))
+    ap.add_argument('--arc', default=None, help='data.arc (default: SSBU_ARC, or the romfs of <build>/state.json)')
+    ap.add_argument('--out', default=os.path.join(build, 'characters'))
     a = ap.parse_args()
     arc = a.arc or os.environ.get('SSBU_ARC')
     if not arc:
         import json
-        st = json.load(open(os.path.join(root, 'build', 'state.json')))
+        st = json.load(open(os.path.join(build, 'state.json')))
         arc = os.path.join(st['dump']['romfs'], 'data.arc')
     os.environ['SSBU_ARC'] = arc
     import arc_extract as ax
     A = ax.Arc(arc)
-    tmp = os.path.join(root, 'build', 'competitive_work')
+    tmp = os.path.join(build, 'competitive_work')
     os.makedirs(tmp, exist_ok=True)
     for name, fn in (('ui_stage_db', stage_db), ('ui_item_db', item_db), ('ui_rule_db', rule_db)):
         src = os.path.join(tmp, name + '.prc')

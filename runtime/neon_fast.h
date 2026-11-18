@@ -16,6 +16,13 @@
  *    zero when r1_fmazero); when any lane fails it, the whole operation goes the scalar way (v_f3v), as before. */
 #ifndef RECOMP_NEON_FAST_H
 #define RECOMP_NEON_FAST_H
+/* (0.2.50) clang's xmmintrin.h includes mm_malloc.h, which includes <stdlib.h>: the game DLL's units are compiled with the
+ * project's own small C headers only (a player's PC has no MSVC / Windows SDK headers), so every unit failed there ("'stdlib.h'
+ * file not found", found by the release test install; the developers' PCs found the SDK's). _mm_malloc is not used: its header
+ * is skipped by its own include guard. */
+#ifndef __MM_MALLOC_H
+#define __MM_MALLOC_H
+#endif
 #include <emmintrin.h>
 #include <tmmintrin.h>
 extern __declspec(dllexport) int r1_fastneon;

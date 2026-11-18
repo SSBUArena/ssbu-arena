@@ -72,6 +72,27 @@ GAME_DEFS = RT_DEFS + (['-DRECOMP_ICACHE'] if os.environ.get('RECOMP_ICACHE', '1
 # modules (EXTRA): r1_fmazero / r1_fastneon live in the game DLL's shim (game_shim_r1.c, which needs -DR1_GAMEDLL in RECOMP_DATA_CFLAGS).
 if os.environ.get('RECOMP_R1_GAMEDLL', '') not in ('', '0'):
     GAME_DEFS = GAME_DEFS + ['-DR1_GAMEDLL']
+# (NEON generator 2026-11-16) RECOMP_NEON_VEC=1: the game's units get -DRECOMP_NEON_VEC: neon.h's hot helpers become the whole-register
+# vector forms of runtime/neon_vec.h (FMA3 / SSSE3 chosen at run time by game_shim.c, generic x86-64 ways otherwise; Arm's results bit for
+# bit, tools/lifter/neon_vec_test.c). Bench A/B 16/11: -0.38 ms per rollback tick, -0.21 ms normal tick (ROLLBACK_STATO 2.13). DEFAULT 0
+# AGAIN since 16/11 evening (user: the NEON generator stays out of release 0.2.50; a release build makes exactly the code of before):
+# RECOMP_NEON_VEC=1 turns it on (test DLLs: rb8ms/build_dll8.sh vec / vec2);
+# Windows x86-64 only (Linux / macOS builds: 0, neon_vec.h is x86 inline assembly); RECOMP_NEON_VEC=0: neon.h exactly as before (the old DLL). RECOMP_NEON_CHECK=1 (TEST DLL ONLY, slow): the same plus every NEON op
+# checked against the other way and the old helper while the game runs (counters read by the exe: NEONCHK lines).
+NEON_VEC_ON = os.environ.get('RECOMP_NEON_VEC', '0') not in ('', '0') or os.environ.get('RECOMP_NEON_CHECK', '0') not in ('', '0')
+if NEON_VEC_ON:
+    GAME_DEFS = GAME_DEFS + ['-DRECOMP_NEON_VEC'] + (['-DRECOMP_NEON_CHECK'] if os.environ.get('RECOMP_NEON_CHECK', '0') not in ('', '0') else [])
+# (NEON generator 2, 16/11) rules of the generator on the lifted functions before they are compiled (tools/lifter/neongen.py, called by
+# tu_prepare.py; only with RECOMP_NEON_VEC, the rewritten statements use neon_vec.h): RECOMP_NEON_CONST=1 vector loads from main's
+# read-only data folded to the constants of main.elf and TBL with such an index as a fixed word shuffle; RECOMP_NEON_BITS=1 vector bit
+# ops / moves / MOVI / scalar FP results as one 16-byte register write. Default 0 (=0: the code of before), and nothing without RECOMP_NEON_VEC.
+_NG = [n for n, e in (('const', 'RECOMP_NEON_CONST'), ('bits', 'RECOMP_NEON_BITS')) if NEON_VEC_ON and os.environ.get(e, '0') not in ('', '0')]
+os.environ['RECOMP_NEONGEN'] = ','.join(_NG)
+# RECOMP_NEON_EST=1 (with RECOMP_NEON_VEC): -DRECOMP_NEON_EST, FRSQRTE / FRECPE / FCVTZS of single-precision lanes as vector code with
+# a table of fpexact.h's estimates (neon_vec.h nv_est; every float checked). Default 0.
+if NEON_VEC_ON and os.environ.get('RECOMP_NEON_EST', '0') not in ('', '0'):
+    GAME_DEFS = GAME_DEFS + ['-DRECOMP_NEON_EST']
+tu_prepare.neongen.ON_CONST, tu_prepare.neongen.ON_BITS = 'const' in _NG, 'bits' in _NG
 # RECOMP_INLINE=1: the helpers of runtime.h / neon.h / fpexact.h (every guest load / store, flag, NEON op) inlined into the
 # lifted code. clang 9 at -O1 runs only the always-inline inliner, so without this each helper is a real call: measured
 # 2026-10-13 (private round 15): main thread -25-30 %, audio update 9-17 -> 2-4 ms, per-frame hash identical. Same
@@ -980,6 +1001,7 @@ def cmd_main(jobs):
         rc = 1 if cold_phase(jobs, (lambda fn, *a: slots.run(10.0, fn, *a)) if WITH_NRO else None) else 0
     data_thread.join()
     report(build.OBJ)
+    print(tu_prepare.neongen.report(), flush=True)
     if _split_stats and _split_stats.get('files', [0])[0]:
         s = _split_stats
         print('-O0 units: %d files, %.0fs of compiler time; functions over %d statements: %d (%d statements); never executed '

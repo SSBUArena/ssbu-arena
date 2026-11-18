@@ -763,12 +763,85 @@ static void fib_reap_pick_tt(void) {
     }
     ReleaseSRWLockExclusive(&g_fr_lock);
 }
+static void fo_forget(void *f);                          /* (0.2.50) below */
 static void fib_reap_delete(void) {                      /* threads running again */
     for (int i = 0; i < g_fr_npick; i++) {
         void *f = g_fr_pick[i]; uint64_t lo = *(uint64_t *)((uint8_t *)f + 0x20), hi = *(uint64_t *)((uint8_t *)f + 0x10);
-        { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)lo, (size_t)(hi - lo), 2); } DeleteFiber(f); hs_unexclude(lo, hi); g_fr_deleted++;
+        { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)lo, (size_t)(hi - lo), 2); } fo_forget(f); DeleteFiber(f); hs_unexclude(lo, hi); g_fr_deleted++;
     }
     g_fr_npick = 0;
+}
+/* (0.2.50, field crashes 11/11 and 15/11) THE SAME REAPER OUTSIDE ROLLBACK SESSIONS (SSBU_FIB_REAP_OUT, default 1; =0: as before).
+ * fib_reap_pick / fib_reap_delete above run only inside ring captures, i.e. only in online rollback matches. With R1 on (every Arena
+ * game) fib_finalize kept every host fiber (g_r1_keep_fibers) and the game initialises fibers again ~37 times a second: in local
+ * matches, against the CPU, CPU against CPU, waiting-stage fights and menus nothing deleted them (1 MB of commit each): 45-56 GB of
+ * private memory after 40-50 min, then "error 1455" and a crash. Now, outside a session (no ring state kept: g_rg_count 0, no
+ * threads kept, no pick pending, no run-ahead pass), os_threads.c hands over a host fiber no guest fiber object uses any more
+ * (finalized, or its object initialised again) and this deleter, on the main thread at the frame end (the thread that makes the
+ * ring's states: none can be made meanwhile), deletes those that no thread runs now (each guest thread's TEB FiberData), that are
+ * not in the last saved fiber list (g_fib: a run-ahead restore); each is taken out of the registry (g_fr_f) so the ring's reaper
+ * never deletes it again, and one the ring's reaper deleted is dropped from the queue (fo_forget). A handed-over fiber's object
+ * has no host fiber any more (o->fiber NULL), so no fiber is handed over twice. The ring's own reaper is unchanged. */
+static void **g_fo_q; static int g_fo_n, g_fo_cap; static SRWLOCK g_fo_lock = SRWLOCK_INIT; static long long g_fo_queued, g_fo_deleted, g_fo_waits;
+static int fo_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_FIB_REAP_OUT"); on = !(e && e[0] == '0'); } return on; }
+static int fo_out(void) { return fo_on() && g_rg_count == 0 && !g_rg_kept && !g_rg_keep && !g_fr_npick && g_ra_phase == 0; }
+static int r1_fiber_out(void) { return fo_out(); }
+static void r1_fiber_dead(void *f) {
+    if (!f) return;
+    AcquireSRWLockExclusive(&g_fo_lock);
+    if (g_fo_n == g_fo_cap) { int nc = g_fo_cap ? g_fo_cap * 2 : 1024; void **q = realloc(g_fo_q, (size_t)nc * sizeof *q); if (q) { g_fo_q = q; g_fo_cap = nc; } }
+    if (g_fo_n < g_fo_cap) { g_fo_q[g_fo_n++] = f; g_fo_queued++; }      /* (no room: kept, as before) */
+    ReleaseSRWLockExclusive(&g_fo_lock);
+}
+static void fo_forget(void *f) {                         /* the ring's reaper deleted f: never again from this queue */
+    if (!g_fo_n) return;
+    AcquireSRWLockExclusive(&g_fo_lock);
+    for (int j = 0; j < g_fo_n; ) if (g_fo_q[j] == f) g_fo_q[j] = g_fo_q[--g_fo_n]; else j++;
+    ReleaseSRWLockExclusive(&g_fo_lock);
+}
+static void fib_reap_out(void) {                          /* main thread, every frame end */
+    static long long nfe; if (fo_on() && ++nfe % 3600 == 1) {      /* about once a minute: the counts and this process's private memory */
+        typedef BOOL (WINAPI *PmiFn)(HANDLE, void *, DWORD); static PmiFn pmi; if (!pmi) pmi = (PmiFn)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "K32GetProcessMemoryInfo");
+        struct { DWORD cb, pf; SIZE_T peak_ws, ws, a, b, c, d, pagefile, peak_pagefile, priv; } pm; memset(&pm, 0, sizeof pm); pm.cb = sizeof pm;
+        if (pmi) pmi(GetCurrentProcess(), &pm, pm.cb);
+        LOG("r1: FIBREAP OUT (SSBU_FIB_REAP_OUT): host fibers handed over %lld, deleted %lld, waits (a thread ran it) %lld, queued now %d; registry %d; private memory %.0f MB\n",
+            g_fo_queued, g_fo_deleted, g_fo_waits, g_fo_n, g_fr_n, pm.priv / 1048576.0);
+    }
+    if (!g_fo_n || !fo_out()) return;
+    static uint64_t cur[513]; int nc = 0; Ctx *tc; const char *nm; HANDLE h;
+    /* every guest thread's TEB FiberData (the fiber it runs now). The threads are NOT held here: one can end at any moment (a room's
+     * waiting-stage fight) and its TEB is freed (the release smoke test crashed reading one), so: ended threads are skipped (alive 0:
+     * the "ended?" question, no cached TEB taken blindly) and the TEB is read with ReadProcessMemory (no fault if it went away just
+     * now); a thread still running whose TEB cannot be read stops this frame's deleting (none deleted: the next frame end). */
+    for (int i = 0; nc < 512 && guest_thread_info(i, &tc, &nm, &h); i++) {
+        if (!h) continue;
+        uint8_t *t = live_teb_addr_k(h, guest_thread_tid(i, h), 0);
+        if (!t) continue;                                 /* ended */
+        uint64_t fd = 0; SIZE_T got = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), t + 0x20, &fd, sizeof fd, &got) && got == sizeof fd) cur[nc++] = fd;
+        else if (WaitForSingleObject(h, 0) != WAIT_OBJECT_0) { g_fo_waits++; return; }
+    }
+    if (nc >= 512) return;                                /* (more threads than the list holds: not sure, nothing deleted) */
+    cur[nc++] = (uint64_t)(uintptr_t)GetCurrentFiber();
+    static void *del[512]; int nd = 0;
+    AcquireSRWLockExclusive(&g_fo_lock);
+    for (int j = 0; j < g_fo_n && nd < 512; ) {
+        void *f = g_fo_q[j]; int used = 0;
+        for (int k = 0; !used && k < nc; k++) if ((void *)(uintptr_t)cur[k] == f) used = 1;
+        for (int i = 0; !used && i < g_nfib; i++) if (g_fib[i].fiber == f || (void *)(uintptr_t)g_fib[i].obj[0] == f) used = 1;
+        if (used) { g_fo_waits++; j++; continue; }       /* a thread runs it now: the next frame end */
+        del[nd++] = f; g_fo_q[j] = g_fo_q[--g_fo_n];
+    }
+    ReleaseSRWLockExclusive(&g_fo_lock);
+    for (int d = 0; d < nd; d++) {
+        void *f = del[d]; int mine = 0;
+        AcquireSRWLockExclusive(&g_fr_lock);
+        for (int j = 0; j < g_fr_n; j++) if (g_fr_f[j] == f) { g_fr_f[j] = g_fr_f[g_fr_n - 1]; g_fr_t[j] = g_fr_t[g_fr_n - 1]; g_fr_n--; mine = 1; break; }
+        ReleaseSRWLockExclusive(&g_fr_lock);
+        (void)mine;      /* (not in the registry: born before the ring's first setup made the registry; the ring's reaper never sees it) */
+        uint64_t lo = *(uint64_t *)((uint8_t *)f + 0x20), hi = *(uint64_t *)((uint8_t *)f + 0x10);
+        { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)lo, (size_t)(hi - lo), 2); } DeleteFiber(f); hs_unexclude(lo, hi); g_fo_deleted++; g_fr_deleted++;
+    }
 }
 static void rg_loader_print(void (*pr)(const char *fmt, ...));      /* (below) */
 /* (rb-ms 2026-11-10) SSBU_RB_CPMAIN=<load>,<capture>: main's share of the page copies of a ring load / capture against one copy

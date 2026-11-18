@@ -613,7 +613,26 @@ namespace Arena
             var bad = Core.CheckOnline();
             if (bad.Count > 0) { Show("Online settings", null, bad, ("Open settings", () => OpenSettings(SecOnline), true), ("Cancel", null, false)); return; }
             if (checks == null) { Status("Still checking the game files...", "busy"); return; }
+            Action go = () =>
+            {
+                if (Core.CanPrepare() && Core.NeedsPrepare()) { StartPrep(true); return; }      // the shaders first, here, with progress: the game then starts without the long wait
+                Start();
+            };
             var badFiles = checks.Where(c => !c.Ok).ToList();
+            if (badFiles.Count == 1 && badFiles[0].Text == Core.ArenaMenuMissingText)
+            {
+                // (0.2.50) a player's game started with the original menu: the Arena menu folder was gone and the launcher said nothing
+                bool canCheck = FileCheck.HasList && FileCheck.CanRepair;
+                Show("Arena menu missing",
+                     "The Arena menu files are missing from the game folder, so the game would start with the original Smash menu instead of Arena's. " +
+                     "The launcher tried to make them from your game dump and could not (" + Core.ArenaMenuOffReason() + "; details in build\\logs\\arena_menu.log). " +
+                     "An antivirus that moved the files, or a dump that was moved or deleted, can cause this. " +
+                     (canCheck ? "Check and repair tries again." : "Running the setup again makes them again."), null,
+                     canCheck ? ("Check and repair", (Action)(() => { OpenSettings(SecFiles); FileCheck_Click(null, null); }), true)
+                              : ("Run the setup again", (Action)(() => { OpenSettings(SecFiles); Reinstall_Click(null, null); }), true),
+                     ("Play anyway", () => { Core.Ticket = null; go(); }, false));
+                return;
+            }
             if (badFiles.Count > 0)
             {
                 bool onlyCodecs = badFiles.Count == missingCodecs.Count && missingCodecs.Count > 0;
@@ -624,11 +643,6 @@ namespace Arena
                 else Show("The game is not ready", null, badFiles.Select(c => c.Text), ("Game files", () => OpenSettings(SecFiles), true), ("Cancel", null, false));
                 return;
             }
-            Action go = () =>
-            {
-                if (Core.CanPrepare() && Core.NeedsPrepare()) { StartPrep(true); return; }      // the shaders first, here, with progress: the game then starts without the long wait
-                Start();
-            };
             Core.Ticket = null;
             if (CheckGameCode(go)) return;      // (online-mm 15/11) a game DLL from other sources: repaired first (or played as it is)
             go();      // (0.2.37) the online pass is asked in Start, after the shader preparation: just before the game starts

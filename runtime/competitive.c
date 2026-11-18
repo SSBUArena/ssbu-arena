@@ -522,6 +522,33 @@ static DWORD WINAPI comp_wait(LPVOID arg) {
     return 0;
 }
 
+/* (0.2.50) one line in game.log saying whether Arena's menu is on and, when it is not, why. A player got the original Smash
+ * menu after 4 reinstalls: the launcher (Core.cs) sets SSBU_COMPETITIVE_UI only when characters\arena_menu is complete, and
+ * nothing said so. SSBU_LAUNCHER (the launcher's version, 0.2.50 and later) tells a start from the launcher apart from a
+ * shortcut, Play SSBU.bat or ssbu_native.exe started by hand; SSBU_ARENA_MENU_WHY is the launcher's reason. Only a log line. */
+__attribute__((constructor)) static void comp_menu_report(void) {
+    const char *la = getenv("SSBU_LAUNCHER"), *ui = getenv("SSBU_COMPETITIVE_UI"), *lf = getenv("SSBU_LOOSE_FILES"), *why = getenv("SSBU_ARENA_MENU_WHY");
+    const char *chars = getenv("SSBU_CHARACTERS");
+    char root[MAX_PATH * 2], f[MAX_PATH * 3];
+    if (chars && chars[0]) snprintf(root, sizeof root, "%s", chars);
+    else {
+        DWORD n = GetModuleFileNameA(NULL, root, MAX_PATH);
+        while (n && root[n - 1] != '\\' && root[n - 1] != '/') n--;
+        snprintf(root + n, sizeof root - n, "..\\characters");
+    }
+    snprintf(f, sizeof f, "%s\\arena_menu\\ui\\layout\\menu\\main_menu\\main_menu\\layout.arc", root);
+    int have = GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES;
+    int on = ui && ui[0] == '1' && lf && lf[0] == '1' && have;
+    if (on) printf("arena menu: ON (launcher %s, %s\\arena_menu)\n", la ? la : "unknown", root);
+    else if (!la) printf("arena menu: OFF, the original Smash menu: not started by the SSBU Arena launcher (no SSBU_LAUNCHER: a shortcut, Play SSBU.bat, "
+                         "ssbu_native.exe started by hand, or a launcher older than 0.2.50); Arena menu file %s\n", have ? "present" : "MISSING");
+    else if (why && why[0]) printf("arena menu: OFF, the original Smash menu: launcher %s says: %s\n", la, why);
+    else if (!(lf && lf[0] == '1')) printf("arena menu: OFF, the original Smash menu: the loose-file layer is off (SSBU_LOOSE_FILES=%s)\n", lf ? lf : "unset");
+    else if (!have) printf("arena menu: OFF, the original Smash menu: no file %s\n", f);
+    else printf("arena menu: OFF, the original Smash menu: SSBU_COMPETITIVE_UI=%s\n", ui ? ui : "unset");
+    fflush(stdout);
+}
+
 __attribute__((constructor)) static void comp_start(void) {
     const char *e = getenv("SSBU_COMPETITIVE");
     if (!e || e[0] != '1') return;

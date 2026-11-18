@@ -98,6 +98,36 @@ your copy --> tools/extract --> main executable, SDK, script modules, data
 Releases ship the launcher and a prebuilt runtime (our code only, audited for game content by
 [`scripts/make_release.py`](scripts/make_release.py)); the game itself is always built on the player's PC.
 
+## Rollback performance
+
+A rollback goes back to the last confirmed frame, loads the state saved there and plays the frames again with the right
+inputs (re-run passes), then plays the new frame. At 60 Hz all of that has to fit in 16.7 ms, together with the frame itself.
+
+Standard rollback bench, CPU time on the game's main thread per frame, median over the measured segment:
+
+| Stage | Frame with a rollback | Normal frame | Pre-load hold | Load | Re-run passes (first + last) | Rest: real pass and its state save |
+|---|---|---|---|---|---|---|
+| Battlefield | 6.74 ms | 4.07 ms | 0.16 | 1.32 | 2.43 (1.44 + 0.96) | 2.83 |
+| Small Battlefield | 6.53 ms | 4.02 ms | 0.14 | 1.33 | 2.30 (1.36 + 0.90) | 2.76 |
+| Final Destination | 6.89 ms | 4.35 ms | 0.18 | 1.34 | 2.27 (1.32 + 0.91) | 3.10 |
+| Pokémon Stadium 2 | 7.10 ms | 4.24 ms | 0.14 | 1.35 | 2.63 (1.50 + 1.09) | 2.98 |
+| Town and City | 7.67 ms | 4.54 ms | 0.17 | 1.46 | 2.82 (1.62 + 1.16) | 3.22 |
+| Smashville | 7.41 ms | 4.40 ms | 0.15 | 1.38 | 2.72 (1.54 + 1.13) | 3.16 |
+| **Average** | **7.06 ms** | **4.27 ms** | 0.16 | 1.36 | 2.53 (1.46 + 1.03) | 3.01 |
+
+- The breakdown columns are means per rollback, in ms; "Rest" is the median minus the other parts. The state of every new
+  frame is saved: median 1.16 ms (mean 1.30), on the main thread (a helper thread shares the page copy). It is part of
+  "Normal frame" and of "Rest". Each extra re-run pass of a deeper rollback costs about 0.9 ms.
+- 281 rollbacks per stage: 270 of 2 frames, 11 of 3 frames. 99th percentile of the frames with a rollback: 9.9 to 11.4 ms.
+- Version 0.2.49 measured about 9.7 ms on Battlefield, 10.9 ms on Town and City and 10.0 ms on Final Destination with the
+  older harness (one match per stage, rollbacks from the loop bots without a fixed schedule), so the comparison is approximate.
+
+How it is measured (`rb8ms/bench.sh` on the developers' PC, `SSBU_BENCH`, [`runtime/rb_bench.c`](runtime/rb_bench.c)): one game
+process plays the six stages in a row, Mario against Fox with player 2 a CPU, inputs from seeded bots and a rollback schedule
+that depends only on the frame number (the loop test: player 2's inputs arrive 3 frames late), so every run gets the same
+rollbacks. Per stage, 1885 warm-up frames, then 1800 measured frames. The numbers are the mean of three runs (15/11/2026, commit
+b86151d and its parent 44aabec: the rollback defaults of 0.2.50) on a Ryzen 5 3600 with an RTX 2080 SUPER, Windows 11.
+
 ## Build from source
 
 Everything the launcher does can be done by hand:

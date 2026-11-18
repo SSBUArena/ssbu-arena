@@ -29,6 +29,8 @@ import os
 import re
 import threading
 
+import neongen      # (NEON generator 2) the generator's rules on each optimised function (RECOMP_NEONGEN, set by build_opt.py)
+
 # bump when the way parts are made changes: it is part of build_opt's hint key and split stamp
 VERSION = 2
 DEF = re.compile(r'^(?:static )?void (\w+)\((Ctx \*c(?:, uint64_t (?:rp|jt0))?)\) \{$')
@@ -146,6 +148,8 @@ def prepare(src, out_dir, split_lines, cold=None, own_decls=True, stats=None):
             if line.startswith('}'):
                 n = len(cur) - 2
                 why = 'long' if split_lines and n > split_lines else 'cold' if cold is not None and cold(name) else None
+                if not why and (neongen.ON_CONST or neongen.ON_BITS):
+                    cur = neongen.rewrite(name, cur)
                 if not why and name in NF_FNS and cur[0] == 'void %s(Ctx *c) {' % name:
                     cur = nf_copy(name, cur)
                 if not why and name in RC_FNS and cur[0] == 'void %s(Ctx *c) {' % name:

@@ -114,7 +114,7 @@ TOOLS = {   # checked 2026-10-19: SDL3 and glslang equal GitHub's own asset dige
 # (None, None) until the maintainer has uploaded the package made from this commit and written its hash here; the
 # download is refused when the hash does not match, and setup.py uses the package only with the tree it was built from.
 # SSBU Arena has no runtime release yet (the package of ssbu-recomp is built from another tree and would be refused).
-RUNTIME_RELEASE = ('https://github.com/ssbuarena/ssbu-arena/releases/download/v0.2.49/ssbu-runtime-58eb7a29f9.zip', 'ecbb7572c4dcbb90f3a29ecb2d5ebeffff6a777875d45f67e9cd4e30ac2aac16')
+RUNTIME_RELEASE = ('https://github.com/ssbuarena/ssbu-arena/releases/download/v0.2.50/ssbu-runtime-0006f4f577.zip', '0f3fb8aa4cf90b0013ba54af798c0224ec2a2a919795b0aed535835b41753fdd')
 
 SETUP_STEPS = ['deps', 'stage', 'convert', 'modules', 'tables', 'lift', 'sdk', 'compile', 'nro', 'link', 'rollback', 'check']
 # expected seconds with 12 jobs (compile and nro scale with 12 / jobs), measured 2026-10-24 on a Ryzen 5 3600 (6 cores,
@@ -1015,22 +1015,26 @@ def step_menu(cx):
     """SSBU Arena's main menu (tools/ui/prepare_menu_classic.py): made from this dump's own menu files into
     build/characters/arena_menu, where the launcher looks for it (nothing of the game is in the repository)"""
     out = os.path.join(BUILD, 'characters', 'arena_menu')
-    cmd = [sys.executable, os.path.join(REPO, 'tools', 'ui', 'prepare_menu_classic.py'), '--out', out]
+    # (0.2.50) the dump's data.arc and the build folder are given to the tools: before, prepare_menu_classic.py read
+    # <repo>\build\state.json, so an install in another folder (the installer's "Install location") never got the Arena menu
+    # (the step said "skip", the launcher showed it as already done, and the game started with the original menu)
+    arc = []
+    try:
+        with open(os.path.join(BUILD, 'state.json'), encoding='utf-8') as f:
+            arc = ['--arc', os.path.join(json.load(f)['dump']['romfs'], 'data.arc')]
+    except (OSError, ValueError, KeyError):
+        pass
+    cmd = [sys.executable, os.path.join(REPO, 'tools', 'ui', 'prepare_menu_classic.py'), '--out', out, '--build', BUILD] + arc
     if cx.a.dry_run:
         return 'dry', 'would make the Arena menu in ' + out
     if stream(cmd, cwd=REPO)[0] != 0:
-        return 'skip', 'the Arena menu was not made (the game keeps its own menu); see the lines above'
+        return 'warn', 'the Arena menu was NOT made (the game would start with its own menu; the launcher tries again); see the lines above'
     # (0.2.8) the competitive set-up (6 stages, no items, no Final Smash meter: tools/competitive/make_competitive.py), from
     # this dump's data.arc into build/characters/competitive: the launcher turns the Arena menu and the competitive rules
     # on only with it, and no install made it (a fresh install got the game's own menu)
-    comp = [sys.executable, os.path.join(REPO, 'tools', 'competitive', 'make_competitive.py'), '--out', os.path.join(BUILD, 'characters')]
-    try:
-        with open(os.path.join(BUILD, 'state.json'), encoding='utf-8') as f:
-            comp += ['--arc', os.path.join(json.load(f)['dump']['romfs'], 'data.arc')]
-    except (OSError, ValueError, KeyError):
-        pass
+    comp = [sys.executable, os.path.join(REPO, 'tools', 'competitive', 'make_competitive.py'), '--out', os.path.join(BUILD, 'characters')] + arc
     if stream(comp, cwd=REPO)[0] != 0:
-        return 'skip', 'the competitive set-up was not made (the Arena menu and rules stay off); see the lines above'
+        return 'warn', 'the competitive set-up was NOT made (the Arena menu and rules stay off; the launcher tries again); see the lines above'
     # (0.2.8) the Kirby loading animation (runtime/loading_anim.c): its atlas is made on each PC from Ultimate Frame Data's
     # GIF (tools/ui/loading_inhale.py; game-derived, never in the repository) and goes beside the exe. No install made it
     art = os.path.join(REPO, 'media', 'loading_kirby.png')

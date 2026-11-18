@@ -2790,6 +2790,7 @@ static void r1_frame_end(Ctx *c, void *user) {
     int rerun = g_phase == 2;
     g_orig_frame_end(c);         /* (round 2 tried skipping the whole frame end in re-run frames: the game crashed in the first one) */
     if (lr != GA(0x7103747b7cull)) return;
+    fib_reap_out();                                      /* (0.2.50) host fibers given up outside rollback sessions (r1_ring.c, SSBU_FIB_REAP_OUT) */
     if (g_ra > 0) { fls_index_find(); ra_frame_end(te); return; }         /* run-ahead (round 5): the save / restore is at the kick after the submission, not here */
     if (g_ff > 0 && g_t_poll > 0 && g_t_fe_prev > 0 && !g_fe_busy) { int k = rerun; g_st[k][0] += te - g_t_poll; g_st[k][1] += now_ms() - te; g_st[k][2] += te - g_t_fe_prev; g_stn[k]++; }
     g_t_fe_prev = te;
@@ -2857,6 +2858,7 @@ void r1_init(void) {
     g_mark = getenv("SSBU_R1_MARK") != NULL;
     g_prot = getenv("SSBU_R1_MARK_PROT") != NULL; if (g_prot) AddVectoredExceptionHandler(1, prot_veh); g_mcheck = getenv("SSBU_R1_MARK_CHECK") != NULL; if (g_mark && !mark_bind()) g_mark = 0;
     g_fast = getenv("SSBU_R1_FAST") != NULL; g_fcheck = getenv("SSBU_R1_FAST_CHECK") != NULL; if (getenv("SSBU_R1_LEARN")) g_learn = atoi(getenv("SSBU_R1_LEARN"));
+    { extern int (*g_r1_fiber_out)(void); extern void (*g_r1_fiber_dead)(void *fiber); if (fo_on()) { g_r1_fiber_out = r1_fiber_out; g_r1_fiber_dead = r1_fiber_dead; } }      /* (0.2.50) os_threads.c */
     g_r1_keep_fibers = 1; g_wait_idle = getenv("SSBU_R1_WAIT_IDLE") != NULL; g_busy_log = g_wait_idle ? 3 : 0;
     ls_init();                                          /* R4: the presentation pool of the learned-set save */
     if (ra_wanted()) ra_init(); else g_ra = 0;
