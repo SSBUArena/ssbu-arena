@@ -1810,6 +1810,41 @@ static void reward_hook(Ctx *c, void *user) {
         printf("[online] the Online match's reward: gold %u -> %u given back to %u, \"Gold Earned\" %u -> 0 (SSBU_ONLINE_NO_GOLD)\n", was, now, was, shown); fflush(stdout);
     }
 }
+/* (0.2.52, RESEARCH, SSBU_ONLINE_LYT_TRACE=1) the game's C++ layout helpers (parts / pane / animation / text by name: x1 = the name):
+ * each new (helper, name, caller) once while the current sequence is the Online Quickplay's (0x0701....) */
+static const uint64_t k_lyt_fns[6] = {0x7103776090ULL, 0x7103776360ULL, 0x7103777d50ULL, 0x7103779b70ULL, 0x7103777b30ULL, 0x71037781b0ULL};
+static ImportFn g_lyt_orig[6];
+static void lyt_trace_hook(Ctx *c, void *user) {
+    int k = (int)(intptr_t)user; static unsigned n; static uint64_t seen[3000]; static int nseen;
+    if ((rd32(GA(0x71053040f0ULL)) >> 16) == 0x0701 && nseen < 3000) {
+        char s[56]; memset(s, 0, sizeof s);
+        if (c->x[1] > 0x10000 && safe_read(c->x[1], s, 48)) {
+            int ok = s[0] != 0; for (int i = 0; i < 48 && s[i]; i++) if (s[i] < 0x20 || s[i] >= 0x7f) ok = 0;
+            if (ok) {
+                uint64_t key = (uint64_t)k << 60 ^ c->x[30] * 31 ^ (uint64_t)s[0] << 8 ^ (uint64_t)strlen(s);
+                int dup = 0; for (int i = 0; i < nseen && !dup; i++) dup = seen[i] == key;
+                if (!dup) { seen[nseen++] = key; n++; printf("[online] LYT TRACE %d: %s from %llx (obj %llx)\n", k, s, (unsigned long long)c->x[30], (unsigned long long)c->x[0]); fflush(stdout); }
+            }
+        }
+    }
+    g_lyt_orig[k](c);
+}
+/* (0.2.52, SSBU_ONLINE_ROOM_SLOTS, default 2; 4 = the game's own) the plates of the players at the bottom of the game's Online waiting
+ * room (Quickplay's practice stage): a container of 8 player plates (0x7101bcb6b0 builds each one: "player_%02d", animations
+ * size_p4 / frame_set_p4 / in_wanted / in_readyok / out_closed ...) whose layout is one of the animations "layout_def" and
+ * "layout_pn1" .. "layout_pn8" (0x7101bccbbc: table name -> id 0 .. 8, kept at container + 0x50 + 16 * id). 0x7101bccfc0
+ * (container, w1 = id) plays layout w1 and each plate's size animation; the waiting room's manager calls it (0x710140d090 /
+ * 0x710140d388) when its wanted layout ([manager + 4]) changes: the game asks layout 4 (layout_pn4, 4 plates; 0 = layout_def) also for a gathering of 2
+ * (runs u3 / u4, SSBU_ONLINE_LYT_TRACE). In the Online Quickplay (sequence 0x0701....) the layout asked is made layout_pn<slots>. */
+static ImportFn g_orig_plates;
+static void plates_hook(Ctx *c, void *user) {
+    (void)user;
+    static int slots = -2; if (slots == -2) { const char *e = getenv("SSBU_ONLINE_ROOM_SLOTS"); slots = e && *e ? atoi(e) : 2; if (slots < 1 || slots > 8) slots = 0; }
+    int was = (int)c->x[1], online = (rd32(GA(0x71053040f0ULL)) >> 16) == 0x0701;
+    if (slots && slots != 4 && online && (was == 0 || was == 4)) c->x[1] = (uint64_t)slots;
+    static int n; if (n++ < 20) { printf("[online] waiting room plates: layout %d asked (from %llx, container + 0x44 %d) -> %d (SSBU_ONLINE_ROOM_SLOTS)\n", was, (unsigned long long)c->x[30], (int)rd32(c->x[0] + 0x44), (int)c->x[1]); fflush(stdout); }
+    g_orig_plates(c);
+}
 static ImportFn g_orig_net_end;
 static void net_end_hook(Ctx *c, void *user) {
     (void)user; uint64_t o = c->x[0]; long long rbn_now(void);
@@ -1940,6 +1975,8 @@ static void bacss_init(void) {
     if (g_bacss == 1) printf("[squadcss] Battle Arena rooms play the game's own Squad Strike: hooks %d %d\n", hook_install(GA(0x710232f690ULL), local_launch_hook, NULL, &g_orig_local_launch), hook_install(GA(0x710233cfd0ULL), tc_css_hook, NULL, &g_orig_tc_css));
     if (g_bacss == 1) { const char *r = getenv("SSBU_BA_SQUAD_RESEED"); g_bacss_reseed = !(r && r[0] == '0');
         if (g_bacss_reseed) printf("[squadcss] hook on the fight set-up 0x71014d8620: id %d (the global generator set again from the agreed seed)\n", hook_install(GA(0x71014d8620ULL), fight_setup_hook, NULL, &g_orig_fight_setup)); }
+    {   int online_nex_on(void); if (online_nex_on()) printf("[online] hook on the waiting room's plate layout 0x7101bccfc0: id %d", hook_install(GA(0x7101bccfc0ULL), plates_hook, NULL, &g_orig_plates)); printf("%c", 10); }
+    if (getenv("SSBU_ONLINE_LYT_TRACE")) for (int k = 0; k < 6; k++) hook_install(GA(k_lyt_fns[k]), lyt_trace_hook, (void *)(intptr_t)k, &g_lyt_orig[k]);      /* (0.2.52, research) */
     if (getenv("SSBU_ONLINE_RB_PROBE")) printf("[online] A3 probe: hooks %d %d %d %d\n", hook_install(GA(0x71017547f0ULL), probe_h0, NULL, &g_orig_pr[0]), hook_install(GA(0x7101754990ULL), probe_h1, NULL, &g_orig_pr[1]),
                                                hook_install(GA(0x7101755300ULL), probe_h2, NULL, &g_orig_pr[2]), hook_install(GA(0x71016d78d0ULL), probe_h3, NULL, &g_orig_pr[3]));
     {   int online_rb_on(void);                         /* (online-mm A3) the network player fields of the records written back after the fight set-up */
