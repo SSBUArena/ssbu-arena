@@ -81,6 +81,7 @@ namespace Arena
         public static double RumbleStrength = 1.0;                        // (0.2.31) [general] rumble_strength (0..2)
         public static bool[] Invert = new bool[4];                        // (0.2.31) [general] invert.LX / LY / RX / RY (on top of a device's own setting)
         public static int ShaderLoad;                                     // (0.2.19) launcher.ini shader_load: 0 automatic, 1 all at the start, 2 per match (graphics.ini shader_load)
+        public static string OpenSmashPath;                               // (0.2.52) launcher.ini opensmash_path: OpenSmash Ultimate's folder or launcher exe, set by hand when the OpenSmash tab does not find it (MainWindow.OpenSmash.cs)
         public const string CommunityDiscord = "https://discord.gg/pkgyYGf3YB";   // (0.2.51) the OpenSmash-Ultimate Discord (their README's invite): Arena's players meet there
         public static bool CrashReports = true;                           // (0.2.18) launcher.ini crash_reports (CrashReport.cs)
         public static int InputDelay = 2;                                 // (0.2.14) launcher.ini input_delay: 1..5 frames (SSBU_RB_NET_DELAY); (0.2.38) no automatic any more, 2 by default; (rb-8ms) 0 = "Auto": the game chooses from the ping and agrees one delay with the other player (ini "automatic", SSBU_RB_NET_DELAY=auto)
@@ -187,6 +188,7 @@ namespace Arena
             RecMatchmaking = Get(L, "replay_matchmaking") != "off"; RecLdn = Get(L, "replay_ldn") != "off"; RecArena = Get(L, "replay_arena") != "off";
             RecLocal = Get(L, "replay_local") != "off";
             ShaderStamp = Get(L, "shaders") ?? "";
+            OpenSmashPath = string.IsNullOrWhiteSpace(Get(L, "opensmash_path")) ? null : Get(L, "opensmash_path").Trim();
             Competitive = LightArc || HasCompetitive;      // (0.2.8) always: Arena is the competitive game
             if (!HasOnline) Online = false;
             foreach (var old in new[] { "online.ini.off", "online.ini.old" })      // an older launcher's settings: the name
@@ -298,7 +300,7 @@ namespace Arena
             File.WriteAllLines(LauncherIni, new[] {
                 "# written by the launcher", "saves = " + Saves, "nickname = " + n,
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
-                "server = " + Server.Trim(), Regions.IniServer != null ? "online_server = " + Regions.IniServer : "# online_server = host:port   (a server set by hand: wins over the region)", "ping = " + (Ping ? "on" : "off"), "shaders = " + ShaderStamp, "input_delay = " + (InputDelay == 0 ? "automatic" : InputDelay.ToString()), "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "complete_save = " + (CompleteSave ? "on" : "off"), "complete_save_choice = " + (CompleteSaveChosen ? "1" : "0"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
+                "server = " + Server.Trim(), Regions.IniServer != null ? "online_server = " + Regions.IniServer : "# online_server = host:port   (a server set by hand: wins over the region)", "ping = " + (Ping ? "on" : "off"), OpenSmashPath != null ? "opensmash_path = " + OpenSmashPath : "# opensmash_path = <folder>   (OpenSmash Ultimate's folder or launcher exe, when the OpenSmash tab does not find it)", "shaders = " + ShaderStamp, "input_delay = " + (InputDelay == 0 ? "automatic" : InputDelay.ToString()), "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "complete_save = " + (CompleteSave ? "on" : "off"), "complete_save_choice = " + (CompleteSaveChosen ? "1" : "0"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off") }, Encoding.ASCII);
             var gfx = GfxValues();

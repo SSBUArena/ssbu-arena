@@ -36,6 +36,7 @@ namespace Arena
             SourceInitialized += (s0, e0) => System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(this).Handle).AddHook(KeepAspect);
             Core.Load();
             InitLeaderboard();
+            InitOpenSmash();
             SpaceOut(this);
             FillSettings();
             loading = false;

@@ -66,13 +66,20 @@
           </StackPanel>
         </Button>
         <Border Width="1" Height="36" Background="{StaticResource Line}" Margin="34,0,26,0" VerticalAlignment="Center"/>
-        <!-- the tabs, left to right. (0.2.52) Leaderboard (SSBU_LEADERBOARD=0 hides it). The OpenSmash tab (opens OpenSmash
-             Ultimate: its launcher or its site) goes right after Leaderboard, as TabOpenSmash: a Button styled like NavTab
-             (it opens something else, it is not a page here), so it never takes the selection from these RadioButtons. -->
+        <!-- the tabs, left to right. (0.2.52) Leaderboard (SSBU_LEADERBOARD=0 hides it), then OpenSmash (TabOpenSmash: a Button
+             styled NavLink, like NavTab: it opens something else, it is not a page here, so it never takes the selection from these
+             RadioButtons). -->
         <RadioButton x:Name="TabHome" Style="{StaticResource NavTab}" Content="Home" IsChecked="True" Checked="Tab_Checked"/>
         <RadioButton x:Name="TabReplays" Style="{StaticResource NavTab}" Content="Replays" Checked="Tab_Checked"/>
         <RadioButton x:Name="TabLeaderboard" Style="{StaticResource NavTab}" Content="Leaderboard" Checked="Tab_Checked"/>
-        <!-- (0.2.52) TabOpenSmash here -->
+        <!-- (0.2.52) OpenSmash Ultimate: its launcher when it is installed here, else its download page (MainWindow.OpenSmash.cs);
+             SSBU_OPENSMASH_TAB=0 hides it -->
+        <Button x:Name="TabOpenSmash" Style="{StaticResource NavLink}" Click="OpenSmash_Click" ToolTip="OpenSmash Ultimate" ToolTipOpening="OpenSmash_ToolTipOpening">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="OpenSmash" VerticalAlignment="Center"/>
+            <Path Data="{StaticResource IcoExternal}" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.7" Width="12" Height="12" Stretch="Uniform" Margin="7,0,0,0" VerticalAlignment="Center" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+          </StackPanel>
+        </Button>
         <RadioButton x:Name="TabCommunity" Style="{StaticResource NavTab}" Content="Community" Checked="Tab_Checked" Visibility="Collapsed"/>
         <RadioButton x:Name="TabChanges" Style="{StaticResource NavTab}" Content="What's new" Checked="Tab_Checked" Visibility="Collapsed"/>
         <RadioButton x:Name="TabSettings" Style="{StaticResource NavTab}" Content="Settings" Checked="Tab_Checked" Visibility="Collapsed"/>

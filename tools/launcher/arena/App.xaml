@@ -285,6 +285,29 @@
         </Setter>
       </Style>
 
+      <!-- (0.2.52) a header tab that opens something else (OpenSmash): NavTab's look, a Button, so it never takes the selection -->
+      <Style x:Key="NavLink" TargetType="Button">
+        <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+        <Setter Property="FontFamily" Value="{StaticResource Body}"/>
+        <Setter Property="FontSize" Value="17"/>
+        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <Grid Background="Transparent" MinWidth="96">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="22,0"/>
+              </Grid>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{StaticResource Text}"/></Trigger>
+                <Trigger Property="IsPressed" Value="True"><Setter Property="Opacity" Value="0.8"/></Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
       <!-- settings: section list on the left -->
       <Style x:Key="SideTab" TargetType="RadioButton">
         <Setter Property="Foreground" Value="{StaticResource Muted}"/>
