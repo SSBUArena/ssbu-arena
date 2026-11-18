@@ -530,6 +530,7 @@ namespace Arena
             if (sender == TabReplays) ReplaysShown();
             if (sender == TabChanges) ChangesShown();
             if (sender == TabLeaderboard) LeaderboardShown();
+            if (sender == TabHome || sender == TabLeaderboard || sender == TabSettings) LoadMyRanked(false);      // (0.2.53) the badge, Settings > Account
         }
 
         void Section_Checked(object sender, RoutedEventArgs e)
@@ -686,6 +687,7 @@ namespace Arena
             RefreshPlayer();
             RefreshOnline();
             if (PageReplays.Visibility == Visibility.Visible && ReplayViewer.Visibility != Visibility.Visible) LoadReplays();
+            LoadMyRanked(true);         // (0.2.53) signed in, out or resumed: the ranked badge (MainWindow.Ranked.cs)
         }
 
         void ShowLogin(string error = null)
@@ -1200,6 +1202,7 @@ namespace Arena
             // (0.2.12) the in-game menu (F1) writes graphics.ini: its choices shown here, and kept by the next PLAY
             try { Core.LoadGfx(); bool was = loading; loading = true; FillSettings(); loading = was; } catch { }
             ReplaysAfterGame();         // (MainWindow.Replays.cs) the cap on local files, the upload of new online matches
+            RankedAfterGame();          // (0.2.53) the elo of the matches just played (MainWindow.Ranked.cs)
             HideTray();
             FromTray();
             SetState();

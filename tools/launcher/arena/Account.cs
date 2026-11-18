@@ -181,7 +181,8 @@ namespace Arena
             catch { Me = null; throw; }
         }
 
-        sealed class ArenaHttpException : Exception
+        /// <summary>(0.2.53 public: the leaderboard falls back to ranked_leaderboard on a 404 of ranked_leaderboard_fighters)</summary>
+        public sealed class ArenaHttpException : Exception
         {
             public int Status; public string Body;
             public ArenaHttpException(int status, string body) : base("Server answered " + status) { Status = status; Body = body ?? ""; }
@@ -190,7 +191,8 @@ namespace Arena
         /// <summary>(0.2.48) a public read without signing in (the publishable key): lobby_status</summary>
         public static string Anon(string path) { return Http("GET", path, null, Key); }
 
-        /// <summary>(0.2.52) a public database function without signing in (the publishable key): ranked_leaderboard</summary>
+        /// <summary>(0.2.52) a public database function without signing in (the publishable key): ranked_leaderboard, (0.2.53)
+        /// ranked_leaderboard_fighters; rank_tiers goes through Anon. my_ranked needs the session: Rest.</summary>
         public static string AnonPost(string path, string body) { return Http("POST", path, body, Key); }
 
         static string Http(string method, string path, string body, string bearer)
