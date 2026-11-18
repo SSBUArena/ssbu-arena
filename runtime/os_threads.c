@@ -445,6 +445,17 @@ void os_r1_fibers(void (*cb)(uint64_t key, Ctx *c, uint64_t stack, uint64_t stac
     }
     for (int i = 0; i < g_fib_cn; i++) { Obj *o = g_fib_c[i]; if (o->fiber && !o->fin) cb(o->key, o->fctx, o->stack, o->stack_size, o->fiber); }
 }
+/* (0.2.51, field crashes 17/11: DeleteFiber of a fiber deleted before) r1_ring.c fib_reap_pick, threads held: the ring's reaper is
+ * about to delete host fiber f. A fiber object finalized inside a rollback session keeps its host fiber pointer (fin 1: left out of
+ * os_r1_fibers, so the reaper is free to take it), and after the session fib_init / fib_finalize handed that dead pointer to the
+ * out-of-session deleter (0.2.50): deleted twice. Such objects forget the pointer here. Returns how many did. */
+int os_r1_fiber_reaped(void *f) {
+    int n = 0;
+    if (g_fib_cinc) { Obj **a = g_fib_c; int cn = g_fib_cn; for (int i = 0; i < cn; i++) { Obj *o = a[i]; if (o->fin && o->fiber == f) { o->fiber = NULL; n++; } } }
+    else for (int h = 0; h < BUCKETS; h++) for (Obj *o = *(Obj *volatile *)&g_table[h]; o; o = o->next) if (o->fin && o->fiber == f) { o->fiber = NULL; n++; }
+    if (n) InterlockedIncrement(&g_fib_gen);
+    return n;
+}
 void os_thread_report(FILE *out) {
     if (!g_oslog_n) return;
     fprintf(out, "nn::os threads of this run (priority 0 highest .. 31 lowest; cores 0..2 exist on the console):\n%.*s", (int)g_oslog_n, g_oslog);
