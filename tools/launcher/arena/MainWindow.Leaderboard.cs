@@ -425,6 +425,8 @@ namespace Arena
             if (key == null) return null;
             if (stockIcons.TryGetValue(key, out var im)) return im;
             var names = new[] { key }.Concat(StockAlso.TryGetValue(key, out var also) ? also : new string[0]).ToList();
+            var web = WebStockIcon(names);   // (0.2.55) the site's icons first: the same as ssbuarena.com's board
+            if (web != null) return stockIcons[key] = web;
             foreach (var n in names)
             {
                 string f = Path.Combine(Core.AvatarsDir, "stock", n + ".png");
@@ -439,6 +441,101 @@ namespace Arena
             }
             foreach (var n in names) { var p = AvatarImage(n, 76); if (p != null) return stockIcons[key] = p; }
             return stockIcons[key] = null;
+        }
+
+        // (0.2.55) The website's stock icons (Max_Hamm's, credited on ssbuarena.com), the same the site's board shows: downloaded once per
+        // fighter from https://www.ssbuarena.com/fighters/<key>/1.png into build\web_stock\<key>.png, then read from there. Nothing is
+        // shipped in this repository. Until a fighter's file is here (first run, offline) the game's own icon above is used as before.
+        // SSBU_STOCK_ICONS_WEB=0: the game's icons only (0.2.54). SSBU_STOCK_ICONS_BASE (TEST only): another base, accepted only as
+        // http://localhost:<port>/ or http://127.0.0.1:<port>/ (the site's dev server); anything else is ignored.
+        static string webStockBase;      // (read at the first download, after the log is opened: its line stays in launcher_update.log)
+        static string WebStockBase => webStockBase ?? (webStockBase = WebStockBaseOf(Environment.GetEnvironmentVariable("SSBU_STOCK_ICONS_BASE")));
+        static string WebStockBaseOf(string v)
+        {
+            const string site = "https://www.ssbuarena.com/fighters/";
+            if (string.IsNullOrWhiteSpace(v)) return site;
+            var m = System.Text.RegularExpressions.Regex.Match(v.Trim(), @"^http://(localhost|127\.0\.0\.1):([0-9]{1,5})/?$");
+            if (!m.Success || !int.TryParse(m.Groups[2].Value, out int port) || port < 1 || port > 65535)
+            {
+                Updater.Log("stock icons: SSBU_STOCK_ICONS_BASE ignored (only http://localhost:<port>/ or http://127.0.0.1:<port>/)");
+                return site;
+            }
+            Updater.Log("stock icons: from the TEST base " + m.Value.TrimEnd('/') + "/fighters/ (SSBU_STOCK_ICONS_BASE)");
+            return m.Value.TrimEnd('/') + "/fighters/";
+        }
+        static readonly bool webStockOn = Environment.GetEnvironmentVariable("SSBU_STOCK_ICONS_WEB") != "0";
+        static readonly HashSet<string> webStockAsked = new HashSet<string>();
+        static int webStockRedraw;
+        static readonly System.Text.RegularExpressions.Regex WebStockKey = new System.Text.RegularExpressions.Regex("^[a-z][a-z0-9_]{1,23}$");
+        static string WebStockDir => Path.Combine(Core.Build, "web_stock");
+
+        // the site has one folder per panel fighter: the game's other names map to it (Pyra / Mythra = "element" here, eflame / elight there)
+        static readonly Dictionary<string, string> WebAlias = new Dictionary<string, string>
+        {
+            { "element", "eflame" }, { "eflame_first", "eflame" }, { "eflame_only", "eflame" }, { "elight_first", "elight" }, { "elight_only", "elight" },
+            { "popo", "ice_climber" }, { "ptrainer_low", "ptrainer" },
+        };
+        static ImageSource WebStockIcon(List<string> names)
+        {
+            if (!webStockOn) return null;
+            names = names.Select(n => WebAlias.TryGetValue(n, out var a) ? a : n).Distinct().ToList();
+            foreach (var n in names)
+            {
+                if (!WebStockKey.IsMatch(n)) continue;
+                string f = Path.Combine(WebStockDir, n + ".png");
+                if (!File.Exists(f)) continue;
+                try
+                {
+                    var b = new BitmapImage();
+                    b.BeginInit(); b.CacheOption = BitmapCacheOption.OnLoad; b.UriSource = new Uri(f); b.EndInit(); b.Freeze();
+                    return b;
+                }
+                catch { try { File.Delete(f); } catch { } }   // (a damaged file: fetched again next run)
+            }
+            var want = names.Where(n => WebStockKey.IsMatch(n)).ToList();
+            if (want.Count == 0) return null;
+            lock (webStockAsked) { if (!webStockAsked.Add(want[0])) return null; }
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                foreach (var n in want)
+                {
+                    try
+                    {
+                        var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(WebStockBase + n + "/1.png");
+                        rq.Timeout = 10000; rq.ReadWriteTimeout = 10000;
+                        byte[] data;
+                        using (var rs = (System.Net.HttpWebResponse)rq.GetResponse())
+                        using (var s = rs.GetResponseStream())
+                        using (var ms = new MemoryStream())
+                        {
+                            var buf = new byte[8192]; int r;
+                            while ((r = s.Read(buf, 0, buf.Length)) > 0) { ms.Write(buf, 0, r); if (ms.Length > 256 * 1024) throw new IOException("too big"); }
+                            data = ms.ToArray();
+                        }
+                        // a PNG only (its signature), as the site serves it
+                        if (data.Length < 8 || data[0] != 0x89 || data[1] != 0x50 || data[2] != 0x4E || data[3] != 0x47) continue;
+                        Directory.CreateDirectory(WebStockDir);
+                        string tmp = Path.Combine(WebStockDir, n + ".png.tmp"), dst = Path.Combine(WebStockDir, n + ".png");
+                        File.WriteAllBytes(tmp, data);
+                        if (File.Exists(dst)) File.Delete(dst);
+                        File.Move(tmp, dst);
+                        Updater.Log("stock icons: " + n + " from the site");
+                        if (System.Threading.Interlocked.Exchange(ref webStockRedraw, 1) == 0)   // (one redraw for a burst of icons)
+                            Application.Current?.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => { webStockRedraw = 0; (Application.Current?.MainWindow as MainWindow)?.WebStockArrived(); }));
+                        return;
+                    }
+                    catch { }   // (offline, or the site has no icon for it: the game's icon stays)
+                }
+            });
+            return null;
+        }
+
+        /// <summary>(0.2.55) a site icon arrived: the icons are looked for again; the badge, Settings > Account and the board (if open) redrawn</summary>
+        void WebStockArrived()
+        {
+            stockIcons.Clear();
+            ShowRanked();                    // the badge (0.2.54's fighter icon) and Settings > Account (fighters used, recent matches)
+            if (PageLeaderboard.Visibility == Visibility.Visible && lbRows.Count > 0) ShowLbRows();
         }
 
         /// <summary>the pictures were (re)made: the board's icons are looked for again</summary>
