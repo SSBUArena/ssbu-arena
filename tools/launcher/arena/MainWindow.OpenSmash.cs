@@ -131,11 +131,53 @@ namespace Arena
         static void Log(string s) { Updater.Log(s); }      // build\launcher_update.log
     }
 
+    /// <summary>(0.2.56) The other way round: OpenSmash's launchers show a "SSBU Arena - Competitive" card that starts this launcher
+    /// when it is installed. They find it in %LOCALAPPDATA%\SSBU Arena\install_path.txt: one line, the folder holding SSBU-Arena.exe
+    /// (the release's name; a dev build's "SSBU Arena.exe" is in the folder written too). Written at each start, only when the
+    /// folder changed; an error here is logged and never stops the launcher. SSBU_INSTALL_PATH_FILE=0 (or off) writes nothing.</summary>
+    static class InstallPath
+    {
+        public static bool On => !(Environment.GetEnvironmentVariable("SSBU_INSTALL_PATH_FILE") is string v && (v.Trim() == "0" || v.Trim().Equals("off", StringComparison.OrdinalIgnoreCase)));
+
+        public static string File
+        {
+            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SSBU Arena", "install_path.txt"); }
+        }
+
+        /// <summary>the folder in <paramref name="file"/> made <paramref name="folder"/>; false when it already was (nothing written)</summary>
+        public static bool Write(string file, string folder)
+        {
+            string old = null;
+            try { if (System.IO.File.Exists(file)) old = (System.IO.File.ReadLines(file, Encoding.UTF8).FirstOrDefault() ?? "").Trim(); } catch { }
+            if (old != null && string.Equals(old, folder, StringComparison.OrdinalIgnoreCase)) return false;
+            Directory.CreateDirectory(Path.GetDirectoryName(file));
+            string tmp = file + ".tmp";
+            System.IO.File.WriteAllText(tmp, folder + "\r\n", new UTF8Encoding(false));
+            if (System.IO.File.Exists(file)) System.IO.File.Replace(tmp, file, null);
+            else System.IO.File.Move(tmp, file);
+            return true;
+        }
+
+        /// <summary>at the launcher's start: this exe's folder written for OpenSmash (never throws)</summary>
+        public static void Publish()
+        {
+            if (!On) return;
+            try
+            {
+                string folder = Path.GetDirectoryName(Path.GetFullPath(Updater.ExePath));
+                if (string.IsNullOrEmpty(folder)) return;
+                if (Write(File, folder)) Updater.Log("install path: " + folder + " written to " + File + " (for OpenSmash's launcher)");
+            }
+            catch (Exception ex) { try { Updater.Log("install path: not written (" + ex.Message + ")"); } catch { } }
+        }
+    }
+
     public partial class MainWindow
     {
         void InitOpenSmash()
         {
             TabOpenSmash.Visibility = OpenSmash.TabOn ? Visibility.Visible : Visibility.Collapsed;
+            System.Threading.Tasks.Task.Run(() => InstallPath.Publish());      // (0.2.56) where OpenSmash's launcher finds this one
         }
 
         /// <summary>the tooltip says what a click will do, looked for again each time the pointer comes on the tab</summary>
