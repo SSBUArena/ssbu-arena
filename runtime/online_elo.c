@@ -164,6 +164,7 @@ void online_elo_verdict(uint64_t gid, int v, int winner, int reason, const char 
             int b2[2], a2[2];
             for (int s2 = 0; s2 < 2; s2++) { const uint8_t *q = el + 4 + 34 * s2; b2[s2] = q[0] << 8 | q[1]; a2[s2] = flags & (4 | 8) ? b2[s2] : q[2] << 8 | q[3]; }
             online_elo_db_numbers((uint32_t)gid, b2, a2);
+            { void online_mastery_tier(int fam, const char *label, int games, int place, int after); if (!(flags & 8)) online_mastery_tier(tier, name, games, place, a2[side]); }      /* (22/11) the select panel's tier text and emblem */
             { void online_mastery_rating(int after); online_mastery_rating(a2[side]); }      /* (22/11) the select panel's peak row (online_mastery.c) */
         }
     } else if (v == 3 || v == 4) {

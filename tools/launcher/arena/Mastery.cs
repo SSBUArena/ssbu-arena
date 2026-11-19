@@ -41,8 +41,31 @@ namespace Arena
                 }
                 try      // (22/11) the account's highest rating for the Online select's "Peak Elo" row (runtime/online_mastery.c "peak <n>")
                 {
+                    RankedAccount.LoadTiers();
                     var acc = RankedAccount.ReadMine();
-                    if (acc != null && acc.Peak > 0) sb.Append("peak ").Append(((long)Math.Round(acc.Peak)).ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
+                    var inv = System.Globalization.CultureInfo.InvariantCulture;
+                    if (acc != null && acc.Peak > 0) sb.Append("peak ").Append(((long)Math.Round(acc.Peak)).ToString(inv)).Append('\n');
+                    // (22/11) the tier for the Online select panel (runtime/online_mastery.c): "tier <position> <emblem> <name>", emblem = the
+                    // family's place among public.ranked_tiers' families (0 Unranked .. the last, Grandmaster: tools/ui/rank_emblems.py)
+                    if (acc != null)
+                    {
+                        var tiers = RankedAccount.Tiers.OrderBy(t => t.Position).ToList();
+                        var fams = tiers.Select(t => t.Family ?? t.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                        int Emb(AccTier t) => t == null ? 0 : Math.Max(0, Math.Min(7, fams.FindIndex(f => string.Equals(f, t.Family ?? t.Name, StringComparison.OrdinalIgnoreCase))));
+                        AccTier cur = acc.Placed || acc.Gm ? tiers.FirstOrDefault(t => string.Equals(t.Name, acc.Tier, StringComparison.OrdinalIgnoreCase)) : tiers.FirstOrDefault();
+                        string curName = acc.TierText.Replace(RankedAccount.PlacementTier + " ", "Placement ");
+                        sb.Append("tier ").Append((cur?.Position ?? 0).ToString(inv)).Append(' ').Append(Emb(cur).ToString(inv)).Append(' ').Append(curName).Append('\n');
+                        AccTier pk = acc.Gm ? cur : tiers.Where(t => t.Rule == "rating" && t.MinRating != null && t.MinRating.Value <= acc.Peak).OrderByDescending(t => t.Position).FirstOrDefault()
+                                                   ?? tiers.FirstOrDefault(t => t.Rule == "rating");
+                        if (acc.Placed || acc.Gm) sb.Append("peaktier ").Append((pk?.Position ?? 0).ToString(inv)).Append(' ').Append(Emb(pk).ToString(inv)).Append(' ').Append(pk?.Name ?? "").Append('\n');
+                    }
+                    try      // (the emblem textures' colours: tools/ui/rank_emblems.py --tiers, run by the menu step)
+                    {
+                        string tf = Path.Combine(Core.Build, "cache", "ranked_tiers.json");
+                        var trows = RankedAccount.Tiers.Select(t => new Dictionary<string, object> { { "tier", t.Name }, { "position", t.Position }, { "family", t.Family }, { "color", t.Color } }).ToList();
+                        System.IO.File.WriteAllText(tf, new JavaScriptSerializer().Serialize(trows), new UTF8Encoding(false));
+                    }
+                    catch { }
                 }
                 catch (Exception e) { Updater.Log("mastery: no peak rating (" + e.GetBaseException().Message + ")"); }
                 Directory.CreateDirectory(Path.GetDirectoryName(File));

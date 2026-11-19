@@ -11,14 +11,17 @@
  *     off 0x7101a27570: layout panes set_parts_score_0 / _1 / _2, the number setter 0x7101a1c070 (pane, {shown u32, -, -, kind u32,
  *     value u32, -, ui_chara u64}: a number when shown && kind 1, else "---"), the row's fighter icon 0x7101a1bc20 (owner, pane, 0,
  *     &{ui_chara, 0})):
- *       row 1 "Elo"             the fighter under the cursor (the game's own, unchanged: rb_nex's record = the account's rating);
+ *       row 1 "Elo"             the account's rating (the game's own number: rb_nex's record); its icon = the account's TIER EMBLEM
+ *                               (SSBU_RANK_EMBLEM, below) instead of the fighter under the cursor;
  *       row 2 "No.1" -> "Peak"  the account's highest rating (the launcher's copy, "peak <n>", raised by every verdict; the current
- *                               rating when not known); its icon stays the game's own (the No.1 fighter of the records);
+ *                               rating when not known); its icon = the peak's tier emblem;
  *       row 3 "Roster" -> "Mastery Points"  the mastery points of the fighter under the cursor: set again each time the game sets
  *                               row 1 (0x7101a19990 -> 0x7101a1c070 from 0x7101a19c48, x20 its layout, x19 its icon owner), on a
  *                               fresh handle of the pane "set_parts_score_2" of that same layout (0x7103776090, released as the game
- *                               does). The fighter icon is set too (0x7101a1bc20), but the game's roster row has no icon slot: none
- *                               shows (seen 22/11). Only in an Online sequence (0x07......).
+ *                               does). No icon: the roster row shows none, also when the game's own builder call gets a fighter
+ *                               (seen 22/11; it would need a layout edit). Only in an Online sequence (0x07......).
+ *   SSBU_PANEL_GROUPING / SSBU_ONLINE_ELO_DELTA / SSBU_ONLINE_ELO_SHIFT: the panels' numbers "1,186 (+86)" (ms_num_hook).
+ *   Everything that hooks the game here is 13.0.4 only (online_mastery_hooks: off on 13.0.2 / 13.0.5, said once in the log).
  *     The labels are the menu's text patch (tools/ui/prepare_menu_classic.py, characters/arena_elo_text).
  *   SSBU_MASTERY_END (default 1 = a small notice at the top left, 5 s, "Mario +170 / Mastery 4,200" and a line why when the points
  *     were reduced; "card" = the 22/11 card at the top centre; 0 = nothing): the "MP" block of this game's side. The table is updated.
@@ -111,6 +114,7 @@ static int ms_key_ok(const char *k) {
     for (const char *p = k; *p; p++) if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
     return 1;
 }
+static void ms_tier_line(const char *line);
 static volatile LONG g_peak = -1;                      /* the account's highest rating: the launcher's copy, raised by the verdicts (-1 unknown) */
 static volatile LONG g_ms_file_ok;                      /* the launcher's copy was read: a fighter not in it has 0 points */
 static void ms_load(void) {
@@ -126,6 +130,7 @@ static void ms_load(void) {
             while (fgets(line, sizeof line, fp)) {
                 if (line[0] == '#' || sscanf(line, "%63s %lu", k, &v) != 2) continue;
                 if (!strcmp(k, "peak")) { if (v > 0 && v < 100000) g_peak = (LONG)v; continue; }      /* (the account's highest rating) */
+                if (!strcmp(k, "tier") || !strcmp(k, "peaktier")) { ms_tier_line(line); continue; }      /* (the tier and the peak's tier) */
                 if (ms_key_ok(k)) { ms_put_locked(k, (uint32_t)v); n++; }
             }
             ReleaseSRWLockExclusive(&g_ms_lock);
@@ -248,7 +253,7 @@ static void ms_set_trace(Ctx *c, void *user) {
 #define MP_FROM_ROW2_BUILD 0x7101a29334ull             /*   row 3 ("set_parts_score_2", the roster row) */
 #define MP_FROM_ROW0_CURSOR 0x7101a19c48ull            /* 0x7101a19990: row 1 again for the fighter under the cursor (x20 the panel's
                                                         * layout, x19 the owner of the rows' icons, as its own icon call 0x7101a19cf0) */
-#define MP_PANE_ROW2 0x7104328a08ull                   /* "set_parts_score_2" */
+static const char MP_PANE_ROW2[] = "set_parts_score_2";      /* (our own copy of the pane name: no read-only address of the game) */
 static ImportFn g_mp_orig_set;
 static int mp_online(void) { uint32_t seq = rd32(GA(0x71053040f0ULL)); return (seq >> 24) == 0x07; }      /* an Online sequence (0x07......) */
 static uint32_t mp_points(uint64_t chara, int *shown) {
@@ -289,6 +294,13 @@ static void ms_num_hook(Ctx *c, void *user) {
     uint64_t from = c->x[30], buf = c->x[0]; uint32_t cap = (uint32_t)c->x[1]; int v = (int)(int32_t)c->x[3]; int flags = (int)c->x[4];
     int results = from == GA(0x7101d5b130ULL) || from == GA(0x7101d5b1dcULL) || from == GA(0x7101d5f0c4ULL) || from == GA(0x7101d5f120ULL) || from == GA(0x7101d5f1c4ULL) || from == GA(0x7101d5f220ULL), select = g_ms_arm_tid && g_ms_arm_tid == GetCurrentThreadId();
     g_ms_orig_num(c);
+    {   static int dumped; const char *e = getenv("SSBU_MASTERY_TRACE");      /* (STUDY) the results pane's first floats (its translate / size) */
+        uint64_t pane = from == GA(0x7101d5f0c4ULL) ? c->x[19] : 0;
+        if (e && e[0] == '2' && pane && dumped++ < 2) {
+            printf("[mastery] STUDY results pane %llx:", (unsigned long long)pane);
+            for (int i = 0; i < 48; i++) { float f; uint32_t u = rd32(pane + 4ull * (uint64_t)i); memcpy(&f, &u, 4); printf(" +%x:%g", i * 4, f); }
+            printf("\n"); fflush(stdout);
+        } }
     {   static int tr = -1, nn; if (tr < 0) { const char *e = getenv("SSBU_MASTERY_TRACE"); tr = e && e[0] == '2'; }      /* (STUDY) every number in 900..1300 */
         if (tr && v >= 900 && v <= 1300 && nn++ < 150) { printf("[mastery] STUDY number %d from %llx (cap %u, flags %d)\n", v, (unsigned long long)from, cap, flags); fflush(stdout); } }
     if (!(results || select) || !buf || cap < 12 || !ms_grouping_on() || (flags & 1)) return;
@@ -299,10 +311,96 @@ static void ms_num_hook(Ctx *c, void *user) {
         int d;
         if (online_elo_panel_delta(v, &d) && d) { char g[24]; ms_group_txt(g, sizeof g, d < 0 ? -d : d); n += snprintf(t + n, sizeof t - n, " (%c%s)", d < 0 ? '-' : '+', g); }
     }
+    if (results) {
+        const char *tt = getenv("SSBU_PANEL_TEST_TEXT");      /* (TEST) a long text in the results panel's number field ('_' = a space) */
+        if (tt && *tt) { n = snprintf(t, sizeof t, "%s", tt); for (char *q = t; *q; q++) if (*q == '_') *q = ' '; }
+        /* SSBU_ONLINE_ELO_SHIFT (layout units, default 10; 0 = the field as the game has it): the number block to the right and, for a
+         * text longer than 9 characters, a little smaller, so that its start stays clear of the up / down arrow and its end inside the
+         * card: the text pane (translate x + 0x30, scale + 0x48 / + 0x4c, width + 0x50; right-aligned text) gets
+         *     scale s = 9.5 / length (0.7 .. 1),   x = x0 - width / 2 x (1 - s) + shift   (its start: the game's + shift) */
+        static int shift = -1000; if (shift == -1000) { const char *e = getenv("SSBU_ONLINE_ELO_SHIFT"); shift = e && *e ? atoi(e) : 10; }
+        uint64_t pane = from == GA(0x7101d5b130ULL) ? c->x[23] : from == GA(0x7101d5b1dcULL) ? c->x[21] : c->x[19];
+        static struct { uint64_t pane; float x, sx, sy; } seen[16]; static int ns;
+        if (shift && pane) {
+            int k = -1; for (int i = 0; i < 16; i++) if (seen[i].pane == pane) k = i;
+            float x, sx, sy, w; uint32_t u;
+            u = rd32(pane + 0x30); memcpy(&x, &u, 4); u = rd32(pane + 0x48); memcpy(&sx, &u, 4); u = rd32(pane + 0x4c); memcpy(&sy, &u, 4); u = rd32(pane + 0x50); memcpy(&w, &u, 4);
+            if (k < 0) { k = ns++ & 15; seen[k].pane = pane; seen[k].x = x; seen[k].sx = sx; seen[k].sy = sy; }
+            float sc = n > 9 ? 9.5f / (float)n : 1.0f; if (sc < 0.7f) sc = 0.7f;
+            float nx = seen[k].x - (w > 0 && w < 2000 ? w * 0.5f * (1.0f - sc) : 0.0f) + (float)shift, nsx = seen[k].sx * sc, nsy = seen[k].sy * sc;
+            memcpy(&u, &nx, 4); wr32(pane + 0x30, u); memcpy(&u, &nsx, 4); wr32(pane + 0x48, u); memcpy(&u, &nsy, 4); wr32(pane + 0x4c, u);
+        }
+    }
     if (n >= (int)cap) return;                        /* (does not fit: the game's own text) */
     for (int i = 0; i <= n; i++) wr16(buf + 2ull * (uint64_t)i, (uint16_t)(uint8_t)t[i]);
     c->x[0] = (uint64_t)n;
     {   static int said; if (ms_trace() && said++ < 30) { printf("[mastery] TRACE number %d (%s, from %llx): \"%s\"\n", v, results ? "results panel" : "select panel", (unsigned long long)from, t); fflush(stdout); } }
+}
+/* ---- (22/11) SSBU_RANK_EMBLEM (default 1): the account's tier EMBLEM in the Online select panel's icon slots, as a game texture.
+ * tools/ui/rank_emblems.py writes one emblem per tier family (0 Unranked .. 6 Master, 7 Grandmaster) over the 128 x 128 icons of eight
+ * bosses the Online select never shows (chara_0_<boss>_00.bntx, served by the loose-file layer from characters/arena_rank_emblems);
+ * the rows' icon setter 0x7101a1bc20 (owner, part handle, 0, &{ui_chara, u32}) gets that boss's ui_chara: row 1 (its call for the
+ * fighter under the cursor, from 0x7101a19cf4) the account's tier, row 2 (the builder's, from 0x7101a292ec) the peak's tier.
+ * The tier's NAME is not shown: the rows' "Elo" label is a static text of the layout (no pane the code can name: the parts have only
+ * set_txt_match / _score_l / _score_m / _worldscore, the last three kept invisible by the part's own animation), 22/11.
+ * The tier: the launcher's copy ("tier <position> <emblem> <name>", "peaktier ..." from my_ranked() and public.ranked_tiers), then each
+ * database verdict of this game (the "EL" block: family and label, online_elo.c). */
+static const char *const MS_EMB_SLOT[8] = {"koopag", "masterhand", "crazyhand", "ganonboss", "kiila", "darz", "dracula", "galleom"};
+static volatile LONG g_tier_emb = -1, g_peak_emb = -1;
+static char g_tier_name[40];
+static SRWLOCK g_tier_lock = SRWLOCK_INIT;
+static int ms_emblem_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_RANK_EMBLEM", 1); return v; }
+static uint64_t ms_emb_chara(int emb) {
+    if (emb < 0 || emb > 7) return 0;
+    char nm[48]; snprintf(nm, sizeof nm, "ui_chara_%s", MS_EMB_SLOT[emb]);
+    return 0xc100000000000000ull | ms_hash40(nm);
+}
+static void ms_tier_line(const char *line) {               /* "tier 8 3 Gold 2" / "peaktier 12 4 Platinum 2" (ms_load) */
+    char kw[16]; int pos, emb, off = 0;
+    if (sscanf(line, "%15s %d %d %n", kw, &pos, &emb, &off) < 3 || emb < 0 || emb > 7) return;
+    if (!strcmp(kw, "tier")) {
+        AcquireSRWLockExclusive(&g_tier_lock);
+        snprintf(g_tier_name, sizeof g_tier_name, "%s", line + off);
+        for (char *p = g_tier_name + strlen(g_tier_name); p > g_tier_name && (p[-1] == '\n' || p[-1] == '\r' || p[-1] == ' '); ) *--p = 0;
+        ReleaseSRWLockExclusive(&g_tier_lock);
+        InterlockedExchange(&g_tier_emb, emb);
+    } else if (!strcmp(kw, "peaktier")) InterlockedExchange(&g_peak_emb, emb);
+}
+/* online_elo.c online_elo_verdict, the database's verdict of this game's side: the 0.2.54 family (0 Unranked .. 6 Master, Grandmaster
+ * = 6 with the label "Grandmaster"), the label ("Placement", "Placed: Gold 2", "Rank up: Gold 3", "Gold 2"), rated games, placement
+ * games, the rating after */
+void online_mastery_tier(int fam, const char *label, int games, int place, int after) {
+    ms_load();
+    char name[40]; const char *l = label ? label : "";
+    static const char *const pre[3] = {"Placed: ", "Rank up: ", "Rank down: "};
+    for (int i = 0; i < 3; i++) if (!strncmp(l, pre[i], strlen(pre[i]))) { l += strlen(pre[i]); break; }
+    int emb = !strcmp(l, "Grandmaster") ? 7 : fam < 0 ? 0 : fam > 6 ? 6 : fam;
+    if (!strcmp(l, "Placement")) { snprintf(name, sizeof name, "Placement %d/%d", games < place ? games : place, place); emb = 0; }
+    else snprintf(name, sizeof name, "%s", l);
+    if (!name[0]) return;
+    AcquireSRWLockExclusive(&g_tier_lock); snprintf(g_tier_name, sizeof g_tier_name, "%s", name); ReleaseSRWLockExclusive(&g_tier_lock);
+    InterlockedExchange(&g_tier_emb, emb);
+    if (after > 0 && after >= (int)g_peak) InterlockedExchange(&g_peak_emb, emb);
+    printf("[mastery] tier now %s (emblem %d)\n", name, emb); fflush(stdout);
+}
+static ImportFn g_ms_orig_icon2;
+static void ms_icon_hook(Ctx *c, void *user) {             /* 0x7101a1bc20 */
+    (void)user;
+    uint64_t from = c->x[30];
+    if (ms_emblem_on() && c->x[3] && (from == GA(0x7101a19cf4ULL) || from == GA(0x7101a292ecULL)) && mp_online()) {
+        ms_load();
+        int emb = from == GA(0x7101a19cf4ULL) ? (int)g_tier_emb : (int)g_peak_emb;
+        if (from == GA(0x7101a292ecULL) && emb < 0) emb = (int)g_tier_emb;      /* (no peak tier known: the current one) */
+        uint64_t ch = ms_emb_chara(emb);
+        if (ch) {
+            static uint64_t want[2][2];
+            int k = from == GA(0x7101a19cf4ULL) ? 0 : 1;
+            want[k][0] = ch; want[k][1] = rd32(c->x[3] + 8);
+            c->x[3] = (uint64_t)(uintptr_t)want[k];
+            {   static int said[2]; if (!said[k]++) { printf("[mastery] the panel's row %d icon: the tier emblem %d (%s's icon slot) (SSBU_RANK_EMBLEM)\n", k + 1, emb, MS_EMB_SLOT[emb]); fflush(stdout); } }
+        }
+    }
+    g_ms_orig_icon2(c);
 }
 static void mp_set_inner(Ctx *c, void *user);
 static void mp_set_hook(Ctx *c, void *user) {          /* 0x7101a1c070 (pane handle, values): this thread marked for the grouping */
@@ -339,19 +437,60 @@ static void mp_set_inner(Ctx *c, void *user) {
     icon[0] = ch; icon[1] = 0;
     Ctx save = *c;
     memset(h, 0, sizeof h);
-    c->x[0] = layout; c->x[1] = GA(MP_PANE_ROW2); c->x[8] = (uint64_t)(uintptr_t)h; call_guest(c, GA(0x7103776090ULL));
+    c->x[0] = layout; c->x[1] = (uint64_t)(uintptr_t)MP_PANE_ROW2; c->x[8] = (uint64_t)(uintptr_t)h; call_guest(c, GA(0x7103776090ULL));
     *c = save;
     uint64_t obj; memcpy(&obj, h + 8, 8);
     if (obj) {
         c->x[0] = (uint64_t)(uintptr_t)h; c->x[1] = (uint64_t)(uintptr_t)v2; g_mp_orig_set(c);
         *c = save;
-        c->x[0] = owner; c->x[1] = (uint64_t)(uintptr_t)h; c->x[2] = 0; c->x[3] = (uint64_t)(uintptr_t)icon; call_guest(c, GA(0x7101a1bc20ULL));
-        *c = save;
+        (void)owner; (void)icon;      /* (no icon: the roster row's part shows none, also with the game's own icon call, 22/11) */
         mp_handle_free(c, h);
         *c = save;
     }
     {   static int sw = -1, done; if (sw < 0) { const char *e = getenv("SSBU_SHOT_MASTERY"); sw = e && e[0] == '1'; }      /* (TEST) a picture of the panel */
         if (sw && !done && obj && shown && pts > 0) { done = 1; void menu_shot_later(const char *name, int ms); menu_shot_later("mastery_panel", 1500); } }      /* (a fighter with points) */
+    {   /* (STUDY, SSBU_MASTERY_PROBE=<file of "name hexaddr" lines, 13.0.4 strings>) once: which of those panes the rows' parts have */
+        static int probed; const char *pf = getenv("SSBU_MASTERY_PROBE");
+        if (pf && *pf && !probed) {
+            probed = 1;
+            static const uint64_t parts[3] = {0x71042b2d67ull, 0x710436acbdull, 0x7104328a08ull};      /* set_parts_score_0 / _1 / _2 */
+            for (int pi = 0; pi < 3; pi++) {
+                static uint8_t ph[16]; memset(ph, 0, sizeof ph);
+                Ctx sv = *c; c->x[0] = layout; c->x[1] = GA(parts[pi]); c->x[8] = (uint64_t)(uintptr_t)ph; call_guest(c, GA(0x7103776090ULL)); *c = sv;
+                uint64_t po; memcpy(&po, ph + 8, 8);
+                printf("[mastery] PROBE part %d: handle %s\n", pi, po ? "found" : "NOT found"); fflush(stdout);
+                if (!po) continue;
+                FILE *fp = fopen(pf, "r"); char line[128], nm[96]; unsigned long long ad; int hits = 0;
+                while (fp && fgets(line, sizeof line, fp)) {
+                    if (sscanf(line, "%95s %llx", nm, &ad) != 2) continue;
+                    static uint8_t th[16]; memset(th, 0, sizeof th);
+                    c->x[0] = (uint64_t)(uintptr_t)ph; c->x[1] = ad; c->x[8] = (uint64_t)(uintptr_t)th; call_guest(c, GA(0x7103776360ULL)); *c = sv;
+                    uint64_t to; memcpy(&to, th + 8, 8);
+                    if (to && rd64(to + 16)) {
+                        uint64_t pn = rd64(to + 16); uint32_t tx = rd32(pn + 0x30), ty = rd32(pn + 0x34), sw = rd32(pn + 0x50), sh = rd32(pn + 0x54); float f[4]; memcpy(&f[0], &tx, 4); memcpy(&f[1], &ty, 4); memcpy(&f[2], &sw, 4); memcpy(&f[3], &sh, 4);
+                        printf("[mastery] PROBE part %d has %s: pane %llx at %g,%g size %gx%g, +0x58 bytes %02x %02x %02x %02x %02x %02x %02x %02x\n", pi, nm, (unsigned long long)pn, f[0], f[1], f[2], f[3],
+                               rd8(pn + 0x58), rd8(pn + 0x59), rd8(pn + 0x5a), rd8(pn + 0x5b), rd8(pn + 0x5c), rd8(pn + 0x5d), rd8(pn + 0x5e), rd8(pn + 0x5f)); hits++;
+                        const char *vis = getenv("SSBU_MASTERY_PROBE_SHOW");      /* (STUDY) make that pane visible (bit 0 of + 0x58) with its own name as text */
+                        if (vis && strstr(nm, vis) && pi == 0) { wr8(pn + 0x58, (uint8_t)(rd8(pn + 0x58) | 1)); static uint16_t w[40]; int k = 0; for (; nm[k] && k < 39; k++) w[k] = (uint8_t)nm[k];
+                            c->x[0] = pn; c->x[1] = (uint64_t)(uintptr_t)w; c->x[2] = (uint64_t)k; c->x[3] = 0; call_guest(c, GA(0x71037a1cc0ULL)); *c = sv; }
+                    }
+                    if (to) mp_handle_free(c, th);
+                    *c = sv;
+                }
+                if (fp) fclose(fp);
+                printf("[mastery] PROBE part %d: %d pane(s)\n", pi, hits); fflush(stdout);
+                {   /* the part's own pane object: its bytes (name, links) and the children found through the first pointers that look like panes */
+                    uint64_t pp = rd64(po + 16);
+                    uint8_t raw[0x100]; SIZE_T got = 0; ReadProcessMemory(GetCurrentProcess(), (void *)(uintptr_t)pp, raw, sizeof raw, &got);
+                    printf("[mastery] PROBE part %d pane %llx:", pi, (unsigned long long)pp);
+                    for (int i = 0; i < 0x100; i += 8) { uint64_t q; memcpy(&q, raw + i, 8); printf(" +%x:%llx", i, (unsigned long long)q); }
+                    printf("\n[mastery] PROBE part %d ascii: ", pi);
+                    for (int i = 0; i < 0x100; i++) putchar(raw[i] >= 0x20 && raw[i] < 0x7f ? raw[i] : '.');
+                    printf("\n"); fflush(stdout);
+                }
+                mp_handle_free(c, ph); *c = sv;
+            }
+        } }
     if (ms_trace()) { static uint64_t last; if (ch != last) { last = ch; printf("[mastery] TRACE panel: cursor on %016llx: mastery row %u%s%s\n", (unsigned long long)ch, pts, shown ? "" : " (---)", obj ? "" : " (NO pane)"); fflush(stdout); } }
 }
 /* (STUDY, SSBU_MASTERY_TRACE=2) the message formatter with numbers 0x7103779cd0 (text, label, count, values...): the labels with "pw" */
@@ -363,13 +502,38 @@ static void ms_fmt_trace(Ctx *c, void *user) {
     if (n < 300 && strstr(lb, "pw")) { n++; printf("[mastery] STUDY fmt %s from %llx: count %llu, values %lld %lld\n", lb, (unsigned long long)c->x[30], (unsigned long long)c->x[2], (long long)(int32_t)c->x[3], (long long)(int32_t)c->x[4]); fflush(stdout); }
     g_ms_orig_fmt(c);
 }
+/* (STUDY, SSBU_MASTERY_TRACE=2) the rows' icon setter 0x7101a1bc20 (owner, pane handle, 0, &{ui_chara, u32}); SSBU_MASTERY_ICON_TEST=<name>
+ * (TEST) gives row 1's icon the ui_chara_<name> instead of the fighter's */
+static ImportFn g_ms_orig_icon;
+static void ms_icon_trace(Ctx *c, void *user) {
+    (void)user; static int n;
+    uint64_t ch = c->x[3] ? rd64(c->x[3]) : 0; uint32_t w2 = c->x[3] ? rd32(c->x[3] + 8) : 0;
+    const char *t = getenv("SSBU_MASTERY_ICON_TEST");
+    if (t && *t && (c->x[30] == GA(0x7101a19cf4ULL) || c->x[30] == GA(0x7101a29350ULL)) && c->x[3]) {
+        static uint64_t want[2]; char nm[64]; snprintf(nm, sizeof nm, "ui_chara_%s", t);
+        want[0] = 0xc100000000000000ull | ms_hash40(nm); want[1] = w2;
+        c->x[3] = (uint64_t)(uintptr_t)want;
+    }
+    if (n++ < 60) { printf("[mastery] STUDY icon from %llx: owner %llx, ui_chara %016llx, word %x%s\n", (unsigned long long)c->x[30], (unsigned long long)c->x[0], (unsigned long long)ch, w2, t && *t ? " (ICON TEST)" : ""); fflush(stdout); }
+    g_ms_orig_icon(c);
+}
 void online_mastery_hooks(void) {                      /* debug_mode.c, with the other Online hooks */
+    if (g_game_build != GAME_13_0_4) {                 /* (the addresses below are 13.0.4's, checked there only: on 13.0.2 / 13.0.5 nothing of this file is hooked) */
+        static int said; if (!said++) { printf("[mastery] game build %d: the panels' mastery / elo additions are 13.0.4 only: off\n", g_game_build); fflush(stdout); }
+        return;
+    }
+    {   const char *e = getenv("SSBU_MASTERY_TRACE"), *t = getenv("SSBU_MASTERY_ICON_TEST"); static int done;
+        if (((e && e[0] == '2') || (t && *t)) && !done) { done = 1; hook_install(GA(0x7101a1bc20ULL), ms_icon_trace, NULL, &g_ms_orig_icon); } }
     {   const char *e = getenv("SSBU_MASTERY_TRACE"); static int done;
         if (e && e[0] == '2' && !done) { done = 1; for (int k = 0; k < 5; k++) hook_install(GA(k_ms_set[k]), ms_set_trace, (void *)(intptr_t)k, &g_ms_orig_set[k]);
             hook_install(GA(0x7103779cd0ULL), ms_fmt_trace, NULL, &g_ms_orig_fmt); printf("[mastery] STUDY: the select panel's number setters and the number formatter hooked\n"); fflush(stdout); } }
     if (!g_ms_orig_num && (ms_grouping_on() || ms_delta_on())) {
         int a = hook_install(GA(0x71037ad390ULL), ms_num_hook, NULL, &g_ms_orig_num);
         printf("[mastery] the panels' numbers: thousands separators (SSBU_PANEL_GROUPING), the results panel's change (SSBU_ONLINE_ELO_DELTA) (hook 0x71037ad390 id %d)\n", a); fflush(stdout);
+    }
+    if (ms_emblem_on() && !g_ms_orig_icon2) {
+        int a = hook_install(GA(0x7101a1bc20ULL), ms_icon_hook, NULL, &g_ms_orig_icon2);
+        printf("[mastery] the panel's icons: the tier emblems (SSBU_RANK_EMBLEM, hook 0x7101a1bc20 id %d)\n", a); fflush(stdout);
     }
     if (mastery_panel_on() && !g_mp_orig_set) {
         int a = hook_install(GA(0x7101a1c070ULL), mp_set_hook, NULL, &g_mp_orig_set);

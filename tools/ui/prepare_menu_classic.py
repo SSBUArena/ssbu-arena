@@ -41,7 +41,7 @@ FOOTER = 'ui/layout/menu/main_menu_footer/main_menu_footer/layout.arc'
 MESSAGES = 'ui/message/msg_menu.msbt'
 SCRIPTS = 'ui/script/menu/main/'
 MARKER = 'arena_menu.json'      # (0.2.50) written last: the launcher (Core.ArenaMenuOk) checks the files it names
-MARKER_VERSION = 3              # (0.2.53) 2: the elo texts below too; (22/11) 3: the Peak / Mastery Points labels (the launcher makes the menu again for an older marker)
+MARKER_VERSION = 4              # (0.2.53) 2: the elo texts below too; (22/11) 3: the Peak / Mastery Points labels; 4: the rank emblems (the launcher makes the menu again for an older marker)
 # (0.2.53, ranked elo per fighter, PHASE 2: on by default since 0.2.54) with SSBU_ONLINE_ELO_UI (=0 off) the game's own Global Smash Power panel shows the
 # elo (runtime online_elo.c) and its name becomes "Arena Elo". Written from the player's own message files into characters/arena_elo_text
 # (beside arena_menu), a folder the loose-file layer leaves out with SSBU_ONLINE_ELO_UI=0 (the game's own texts). Labels read off the game's msg_common / msg_melee (results item, the
@@ -412,6 +412,32 @@ def elo_texts(arc, region, out):
             print('elo texts: %s not written (%s)' % (path, e))
 
 
+def rank_emblem_textures(arc, out, tiers):
+    """(22/11) the tier emblems as game textures for the Online select's panel (rank_emblems.py; runtime online_mastery.c
+    SSBU_RANK_EMBLEM): the colours of the launcher's copy of public.ranked_tiers when there is one. Cosmetic: a failure is only said."""
+    try:
+        import rank_emblems
+        import struct
+        from PIL import Image
+        cols = rank_emblems.family_colours(str(tiers) if tiers.exists() else None)
+        for fam, slot in zip(rank_emblems.FAMILIES, rank_emblems.SLOTS):
+            path = 'ui/replace/chara/chara_0/chara_0_%s_00.bntx' % slot
+            data = arc.get(path)
+            slots = menu_textures.texture_slots(bytearray(data))
+            imgs = {}
+            for name, b in slots.items():
+                w, h = struct.unpack_from('<II', data, b + 0x24)
+                imgs[name] = rank_emblems.emblem(fam, cols[fam], w).resize((w, h), Image.LANCZOS)
+            dest = out / path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_suffix('.tmp')
+            tmp.write_bytes(rank_emblems.texture_surface.replace_rgba(data, imgs))
+            tmp.replace(dest)
+        print('rank emblems: %d textures in %s' % (len(rank_emblems.SLOTS), out))
+    except Exception as e:      # (cosmetic: never stops the menu)
+        print('rank emblems: not written (%s)' % e)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--arc', type=Path)
@@ -452,6 +478,7 @@ def main():
         tmp.replace(dest)
         print('%s: %d bytes, sha256 %s' % (dest.relative_to(a.out), len(content), hashlib.sha256(content).hexdigest()[:16]))
     elo_texts(arc, a.region, a.out.parent / ELO_DIR)
+    rank_emblem_textures(arc, a.out.parent / 'arena_rank_emblems', build / 'cache' / 'ranked_tiers.json')
     # (0.2.50) the marker last: the files and their sizes (no game content: names and numbers only)
     info = {'version': MARKER_VERSION, 'region': a.region, 'files': {r: len(c) for r, c in outputs.items()}}
     tmp = marker.with_suffix('.json.tmp')
