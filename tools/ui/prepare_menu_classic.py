@@ -41,14 +41,16 @@ FOOTER = 'ui/layout/menu/main_menu_footer/main_menu_footer/layout.arc'
 MESSAGES = 'ui/message/msg_menu.msbt'
 SCRIPTS = 'ui/script/menu/main/'
 MARKER = 'arena_menu.json'      # (0.2.50) written last: the launcher (Core.ArenaMenuOk) checks the files it names
-MARKER_VERSION = 4              # (0.2.53) 2: the elo texts below too; (22/11) 3: the Peak / Mastery Points labels; 4: the rank emblems (the launcher makes the menu again for an older marker)
+MARKER_VERSION = 5              # (0.2.53) 2: the elo texts below too; (22/11) 3: the Peak / Mastery Points labels; 4: the rank emblems; 5: the label slot (the launcher makes the menu again for an older marker)
 # (0.2.53, ranked elo per fighter, PHASE 2: on by default since 0.2.54) with SSBU_ONLINE_ELO_UI (=0 off) the game's own Global Smash Power panel shows the
 # elo (runtime online_elo.c) and its name becomes "Arena Elo". Written from the player's own message files into characters/arena_elo_text
 # (beside arena_menu), a folder the loose-file layer leaves out with SSBU_ONLINE_ELO_UI=0 (the game's own texts). Labels read off the game's msg_common / msg_melee (results item, the
 # character select's "GSP" and "Roster GSP"); a label a region does not have is skipped. Nothing of the game is in this file.
 ELO_DIR = 'arena_elo_text'
+# (22/11, SSBU_RANK_LABEL) the select panel's row label "Elo" is followed by 32 spaces: a fixed-length slot the launcher overwrites at
+# PLAY with "Elo - <tier>" (tools/launcher/arena/Mastery.cs RankLabel), so the file's sizes never change; trailing spaces do not show
 ELO_TEXT = {'ui/message/msg_common.msbt': {'cmn_world_pw': 'Arena Elo'},
-            'ui/message/msg_melee.msbt': {'mel_result_item_36': 'Arena Elo', 'mel_chara_select_world_pw': 'Elo',
+            'ui/message/msg_melee.msbt': {'mel_result_item_36': 'Arena Elo', 'mel_chara_select_world_pw': 'Elo' + ' ' * 32,
                                           'mel_chara_select_synthesize_world_pw': 'Mastery Points', 'mel_chara_select_highest_score': 'Peak'}}
 # (22/11, runtime online_mastery.c SSBU_MASTERY_PANEL) the Online select's GSP panel: row 2 ("No.1" + "Elo") is the account's peak rating -> "Peak",
 # row 3 ("Roster Elo") the fighter's mastery points -> "Mastery Points"

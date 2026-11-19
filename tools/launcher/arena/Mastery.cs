@@ -19,6 +19,44 @@ namespace Arena
         public static string File => Path.Combine(Core.Build, "cache", "mastery.txt");
         static bool On => Environment.GetEnvironmentVariable("SSBU_MASTERY_LAUNCHER") != "0";
 
+        /// <summary>(22/11, SSBU_RANK_LABEL=0: off) the Online select panel's row label "Elo" -> "Elo - Gold 2" ("Elo - Placement"): the
+        /// menu step (tools/ui/prepare_menu_classic.py) leaves the message "Elo" + 32 spaces in characters\arena_elo_text's
+        /// msg_melee.msbt; here that 35-character slot is written again in place (the file's sizes never change). The game reads it at
+        /// its start: one label for the Elo and the Peak rows, so both show the CURRENT tier, as of this PLAY.</summary>
+        public static void RankLabel(string tier)
+        {
+            try
+            {
+                const int Slot = 35;
+                string file = Path.Combine(Core.Build, "characters", "arena_elo_text", "ui", "message", "msg_melee.msbt");
+                if (!System.IO.File.Exists(file)) return;
+                string want = Environment.GetEnvironmentVariable("SSBU_RANK_LABEL") == "0" || string.IsNullOrWhiteSpace(tier) ? "Elo" : "Elo - " + tier.Trim();
+                if (want.Length > Slot) want = want.Substring(0, Slot);
+                byte[] d = System.IO.File.ReadAllBytes(file), elo = Encoding.Unicode.GetBytes("Elo");
+                for (int i = 0; i + 2 * Slot + 2 <= d.Length; i += 2)
+                {
+                    // the slot: 36 UTF-16 units from "Elo", the last a NUL, only NULs after the first NUL (the text ends at its NUL:
+                    // trailing spaces would count in the label's width, which the game shrinks to fit)
+                    bool at = true;
+                    for (int k = 0; k < elo.Length && at; k++) at = d[i + k] == elo[k];
+                    if (!at || d[i + 2 * Slot] != 0 || d[i + 2 * Slot + 1] != 0) continue;
+                    bool slot = true, ended = false;
+                    for (int k = 0; k <= Slot && slot; k++) { bool nul = d[i + 2 * k] == 0 && d[i + 2 * k + 1] == 0; if (ended && !nul) slot = false; if (nul) ended = true; }
+                    if (!slot) continue;
+                    byte[] w = Encoding.Unicode.GetBytes(want);
+                    for (int k = 0; k < 2 * Slot; k++) d[i + k] = k < w.Length ? w[k] : (byte)0;
+                    string tmp = file + ".part";
+                    System.IO.File.WriteAllBytes(tmp, d);
+                    System.IO.File.Copy(tmp, file, true);
+                    System.IO.File.Delete(tmp);
+                    Updater.Log("rank label: \"" + want + "\"");
+                    return;
+                }
+                Updater.Log("rank label: no slot in " + file + " (an older menu step)");
+            }
+            catch (Exception e) { Updater.Log("rank label: not written (" + e.GetBaseException().Message + ")"); }
+        }
+
         /// <summary>my_opensmash_mastery() into File (true: written). Never throws: a failed read leaves no file (the game shows "-").</summary>
         public static bool TryWrite()
         {
@@ -59,6 +97,7 @@ namespace Arena
                                                    ?? tiers.FirstOrDefault(t => t.Rule == "rating");
                         if (acc.Placed || acc.Gm) sb.Append("peaktier ").Append((pk?.Position ?? 0).ToString(inv)).Append(' ').Append(Emb(pk).ToString(inv)).Append(' ').Append(pk?.Name ?? "").Append('\n');
                     }
+                    RankLabel(acc == null ? null : acc.Placed || acc.Gm ? acc.Tier : "Placement");
                     try      // (the emblem textures' colours: tools/ui/rank_emblems.py --tiers, run by the menu step)
                     {
                         string tf = Path.Combine(Core.Build, "cache", "ranked_tiers.json");
