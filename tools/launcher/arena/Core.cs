@@ -942,7 +942,7 @@ namespace Arena
         static void GameEnv(System.Collections.Specialized.StringDictionary env)
         {
             foreach (var v in new[] { "SSBU_ONLINE", "SSBU_ONLINE_CODE", "SSBU_ONLINE_NAME", "SSBU_ONLINE_DIRECT", "SSBU_NICKNAME", "SSBU_RB_NET", "SSBU_R1_GAMEDLL", "SSBU_NRO_BIN", "SSBU_NET_PING", "SSBU_COMPETITIVE_UI",
-                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_REGION_AUTO", "SSBU_ONLINE_TICKET", "SSBU_ONLINE_TICKET_FILE", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG", "SSBU_MENU", "SSBU_ARENA_MENU_WHY" })
+                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_REGION_AUTO", "SSBU_ONLINE_TICKET", "SSBU_ONLINE_TICKET_FILE", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG", "SSBU_MENU", "SSBU_ARENA_MENU_WHY", "SSBU_MASTERY_FILE" })
                 env.Remove(v);
             env["SSBU_ROMFS"] = RomFS ?? "";
             env["SSBU_LAUNCHER"] = Updater.Current.ToString(3);      // (0.2.50) the game logs whether the launcher started it (runtime/competitive.c)
@@ -1020,6 +1020,7 @@ namespace Arena
                 env["SSBU_ONLINE_CODE"] = "public";                  // (0.2.8) no friend codes: one public pool
                 env["SSBU_ONLINE_DIRECT"] = "0";                     // never a direct path: no player sees another one's address
                 env["SSBU_NET_PING"] = Ping ? "1" : "0";             // each player's ping to the server (nvn_vk_draw.c)
+                if (File.Exists(Mastery.File)) env["SSBU_MASTERY_FILE"] = Mastery.File;      // (22/11) the player's mastery points (Mastery.cs, runtime/online_mastery.c)
                 if (RbPair)      // (0.2.8) always rollback; only with the marked pair: the normal build's rollback drifts apart (the game's own netcode then)
                 {
                     env["SSBU_RB_NET"] = "net";

@@ -1028,7 +1028,7 @@ namespace Arena
             if (!(Core.Online && Core.HasOnline)) { StartGame(); return; }
             PlayButton.IsEnabled = false;
             Status("Checking your account...", "busy");
-            Task.Run(() => Account.LobbyTicket()).ContinueWith(t =>
+            Task.Run(() => { string tk = Account.LobbyTicket(); Mastery.TryWrite(); return tk; }).ContinueWith(t =>      // (22/11) + the mastery points for the game (Mastery.cs: never throws)
             {
                 PlayButton.IsEnabled = true;
                 if (t.IsFaulted) { SetState(); Show("Online", "Could not get your online pass: " + t.Exception.GetBaseException().Message, null, ("Play offline", () => { Core.Online = false; OnlineBox.IsChecked = false; SaveQuiet(); RefreshOnline(); StartGame(); }, false), ("OK", null, true)); return; }
