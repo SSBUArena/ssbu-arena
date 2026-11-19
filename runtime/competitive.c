@@ -596,8 +596,13 @@ static void comp_onl_menu(Ctx *c, void *u) {
     (void)u;
     static int solo = -1; if (solo < 0) { const char *e = getenv("SSBU_ONLINE_SOLO"); solo = !(e && e[0] == '0'); }
     uint64_t o = c->x[0], scene = o ? *(volatile uint64_t *)(uintptr_t)o : 0;
+    /* (0.2.58, SSBU_ONLINE_SOLO_BACK, default 1) the character select's Back (B held, or the Back arrow) does not enter this state
+     * from 4 but from 9 (0x7102369620: the select's way out, it keeps the player's choices, then wants state 3): runs k1 / k2 (the
+     * state trace SSBU_ONLINE_SEQ_TRACE=1: 4 -> 9 -> 3). 0.2.52 .. 0.2.57 answered "Solo" there: the select opened again and Quickplay
+     * could never be left. Now 4 and 9 both mean Back. SSBU_ONLINE_SOLO_BACK=0: only 4, as 0.2.57. */
+    static int back9 = -1; if (back9 < 0) { const char *e = getenv("SSBU_ONLINE_SOLO_BACK"); back9 = !(e && e[0] == '0'); }
     if (solo && scene && *(volatile int32_t *)(uintptr_t)(o + 0x154) == 0) {
-        int prev = *(volatile int32_t *)(uintptr_t)(o + 0x158), res = prev == 4 ? 2 : 3;
+        int prev = *(volatile int32_t *)(uintptr_t)(o + 0x158), res = (prev == 4 || (back9 && prev == 9)) ? 2 : 3;
         *(volatile int32_t *)(uintptr_t)(scene + 0x40) = res;
         *(volatile int32_t *)(uintptr_t)(o + 0x154) = 1;
         printf("competitive UI: Quickplay: the Solo / Co-op / preferred rules screen skipped: %s (state entered from %d; SSBU_ONLINE_SOLO)\n", res == 3 ? "Solo" : "back from the character select: Quickplay left", prev); fflush(stdout);
