@@ -181,14 +181,12 @@ static int oe_ui_db_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ON
 void online_elo_db_numbers(uint32_t mid, const int before[2], const int after[2]) {      /* online_elo_verdict, the database's verdict */
     if (!online_elo_ui_on() || !oe_ui_db_on()) return;
     oe_lock(); int made = oep_db(&g_oe_pan, mid, before, after); LeaveCriticalSection(&g_oe_cs);
-    if (made) { printf("[elo] the results panel: %d number(s) of match %08x shown as the database's (SSBU_ONLINE_ELO_UI_DB)
-", made, mid); fflush(stdout); }
+    if (made) { printf("[elo] the results panel: %d number(s) of match %08x shown as the database's (SSBU_ONLINE_ELO_UI_DB)\n", made, mid); fflush(stdout); }
 }
 static uint32_t oe_panel_number(uint32_t r) {           /* the rating the panel asks for -> the number shown */
     if (!oe_ui_db_on()) return r;
     oe_lock(); int v = oep_fixed(&g_oe_pan, (int)r); LeaveCriticalSection(&g_oe_cs);
-    if ((uint32_t)v != r) { static int n; if (n++ < 12) { printf("[elo] the results panel: the game's %u shown as the database's %d (SSBU_ONLINE_ELO_UI_DB)
-", r, v); fflush(stdout); } }
+    if ((uint32_t)v != r) { static int n; if (n++ < 12) { printf("[elo] the results panel: the game's %u shown as the database's %d (SSBU_ONLINE_ELO_UI_DB)\n", r, v); fflush(stdout); } }
     return (uint32_t)v;
 }
 static void oe_conv_hook(Ctx *c, void *user) {          /* 0x71017d14c0 (table, u16 category, u32 rating) -> u32 shown */
@@ -232,8 +230,7 @@ static void oe_upd_hook(Ctx *c, void *user) {
     wr32(pr, (uint32_t)nv); wr32(pt, (uint32_t)nv); if (pd) wr32(pd, (uint32_t)(dev >= 200 ? dev + 1 : dev));
     if (!provisional && oe_ui_db_on()) {               /* (SSBU_ONLINE_ELO_UI_DB) this match's end values, per member */
         oe_lock(); int made = oep_game(&g_oe_pan, (uint32_t)g_oe_last_mid, old, nv); LeaveCriticalSection(&g_oe_cs);
-        if (made) { printf("[elo] the results panel: %d number(s) shown as the database's (SSBU_ONLINE_ELO_UI_DB)
-", made); fflush(stdout); }
+        if (made) { printf("[elo] the results panel: %d number(s) shown as the database's (SSBU_ONLINE_ELO_UI_DB)\n", made); fflush(stdout); }
     }
     if (g_oe_upd_n++ < 20) { printf("[elo] the game's rating update (%s): %d vs %d, %d rated games, score %d: %d (its own Glicko %d) (SSBU_ONLINE_ELO_UI)\n",
                                     provisional ? "the set-up's if-I-lose value" : "the match's end", old, op, games, s, nv, glicko); fflush(stdout); }
