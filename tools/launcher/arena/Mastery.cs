@@ -4,6 +4,8 @@
 // public.my_opensmash_mastery() (per fighter: points summed over every region + the largest veteran bonus) into build\cache\mastery.txt,
 // one "<fighter key> <total>" per line, and the game gets the path in SSBU_MASTERY_FILE. Nothing else: the game updates its copy from
 // each match's verdict. SSBU_MASTERY_LAUNCHER=0: no read, no file (the game then shows "-" until a match tells a fighter's total).
+// (0.2.58) ranked PER FIGHTER: the same file also gets "rank <key> <rating> <games> <peak> <tier pos> <emblem> <peak pos> <peak emblem>"
+// per rated fighter (my_ranked().ranked_fighters): the Online select's Elo / Peak Elo rows and emblems follow the fighter under the cursor.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -90,6 +92,19 @@ namespace Arena
                         var tiers = RankedAccount.Tiers.OrderBy(t => t.Position).ToList();
                         var fams = tiers.Select(t => t.Family ?? t.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                         int Emb(AccTier t) => t == null ? 0 : Math.Max(0, Math.Min(7, fams.FindIndex(f => string.Equals(f, t.Family ?? t.Name, StringComparison.OrdinalIgnoreCase))));
+                        // (0.2.58) ranked PER FIGHTER (arena-server 20261123_ranked_fighter.sql): one line per rated fighter for the Online select
+                        // (runtime/online_mastery.c "rank"): "rank <key> <rating> <rated games> <peak> <tier position> <emblem> <peak tier position> <peak emblem>"
+                        foreach (var f in acc.PerFighter ? acc.Used.Where(x => x.Rating != null && (x.RankKey ?? x.Key) != null) : Enumerable.Empty<AccFighter>())
+                        {
+                            string fk = f.RankKey ?? f.Key;      // (the server's key = the game's mastery key: "ice_climber", "element", "ptrainer")
+                            if (!Regex.IsMatch(fk, "^[a-z0-9_]{1,23}$")) continue;
+                            AccTier ft = f.Placed || f.Gm ? tiers.FirstOrDefault(t => string.Equals(t.Name, f.Tier, StringComparison.OrdinalIgnoreCase)) : tiers.FirstOrDefault();
+                            AccTier pt = f.Placed || f.Gm ? tiers.FirstOrDefault(t => string.Equals(t.Name, f.PeakTier, StringComparison.OrdinalIgnoreCase)) ?? ft : tiers.FirstOrDefault();
+                            sb.Append("rank ").Append(fk).Append(' ').Append(((long)Math.Round(f.Rating.Value)).ToString(inv)).Append(' ').Append(f.RatedGames.ToString(inv))
+                              .Append(' ').Append(((long)Math.Round(Math.Max(f.Peak ?? f.Rating.Value, f.Rating.Value))).ToString(inv))
+                              .Append(' ').Append((ft?.Position ?? 0).ToString(inv)).Append(' ').Append(Emb(ft).ToString(inv))
+                              .Append(' ').Append((pt?.Position ?? 0).ToString(inv)).Append(' ').Append(Emb(pt).ToString(inv)).Append('\n');
+                        }
                         AccTier cur = acc.Placed || acc.Gm ? tiers.FirstOrDefault(t => string.Equals(t.Name, acc.Tier, StringComparison.OrdinalIgnoreCase)) : tiers.FirstOrDefault();
                         string curName = acc.TierText.Replace(RankedAccount.PlacementTier + " ", "Placement ");
                         sb.Append("tier ").Append((cur?.Position ?? 0).ToString(inv)).Append(' ').Append(Emb(cur).ToString(inv)).Append(' ').Append(curName).Append('\n');
@@ -97,7 +112,9 @@ namespace Arena
                                                    ?? tiers.FirstOrDefault(t => t.Rule == "rating");
                         if (acc.Placed || acc.Gm) sb.Append("peaktier ").Append((pk?.Position ?? 0).ToString(inv)).Append(' ').Append(Emb(pk).ToString(inv)).Append(' ').Append(pk?.Name ?? "").Append('\n');
                     }
-                    RankLabel(acc == null ? null : acc.Placed || acc.Gm ? acc.Tier : "Placement");
+                    // (0.2.58) per fighter: the rows' label is ONE static message for every fighter under the cursor, so it says only "Elo";
+                    // each fighter's tier is its emblem (online_mastery.c). Per account (an older server): "Elo - Gold 2" as 0.2.56.
+                    RankLabel(acc == null || acc.PerFighter ? null : acc.Placed || acc.Gm ? acc.Tier : "Placement");
                     try      // (the emblem textures' colours: tools/ui/rank_emblems.py --tiers, run by the menu step)
                     {
                         string tf = Path.Combine(Core.Build, "cache", "ranked_tiers.json");
