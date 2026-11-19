@@ -379,8 +379,20 @@ static DWORD WINAPI comp_keep(LPVOID arg) {
         if (ok) break;
         Sleep(20);
     }
+    /* (TEST, 0.2.54) SSBU_TEST_RULE_TIME=<seconds> [SSBU_TEST_RULE_KIND=0 time | 1 stock, default 0]: every rule copy gets that rule kind
+     * and time limit (as comp_quick_rules does for the quick match), e.g. a 2:30 timed room match (150) on both games of a test pair;
+     * not with the quick match / Online mode flags. Unset (the default) = the player's own rules. */
+    int test_time = -1, test_kind = 0;
+    {   const char *e = getenv("SSBU_TEST_RULE_TIME"); if (e && *e) test_time = atoi(e);
+        e = getenv("SSBU_TEST_RULE_KIND"); if (e && *e) test_kind = atoi(e);
+        if (test_time >= 0) { printf("competitive: TEST rules on every rule copy: rule kind %d, time %d s (SSBU_TEST_RULE_TIME)\n", test_kind, test_time); fflush(stdout); } }
     for (;;) {
         comp_clear();
+        if (test_time >= 0 && !g_quick) for (int i = 0; i < 3; i++) {
+            volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[i]);
+            if (r[RULE_KIND] != (uint8_t)test_kind) r[RULE_KIND] = (uint8_t)test_kind;
+            if (*(volatile uint16_t *)(r + RULE_TIME) != (uint16_t)test_time) *(volatile uint16_t *)(r + RULE_TIME) = (uint16_t)test_time;
+        }
         if (g_quick) {          /* (the main menu's own scene is not made by the scene dispatcher comp_scene hooks: the flag ends here) */
             if ((*(volatile uint32_t *)(uintptr_t)CURRENT_SEQUENCE >> 24) == 0x01) comp_quick_end("back at the main menu");
             else comp_quick_rules();
