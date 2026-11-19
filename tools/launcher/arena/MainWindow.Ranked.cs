@@ -37,7 +37,6 @@ namespace Arena
         /// <summary>my_ranked() again (force: even when it was read a moment ago). Signed out: the 0.2.52 badge.</summary>
         void LoadMyRanked(bool force)
         {
-            LoadOsCard(force);      // (22/11) the home OpenSmash card, read when the badge is (MainWindow.OpenSmashCard.cs)
             if (!Ranked.On) return;
             if (RankedAccount.On) { LoadMyAcc(force); return; }      // (0.2.55) one rating per account: MainWindow.RankedAccount.cs
             string key = MeKey;
