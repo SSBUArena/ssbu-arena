@@ -76,6 +76,12 @@ namespace Arena
                     sb.Append(key).Append(' ').Append(Math.Min(total, uint.MaxValue)).Append('\n');
                     n++;
                 }
+                try      // (22/11) the account's highest rating for the Online select's "Peak Elo" row (runtime/online_mastery.c "peak <n>")
+                {
+                    var acc = RankedAccount.ReadMine();
+                    if (acc != null && acc.Peak > 0) sb.Append("peak ").Append(((long)Math.Round(acc.Peak)).ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
+                }
+                catch (Exception e) { Updater.Log("mastery: no peak rating (" + e.GetBaseException().Message + ")"); }
                 Directory.CreateDirectory(Path.GetDirectoryName(File));
                 string tmp = File + ".part";
                 System.IO.File.WriteAllText(tmp, sb.ToString(), new UTF8Encoding(false));
