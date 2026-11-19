@@ -115,7 +115,8 @@ static int ms_key_ok(const char *k) {
     return 1;
 }
 static void ms_tier_line(const char *line);
-static volatile LONG g_peak = -1;                      /* the account's highest rating: the launcher's copy, raised by the verdicts (-1 unknown) */
+static void rkf_line(const char *line);
+static volatile LONG g_peak = -1;                     /* the account's highest rating: the launcher's copy, raised by the verdicts (-1 unknown) */
 static volatile LONG g_ms_file_ok;                      /* the launcher's copy was read: a fighter not in it has 0 points */
 static void ms_load(void) {
     static volatile LONG done;
@@ -128,6 +129,7 @@ static void ms_load(void) {
             char line[128], k[64]; unsigned long v;
             AcquireSRWLockExclusive(&g_ms_lock);
             while (fgets(line, sizeof line, fp)) {
+                if (!strncmp(line, "rank ", 5)) { rkf_line(line); continue; }      /* (0.2.58) a fighter's ranked rating, tier, peak */
                 if (line[0] == '#' || sscanf(line, "%63s %lu", k, &v) != 2) continue;
                 if (!strcmp(k, "peak")) { if (v > 0 && v < 100000) g_peak = (LONG)v; continue; }      /* (the account's highest rating) */
                 if (!strcmp(k, "tier") || !strcmp(k, "peaktier")) { ms_tier_line(line); continue; }      /* (the tier and the peak's tier) */
@@ -383,6 +385,72 @@ void online_mastery_tier(int fam, const char *label, int games, int place, int a
     if (after > 0 && after >= (int)g_peak) InterlockedExchange(&g_peak_emb, emb);
     printf("[mastery] tier now %s (emblem %d)\n", name, emb); fflush(stdout);
 }
+/* ---- (0.2.58) RANKED PER FIGHTER (arena-server 20261123_ranked_fighter.sql): every fighter of an account has its own OpenSkill rating,
+ * tier, placement matches and peak. SSBU_RANK_PER_FIGHTER (default 1; 0 = the panel exactly as 0.2.57: the account's tier and peak on
+ * every fighter). The launcher's copy (SSBU_MASTERY_FILE) has one line per rated fighter, from my_ranked().ranked_fighters:
+ *     "rank <key> <rating> <rated games> <peak> <tier position> <emblem> <peak tier position> <peak emblem>"
+ * and each database verdict of this game updates the line of the fighter it played (online_elo.c: the "EL" block = that fighter's
+ * numbers). The Online select panel then follows the fighter under the cursor:
+ *   row 1 "Elo"       its rating (our copy when it has the fighter: the game's own record of the fighter played drifts after a match
+ *                     until the next login, rb_nex gives the database's number at login) and ITS tier emblem (Unranked without a line);
+ *   row 2 "Peak Elo"  its peak and the peak's tier emblem, set again on every cursor move on a fresh handle of "set_parts_score_1"
+ *                     (the way row 3 is set), the emblem through the rows' own icon setter 0x7101a1bc20;
+ *   the rows' label: one static message of the layout for both rows (no per-fighter text possible): the launcher writes the generic
+ *   "Elo" in per-fighter mode (Mastery.RankLabel); the tier shows as the emblem. Nothing of the game's data changes (our own copy of
+ *   the values block is passed to the setter). 13.0.4 only, as the rest of this file. */
+typedef struct { char key[24]; int rating, games, peak, tpos, emb, ppos, pemb; } RkFighter;
+static RkFighter g_rkf[MS_NF + 8]; static int g_nrkf;
+static SRWLOCK g_rkf_lock = SRWLOCK_INIT;
+static volatile LONG g_rkf_file;                           /* the launcher's copy had per-fighter lines (a fighter without one: Unranked) */
+int online_mastery_per_fighter(void) { static int v = -1; if (v < 0) v = env_on("SSBU_RANK_PER_FIGHTER", 1); return v; }
+static int rkf_icon_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_RANK_PEAK_ICON", 1); return v; }     /* (0 = row 2 keeps the build's emblem) */
+static const char MP_PANE_ROW1[] = "set_parts_score_1";      /* (our own copy of the pane name, as MP_PANE_ROW2) */
+static void rkf_put_locked(const RkFighter *e) {
+    for (int i = 0; i < g_nrkf; i++) if (!strcmp(g_rkf[i].key, e->key)) { g_rkf[i] = *e; return; }
+    if (g_nrkf < (int)(sizeof g_rkf / sizeof g_rkf[0])) g_rkf[g_nrkf++] = *e;
+}
+static int rkf_get(const char *key, RkFighter *out) {
+    int ok = 0;
+    AcquireSRWLockShared(&g_rkf_lock);
+    for (int i = 0; i < g_nrkf; i++) if (!strcmp(g_rkf[i].key, key)) { *out = g_rkf[i]; ok = 1; break; }
+    ReleaseSRWLockShared(&g_rkf_lock);
+    return ok;
+}
+static void rkf_line(const char *line) {                   /* ms_load: "rank mario 1254 2 1254 0 0 0 0" */
+    RkFighter e; memset(&e, 0, sizeof e);
+    if (sscanf(line, "rank %23s %d %d %d %d %d %d %d", e.key, &e.rating, &e.games, &e.peak, &e.tpos, &e.emb, &e.ppos, &e.pemb) != 8 || !ms_key_ok(e.key)
+        || e.rating < 0 || e.rating > 100000 || e.emb < 0 || e.emb > 7 || e.pemb < 0 || e.pemb > 7) return;
+    AcquireSRWLockExclusive(&g_rkf_lock); rkf_put_locked(&e); ReleaseSRWLockExclusive(&g_rkf_lock);
+    InterlockedExchange(&g_rkf_file, 1);
+}
+/* the emblem (0 Unranked .. 6 Master, 7 Grandmaster) of a fighter's current (peak = 0) or peak (peak = 1) tier; -1: not known (the account's) */
+static int rkf_emblem(uint64_t chara, int peak) {
+    const char *k = ms_key_of_chara(chara); RkFighter e;
+    if (k && rkf_get(k, &e)) return peak ? e.pemb : e.emb;
+    return g_rkf_file ? 0 : -1;
+}
+/* online_elo.c online_elo_verdict, the database's verdict of this game's side (per fighter): the fighter played (ui_chara), the 0.2.54
+ * family, the label ("Placement", "Placed: Gold 2", "Rank up: Gold 3", "Gold 2"), rated games, placement games, the rating after */
+void online_mastery_fighter_verdict(uint64_t chara, int fam, const char *label, int games, int place, int after) {
+    ms_load();
+    const char *k = ms_key_of_chara(chara);
+    if (!k || after <= 0) { printf("[mastery] ranked verdict: the fighter played is not known (%016llx): no per-fighter update\n", (unsigned long long)chara); fflush(stdout); return; }
+    const char *l = label ? label : "";
+    static const char *const pre[3] = {"Placed: ", "Rank up: ", "Rank down: "};
+    for (int i = 0; i < 3; i++) if (!strncmp(l, pre[i], strlen(pre[i]))) { l += strlen(pre[i]); break; }
+    int emb = !strcmp(l, "Grandmaster") ? 7 : fam < 0 ? 0 : fam > 6 ? 6 : fam;
+    if (!strcmp(l, "Placement") || games < place) emb = 0;
+    RkFighter e; memset(&e, 0, sizeof e);
+    AcquireSRWLockExclusive(&g_rkf_lock);
+    int had = 0; for (int i = 0; i < g_nrkf; i++) if (!strcmp(g_rkf[i].key, k)) { e = g_rkf[i]; had = 1; break; }
+    if (!had) { snprintf(e.key, sizeof e.key, "%s", k); e.peak = 0; e.pemb = emb; }
+    e.rating = after; e.games = games; e.emb = emb;
+    if (after >= e.peak) { e.peak = after; e.pemb = emb; }
+    rkf_put_locked(&e);
+    ReleaseSRWLockExclusive(&g_rkf_lock);
+    InterlockedExchange(&g_rkf_file, 1);
+    printf("[mastery] ranked %s: %d (%d rated games), emblem %d, peak %d (emblem %d)\n", k, e.rating, e.games, e.emb, e.peak, e.pemb); fflush(stdout);
+}
 static ImportFn g_ms_orig_icon2;
 static void ms_icon_hook(Ctx *c, void *user) {             /* 0x7101a1bc20 */
     (void)user;
@@ -391,6 +459,12 @@ static void ms_icon_hook(Ctx *c, void *user) {             /* 0x7101a1bc20 */
         ms_load();
         int emb = from == GA(0x7101a19cf4ULL) ? (int)g_tier_emb : (int)g_peak_emb;
         if (from == GA(0x7101a292ecULL) && emb < 0) emb = (int)g_tier_emb;      /* (no peak tier known: the current one) */
+        if (online_mastery_per_fighter()) {                /* (0.2.58) row 1: the fighter under the cursor (its own icon call); row 2 at
+                                                            * build: player 1's fighter (the cursor moves set it again, mp_set_inner) */
+            uint64_t ch = from == GA(0x7101a19cf4ULL) ? rd64(c->x[3]) : rd64(GA(0x7105307770ULL) + 0x38);
+            int fe = rkf_emblem(ch, from != GA(0x7101a19cf4ULL));
+            if (fe >= 0) emb = fe;
+        }
         uint64_t ch = ms_emb_chara(emb);
         if (ch) {
             static uint64_t want[2][2];
@@ -417,6 +491,10 @@ static void mp_set_inner(Ctx *c, void *user) {
     if (from == GA(MP_FROM_ROW1_BUILD)) {               /* row 2: the peak rating (else the current one, the record's) */
         ms_load();
         uint32_t cur = rd32(vals + 16), v = g_peak > 0 && (uint32_t)g_peak > cur ? (uint32_t)g_peak : cur;
+        if (online_mastery_per_fighter()) {             /* (0.2.58) player 1's fighter's own peak (the cursor moves set it again) */
+            RkFighter e; const char *k = ms_key_of_chara(rd64(GA(0x7105307770ULL) + 0x38));
+            v = k && rkf_get(k, &e) && e.peak > 0 ? (uint32_t)e.peak : cur;
+        }
         if (cur && cur != 0xffffffffu) { wr32(vals, 1); wr32(vals + 12, 1); wr32(vals + 16, v); }      /* (its icon: the game's own No.1 fighter; a "no fighter" icon showed an empty grey box) */
         if (ms_trace()) { printf("[mastery] TRACE panel: peak row %u (the record %u, the launcher's peak %ld)\n", v, cur, (long)g_peak); fflush(stdout); }
         g_mp_orig_set(c); return;
@@ -429,8 +507,49 @@ static void mp_set_inner(Ctx *c, void *user) {
     }
     /* row 1 for the fighter under the cursor: row 3 follows it (its number and its icon) */
     uint64_t ch = rd64(vals + 24), layout = c->x[20], owner = c->x[19];
+    RkFighter rf; int rf_have = 0; uint32_t rec = rd32(vals + 16);
+    if (online_mastery_per_fighter() && (ch >> 56) == 0xc1) {      /* (0.2.58) row 1 = the fighter's own rating from our copy, when it has it */
+        const char *k = ms_key_of_chara(ch);
+        if (k && rkf_get(k, &rf)) {
+            static uint32_t mine[8];                    /* (our copy of the values block: the game's own is never written) */
+            for (int i = 0; i < 8; i++) mine[i] = rd32(vals + 4ull * (uint64_t)i);
+            mine[0] = 1; mine[3] = 1; mine[4] = (uint32_t)rf.rating; rf_have = 1;
+            if (mine[4] != rec && ms_trace()) { printf("[mastery] TRACE panel: %s row 1 %u (the game's record %u)\n", k, mine[4], rec); fflush(stdout); }
+            c->x[1] = (uint64_t)(uintptr_t)mine;
+        }
+    }
     g_mp_orig_set(c);
     if ((ch >> 56) != 0xc1 || !layout || !owner) return;
+    if (online_mastery_per_fighter()) {                 /* (0.2.58) row 2 = this fighter's peak and the peak's tier emblem */
+        Ctx sv = *c;
+        static uint8_t h2[16]; static uint32_t pv[8]; static uint64_t picon[2];
+        uint32_t cur = rf_have ? (uint32_t)rf.rating : rec;
+        uint32_t pk = rf_have && rf.peak > 0 ? (uint32_t)rf.peak : cur;
+        int pe = rkf_emblem(ch, 1); if (pe < 0) pe = (int)g_peak_emb >= 0 ? (int)g_peak_emb : (int)g_tier_emb;
+        memset(h2, 0, sizeof h2);
+        c->x[0] = layout; c->x[1] = (uint64_t)(uintptr_t)MP_PANE_ROW1; c->x[8] = (uint64_t)(uintptr_t)h2; call_guest(c, GA(0x7103776090ULL));
+        *c = sv;
+        uint64_t o2; memcpy(&o2, h2 + 8, 8);
+        if (o2 && cur && cur != 0xffffffffu) {
+            pv[0] = 1; pv[1] = pv[2] = 0xffffffffu; pv[3] = 1; pv[4] = pk; pv[5] = 0; memcpy(&pv[6], &ch, 8);
+            c->x[0] = (uint64_t)(uintptr_t)h2; c->x[1] = (uint64_t)(uintptr_t)pv; g_mp_orig_set(c);
+            *c = sv;
+            uint64_t ec = ms_emblem_on() ? ms_emb_chara(pe) : 0;
+            if (ec && rkf_icon_on()) {                  /* the rows' own icon setter (owner, part handle, 0, &{ui_chara, 0}) */
+                picon[0] = ec; picon[1] = 0;
+                c->x[0] = owner; c->x[1] = (uint64_t)(uintptr_t)h2; c->x[2] = 0; c->x[3] = (uint64_t)(uintptr_t)picon;
+                if (g_ms_orig_icon2) g_ms_orig_icon2(c); else call_guest(c, GA(0x7101a1bc20ULL));
+                *c = sv;
+            }
+            if (ms_trace()) { static uint64_t last2; if (ch != last2) { last2 = ch; printf("[mastery] TRACE panel: cursor on %016llx: peak row %u, emblem %d\n", (unsigned long long)ch, pk, pe); fflush(stdout); } }
+            {   static int sw = -1, n; static uint64_t lastc;      /* (TEST, SSBU_SHOT_RANK=1) a picture of the panel on the first 3 rated fighters the cursor stops on */
+                if (sw < 0) { const char *e = getenv("SSBU_SHOT_RANK"); sw = e && e[0] == '1'; }
+                if (sw && rf_have && ch != lastc && n < 3) { lastc = ch; n++; char nm[48]; snprintf(nm, sizeof nm, "rank_panel_%s", rf.key);
+                    void menu_shot_later(const char *name, int ms); menu_shot_later(nm, 1500); } }
+        }
+        if (o2) mp_handle_free(c, h2);
+        *c = sv;
+    }
     int shown; uint32_t pts = mp_points(ch, &shown);
     static uint8_t h[16]; static uint32_t v2[8]; static uint64_t icon[2];     /* (the setter reads + 0, + 12, + 16; the icon setter {ui_chara, 0}) */
     v2[0] = (uint32_t)shown; v2[1] = v2[2] = 0xffffffffu; v2[3] = (uint32_t)shown; v2[4] = pts; v2[5] = 0; memcpy(&v2[6], &ch, 8);

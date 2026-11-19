@@ -87,6 +87,7 @@ static uint32_t g_oe_tie_mid;                          /* a time-out tie of this
 static volatile LONG g_oe_last_winner = -1;            /* (phase 2) the winner side of the last fight this game reported, and its match */
 static volatile LONG g_oe_last_side = -1; static volatile LONG g_oe_last_mid;
 static uint64_t g_oe_chara[2];                         /* the two players' ui_chara as the match block holds them (record + 0) */
+static volatile LONG64 g_oe_last_chara;                /* (0.2.58) this game's fighter in the last fight it reported (the verdict's fighter) */
 void online_elo_sample(long long real_frames) {        /* rb_rollback.c, once per tick of a rollback match (main thread) */
     if (!online_elo_result_on() || !rbn_online_rb() || (real_frames % 10)) return;
     for (int i = 0; i < 2; i++) { uint64_t r = oe_info(i); uint32_t v; if (r && oe_read(r + 0xd8, &v, 4) && v < 100) { g_oe_stocks[i] = (int)v; g_oe_seen = 1; } }
@@ -132,6 +133,7 @@ void online_elo_fight_end(long long real_frames) {     /* rb_rollback.c rbg_figh
     for (int i = 0; i < 3; i++) for (int k = 7; k >= 0; k--) *q++ = (uint8_t)(w64[i] >> (8 * k));
     *q++ = 1;                                          /* (flags: checksums on) */
     InterlockedExchange(&g_oe_last_winner, winner == 0xFF ? -1 : winner); InterlockedExchange(&g_oe_last_side, side); InterlockedExchange(&g_oe_last_mid, (LONG)mid);
+    InterlockedExchange64(&g_oe_last_chara, (LONG64)chara[side]);      /* (0.2.58) the fighter this game played: its rating moves (ranked per fighter) */
     printf("[elo] match %08x over after %lld frames: stocks %d / %d -> winner %s (end %d), this game is player %d; final frame %u, checksums agreed up to %u, desyncs %d: RESULT to the lobby\n",
            mid, real_frames, s0, s1, winner == 0 ? "player 1" : winner == 1 ? "player 2" : "none", end, side + 1, fin_f, ag_f, desyncs);
     fflush(stdout);
@@ -164,8 +166,14 @@ void online_elo_verdict(uint64_t gid, int v, int winner, int reason, const char 
             int b2[2], a2[2];
             for (int s2 = 0; s2 < 2; s2++) { const uint8_t *q = el + 4 + 34 * s2; b2[s2] = q[0] << 8 | q[1]; a2[s2] = flags & (4 | 8) ? b2[s2] : q[2] << 8 | q[3]; }
             online_elo_db_numbers((uint32_t)gid, b2, a2);
+            int online_mastery_per_fighter(void);
+            if (online_mastery_per_fighter()) {             /* (0.2.58) ranked per fighter: the numbers / tier / peak of the fighter played */
+                void online_mastery_fighter_verdict(uint64_t chara, int fam, const char *label, int games, int place, int after);
+                if (!(flags & 8) && (uint32_t)g_oe_last_mid == (uint32_t)gid) online_mastery_fighter_verdict((uint64_t)g_oe_last_chara, tier, name, games, place, a2[side]);
+            } else {
             { void online_mastery_tier(int fam, const char *label, int games, int place, int after); if (!(flags & 8)) online_mastery_tier(tier, name, games, place, a2[side]); }      /* (22/11) the select panel's tier text and emblem */
             { void online_mastery_rating(int after); online_mastery_rating(a2[side]); }      /* (22/11) the select panel's peak row (online_mastery.c) */
+            }
         }
     } else if (v == 3 || v == 4) {
         snprintf(t, sizeof t, "%s: %s. Elo unchanged.", reason == 13 ? "Not ranked" : v == 3 ? "No contest" : "Not recorded", text && *text ? text : "-");
