@@ -17,8 +17,8 @@
  *   picture, e.g. "Pikachu   1016 -> 1032  (+16)   Gold" (or "Unranked 3/5", "provisional" until the database's own number is
  *   there, the reason of a no contest / forfeit / a match that is not ranked).
  *
- * PHASE 2 (SSBU_ONLINE_ELO_UI=1 turns it on; OFF by default in 0.2.53: the results page with the GSP panel never came up in the local
- * tests, so it is not published as verified; off = the game's GSP exactly as 0.2.52) the game's own Global Smash Power panel shows the elo:
+ * PHASE 2 (SSBU_ONLINE_ELO_UI, ON by default since 0.2.54; =0 = the game's GSP exactly as 0.2.53 / 0.2.52) the game's own Global Smash
+ * Power numbers show the elo:
  *   - 0x71017d14c0 (rating -> the number shown, per category; the fighter GSP is category 0x15): for 0x15 the rating itself
  *     (1:1), every other category as the game does it;
  *   - 0x71017a55e0 (the rating update: the "if I lose" value at the match set-up and the real one at its end, both posted to the
@@ -30,10 +30,16 @@
  *   from the real number; the database's number stays the truth (a match over the pair limit or disputed can differ until the
  *   next login). "Global Smash Power" is renamed "Arena Elo" by the menu's text patch (tools/ui/prepare_menu_classic.py).
  *   Seen in the local tests (elo_test, 19/11): the Online select shows the record's rating itself (also without the hooks: "GSP 1014"),
- *   with the text patch "Elo 1014"; the update hook gives the database's numbers at the set-up and the end (pairs IDENTICAL). The
- *   results page with the GSP panel did not come up in the local runs (with or without the hooks), so the conversion hook was not
- *   seen running there: SSBU_ONLINE_ELO_TRACE=1 (test) logs every call of 0x71017d14c0.
- *   Read off the 13.0.4 binary (elo_re study, 19/11): addresses and fields only. Never inside the fight (results / select). */
+ *   with the text patch "Elo 1014"; the update hook gives the database's numbers at the set-up and the end (pairs IDENTICAL).
+ *   The results panel (0.2.54, elo2_test): the panels with "Arena Elo" are the page the game shows when a player presses A on the
+ *   winner screen (its 15 s countdown otherwise goes straight to "Rematch?": the 0.2.53 tests pressed nothing, so it never came
+ *   up). The page (0x7101d5aa30) asks 0x71017d14c0 twice per player: before (caller 0x7101d5add4) and after (0x7101d5ae14) and
+ *   animates between them with the arrow. "After" is the rating the game's result phase (0x71016acd80 -> 0x71016acff0 ->
+ *   0x71016ad190) left after the update hook; when the game's own inactivity check ended the match for a player (a scripted test
+ *   fighter: "You have been disconnected due to inactivity"), that phase is skipped and both numbers are the "before" one.
+ *   SSBU_ONLINE_ELO_UI_DB (above) shows the database's "after" once the verdict is here. SSBU_ONLINE_ELO_TRACE=1 (test) logs every
+ *   call of 0x71017d14c0, =2 also the result phases.
+ *   Read off the 13.0.4 binary (elo_re study 19/11, results phases 20/11): addresses and fields only. Never inside the fight. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +47,7 @@
 #include <windows.h>
 #include "runtime.h"
 #include "hostrt.h"
+#include "online_elo_panel.h"
 
 uint64_t hook_address(const char *name);              /* fighter_sdk\hook_host.c */
 int hook_install(uint64_t addr, void (*repl)(Ctx *, void *), void *user, ImportFn *orig);
@@ -57,7 +64,7 @@ void net_ranked_result(const uint8_t body[61], uint64_t game_id);
 static int env_on(const char *name, int dflt) { const char *e = getenv(name); return e && *e ? e[0] != '0' : dflt; }
 int online_elo_result_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_RESULT", 1); return v; }
 static int toast_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_TOAST", 1); return v; }
-int online_elo_ui_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_UI", 0); return v; }      /* (0.2.53: OFF by default, the owner's decision: never seen on the results page) */
+int online_elo_ui_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_UI", 1); return v; }      /* (0.2.54: ON by default, verified on the results page; 0 = as 0.2.53) */
 
 static int oe_read(uint64_t addr, void *buf, size_t n) {
     SIZE_T got = 0;
@@ -146,6 +153,12 @@ void online_elo_verdict(uint64_t gid, int v, int winner, int reason, const char 
         else if (flags & 4) snprintf(t, sizeof t, "%s   %d   (no change: 3 rated matches with this player in 24 h)   %s", name, before, tn);
         else snprintf(t, sizeof t, "%s   %d -> %d   (%+d)   %s%s", name, before, after, delta, tn, flags & 2 ? "" : "   (provisional)");
         printf("[elo] VERDICT %d for match %08x: %s (flags %x)\n", v, (unsigned)gid, t, flags); fflush(stdout);
+        if (flags & 2) {                                   /* (0.2.54, phase 2) the database's numbers of both sides, for the results panel */
+            void online_elo_db_numbers(uint32_t mid, const int before[2], const int after[2]);
+            int b2[2], a2[2];
+            for (int s2 = 0; s2 < 2; s2++) { const uint8_t *q = el + 4 + 34 * s2; b2[s2] = q[0] << 8 | q[1]; a2[s2] = flags & (4 | 8) ? b2[s2] : q[2] << 8 | q[3]; }
+            online_elo_db_numbers((uint32_t)gid, b2, a2);
+        }
     } else if (v == 3 || v == 4) {
         snprintf(t, sizeof t, "%s: %s. Elo unchanged.", reason == 13 ? "Not ranked" : v == 3 ? "No contest" : "Not recorded", text && *text ? text : "-");
         printf("[elo] VERDICT %d for match %08x: %s\n", v, (unsigned)gid, t); fflush(stdout);
@@ -159,12 +172,31 @@ void online_elo_verdict(uint64_t gid, int v, int winner, int reason, const char 
 /* ---------------------------------------------------------------- phase 2: the game's own panel shows the elo */
 static ImportFn g_oe_orig_conv, g_oe_orig_upd;
 static long long g_oe_conv_n, g_oe_upd_n;
+/* (0.2.54) SSBU_ONLINE_ELO_UI_DB (default 1; 0 = the game's own update shown as it is): the numbers of the results panel are the
+ * DATABASE's once its verdict is here (online_elo_panel.h: why and how; display only, the game's own data never changes). */
+static CRITICAL_SECTION g_oe_cs; static volatile LONG g_oe_cs_init;
+static OePanel g_oe_pan;
+static void oe_lock(void) { if (!InterlockedCompareExchange(&g_oe_cs_init, 1, 0)) { InitializeCriticalSection(&g_oe_cs); InterlockedExchange(&g_oe_cs_init, 2); } while (g_oe_cs_init != 2) Sleep(0); EnterCriticalSection(&g_oe_cs); }
+static int oe_ui_db_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_UI_DB", 1); return v; }
+void online_elo_db_numbers(uint32_t mid, const int before[2], const int after[2]) {      /* online_elo_verdict, the database's verdict */
+    if (!online_elo_ui_on() || !oe_ui_db_on()) return;
+    oe_lock(); int made = oep_db(&g_oe_pan, mid, before, after); LeaveCriticalSection(&g_oe_cs);
+    if (made) { printf("[elo] the results panel: %d number(s) of match %08x shown as the database's (SSBU_ONLINE_ELO_UI_DB)
+", made, mid); fflush(stdout); }
+}
+static uint32_t oe_panel_number(uint32_t r) {           /* the rating the panel asks for -> the number shown */
+    if (!oe_ui_db_on()) return r;
+    oe_lock(); int v = oep_fixed(&g_oe_pan, (int)r); LeaveCriticalSection(&g_oe_cs);
+    if ((uint32_t)v != r) { static int n; if (n++ < 12) { printf("[elo] the results panel: the game's %u shown as the database's %d (SSBU_ONLINE_ELO_UI_DB)
+", r, v); fflush(stdout); } }
+    return (uint32_t)v;
+}
 static void oe_conv_hook(Ctx *c, void *user) {          /* 0x71017d14c0 (table, u16 category, u32 rating) -> u32 shown */
     (void)user;
-    {   static int tr = -1, n; if (tr < 0) { const char *e = getenv("SSBU_ONLINE_ELO_TRACE"); tr = e && e[0] == '1'; }      /* (TEST) every call, the first 60 */
+    {   static int tr = -1, n; if (tr < 0) { const char *e = getenv("SSBU_ONLINE_ELO_TRACE"); tr = e && (e[0] == '1' || e[0] == '2'); }      /* (TEST) every call, the first 60 */
         if (tr && n++ < 60) { printf("[elo] trace: the rating shown: category %u, rating %u, caller %llx\n", (unsigned)(c->x[1] & 0xffff), (unsigned)c->x[2], (unsigned long long)c->x[30]); fflush(stdout); } }
     if ((c->x[1] & 0xffff) == 0x15) {
-        uint32_t r = (uint32_t)c->x[2]; c->x[0] = r ? r : 1;
+        uint32_t r = (uint32_t)c->x[2], v = oe_panel_number(r); c->x[0] = v ? v : 1;
         if (g_oe_conv_n++ < 6) { printf("[elo] the game's rating %u shown as it is (Arena Elo, SSBU_ONLINE_ELO_UI)\n", r); fflush(stdout); }
         return;
     }
@@ -198,10 +230,37 @@ static void oe_upd_hook(Ctx *c, void *user) {
     double e = 1.0 / (1.0 + pow(10.0, (op - old) / 400.0));
     int nv = old + oe_round(oe_k(games, old) * (s - e)); if (nv < 100) nv = 100;
     wr32(pr, (uint32_t)nv); wr32(pt, (uint32_t)nv); if (pd) wr32(pd, (uint32_t)(dev >= 200 ? dev + 1 : dev));
+    if (!provisional && oe_ui_db_on()) {               /* (SSBU_ONLINE_ELO_UI_DB) this match's end values, per member */
+        oe_lock(); int made = oep_game(&g_oe_pan, (uint32_t)g_oe_last_mid, old, nv); LeaveCriticalSection(&g_oe_cs);
+        if (made) { printf("[elo] the results panel: %d number(s) shown as the database's (SSBU_ONLINE_ELO_UI_DB)
+", made); fflush(stdout); }
+    }
     if (g_oe_upd_n++ < 20) { printf("[elo] the game's rating update (%s): %d vs %d, %d rated games, score %d: %d (its own Glicko %d) (SSBU_ONLINE_ELO_UI)\n",
                                     provisional ? "the set-up's if-I-lose value" : "the match's end", old, op, games, s, nv, glicko); fflush(stdout); }
 }
+/* (TEST, SSBU_ONLINE_ELO_TRACE=2) the result phases of the Online match's network object (its phase function at + 0x10, run every
+ * frame until it sets the next): 0x71016acd80 -> 0x71016acff0 (decides: 0x71016ad190 the rating phase, the panel's before / after
+ * numbers, or 0x71016adb80 without it) -> ... Each change of the phase run is logged with what 0x71016acff0 reads. */
+static ImportFn g_oe_orig_ph[5];
+static const uint64_t k_oe_ph[5] = {0x71016acd80ull, 0x71016acff0ull, 0x71016ad190ull, 0x71016adb80ull, 0x71016adf70ull};
+static void oe_phase_hook(Ctx *c, void *user) {
+    int k = (int)(intptr_t)user; static int last = -1; static unsigned n;
+    uint64_t o = c->x[0];
+    if (k != last && n++ < 200) {
+        uint64_t a = oe_r64(oe_r64(oe_r64(o + 8) + 8) + 0xa8), b = oe_r64(oe_r64(oe_r64(a + 8) + 8) + 0x80); uint8_t b244 = 0; uint32_t a10 = 0, mode = 0, n74 = 0, mask = 0;
+        oe_read(b + 0x244, &b244, 1); oe_read(a + 0x10, &a10, 4); oe_read(o + 0x269c0, &mode, 4); oe_read(o + 0xa000, &mask, 4);
+        oe_read(oe_r64(oe_r64(oe_r64(GA(0x71052c3c58ULL)) + 8) + 0x88) + 0x74, &n74, 4);
+        uint64_t p8 = oe_r64(o + 0x9ff8), p0 = oe_r64(o + 0x9ff0); int i8 = -1, i0 = -1;
+        for (int i = 0; i < 8; i++) { uint64_t e = oe_r64(o + 0xa010 + 8 + 0x78ull * (uint64_t)i); if (e && e == p8) i8 = i; if (e && e == p0) i0 = i; }
+        printf("[elo] TRACE result phase %llx (was %llx): mode %u, net %u, +0x244 %u / +0x10 %u, + 0x9ff8 %s (member %d), + 0x9ff0 %s (member %d), members mask %x\n",
+               (unsigned long long)k_oe_ph[k], last >= 0 ? (unsigned long long)k_oe_ph[last] : 0ull, mode, n74, b244, a10, p8 ? "set" : "0", i8, p0 ? "set" : "0", i0, mask); fflush(stdout);
+    }
+    last = k;
+    g_oe_orig_ph[k](c);
+}
 void online_elo_hooks(void) {                           /* debug_mode.c, with the other Online hooks (online_nex_on) */
+    {   const char *e = getenv("SSBU_ONLINE_ELO_TRACE"); static int done;
+        if (e && e[0] == '2' && !done) { done = 1; for (int k = 0; k < 5; k++) hook_install(GA(k_oe_ph[k]), oe_phase_hook, (void *)(intptr_t)k, &g_oe_orig_ph[k]); printf("[elo] TRACE: the result phases hooked\n"); fflush(stdout); } }
     if (!online_elo_ui_on() || g_oe_orig_conv) return;
     int a = hook_install(GA(0x71017d14c0ULL), oe_conv_hook, NULL, &g_oe_orig_conv);
     int b = hook_install(GA(0x71017a55e0ULL), oe_upd_hook, NULL, &g_oe_orig_upd);

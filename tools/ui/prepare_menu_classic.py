@@ -42,9 +42,9 @@ MESSAGES = 'ui/message/msg_menu.msbt'
 SCRIPTS = 'ui/script/menu/main/'
 MARKER = 'arena_menu.json'      # (0.2.50) written last: the launcher (Core.ArenaMenuOk) checks the files it names
 MARKER_VERSION = 2              # (0.2.53) 2: the elo texts below too (the launcher makes the menu again for a marker below 2)
-# (0.2.53, ranked elo per fighter, PHASE 2: off by default) with SSBU_ONLINE_ELO_UI=1 the game's own Global Smash Power panel shows the
+# (0.2.53, ranked elo per fighter, PHASE 2: on by default since 0.2.54) with SSBU_ONLINE_ELO_UI (=0 off) the game's own Global Smash Power panel shows the
 # elo (runtime online_elo.c) and its name becomes "Arena Elo". Written from the player's own message files into characters/arena_elo_text
-# (beside arena_menu), a folder the loose-file layer reads ONLY with SSBU_ONLINE_ELO_UI=1 (else the game's own texts). Labels read off the game's msg_common / msg_melee (results item, the
+# (beside arena_menu), a folder the loose-file layer leaves out with SSBU_ONLINE_ELO_UI=0 (the game's own texts). Labels read off the game's msg_common / msg_melee (results item, the
 # character select's "GSP" and "Roster GSP"); a label a region does not have is skipped. Nothing of the game is in this file.
 ELO_DIR = 'arena_elo_text'
 ELO_TEXT = {'ui/message/msg_common.msbt': {'cmn_world_pw': 'Arena Elo'},

@@ -170,8 +170,11 @@ static char g_ticket[320];
  * 0.2.50 game searches in the lobby's classic queue and would never meet one; min_client_level = 4 keeps 0.2.50 out.
  * 5 (0.2.52): the Online match with SSBU Arena's fixed rules and stages, its normal results, 1v1 gatherings (rb_nex of 0.2.52).
  * A 0.2.51 game never meets a 0.2.52 one anyway (another game code: the lobby's and rb_nex's partitions, the handshake's code
- * check); min_client_level = 5 tells it to update instead of leaving it searching alone. A lobby at 4 takes both. */
-#define NET_CLIENT_LEVEL 6
+ * check); min_client_level = 5 tells it to update instead of leaving it searching alone. A lobby at 4 takes both.
+ * 6 (0.2.53): RESULT of the game's own Online match (ranked elo; the lobby's rk_native_min_level). 7 (0.2.54): the elo in the game's
+ * own Online select / results panel (SSBU_ONLINE_ELO_UI, rb_nex --elo-records 1); a 0.2.53 game never meets a 0.2.54 one (another
+ * exe: another game code), min_client_level = 7 tells it to update. Ranked stays open from 6 (rk_native_min_level). */
+#define NET_CLIENT_LEVEL 7
 /* (0.2.37) SSBU_ONLINE_TICKET_FILE: a file the launcher writes again with a fresh ticket while the game runs (its pass is short);
  * read again when it changes (every 5 s at most) and sent at once with the same nonce: the lobby takes it as a renewal */
 static char g_ticket_file[MAX_PATH];
