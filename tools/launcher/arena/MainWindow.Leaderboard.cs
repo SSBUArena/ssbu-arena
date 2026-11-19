@@ -15,6 +15,10 @@
 // that answers 404, for the rest of the run); each row has the tier of its fighter (tier, tier_color: under the elo) and "placed"
 // (the "Placed only" chip), each fighter of "fighters" its tier (in the icon's tooltip). "Your position" comes from my_ranked().board
 // (MainWindow.Ranked.cs) for All regions. SSBU_RANKED_ELO=0: 0.2.52's board.
+// (0.2.55) Ranked per account (RankedAccount.cs; SSBU_RANKED_ACCOUNT=0: the 0.2.54 board above): public.ranked_board, one row per
+// account with its rating (one decimal), tier (the emblem with its pips, Grandmaster rows stand out), W-L, region and region rank, and
+// its 3 most played fighters (games and wins in each icon's tooltip). The region filter is the account's region (the server's), the
+// fighter filter goes to the server too (p_fighter: the accounts that played that fighter), "Placed only" works on the rows read.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -63,6 +67,8 @@ namespace Arena
         public string Tip => Name + (Main ? " (main)" : "") + (HasElo ? ": " + (Ranked.On ? Ranked.Num(Elo) : Elo.ToString()) + " elo" : "")
                              + (Ranked.On && Tier != null ? (HasElo ? " · " : ": ") + Tier : "")
                              + (Games > 0 ? (HasElo || (Ranked.On && Tier != null) ? ", " : ": ") + Games + (Games == 1 ? " ranked match" : " ranked matches") + (Wins + Losses > 0 ? " (" + Wins + "–" + Losses + ")" : "") : "");
+        /// <summary>(0.2.55) ranked per account: "Mario: 12 games, 8 wins (67%)"</summary>
+        public string AccTip => Name + ": " + Games + (Games == 1 ? " game, " : " games, ") + Wins + (Wins == 1 ? " win" : " wins") + (Games > 0 ? " (" + (Wins * 100 + Games / 2) / Games + "%)" : "");
         /// <summary>the same fighter, the same player: one key, or one label when the key is not known</summary>
         public bool Same(LeaderFighter o) => o != null && (Key != null ? Key == o.Key : string.Equals(Label, o.Label, StringComparison.OrdinalIgnoreCase));
         public string FilterKey => Key ?? "label:" + (Label ?? "").ToLowerInvariant();
@@ -115,6 +121,31 @@ namespace Arena
             return v;
         }
         public Visibility YouVisible => IsMe ? Visibility.Visible : Visibility.Collapsed;
+
+        // ---------------------------------------------------------------- (0.2.55) ranked per account (ranked_board)
+        public double Rating { get; set; }
+        public string Family { get; set; }
+        public int? Division { get; set; }
+        public string Region { get; set; }
+        public int? RegionRank { get; set; }
+        public bool Gm => RankedAccount.IsGrandmaster(Tier, Family);
+        public EmblemSpec Emblem => Placed || Gm ? EmblemSpec.Of(Tier, Family, Division, TierColor) : EmblemSpec.Unranked;
+        public string RatingText => RankedAccount.R(Rating);
+        /// <summary>"GOLD 2", "GRANDMASTER", "UNRANKED 3/5"</summary>
+        public string AccTierText => Placed || Gm ? (Tier ?? "").ToUpperInvariant() : RankedAccount.PlacementTier.ToUpperInvariant() + " " + Math.Min(Games, RankedAccount.PlacementGames) + "/" + RankedAccount.PlacementGames;
+        public Brush AccTierBrush => Placed || Gm ? Ranked.BrushOf(TierColor ?? RankedAccount.TierOf(Tier)?.Color) : (Brush)Application.Current.Resources["Muted"];
+        /// <summary>"Europe #7" under the name; "" when the account has no region yet</summary>
+        public string RegionText => RankedAccount.RegionName(Region) is string n ? n + (RegionRank != null ? " #" + RegionRank.Value.ToString(CultureInfo.InvariantCulture) : "") : "";
+        public Visibility RegionVisible => RegionText != "" ? Visibility.Visible : Visibility.Collapsed;
+        public string AccTierTip => Gm ? "Grandmaster: top " + RankedAccount.Season.GmTopN + " of " + (RankedAccount.RegionName(Region) ?? "a region") + " by rating"
+                                  : Placed ? Tier + " · " + RatingText + " rating"
+                                  : "Placement: " + Math.Min(Games, RankedAccount.PlacementGames) + " of " + RankedAccount.PlacementGames + " rated games played";
+        public string AccRowTip => Name + TagText + ": " + Games + (Games == 1 ? " rated game" : " rated games") + (RegionText != "" ? " · " + RegionText : "");
+        static readonly Brush GmBack = B("#1F1520"), GmLine = B("#8A3A47");
+        public Brush AccRowBack => IsMe ? MeBack : Gm ? GmBack : Back;
+        public Brush AccRowBorder => Gm ? GmLine : RowBorder;
+        public Brush AccRankBrush => Gm ? Ranked.BrushOf("#FF5A6A") : RankBrush;
+
         static Brush B(string hex) { var b = (Brush)new BrushConverter().ConvertFromString(hex); b.Freeze(); return b; }
         static readonly Brush MeBack = B("#12263A"), MeLine = B("#3E7FB0"), Back = B("#0F1620"), Line = B("#233041"), TopLine = B("#2C4A66");
         public Brush RowBack => IsMe ? MeBack : Back;
@@ -133,6 +164,9 @@ namespace Arena
             row.Fighters = FightersOf(d.TryGetValue("fighters", out object fl) ? fl : null, S("main_fighter"));
             row.Tier = S("tier"); row.TierColor = S("tier_color");
             row.Placed = d.TryGetValue("placed", out object pl) ? pl is bool pb && pb : row.Tier != null && row.Tier != Ranked.PlacementTier;
+            // (0.2.55) ranked_board's columns (absent from the older functions)
+            row.Rating = RankedAccount.Dbl(d, "rating") ?? 0; row.Family = S("tier_family"); row.Division = Ranked.Int(d, "tier_division");
+            row.Region = S("region"); row.RegionRank = Ranked.Int(d, "region_rank");
             return row;
         }
 
@@ -200,7 +234,22 @@ namespace Arena
             LbRegionBox.SelectedIndex = 0;
             lbTyping = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
             lbTyping.Tick += (s, e) => { lbTyping.Stop(); LoadLeaderboard(); };
+            if (RankedAccount.On)      // (0.2.55) the account rows: rating, emblem and tier
+            {
+                LbList.ItemTemplate = (DataTemplate)LbList.FindResource("LbAccRow");
+                LbEloCol.Width = new GridLength(AccRatingWidth);
+                LbSubtitle.Text = "Ranked 1v1 on SSBU Arena: one rating per account. Wins and losses count rated games.";
+                LbEloHead.Text = "RATING";
+                LbEloHead.HorizontalAlignment = HorizontalAlignment.Left; LbEloHead.Margin = new Thickness(24, 0, 0, 0);      // (over the emblem, as LbAccRow)
+                LbEloHead.ToolTip = "The account's rating and tier (one rating per account, whatever fighter is played)";
+                LbFightersHead.ToolTip = "The fighters played most in ranked (hover one: its games and wins)";
+                LbRegionBox.ToolTip = "Only the players of this region (the region where they played the most rated matches)";
+                LbFighterBox.ToolTip = "Only the players who played this fighter in ranked";
+                LbPlacedBox.ToolTip = "Only the players who finished their " + RankedAccount.PlacementGames + " placement games";
+            }
         }
+        /// <summary>(0.2.55) the width of the rating column (MainWindow.xaml's LbAccRow uses the same)</summary>
+        const double AccRatingWidth = 190;
 
         static string MeKey => Account.SignedIn ? Account.Me.Username + "#" + Account.Me.Tag : "";
 
@@ -235,9 +284,18 @@ namespace Arena
 
         /// <summary>one call of ranked_leaderboard_fighters, or ranked_leaderboard (0.2.52, SSBU_RANKED_ELO=0, or a server without the new
         /// function) (region: null = all; search: null = everyone)</summary>
-        static List<LeaderRow> ReadBoard(string region, string search, int limit)
+        static List<LeaderRow> ReadBoard(string region, string search, int limit, string fighter = null)
         {
             var js = new JavaScriptSerializer();
+            if (RankedAccount.On)      // (0.2.55) public.ranked_board (fighter: p_fighter, the label as the server writes it)
+            {
+                var a = new Dictionary<string, object> { { "p_region", region }, { "p_search", string.IsNullOrWhiteSpace(search) ? null : search.Trim() }, { "p_fighter", fighter },
+                                                         { "p_limit", limit }, { "p_offset", 0 } };
+                string t = Account.AnonPost("/rest/v1/rpc/ranked_board", js.Serialize(a));
+                RankedAccount.LoadTiers();
+                var acc = js.Deserialize<List<Dictionary<string, object>>>(t);
+                return (acc ?? new List<Dictionary<string, object>>()).Select(LeaderRow.From).Where(r => r != null).ToList();
+            }
             if (!Ranked.On)
             {
                 string body = js.Serialize(new Dictionary<string, object> { { "p_region", region }, { "p_search", string.IsNullOrWhiteSpace(search) ? null : search.Trim() }, { "p_limit", limit }, { "p_offset", 0 } });
@@ -269,6 +327,7 @@ namespace Arena
             string region = LbRegionBox.SelectedIndex > 0 ? Regions.Table[LbRegionBox.SelectedIndex - 1].Id : null;
             string regionName = LbRegionBox.SelectedIndex > 0 ? Regions.Table[LbRegionBox.SelectedIndex - 1].Name : null;
             string search = LbSearch.Text.Trim();
+            string fighter = RankedAccount.On && lbFighter != null && lbFighterSeen.TryGetValue(lbFighter, out var lf) ? lf.Label : null;      // (0.2.55) p_fighter
             Profile me = Account.SignedIn ? Account.Me : null;
             string meKey = MeKey;
             LbRefresh.IsEnabled = false;
@@ -276,9 +335,9 @@ namespace Arena
             if (LbList.Items.Count == 0) ShowLbState("Loading the leaderboard…", "", false);
             Task.Run(() =>
             {
-                var rows = ReadBoard(region, search, LbLimit);
+                var rows = ReadBoard(region, search, LbLimit, fighter);
                 LeaderRow mine = me != null ? rows.FirstOrDefault(r => r.Is(me)) : null;
-                if (me != null && mine == null) mine = ReadBoard(region, me.Username, 20).FirstOrDefault(r => r.Is(me));
+                if (me != null && mine == null) mine = ReadBoard(region, me.Username, 20, fighter).FirstOrDefault(r => r.Is(me));
                 return (rows, mine);
             }).ContinueWith(t =>
             {
@@ -303,7 +362,7 @@ namespace Arena
                 }
                 var (rows, mine) = t.Result;
                 foreach (var r in rows) { r.IsMe = r.Is(me); r.Icon = AvatarImage(r.Avatar, 76); }
-                lbRows = rows; lbSearch = search; lbRegionName = regionName;
+                lbRows = rows; lbSearch = search; lbRegionName = regionName; lbFighterRead = fighter;
                 lbReadAt = DateTime.UtcNow; lbFor = meKey;
                 lbMe = me; lbMine = mine; lbShown = true;
                 FillLbFighters();
@@ -324,6 +383,7 @@ namespace Arena
             var me = lbMe; var mine = lbMine; string regionName = lbRegionName;
             LbMeBox.Visibility = Visibility.Visible;
             LbSignIn.Visibility = me == null ? Visibility.Visible : Visibility.Collapsed;
+            if (RankedAccount.On) { ShowLbMeAcc(me, mine, regionName); return; }
             var mr = Ranked.On && me != null && regionName == null && myRankedFor == me.Username + "#" + me.Tag ? myRanked : null;
             if (mr != null && mr.HasBoard)
             {
@@ -392,6 +452,7 @@ namespace Arena
         /// <summary>the filter's choices: the fighters of the rows read (by name); hidden while the board has none</summary>
         void FillLbFighters()
         {
+            if (RankedAccount.On) { FillLbFightersAcc(); return; }
             var all = lbRows.SelectMany(r => r.Fighters).GroupBy(f => f.FilterKey).Select(g => g.First()).OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
             lbFilling = true;
             LbFighterBox.Items.Clear();
@@ -416,6 +477,7 @@ namespace Arena
         {
             if (lbFilling || LbFighterBox.SelectedItem == null) return;
             lbFighter = (string)((ComboBoxItem)LbFighterBox.SelectedItem).Tag;
+            if (RankedAccount.On) { LoadLeaderboard(); return; }      // (0.2.55) the server filters (p_fighter)
             ShowLbRows();
         }
 
@@ -423,6 +485,7 @@ namespace Arena
         /// fighter (ranked again among them), else in the board's order; that fighter's icon first</summary>
         void ShowLbRows()
         {
+            if (RankedAccount.On) { ShowLbRowsAcc(); return; }
             var rows = lbRows;
             string fk = lbFighter;
             bool placedOnly = lbPlacedOnly && Ranked.On && LbPlacedBox.Visibility == Visibility.Visible;
@@ -465,6 +528,53 @@ namespace Arena
                             + (rows.Count < total ? " · the first " + rows.Count + " shown" : "")
                             + (fk != null ? " · " + shown.Count + " of them play " + fighterName + (perFighter ? ", ranked by their " + fighterName + " elo" : "") : "")
                             + (placedOnly && fk == null ? " · " + shown.Count + " placed" : placedOnly ? " (placed)" : "")
+                            + " · updated " + lbReadAt.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture);
+        }
+
+        // ---------------------------------------------------------------- (0.2.55) ranked per account
+        /// <summary>every fighter seen on the board this run (the filter's choices stay while the server filters the rows)</summary>
+        readonly Dictionary<string, LeaderFighter> lbFighterSeen = new Dictionary<string, LeaderFighter>();
+        string lbFighterRead;        // the p_fighter of the rows shown (its label), null: all
+
+        void FillLbFightersAcc()
+        {
+            foreach (var f in lbRows.SelectMany(r => r.Fighters)) if (!lbFighterSeen.ContainsKey(f.FilterKey)) lbFighterSeen[f.FilterKey] = f;
+            var all = lbFighterSeen.Values.OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            lbFilling = true;
+            LbFighterBox.Items.Clear();
+            LbFighterBox.Items.Add(new ComboBoxItem { Content = "All fighters", Tag = null });
+            foreach (var f in all) LbFighterBox.Items.Add(new ComboBoxItem { Content = f.Name, Tag = f.FilterKey });
+            if (lbFighter != null && !all.Any(f => f.FilterKey == lbFighter)) lbFighter = null;
+            LbFighterBox.SelectedIndex = lbFighter == null ? 0 : 1 + all.FindIndex(f => f.FilterKey == lbFighter);
+            lbFilling = false;
+            LbFighterBox.Visibility = all.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            LbFilterCol.Width = all.Count > 0 ? new GridLength(200) : new GridLength(0);
+            LbPlacedBox.Visibility = lbRows.Count > 0 || lbPlacedOnly ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /// <summary>the rows as the server ranked them (region and fighter filtered there); "Placed only" here</summary>
+        void ShowLbRowsAcc()
+        {
+            var rows = lbRows;
+            bool placedOnly = lbPlacedOnly && LbPlacedBox.Visibility == Visibility.Visible;
+            string fighterName = lbFighterRead != null ? new LeaderFighter { Label = lbFighterRead, Key = ReplayNames.FighterKeyOfLabel(lbFighterRead) }.Name : null;
+            var shown = rows.Where(r => !placedOnly || r.Placed || r.Gm).Select(r => r.View(r.Rank, r.Elo, r.Fighters.Take(LeaderRow.MaxFighters).ToList())).ToList();
+            LbList.ItemsSource = shown;
+            LbHead.Visibility = shown.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (shown.Count == 0)
+            {
+                if (rows.Count > 0 && placedOnly) ShowLbState("No player of this list is placed yet", "A player is placed after " + RankedAccount.PlacementGames + " rated games. Turn off Placed only to see everyone.", false);
+                else if (lbSearch != "") ShowLbState("No ranked player matches “" + lbSearch + "”", "Try another name, or part of it.", false);
+                else if (fighterName != null) ShowLbState("No ranked player played " + fighterName + (lbRegionName != null ? " on " + lbRegionName : "") + " yet", "Choose All fighters to see everyone.", false);
+                else if (lbRegionName != null) ShowLbState("No ranked player from " + lbRegionName + " yet", "Choose All regions to see everyone.", false);
+                else ShowLbState("No ranked results yet", "Players appear here after their first rated match.", false);
+            }
+            else LbEmpty.Visibility = Visibility.Collapsed;
+            int total = rows.Count > 0 ? Math.Max(rows[0].Total, rows.Count) : 0;
+            LbStatus.Text = rows.Count == 0 ? "" : total + (total == 1 ? " ranked player" : " ranked players") + (lbRegionName != null ? " from " + lbRegionName : "")
+                            + (fighterName != null ? " who played " + fighterName : "")
+                            + (rows.Count < total ? " · the first " + rows.Count + " shown" : "")
+                            + (placedOnly ? " · " + shown.Count + " placed" : "")
                             + " · updated " + lbReadAt.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture);
         }
 

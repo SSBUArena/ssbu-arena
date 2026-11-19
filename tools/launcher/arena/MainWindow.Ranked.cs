@@ -5,6 +5,8 @@
 // my_ranked() is read at sign-in, when the game closes (and once more a little later: the results writer records the match after
 // the game has left), and when Home, Leaderboard or Settings is opened (at most every MyRankedFresh): no polling loop.
 // SSBU_RANKED_ELO=0: nothing here runs; the badge stays 0.2.52's steel "UNRANKED".
+// (0.2.55) Ranked per account (SSBU_RANKED_ACCOUNT, default on): LoadMyRanked, ShowBadge and ShowRankedAccount hand over to
+// MainWindow.RankedAccount.cs; SSBU_RANKED_ACCOUNT=0 runs this file as 0.2.54 did.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -36,6 +38,7 @@ namespace Arena
         void LoadMyRanked(bool force)
         {
             if (!Ranked.On) return;
+            if (RankedAccount.On) { LoadMyAcc(force); return; }      // (0.2.55) one rating per account: MainWindow.RankedAccount.cs
             string key = MeKey;
             if (!Account.SignedIn)
             {
@@ -115,6 +118,7 @@ namespace Arena
 
         void ShowBadge()
         {
+            if (RankedAccount.On) { ShowAccBadge(); return; }
             var main = Ranked.On && Account.SignedIn ? myRanked?.MainFighter : null;
             if (main == null)
             {
@@ -189,6 +193,7 @@ namespace Arena
         // ---------------------------------------------------------------- Settings > Account
         void ShowRankedAccount()
         {
+            if (RankedAccount.On) { ShowAccPanel(); return; }
             bool on = Ranked.On && Account.SignedIn;
             RankedBox.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
             if (!on) return;
