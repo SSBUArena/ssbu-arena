@@ -37,6 +37,7 @@ namespace Arena
             Core.Load();
             InitLeaderboard();
             InitOpenSmash();
+            InitOsCard();          // (22/11) the home OpenSmash card (MainWindow.OpenSmashCard.cs)
             SpaceOut(this);
             FillSettings();
             loading = false;

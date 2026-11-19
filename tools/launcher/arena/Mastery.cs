@@ -19,6 +19,43 @@ namespace Arena
         public static string File => Path.Combine(Core.Build, "cache", "mastery.txt");
         static bool On => Environment.GetEnvironmentVariable("SSBU_MASTERY_LAUNCHER") != "0";
 
+        /// <summary>(22/11) the home card's numbers: the player's total mastery points (every fighter, every region) and, when the database
+        /// has public.my_opensmash_mastery_rank() (the contract after 20261122: pos, total_count), the position. Null when not signed in.
+        /// Throws when my_opensmash_mastery cannot be read; the rank is only left out when it cannot.</summary>
+        public class Summary { public long Total; public int Fighters; public long? Pos; public long? Count; public string Main; }
+        public static Summary ReadSummary()
+        {
+            if (!Account.SignedIn) return null;
+            var js = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
+            var rows = js.DeserializeObject(Account.Rest("POST", "/rest/v1/rpc/my_opensmash_mastery", "{}")) as object[];
+            var s = new Summary();
+            long best = -1;
+            foreach (var o in rows ?? new object[0])
+            {
+                if (!(o is IDictionary<string, object> d)) continue;
+                long t = Num(d, "total") ?? 0;
+                s.Total += Math.Max(0, t); s.Fighters++;
+                if (t > best && d.TryGetValue("fighter", out object f) && f is string k) { best = t; s.Main = k; }
+            }
+            try
+            {
+                object r = js.DeserializeObject(Account.Rest("POST", "/rest/v1/rpc/my_opensmash_mastery_rank", "{}"));
+                if (r is object[] a && a.Length > 0) r = a[0];
+                if (r is IDictionary<string, object> d)
+                {
+                    s.Pos = Num(d, "pos"); s.Count = Num(d, "total_count");
+                    if (d.TryGetValue("main_fighter", out object mf) && mf is string m && m != "") s.Main = m;
+                }
+            }
+            catch (Exception e) { Updater.Log("mastery: no rank (" + e.GetBaseException().Message + ")"); }
+            return s;
+        }
+        static long? Num(IDictionary<string, object> d, string k)
+        {
+            if (!d.TryGetValue(k, out object v) || v == null) return null;
+            return long.TryParse(Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture), System.Globalization.NumberStyles.Integer | System.Globalization.NumberStyles.AllowDecimalPoint, System.Globalization.CultureInfo.InvariantCulture, out long n) ? n : (long?)null;
+        }
+
         /// <summary>my_opensmash_mastery() into File (true: written). Never throws: a failed read leaves no file (the game shows "-").</summary>
         public static bool TryWrite()
         {

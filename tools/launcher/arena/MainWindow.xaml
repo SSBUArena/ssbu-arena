@@ -306,19 +306,39 @@
             </Grid>
           </Border>
 
-          <!-- community -->
-          <Button Grid.Row="4" Style="{StaticResource CardButton}" Padding="20,12" Click="Community_Click">
-            <Grid>
-              <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-              <Path Data="{StaticResource IcoDiscord}" Width="38" Height="32" Stretch="Uniform" VerticalAlignment="Center" Fill="#5865F2"/>
-              <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
-                <TextBlock Text="Join the community" FontSize="18" FontWeight="SemiBold"/>
-                <TextBlock Text="Find players on Discord." FontSize="15.5" Foreground="{StaticResource Muted}" Margin="0,4,0,0"/>
+          <!-- community; (22/11) the OpenSmash card beside a small Discord button (SSBU_OPENSMASH_CARD=0: the community card alone, as before) -->
+          <Grid Grid.Row="4">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <Button x:Name="OsCard" Style="{StaticResource CardButton}" Padding="16,8,14,8" Click="OsCard_Click" Visibility="Collapsed">
+              <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="OpenSmash Ultimate  ·  Casual" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Accent}" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Margin="0,2,0,0" TextTrimming="CharacterEllipsis">
+                  <Run x:Name="OsCardPoints" Text="Mastery points" FontSize="17" FontWeight="SemiBold"/><Run x:Name="OsCardSub" Text="" FontSize="14" Foreground="{StaticResource Muted}"/>
+                </TextBlock>
+                <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                  <TextBlock x:Name="OsCardAction" Text="Get OpenSmash" FontSize="14.5" FontWeight="SemiBold" Foreground="{StaticResource Accent}" VerticalAlignment="Center"/>
+                  <Path Data="{StaticResource IcoArrow}" Stroke="{StaticResource Accent}" StrokeThickness="2" Width="14" Height="11" Stretch="Uniform" Margin="8,1,0,0" VerticalAlignment="Center"
+                        StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                </StackPanel>
               </StackPanel>
-              <Path Grid.Column="2" Data="{StaticResource IcoExternal}" Stroke="{StaticResource Accent}" StrokeThickness="1.8" Width="18" Height="18" Stretch="Uniform" VerticalAlignment="Center"
-                    StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
-            </Grid>
-          </Button>
+            </Button>
+            <Button x:Name="CommunityMini" Grid.Column="1" Style="{StaticResource CardButton}" Padding="12,10" Margin="8,0,0,0" Click="Community_Click" Visibility="Collapsed"
+                    ToolTip="Join the community: find players on Discord">
+              <Path Data="{StaticResource IcoDiscord}" Width="30" Height="24" Stretch="Uniform" VerticalAlignment="Center" HorizontalAlignment="Center" Fill="#5865F2"/>
+            </Button>
+            <Button x:Name="CommunityCard" Grid.ColumnSpan="2" Style="{StaticResource CardButton}" Padding="20,12" Click="Community_Click">
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Path Data="{StaticResource IcoDiscord}" Width="38" Height="32" Stretch="Uniform" VerticalAlignment="Center" Fill="#5865F2"/>
+                <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+                  <TextBlock Text="Join the community" FontSize="18" FontWeight="SemiBold"/>
+                  <TextBlock Text="Find players on Discord." FontSize="15.5" Foreground="{StaticResource Muted}" Margin="0,4,0,0"/>
+                </StackPanel>
+                <Path Grid.Column="2" Data="{StaticResource IcoExternal}" Stroke="{StaticResource Accent}" StrokeThickness="1.8" Width="18" Height="18" Stretch="Uniform" VerticalAlignment="Center"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+              </Grid>
+            </Button>
+          </Grid>
         </Grid>
 
         <!-- latest -->
