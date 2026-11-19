@@ -114,7 +114,7 @@ TOOLS = {   # checked 2026-10-19: SDL3 and glslang equal GitHub's own asset dige
 # (None, None) until the maintainer has uploaded the package made from this commit and written its hash here; the
 # download is refused when the hash does not match, and setup.py uses the package only with the tree it was built from.
 # SSBU Arena has no runtime release yet (the package of ssbu-recomp is built from another tree and would be refused).
-RUNTIME_RELEASE = ('https://github.com/ssbuarena/ssbu-arena/releases/download/v0.2.53/ssbu-runtime-9108947601.zip', 'e7cdf304d7cc0ae23b0c4a5f13f20deb11506ba083e176e2fb227c808f26be40')
+RUNTIME_RELEASE = ('https://github.com/ssbuarena/ssbu-arena/releases/download/v0.2.54/ssbu-runtime-98fb6066f9.zip', '39f1772e92f2519965e5e43baa773fbad63eef35a812f196cb3061bc503a4dc4')
 
 SETUP_STEPS = ['deps', 'stage', 'convert', 'modules', 'tables', 'lift', 'sdk', 'compile', 'nro', 'link', 'rollback', 'check']
 # expected seconds with 12 jobs (compile and nro scale with 12 / jobs), measured 2026-10-24 on a Ryzen 5 3600 (6 cores,
