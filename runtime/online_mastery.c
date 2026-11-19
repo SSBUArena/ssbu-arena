@@ -189,6 +189,7 @@ int mastery_card_get(MasteryCard *out) {
 /* net_relay.c rk_verdict: a VERDICT body (gid u64 .. text at 12, "EL" at 76 when there, then "MP") */
 void online_mastery_verdict(uint64_t gid, const uint8_t *b, int n) {
     int at = n >= 76 + 72 && b[76] == 'E' && b[77] == 'L' ? 76 + 72 : 76;
+    if (n >= at + 5 && b[at] == 'M' && b[at + 1] == 'P' && b[at + 2] == 2) { online_mastery_room(gid, b + at, n - at); return; }      /* (0.2.58) a room match */
     if (n < at + MASTERY_MP_LEN || b[at] != 'M' || b[at + 1] != 'P' || b[at + 2] != 1) return;
     static uint64_t shown;
     if (gid == shown) return;                          /* (every RESULT sent gets the same answer) */
@@ -203,6 +204,51 @@ void online_mastery_verdict(uint64_t gid, const uint8_t *b, int n) {
     {   const uint8_t *o = b + at + 4 + 36 * (1 - side); char ok2[25]; memcpy(ok2, o + 12, 24); ok2[24] = 0;
         printf("[mastery] VERDICT %08x: this game is player %d; the other player: %s +%u\n", (unsigned)gid, side + 1, ms_key_ok(ok2) ? ok2 : "?", (unsigned)(o[8] << 8 | o[9])); fflush(stdout); }
     ms_card(gid, key, before, after, pts, flags, "the database's points");
+}
+
+/* (0.2.58) a room match's points (arena-server rb_roommastery.c, Supabase 20261123_arena_mastery_rooms.sql): VERDICT "RM" | match id with
+ * the "MP" block version 2: "MP" 2, applied u8, kind u8 (1 a 1-on-1 room match, 2 Squad Strike), then both sides: flags u8 (as the
+ * version 1 flags, + 128 this game sent no result), fighters u8 (0..5), and per fighter that fought the 36 bytes of version 1 (total
+ * before u32, after u32, points u16, flags u8 (1 first win of the day with it), 0, key[24]). This game's side: room_mastery.c. One line
+ * per fighter on the notice (Squad Strike); a 1-on-1 room match shows the same notice as a matchmaking match. */
+void online_mastery_room(uint64_t gid, const uint8_t *mp, int n) {
+    int room_mastery_side_of(uint64_t gid);             /* room_mastery.c */
+    static uint64_t shown;
+    if (n < 5 || mp[0] != 'M' || mp[1] != 'P' || mp[2] != 2 || gid == shown) return;
+    int side = room_mastery_side_of(gid); if (side < 0) side = 0;
+    int applied = mp[3], kind = mp[4], at = 5;
+    const uint8_t *me = NULL; int me_n = 0, me_flags = 0;
+    for (int s = 0; s < 2; s++) {
+        if (at + 2 > n) return;
+        int fl = mp[at], k = mp[at + 1]; if (k > 5 || at + 2 + 36 * k > n) return;
+        if (s == side) { me = mp + at + 2; me_n = k; me_flags = fl; }
+        else { printf("[mastery] room VERDICT %08x: the other player: %d fighter(s), flags %d\n", (unsigned)gid, k, fl); fflush(stdout); }
+        at += 2 + 36 * k;
+    }
+    shown = gid;
+    ms_load();
+    if (!applied || !me) { printf("[mastery] room VERDICT %08x: no points applied\n", (unsigned)gid); fflush(stdout); return; }
+    printf("[mastery] room VERDICT %08x (%s): this game is player %d, %d fighter(s), side flags %d\n", (unsigned)gid, kind == 2 ? "Squad Strike" : "room", side + 1, me_n, me_flags); fflush(stdout);
+    if (me_n == 0) { ms_card(gid, "", 0, 0, 0, (unsigned)me_flags, "the database's points (room match)"); return; }
+    MasteryCard lines; memset(&lines, 0, sizeof lines);
+    uint32_t sum = 0;
+    for (int i = 0; i < me_n; i++) {
+        const uint8_t *q = me + 36 * i;
+        uint32_t before = (uint32_t)q[0] << 24 | (uint32_t)q[1] << 16 | (uint32_t)q[2] << 8 | q[3];
+        uint32_t after = (uint32_t)q[4] << 24 | (uint32_t)q[5] << 16 | (uint32_t)q[6] << 8 | q[7];
+        unsigned pts = (unsigned)(q[8] << 8 | q[9]), fl = q[10] | (unsigned)me_flags;
+        char key[25]; memcpy(key, q + 12, 24); key[24] = 0; if (!ms_key_ok(key)) key[0] = 0;
+        AcquireSRWLockExclusive(&g_ms_lock); if (key[0]) ms_put_locked(key, after); ReleaseSRWLockExclusive(&g_ms_lock);
+        snprintf(lines.ln[i].key, sizeof lines.ln[i].key, "%s", key); snprintf(lines.ln[i].name, sizeof lines.ln[i].name, "%s", key[0] ? mastery_name(key) : "?");
+        lines.ln[i].after = after; lines.ln[i].points = pts; lines.ln[i].flags = fl; sum += pts;
+        printf("[mastery] room VERDICT %08x: %s %u -> %u (+%u, flags %u)\n", (unsigned)gid, key[0] ? key : "?", before, after, pts, fl); fflush(stdout);
+        if (i == 0) ms_card(gid, key, before, after, pts, fl, me_n > 1 ? "the database's points (Squad Strike, fighter 1)" : "the database's points (room match)");
+    }
+    if (me_n > 1) {                                    /* (Squad Strike) the card above + one line per fighter */
+        AcquireSRWLockExclusive(&g_card_lock);
+        g_card.nl = me_n; memcpy(g_card.ln, lines.ln, sizeof g_card.ln); g_card.points = sum;
+        ReleaseSRWLockExclusive(&g_card_lock);
+    }
 }
 
 /* (TEST) SSBU_MASTERY_FAKE: the same card from a fake verdict */
