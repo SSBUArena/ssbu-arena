@@ -173,8 +173,10 @@ static char g_ticket[320];
  * check); min_client_level = 5 tells it to update instead of leaving it searching alone. A lobby at 4 takes both.
  * 6 (0.2.53): RESULT of the game's own Online match (ranked elo; the lobby's rk_native_min_level). 7 (0.2.54): the elo in the game's
  * own Online select / results panel (SSBU_ONLINE_ELO_UI, rb_nex --elo-records 1); a 0.2.53 game never meets a 0.2.54 one (another
- * exe: another game code), min_client_level = 7 tells it to update. Ranked stays open from 6 (rk_native_min_level). */
-#define NET_CLIENT_LEVEL 7
+ * exe: another game code), min_client_level = 7 tells it to update. Ranked stays open from 6 (rk_native_min_level).
+ * 8 (0.2.57): the menu step's UI folders arena_elo_text / arena_rank_emblems out of the mod set (another build id "+m..." than
+ * 0.2.56, and another game code): a 0.2.56 game never meets a 0.2.57 one, min_client_level = 8 tells it to update. */
+#define NET_CLIENT_LEVEL 8
 /* (0.2.37) SSBU_ONLINE_TICKET_FILE: a file the launcher writes again with a fresh ticket while the game runs (its pass is short);
  * read again when it changes (every 5 s at most) and sent at once with the same nonce: the lobby takes it as a renewal */
 static char g_ticket_file[MAX_PATH];
@@ -232,6 +234,7 @@ static void mod_add(const char *name, uint64_t h64) {
     m->hash = (uint32_t)(h64 ^ h64 >> 32);
 }
 static int mod_cmp(const void *a, const void *b) { return _stricmp(((const ModEntry *)a)->name, ((const ModEntry *)b)->name); }
+static int ui_mods_counted(void) { const char *e = getenv("SSBU_ONLINE_UI_MODS"); return e && e[0] == '1'; }
 static void mods_scan(void) {
     char root[MAX_PATH * 2] = "";
     const char *ch = getenv("SSBU_CHARACTERS"), *lf = getenv("SSBU_LOOSE_FILES"), *md = getenv("SSBU_MODS");
@@ -252,6 +255,12 @@ static void mods_scan(void) {
                 /* (0.2.13) the Arena menu (install.py's menu step) is the menus' look only, nothing a fight reads, and its
                  * message file is made in each player's language: Italian and English players never shared a room */
                 if (!_stricmp(fd.cFileName, "arena_menu")) continue;
+                /* (0.2.57) the same for the Online select's texts and tier emblems (install.py's menu step, prepare_menu_classic.py):
+                 * arena_elo_text's message files are made from each player's own language (another size: Italian and English
+                 * players of 0.2.56 were "ANOTHER COPY" in rooms and never shared a matchmaking partition) and the launcher writes
+                 * the player's tier into them at PLAY; arena_rank_emblems are textures. Nothing a fight reads.
+                 * SSBU_ONLINE_UI_MODS=1: counted again (0.2.56's mod set). */
+                if ((!_stricmp(fd.cFileName, "arena_elo_text") || !_stricmp(fd.cFileName, "arena_rank_emblems")) && !ui_mods_counted()) continue;
                 char sub[MAX_PATH * 2], mf[MAX_PATH * 2], js[4096] = "", name[64];
                 int files = 0;
                 snprintf(sub, sizeof sub, "%s\\%s", root, fd.cFileName);
