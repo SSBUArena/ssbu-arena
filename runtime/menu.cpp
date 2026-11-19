@@ -2313,13 +2313,68 @@ static void mastery_shot(int which, int age_ms) {     /* (TEST) SSBU_SHOT_MASTER
     if (!which && !mid && age_ms >= 1100) { mid = 1; test_shot("mastery_end_mid"); printf("menu: picture of the mastery end card while it counts (SSBU_SHOT_MASTERY)\n"); fflush(stdout); }
     if (!done[which] && age_ms >= (which ? 1500 : 2600)) { done[which] = 1; test_shot(which ? "mastery_css" : "mastery_end"); printf("menu: picture of the mastery %s card (SSBU_SHOT_MASTERY)\n", which ? "select" : "end"); fflush(stdout); }
 }
+/* (22/11, SSBU_MASTERY_END=1, the default) the mastery points of the match just played: a small notice at the top left for 5 s in
+ * the Arena menu's own look (the quick menu's slanted bars, its Barlow title font, the Arena mark, the accent colour): it slides in,
+ * "MASTERY", the fighter and the points earned, the new total, and a line why only when the points were reduced. */
+static void mastery_toast(const MasteryCard &c) {
+    ImGuiIO &io = ImGui::GetIO();
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    float H = io.DisplaySize.y, fs = ImGui::GetFontSize();
+    float in = c.age_ms < 260 ? (float)c.age_ms / 260.0f : 1.0f; in = 1 - (1 - in) * (1 - in);
+    float a = c.age_ms > c.life_ms - 450 ? (float)(c.life_ms - c.age_ms) / 450.0f : 1.0f;
+    if (a < 0) a = 0;
+    char plus[24], tot[40], why[96] = "";
+    snprintf(plus, sizeof plus, "+%u", c.points);
+    { char g[24]; ms_group(g, sizeof g, c.after); snprintf(tot, sizeof tot, "%s points", g); }
+    if (c.flags & 32) snprintf(why, sizeof why, "You left the match: no points");
+    else if (c.flags & 64) snprintf(why, sizeof why, "Fighter not recognised: no points");
+    else if (c.flags & 2) snprintf(why, sizeof why, "5 matches with this player today: no points");
+    else if (c.flags & 16) snprintf(why, sizeof why, "Base points only");
+    else if (c.flags & 8) snprintf(why, sizeof why, "Daily limit reached: 25%%");
+    else if (c.flags & 4) snprintf(why, sizeof why, "Same network: 25%%");
+    ImFont *tf = g_font_title;
+    float th = fs * 0.95f, nh = fs * 1.45f, bh = fs * 0.85f, wh = fs * 0.78f;
+    ImVec2 sname = tf ? tf->CalcTextSizeA(nh, FLT_MAX, 0, c.name) : ImGui::CalcTextSize(c.name), splus = tf ? tf->CalcTextSizeA(nh, FLT_MAX, 0, plus) : ImGui::CalcTextSize(plus);
+    ImVec2 stot = ImGui::GetFont()->CalcTextSizeA(bh, FLT_MAX, 0, tot), swhy = ImGui::GetFont()->CalcTextSizeA(wh, FLT_MAX, 0, why);
+    float pad = fs * 0.9f, inner = sname.x + fs * 0.8f + splus.x;
+    if (stot.x > inner) inner = stot.x;
+    if (why[0] && swhy.x > inner) inner = swhy.x;
+    float w = inner + pad * 2 + fs * 0.6f, h = pad * 0.6f + th + fs * 0.15f + nh + fs * 0.05f + stot.y + (why[0] ? fs * 0.2f + swhy.y : 0) + pad * 0.6f;
+    float skew = fs * 0.7f, x0 = H * 0.03f - (w + skew + H * 0.03f) * (1 - in), y0 = H * 0.03f;
+    ImU32 bg = ImGui::GetColorU32(hexc(0x111B28, 0.93f * a)), acc = ImGui::GetColorU32(hexc(AR_ACCENT, a));
+    q_bar(dl, ImVec2(x0, y0), ImVec2(x0 + w, y0 + h), skew, bg);
+    q_bar(dl, ImVec2(x0 - fs * 0.05f, y0), ImVec2(x0 + fs * 0.35f, y0 + h), skew, acc);        /* the accent edge */
+    float x = x0 + skew + pad, y = y0 + pad * 0.6f;
+    arena_mark(dl, x, y + th * 0.08f, th * 0.86f, acc);
+    q_text(dl, tf, th, ImVec2(x + th * 1.25f, y), acc, "MASTERY");
+    y += th + fs * 0.15f;
+    q_text(dl, tf, nh, ImVec2(x, y), ImGui::GetColorU32(hexc(AR_TEXT, a)), c.name);
+    q_text(dl, tf, nh, ImVec2(x + sname.x + fs * 0.8f, y), ImGui::GetColorU32(hexc(c.points ? 0x3DDC97 : AR_MUTED, a)), plus);
+    y += nh + fs * 0.05f;
+    dl->AddText(ImGui::GetFont(), bh, ImVec2(x, y), ImGui::GetColorU32(hexc(AR_TEXT, 0.85f * a)), tot);
+    if (why[0]) dl->AddText(ImGui::GetFont(), wh, ImVec2(x, y + stot.y + fs * 0.2f), ImGui::GetColorU32(hexc(AR_MUTED, a)), why);
+    if (!InterlockedExchange(&g_ms_drawn, 1)) { printf("menu: mastery notice drawn (presented frame %lld): %s +%u, %u\n", g_frame, c.name, c.points, c.after); fflush(stdout); }
+    {   static int sw = -1, done; if (sw < 0) { const char *e = getenv("SSBU_SHOT_MASTERY"); sw = e && e[0] == '1'; }      /* (TEST) */
+        if (sw && !done && c.age_ms >= 900) { done = 1; test_shot("mastery_toast"); printf("menu: picture of the mastery notice (SSBU_SHOT_MASTERY)\n"); fflush(stdout); } }
+}
+/* (22/11, TEST) pictures at a later time, asked by other files (online_elo.c: the results panel, SSBU_SHOT_ELO_PANEL=1) */
+static struct { char name[32]; ULONGLONG due; } g_shot_later[4];
+extern "C" void menu_shot_later(const char *name, int ms) {
+    for (int i = 0; i < 4; i++) if (!g_shot_later[i].due) { snprintf(g_shot_later[i].name, sizeof g_shot_later[i].name, "%s", name); g_shot_later[i].due = GetTickCount64() + (ULONGLONG)ms; return; }
+}
+static void shot_later_tick(void) {
+    for (int i = 0; i < 4; i++) if (g_shot_later[i].due && GetTickCount64() >= g_shot_later[i].due && !g_shot_req) {
+        test_shot(g_shot_later[i].name); printf("menu: picture %s (asked earlier)\n", g_shot_later[i].name); fflush(stdout); g_shot_later[i].due = 0; return;
+    }
+}
 static void mastery_draw(void) {
     ImGuiIO &io = ImGui::GetIO();
     ImDrawList *dl = ImGui::GetForegroundDrawList();
     ImFont *font = ImGui::GetFont();
     float W = io.DisplaySize.x, H = io.DisplaySize.y, fs = ImGui::GetFontSize();
     MasteryCard c;
-    if (mastery_card_get(&c)) {
+    if (mastery_card_get(&c) && mastery_end_mode() != 2) mastery_toast(c);
+    else if (mastery_end_mode() == 2 && mastery_card_get(&c)) {      /* (SSBU_MASTERY_END=card: the 22/11 card) */
         float a = c.age_ms > c.life_ms - 600 ? (float)(c.life_ms - c.age_ms) / 600.0f : c.age_ms < 200 ? (float)c.age_ms / 200.0f : 1.0f;
         if (a < 0) a = 0;
         float t = (float)(c.age_ms - 500) / 1700.0f; t = t < 0 ? 0 : t > 1 ? 1 : t; t = 1 - (1 - t) * (1 - t) * (1 - t);      /* ease out */
@@ -2363,7 +2418,7 @@ static void mastery_draw(void) {
         if (why[0]) dl->AddText(font, f3, ImVec2(x0 + pad, y + sv.y + fs * 0.25f), ImGui::GetColorU32(hexc(AR_MUTED, a)), why);
         if (!InterlockedExchange(&g_ms_drawn, 1)) { printf("menu: mastery card drawn (presented frame %lld): %s %u -> %u (+%u)\n", g_frame, c.name, c.before, c.after, c.points); fflush(stdout); }
         mastery_shot(0, c.age_ms);
-    } else InterlockedExchange(&g_ms_drawn, 0);
+    } else if (!mastery_card_get(&c)) InterlockedExchange(&g_ms_drawn, 0);
     char nm[40], key[24]; uint32_t total = 0; int known = 0;
     static ULONGLONG css_t0;
     if (mastery_css_get(nm, sizeof nm, key, sizeof key, &total, &known)) {
@@ -2411,7 +2466,7 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
         if (fresh) g_last_t = now; }
     if (!g_sections_inited) { settings_init(width, height); g_sections_inited = 1; CreateThread(NULL, 0, redraw_thread, NULL, 0, NULL); }
     test_tick();
-    rooms_test_tick(); popup_shot_tick();
+    rooms_test_tick(); popup_shot_tick(); shot_later_tick();
     uint64_t b = nnhid_menu_buttons(), down = b & ~g_pad_prev;
     g_pad_prev = b;
     {   /* U2: - and + held together for 1 s open the menu too: a controller whose Home / Guide button is taken (the Steam
@@ -2441,7 +2496,7 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
 #ifndef _WIN32
     if (!g_open) InterlockedExchange(&g_text_want, 0);      /* the window thread turns SDL's text input off */
 #endif
-    if (!g_open && !S.overlay && !S.stats && !g_notice_on && !popup_on() && !in_options && !mastery_wants_draw()) { Ev drop[8]; while (q_take(drop, 8) == 8) continue; return 0; }
+    if (!g_open && !S.overlay && !S.stats && !g_notice_on && !popup_on() && !in_options && !mastery_wants_draw() && !g_shot_req) { Ev drop[8]; while (q_take(drop, 8) == 8) continue; return 0; }
     if (!g_im_ready) im_init(height);
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)width, (float)height);
@@ -2534,6 +2589,7 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
     }
     else g_popup_bottom = -1.0f;
     mastery_draw();                                      /* (22/11) online_mastery.c */
+    if (g_shot_req) ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2(1, 1), IM_COL32(0, 0, 0, 1));      /* (TEST pictures: one draw, so the frame is read back) */
     if (g_open && !osk_active()) { if (g_ba_screen) draw_squad(); else if (arena_ui()) draw_quick(); else draw_arena(width, height); }
     g_back_blocked = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen(NULL, ImGuiPopupFlags_AnyPopupId) || g_q_confirm == 1;      /* B answers "no" to the exit question asked from the menu (from the tile, B closes it) */
     ImGui::Render();

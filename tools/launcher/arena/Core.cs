@@ -607,7 +607,7 @@ namespace Arena
         /// (tools/ui/prepare_menu_classic.py; its marker arena_menu.json names them, the six below without it).</summary>
         public static bool ArenaMenuOk => Competitive && ArenaMenuFiles(out _);
         /// <summary>(0.2.53) the menu tool's marker version this launcher wants (tools/ui/prepare_menu_classic.py MARKER_VERSION)</summary>
-        const int ArenaMenuVersion = 2;
+        const int ArenaMenuVersion = 3;      // (22/11) 3: the Online select panel's Peak / Mastery Points labels
         /// <summary>(0.2.53) the menu was made again once for an older marker: from then on its version is not asked (a menu tool older than
         /// this launcher, e.g. sources not updated yet, would else be run at every check and the game started without Arena's menu)</summary>
         static volatile bool menuVersionTried;

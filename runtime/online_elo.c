@@ -63,7 +63,8 @@ void net_ranked_result(const uint8_t body[61], uint64_t game_id);
 
 static int env_on(const char *name, int dflt) { const char *e = getenv(name); return e && *e ? e[0] != '0' : dflt; }
 int online_elo_result_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_RESULT", 1); return v; }
-static int toast_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_TOAST", 1); return v; }
+/* (22/11) the notice is OFF by default: the elo change shows in the game's own results panel (phase 2, the "Arena Elo" page); =1 the notice again */
+static int toast_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_TOAST", 0); return v; }
 int online_elo_ui_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_UI", 1); return v; }      /* (0.2.54: ON by default, verified on the results page; 0 = as 0.2.53) */
 
 static int oe_read(uint64_t addr, void *buf, size_t n) {
@@ -163,6 +164,7 @@ void online_elo_verdict(uint64_t gid, int v, int winner, int reason, const char 
             int b2[2], a2[2];
             for (int s2 = 0; s2 < 2; s2++) { const uint8_t *q = el + 4 + 34 * s2; b2[s2] = q[0] << 8 | q[1]; a2[s2] = flags & (4 | 8) ? b2[s2] : q[2] << 8 | q[3]; }
             online_elo_db_numbers((uint32_t)gid, b2, a2);
+            { void online_mastery_rating(int after); online_mastery_rating(a2[side]); }      /* (22/11) the select panel's peak row (online_mastery.c) */
         }
     } else if (v == 3 || v == 4) {
         snprintf(t, sizeof t, "%s: %s. Elo unchanged.", reason == 13 ? "Not ranked" : v == 3 ? "No contest" : "Not recorded", text && *text ? text : "-");
@@ -199,6 +201,12 @@ static void oe_conv_hook(Ctx *c, void *user) {          /* 0x71017d14c0 (table, 
     {   static int tr = -1, n; if (tr < 0) { const char *e = getenv("SSBU_ONLINE_ELO_TRACE"); tr = e && (e[0] == '1' || e[0] == '2'); }      /* (TEST) every call, the first 60 */
         if (tr && n++ < 60) { printf("[elo] trace: the rating shown: category %u, rating %u, caller %llx\n", (unsigned)(c->x[1] & 0xffff), (unsigned)c->x[2], (unsigned long long)c->x[30]); fflush(stdout); } }
     if ((c->x[1] & 0xffff) == 0x15) {
+        {   static int sw = -1; static ULONGLONG last;      /* (22/11, TEST SSBU_SHOT_ELO_PANEL=1) pictures of the results panel: while it counts, at its end */
+            if (sw < 0) { const char *e = getenv("SSBU_SHOT_ELO_PANEL"); sw = e && e[0] == '1'; }
+            if (sw && c->x[30] == GA(0x7101d5ae14ULL) && GetTickCount64() - last > 20000) {
+                void menu_shot_later(const char *name, int ms); last = GetTickCount64();
+                menu_shot_later("elo_panel_count", 450); menu_shot_later("elo_panel_end", 1700);
+            } }
         uint32_t r = (uint32_t)c->x[2], v = oe_panel_number(r); c->x[0] = v ? v : 1;
         if (g_oe_conv_n++ < 6) { printf("[elo] the game's rating %u shown as it is (Arena Elo, SSBU_ONLINE_ELO_UI)\n", r); fflush(stdout); }
         return;

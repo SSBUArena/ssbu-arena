@@ -41,7 +41,7 @@ FOOTER = 'ui/layout/menu/main_menu_footer/main_menu_footer/layout.arc'
 MESSAGES = 'ui/message/msg_menu.msbt'
 SCRIPTS = 'ui/script/menu/main/'
 MARKER = 'arena_menu.json'      # (0.2.50) written last: the launcher (Core.ArenaMenuOk) checks the files it names
-MARKER_VERSION = 2              # (0.2.53) 2: the elo texts below too (the launcher makes the menu again for a marker below 2)
+MARKER_VERSION = 3              # (0.2.53) 2: the elo texts below too; (22/11) 3: the Peak / Mastery Points labels (the launcher makes the menu again for an older marker)
 # (0.2.53, ranked elo per fighter, PHASE 2: on by default since 0.2.54) with SSBU_ONLINE_ELO_UI (=0 off) the game's own Global Smash Power panel shows the
 # elo (runtime online_elo.c) and its name becomes "Arena Elo". Written from the player's own message files into characters/arena_elo_text
 # (beside arena_menu), a folder the loose-file layer leaves out with SSBU_ONLINE_ELO_UI=0 (the game's own texts). Labels read off the game's msg_common / msg_melee (results item, the
@@ -49,7 +49,9 @@ MARKER_VERSION = 2              # (0.2.53) 2: the elo texts below too (the launc
 ELO_DIR = 'arena_elo_text'
 ELO_TEXT = {'ui/message/msg_common.msbt': {'cmn_world_pw': 'Arena Elo'},
             'ui/message/msg_melee.msbt': {'mel_result_item_36': 'Arena Elo', 'mel_chara_select_world_pw': 'Elo',
-                                          'mel_chara_select_synthesize_world_pw': 'Roster Elo'}}
+                                          'mel_chara_select_synthesize_world_pw': 'Mastery Points', 'mel_chara_select_highest_score': 'Peak'}}
+# (22/11, runtime online_mastery.c SSBU_MASTERY_PANEL) the Online select's GSP panel: row 2 ("No.1" + "Elo") is the account's peak rating -> "Peak",
+# row 3 ("Roster Elo") the fighter's mastery points -> "Mastery Points"
 NAVY = '0a1424ff'                                     # the launcher's page background
 
 

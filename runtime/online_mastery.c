@@ -1,5 +1,5 @@
 /* online_mastery.c - (22/11) SSBU Arena earns OpenSmash MASTERY POINTS: the game's side. No game content in this file: switches, our
- * own small table of the player's points per fighter, and what menu.cpp draws (two cards of ours, never inside the game's own UI).
+ * own small table of the player's points per fighter, the game's own Online select panel fed with our numbers, and a small notice.
  *
  * The points are computed by the accounts database only (arena-server tools/net/supabase/20261122_arena_mastery.sql): every match the
  * lobby referees (the Online Matchmaking, the quick matches) earns points with OpenSmash's formula; the results writer passes the
@@ -7,18 +7,28 @@
  * (36 bytes): the fighter's total before u32, after u32, this match's points u16, flags u8 (1 first win of the day, 2 pair cap, 4 same
  * network, 8 day cap, 16 base only, 32 left, 64 fighter unknown), 0, fighter key[24]. A game never computes or sends a number.
  *
- *   SSBU_MASTERY_END (default 1; 0 = nothing shown at the match's end): the "MP" block of this game's side as a card at the top of the
- *     picture (under the ranked notice when it is there): "MASTERY  Mario  4,180 -> 4,330  +150" with the number counting up, and
- *     why when it is not the full amount ("First win of the day +50", "Pair limit: no points", ...). The table below is updated.
- *   SSBU_MASTERY_CSS (default 1; 0 = nothing): on the Online character select (the game's own Online scene "OnlineMeleeAnyScene"),
- *     the player's mastery of the fighter in player 1's panel (the select screens' per-player table 0x7105307770, + 0x38 the ui_chara,
- *     debug_mode.c PANEL) as a small card of ours (menu.cpp mastery_draw: where and why).
- *   SSBU_MASTERY_FILE: the launcher's copy of public.my_opensmash_mastery() ("<key> <total>" per line), read at the first use; the
- *     verdicts update it in memory. Without it a fighter shows "-" until a match of this run tells its total.
+ *   SSBU_MASTERY_PANEL (default 1; 0 = the panel as 0.2.55): the game's own GSP panel of the Online character select (three rows, read
+ *     off 0x7101a27570: layout panes set_parts_score_0 / _1 / _2, the number setter 0x7101a1c070 (pane, {shown u32, -, -, kind u32,
+ *     value u32, -, ui_chara u64}: a number when shown && kind 1, else "---"), the row's fighter icon 0x7101a1bc20 (owner, pane, 0,
+ *     &{ui_chara, 0})):
+ *       row 1 "Elo"             the fighter under the cursor (the game's own, unchanged: rb_nex's record = the account's rating);
+ *       row 2 "No.1" -> "Peak"  the account's highest rating (the launcher's copy, "peak <n>", raised by every verdict; the current
+ *                               rating when not known); its icon stays the game's own (the No.1 fighter of the records);
+ *       row 3 "Roster" -> "Mastery Points"  the mastery points of the fighter under the cursor: set again each time the game sets
+ *                               row 1 (0x7101a19990 -> 0x7101a1c070 from 0x7101a19c48, x20 its layout, x19 its icon owner), on a
+ *                               fresh handle of the pane "set_parts_score_2" of that same layout (0x7103776090, released as the game
+ *                               does). The fighter icon is set too (0x7101a1bc20), but the game's roster row has no icon slot: none
+ *                               shows (seen 22/11). Only in an Online sequence (0x07......).
+ *     The labels are the menu's text patch (tools/ui/prepare_menu_classic.py, characters/arena_elo_text).
+ *   SSBU_MASTERY_END (default 1 = a small notice at the top left, 5 s, "Mario +170 / Mastery 4,200" and a line why when the points
+ *     were reduced; "card" = the 22/11 card at the top centre; 0 = nothing): the "MP" block of this game's side. The table is updated.
+ *   SSBU_MASTERY_CSS (default 0; 1 = the 22/11 overlay pill on the Online select, menu.cpp)
+ *   SSBU_MASTERY_FILE: the launcher's copy of public.my_opensmash_mastery() ("<key> <total>" per line) and the account's peak rating
+ *     ("peak <n>"), read at the first use; the verdicts update it in memory.
  * TEST switches (off by default):
  *   SSBU_MASTERY_FAKE=<key>:<before>:<points>[:<flags>]  the table starts with <key> = <before>; at the end of an online rollback fight
- *     (and SSBU_MASTERY_FAKE_AT=<s> seconds after the start) the SAME end card shows before -> before + points (a fake verdict).
- *   SSBU_MASTERY_TRACE=1  the select screen's panel 0 / the scene names in the log. */
+ *     (and SSBU_MASTERY_FAKE_AT=<s> seconds after the start) the SAME notice shows before -> before + points (a fake verdict).
+ *   SSBU_MASTERY_TRACE=1  the select screen's panel 0 / the scene names / the panel's rows in the log; =2 also every number setter. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,8 +42,14 @@ int hook_install(uint64_t addr, void (*repl)(Ctx *, void *), void *user, ImportF
 int online_elo_side_of(uint64_t gid);                  /* online_elo.c: this game's side of a verdict's match */
 
 static int env_on(const char *name, int dflt) { const char *e = getenv(name); return e && *e ? e[0] != '0' : dflt; }
-int mastery_end_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_MASTERY_END", 1); return v; }
-int mastery_css_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_MASTERY_CSS", 1); return v; }
+int mastery_end_mode(void) {                            /* 0 nothing, 1 the notice (default), 2 the 22/11 card */
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("SSBU_MASTERY_END"); v = !e || !*e ? 1 : !_stricmp(e, "card") || e[0] == '2' ? 2 : e[0] == '0' ? 0 : 1; }
+    return v;
+}
+int mastery_end_on(void) { return mastery_end_mode() != 0; }
+int mastery_css_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_MASTERY_CSS", 0); return v; }
+int mastery_panel_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_MASTERY_PANEL", 1); return v; }
 static int ms_trace(void) { static int v = -1; if (v < 0) v = env_on("SSBU_MASTERY_TRACE", 0); return v; }
 
 /* ---- the fighters: the mastery key (ui_chara_db name without "ui_chara_", OpenSmash's keys) and the name shown */
@@ -95,6 +111,8 @@ static int ms_key_ok(const char *k) {
     for (const char *p = k; *p; p++) if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
     return 1;
 }
+static volatile LONG g_peak = -1;                      /* the account's highest rating: the launcher's copy, raised by the verdicts (-1 unknown) */
+static volatile LONG g_ms_file_ok;                      /* the launcher's copy was read: a fighter not in it has 0 points */
 static void ms_load(void) {
     static volatile LONG done;
     if (InterlockedExchange(&done, 1)) return;
@@ -105,11 +123,16 @@ static void ms_load(void) {
         if (fp) {
             char line[128], k[64]; unsigned long v;
             AcquireSRWLockExclusive(&g_ms_lock);
-            while (fgets(line, sizeof line, fp)) if (line[0] != '#' && sscanf(line, "%63s %lu", k, &v) == 2 && ms_key_ok(k)) { ms_put_locked(k, (uint32_t)v); n++; }
+            while (fgets(line, sizeof line, fp)) {
+                if (line[0] == '#' || sscanf(line, "%63s %lu", k, &v) != 2) continue;
+                if (!strcmp(k, "peak")) { if (v > 0 && v < 100000) g_peak = (LONG)v; continue; }      /* (the account's highest rating) */
+                if (ms_key_ok(k)) { ms_put_locked(k, (uint32_t)v); n++; }
+            }
             ReleaseSRWLockExclusive(&g_ms_lock);
             fclose(fp);
         }
-        printf("[mastery] %d fighter(s) from the launcher's copy (SSBU_MASTERY_FILE)%s\n", n, fp ? "" : ": not readable"); fflush(stdout);
+        if (fp) InterlockedExchange(&g_ms_file_ok, 1);
+        printf("[mastery] %d fighter(s) from the launcher's copy (SSBU_MASTERY_FILE), peak rating %ld%s\n", n, (long)g_peak, fp ? "" : ": not readable"); fflush(stdout);
     }
     const char *fk = getenv("SSBU_MASTERY_FAKE");      /* (TEST) key:before:points[:flags] */
     if (fk && *fk) {
@@ -143,7 +166,12 @@ static void ms_card(uint64_t gid, const char *key, uint32_t before, uint32_t aft
     g_card_t0 = GetTickCount64(); g_card_gid = gid;
     ReleaseSRWLockExclusive(&g_card_lock);
 }
-#define MS_CARD_MS 9000
+#define MS_CARD_MS (mastery_end_mode() == 2 ? 9000 : 5000)
+/* online_elo.c online_elo_verdict: the database's rating after a match of this account (the peak row) */
+void online_mastery_rating(int after) {
+    ms_load();
+    if (after > 0 && after > (int)g_peak) { InterlockedExchange(&g_peak, after); printf("[mastery] peak rating now %d\n", after); fflush(stdout); }
+}
 int mastery_card_get(MasteryCard *out) {
     ms_fake_tick();
     AcquireSRWLockShared(&g_card_lock);
@@ -201,7 +229,94 @@ static void ms_scene_hook(Ctx *c, void *user) {        /* 0x7103726120: the sequ
     if (ms_trace()) { printf("[mastery] TRACE scene %s asked, sequence %08x (online select: %s)\n", nm, seq, css ? "yes" : "no"); fflush(stdout); }
     g_ms_orig_scene(c);
 }
+/* (STUDY, SSBU_MASTERY_TRACE=2) the select panel's number setters (the functions of 0x7101a27570 that read the "_n" / "_none" labels) */
+static const uint64_t k_ms_set[5] = {0x7101a1c070ull, 0x7101a1b4a0ull, 0x7101a1ba90ull, 0x7101a1be30ull, 0x7101a1c140ull};
+static ImportFn g_ms_orig_set[5];
+static void ms_set_trace(Ctx *c, void *user) {
+    int k = (int)(intptr_t)user; static int n[5];
+    if (n[k]++ < 40) {
+        uint32_t w[8] = {0}; SIZE_T got; ReadProcessMemory(GetCurrentProcess(), (void *)(uintptr_t)c->x[1], w, sizeof w, &got);
+        printf("[mastery] STUDY setter %llx from %llx: x0 %llx x1 %llx x2 %llx x3 %llx | x1 words %x %x %x %x %x %x %x %x\n", (unsigned long long)k_ms_set[k],
+               (unsigned long long)c->x[30], (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3],
+               w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+        fflush(stdout);
+    }
+    g_ms_orig_set[k](c);
+}
+/* ---- SSBU_MASTERY_PANEL: the game's own GSP panel of the Online select shows the peak rating and the mastery points (see the top) */
+#define MP_FROM_ROW1_BUILD 0x7101a292d8ull             /* 0x7101a27570 builds the panel: row 2 ("set_parts_score_1", the No.1 row), */
+#define MP_FROM_ROW2_BUILD 0x7101a29334ull             /*   row 3 ("set_parts_score_2", the roster row) */
+#define MP_FROM_ROW0_CURSOR 0x7101a19c48ull            /* 0x7101a19990: row 1 again for the fighter under the cursor (x20 the panel's
+                                                        * layout, x19 the owner of the rows' icons, as its own icon call 0x7101a19cf0) */
+#define MP_PANE_ROW2 0x7104328a08ull                   /* "set_parts_score_2" */
+static ImportFn g_mp_orig_set;
+static int mp_online(void) { uint32_t seq = rd32(GA(0x71053040f0ULL)); return (seq >> 24) == 0x07; }      /* an Online sequence (0x07......) */
+static uint32_t mp_points(uint64_t chara, int *shown) {
+    const char *k = ms_key_of_chara(chara); uint32_t t = 0;
+    ms_load();
+    *shown = k && (mastery_total(k, &t) || g_ms_file_ok);   /* (a fighter not in the launcher's copy: 0; no copy at all: "---") */
+    return t;
+}
+/* a pane handle of the layout (0x7103776090: x0 the layout, x1 the pane's name, x8 the handle {vtable, object}) and its release as the
+ * game's own code does it (0x7101a19cf4: the object's + 24 freed by 0x710392e590, + 16 / + 24 back to the empty handle) */
+static void mp_handle_free(Ctx *c, uint8_t h[16]) {
+    uint64_t o; memcpy(&o, h + 8, 8); memset(h + 8, 0, 8);
+    if (!o) return;
+    uint64_t in = rd64(o + 24);
+    wr64(o + 16, GA(0x710523c9a8ULL)); wr64(o + 24, 0);
+    if (in) { Ctx save = *c; c->x[0] = in; call_guest(c, GA(0x710392e590ULL)); *c = save; }
+}
+static void mp_set_hook(Ctx *c, void *user) {          /* 0x7101a1c070 (pane handle, values) */
+    (void)user;
+    uint64_t from = c->x[30], pane = c->x[0], vals = c->x[1];
+    if (!mastery_panel_on() || !pane || !vals || (from != GA(MP_FROM_ROW1_BUILD) && from != GA(MP_FROM_ROW2_BUILD) && from != GA(MP_FROM_ROW0_CURSOR)) || !mp_online()) {
+        g_mp_orig_set(c); return;
+    }
+    if (from == GA(MP_FROM_ROW1_BUILD)) {               /* row 2: the peak rating (else the current one, the record's) */
+        ms_load();
+        uint32_t cur = rd32(vals + 16), v = g_peak > 0 && (uint32_t)g_peak > cur ? (uint32_t)g_peak : cur;
+        if (cur && cur != 0xffffffffu) { wr32(vals, 1); wr32(vals + 12, 1); wr32(vals + 16, v); }      /* (its icon: the game's own No.1 fighter; a "no fighter" icon showed an empty grey box) */
+        if (ms_trace()) { printf("[mastery] TRACE panel: peak row %u (the record %u, the launcher's peak %ld)\n", v, cur, (long)g_peak); fflush(stdout); }
+        g_mp_orig_set(c); return;
+    }
+    if (from == GA(MP_FROM_ROW2_BUILD)) {               /* row 3 when the panel is built: player 1's fighter if already chosen */
+        int shown; uint64_t ch = rd64(GA(0x7105307770ULL) + 0x38); uint32_t pts = mp_points(ch, &shown);
+        if (shown) { wr32(vals, 1); wr32(vals + 12, 1); wr32(vals + 16, pts); }
+        if (ms_trace()) { printf("[mastery] TRACE panel: mastery row built, player 1's fighter %016llx: %u%s\n", (unsigned long long)ch, pts, shown ? "" : " (---)"); fflush(stdout); }
+        g_mp_orig_set(c); return;
+    }
+    /* row 1 for the fighter under the cursor: row 3 follows it (its number and its icon) */
+    uint64_t ch = rd64(vals + 24), layout = c->x[20], owner = c->x[19];
+    g_mp_orig_set(c);
+    if ((ch >> 56) != 0xc1 || !layout || !owner) return;
+    int shown; uint32_t pts = mp_points(ch, &shown);
+    static uint8_t h[16]; static uint32_t v2[8]; static uint64_t icon[2];     /* (the setter reads + 0, + 12, + 16; the icon setter {ui_chara, 0}) */
+    v2[0] = (uint32_t)shown; v2[1] = v2[2] = 0xffffffffu; v2[3] = (uint32_t)shown; v2[4] = pts; v2[5] = 0; memcpy(&v2[6], &ch, 8);
+    icon[0] = ch; icon[1] = 0;
+    Ctx save = *c;
+    memset(h, 0, sizeof h);
+    c->x[0] = layout; c->x[1] = GA(MP_PANE_ROW2); c->x[8] = (uint64_t)(uintptr_t)h; call_guest(c, GA(0x7103776090ULL));
+    *c = save;
+    uint64_t obj; memcpy(&obj, h + 8, 8);
+    if (obj) {
+        c->x[0] = (uint64_t)(uintptr_t)h; c->x[1] = (uint64_t)(uintptr_t)v2; g_mp_orig_set(c);
+        *c = save;
+        c->x[0] = owner; c->x[1] = (uint64_t)(uintptr_t)h; c->x[2] = 0; c->x[3] = (uint64_t)(uintptr_t)icon; call_guest(c, GA(0x7101a1bc20ULL));
+        *c = save;
+        mp_handle_free(c, h);
+        *c = save;
+    }
+    {   static int sw = -1, done; if (sw < 0) { const char *e = getenv("SSBU_SHOT_MASTERY"); sw = e && e[0] == '1'; }      /* (TEST) a picture of the panel */
+        if (sw && !done && obj && shown && pts > 0) { done = 1; void menu_shot_later(const char *name, int ms); menu_shot_later("mastery_panel", 1500); } }      /* (a fighter with points) */
+    if (ms_trace()) { static uint64_t last; if (ch != last) { last = ch; printf("[mastery] TRACE panel: cursor on %016llx: mastery row %u%s%s\n", (unsigned long long)ch, pts, shown ? "" : " (---)", obj ? "" : " (NO pane)"); fflush(stdout); } }
+}
 void online_mastery_hooks(void) {                      /* debug_mode.c, with the other Online hooks */
+    {   const char *e = getenv("SSBU_MASTERY_TRACE"); static int done;
+        if (e && e[0] == '2' && !done) { done = 1; for (int k = 0; k < 5; k++) hook_install(GA(k_ms_set[k]), ms_set_trace, (void *)(intptr_t)k, &g_ms_orig_set[k]); printf("[mastery] STUDY: the select panel's number setters hooked\n"); fflush(stdout); } }
+    if (mastery_panel_on() && !g_mp_orig_set) {
+        int a = hook_install(GA(0x7101a1c070ULL), mp_set_hook, NULL, &g_mp_orig_set);
+        printf("[mastery] the Online select's GSP panel: peak rating and mastery points (SSBU_MASTERY_PANEL, hook 0x7101a1c070 id %d)\n", a); fflush(stdout);
+    }
     if (!mastery_css_on() || g_ms_orig_scene) return;
     int a = hook_install(GA(0x7103726120ULL), ms_scene_hook, NULL, &g_ms_orig_scene);
     printf("[mastery] hook on the scene change 0x7103726120 (id %d): the Online select's mastery card (SSBU_MASTERY_CSS)\n", a); fflush(stdout);

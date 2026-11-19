@@ -13,7 +13,10 @@ typedef struct {
     int age_ms, life_ms;
 } MasteryCard;
 int mastery_end_on(void);                    /* SSBU_MASTERY_END (default 1) */
-int mastery_css_on(void);                    /* SSBU_MASTERY_CSS (default 1) */
+int mastery_end_mode(void);                  /* 0 off, 1 the top left notice, 2 the 22/11 card */
+int mastery_panel_on(void);                  /* SSBU_MASTERY_PANEL (default 1) */
+void online_mastery_rating(int after);
+int mastery_css_on(void);                    /* SSBU_MASTERY_CSS (default 0: the 22/11 overlay pill) */
 int mastery_card_get(MasteryCard *out);      /* 1: the end card is on (render thread, every frame) */
 int mastery_css_get(char *name, int nn, char *key, int nk, uint32_t *total, int *known);     /* 1: the Online select's card is on */
 int mastery_total(const char *key, uint32_t *total);
