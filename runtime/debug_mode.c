@@ -1986,7 +1986,8 @@ static void bacss_init(void) {
         if (online_rb_on()) printf("[online] A3: hooks on the game's fight netcode 0x71016d5ff0 / 0x71016d78d0: ids %d %d\n", hook_install(GA(0x71016d5ff0ULL), net_pre_hook, NULL, &g_orig_net_upd[0]), hook_install(GA(0x71016d78d0ULL), net_upd_hook, NULL, &g_orig_net_upd[1]));
         if (online_rb_on()) printf("[online] A3: hook on the game's fight netcode's end 0x71016ce960: id %d\n", hook_install(GA(0x71016ce960ULL), net_end_hook, NULL, &g_orig_net_end));
         { int online_nex_on(void); if (online_nex_on()) printf("[online] hook on the result handler's reward 0x7101518820: id %d\n", hook_install(GA(0x7101518820ULL), reward_hook, NULL, &g_orig_reward)); }
-        { int online_nex_on(void); void online_elo_hooks(void); if (online_nex_on()) online_elo_hooks(); } }      /* (0.2.53, online_elo.c) phase 2: the game's own panel shows the elo */
+        { int online_nex_on(void); void online_elo_hooks(void); if (online_nex_on()) online_elo_hooks(); }
+        { int online_nex_on(void); void online_mastery_hooks(void); if (online_nex_on()) online_mastery_hooks(); } }      /* (22/11) online_mastery.c: the Online select's mastery card */      /* (0.2.53, online_elo.c) phase 2: the game's own panel shows the elo */
     if (g_bacss == 1) { const char *v = getenv("SSBU_BA_SQUAD_VS"); g_bacss_vs = !(v && v[0] == '0');
         printf("[squadcss] hook on the matchup's state 7 (0x710197d5f0): id %d (the VS screen ends as offline once this game is ready: %s)\n", hook_install(GA(0x710197d5f0ULL), tc_vs_hook, NULL, &g_orig_tc_vs), g_bacss_vs ? "on" : "off, SSBU_BA_SQUAD_VS=0"); }
     fflush(stdout);

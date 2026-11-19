@@ -69,6 +69,7 @@ const char *nvn_vk_device_name(void);                                /* nvn_vk_m
 int osk_active(void);                                                /* osk.c */
 int osk_run(const wchar_t *header, const wchar_t *guide, const wchar_t *initial, int max_len, int min_len, int password, wchar_t *out);      /* osk.c */
 extern "C" void display_refresh_info(double *hz, int *lock_k);      /* display.c */
+#include "online_mastery.h"                                          /* (22/11) mastery points: the end card, the Online select card */
 #include "net_region.h"                                              /* SSBU Arena's lobbies by region (the table) */
 const char *net_region_text(void);                                   /* net_relay.c: "Europe", "Auto (Europe)", "" = another server */
 int net_online(void); int net_mode(void); const char *net_room_code(void); const char *net_lan_code(void); const char *net_upnp_result(void);      /* net_relay.c */
@@ -118,6 +119,7 @@ static SRWLOCK g_popup_lock = SRWLOCK_INIT;
 static char g_popup_title[96], g_popup_text[512];
 static volatile LONG64 g_popup_until;
 static volatile LONG g_popup_drawn;
+static volatile LONG g_ms_drawn;                       /* (22/11) the mastery card: said once in the log */
 extern "C" void menu_popup(const char *title, const char *text) {
     AcquireSRWLockExclusive(&g_popup_lock);
     snprintf(g_popup_title, sizeof g_popup_title, "%s", title ? title : "");
@@ -2285,6 +2287,106 @@ static void rooms_test_tick(void) {
     } else if (step == 4 && t - t0 >= 1500) { set_open(0); printf("menu: rooms test: over\n"); step = 5; }
     fflush(stdout);
 }
+/* ------------------------------------------------------------------ (22/11) mastery points (online_mastery.c)
+ * Two small cards of ours, drawn over the picture with the overlay's own font and colours (never inside the game's own UI):
+ *   END   at the top centre, right under the ranked notice when it is up (the same place the online notices use, so the eye finds
+ *         it where the rating change just appeared): "MASTERY  Mario", the total counting up from before to after, "+150", and a
+ *         line why it is less than full ("First win of the day: +50", "5 matches with this player in 24 h ..."). 9 s, fades out.
+ *   CSS   on the game's own Online character select: a slim pill in the right column, under the game's "Elo" / "Roster Elo"
+ *         cards: that column is the player's own numbers already, and the pill covers no portrait, no panel and no rule.
+ *         SSBU_MASTERY_CSS_POS=<x>,<y> (fractions of the picture: the pill's right / top edge) moves it (tests, other layouts).
+ * TEST switch SSBU_SHOT_MASTERY=1: a picture of each card (SSBU_SHOT_DIR/menu_test_mastery_end.bmp, ..._css.bmp). */
+static float g_popup_bottom = -1.0f;                  /* the ranked notice's bottom edge this frame (-1: not up) */
+static void ms_group(char *out, size_t n, uint32_t v) {
+    char raw[16]; int k = snprintf(raw, sizeof raw, "%u", v), o = 0;
+    for (int i = 0; i < k && o + 2 < (int)n; i++) { if (i && (k - i) % 3 == 0) out[o++] = ','; out[o++] = raw[i]; }
+    out[o] = 0;
+}
+static int mastery_wants_draw(void) {
+    MasteryCard c; char nm[40], key[24]; uint32_t t; int known;
+    return mastery_card_get(&c) || mastery_css_get(nm, sizeof nm, key, sizeof key, &t, &known);
+}
+static void mastery_shot(int which, int age_ms) {     /* (TEST) SSBU_SHOT_MASTERY=1 */
+    static int sw = -1, done[2], mid;
+    if (sw < 0) { const char *e = getenv("SSBU_SHOT_MASTERY"); sw = e && e[0] == '1'; }
+    if (!sw) return;
+    if (!which && !mid && age_ms >= 1100) { mid = 1; test_shot("mastery_end_mid"); printf("menu: picture of the mastery end card while it counts (SSBU_SHOT_MASTERY)\n"); fflush(stdout); }
+    if (!done[which] && age_ms >= (which ? 1500 : 2600)) { done[which] = 1; test_shot(which ? "mastery_css" : "mastery_end"); printf("menu: picture of the mastery %s card (SSBU_SHOT_MASTERY)\n", which ? "select" : "end"); fflush(stdout); }
+}
+static void mastery_draw(void) {
+    ImGuiIO &io = ImGui::GetIO();
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImFont *font = ImGui::GetFont();
+    float W = io.DisplaySize.x, H = io.DisplaySize.y, fs = ImGui::GetFontSize();
+    MasteryCard c;
+    if (mastery_card_get(&c)) {
+        float a = c.age_ms > c.life_ms - 600 ? (float)(c.life_ms - c.age_ms) / 600.0f : c.age_ms < 200 ? (float)c.age_ms / 200.0f : 1.0f;
+        if (a < 0) a = 0;
+        float t = (float)(c.age_ms - 500) / 1700.0f; t = t < 0 ? 0 : t > 1 ? 1 : t; t = 1 - (1 - t) * (1 - t) * (1 - t);      /* ease out */
+        uint32_t cur = c.after >= c.before ? c.before + (uint32_t)((double)(c.after - c.before) * t) : c.after;
+        char num[24], from[24], plus[24], why[120] = "";
+        ms_group(num, sizeof num, cur); ms_group(from, sizeof from, c.before); snprintf(plus, sizeof plus, "+%u", c.points);
+        if (c.flags & 32) snprintf(why, sizeof why, "You left the match: no points");
+        else if (c.flags & 64) snprintf(why, sizeof why, "Fighter not recognised: no points");
+        else if (c.flags & 2) snprintf(why, sizeof why, "5 matches with this player in 24 h: no more points for now");
+        else {
+            int k = 0;
+            if (c.flags & 1) k += snprintf(why + k, sizeof why - k, "First win of the day: +50");
+            if (c.flags & 16) k += snprintf(why + k, sizeof why - k, "%sBase points only", k ? "   " : "");
+            if (c.flags & 8) k += snprintf(why + k, sizeof why - k, "%sDaily limit reached: 25%%", k ? "   " : "");
+            if (c.flags & 4) k += snprintf(why + k, sizeof why - k, "%sSame network: 25%%", k ? "   " : "");
+        }
+        float f1 = fs * 1.0f, f2 = fs * 2.5f, f3 = fs * 0.9f, pad = fs * 1.15f;
+        const char *title = "MASTERY";
+        char widest[24]; ms_group(widest, sizeof widest, c.after > c.before ? c.after : c.before);
+        ImVec2 st = font->CalcTextSizeA(f1, FLT_MAX, 0, title), sn = font->CalcTextSizeA(f1 * 1.15f, FLT_MAX, 0, c.name);
+        ImVec2 sv = font->CalcTextSizeA(f2, FLT_MAX, 0, widest), sp = font->CalcTextSizeA(f2 * 0.6f, FLT_MAX, 0, plus), sw = font->CalcTextSizeA(f3, FLT_MAX, 0, why);
+        ImVec2 sf = font->CalcTextSizeA(f3, FLT_MAX, 0, from);
+        float inner = st.x + fs * 0.8f + sn.x + fs * 1.2f + sf.x, row2 = sv.x + fs * 0.9f + sp.x + fs * 1.0f;
+        if (row2 > inner) inner = row2;
+        if (why[0] && sw.x > inner) inner = sw.x;
+        float w = inner + 2 * pad, h = pad * 0.7f + sn.y + fs * 0.2f + sv.y + (why[0] ? fs * 0.25f + sw.y : 0) + pad * 0.7f;
+        float x0 = (W - w) * 0.5f, y0 = g_popup_bottom > 0 ? g_popup_bottom + fs * 0.5f : H * 0.06f, x1 = x0 + w, y1 = y0 + h;
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), ImGui::GetColorU32(hexc(0x0A1424, 0.92f * a)), fs * 0.6f);
+        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), ImGui::GetColorU32(hexc(0xE6B84A, a)), fs * 0.6f, 0, 2.0f);
+        float y = y0 + pad * 0.7f;
+        dl->AddText(font, f1, ImVec2(x0 + pad, y + (sn.y - st.y) * 0.5f), ImGui::GetColorU32(hexc(0xE6B84A, a)), title);
+        dl->AddText(font, f1 * 1.15f, ImVec2(x0 + pad + st.x + fs * 0.8f, y), ImGui::GetColorU32(hexc(AR_TEXT, a)), c.name);
+        if (c.age_ms < 2400 && c.after != c.before)       /* where it started, while it counts */
+            dl->AddText(font, f3, ImVec2(x1 - pad - sf.x, y + (sn.y - sf.y) * 0.5f), ImGui::GetColorU32(hexc(AR_MUTED, a * 0.9f)), from);
+        y += sn.y + fs * 0.2f;
+        dl->AddText(font, f2, ImVec2(x0 + pad, y), ImGui::GetColorU32(hexc(AR_TEXT, a)), num);
+        float px = x0 + pad + sv.x + fs * 0.9f, ph = sp.y + fs * 0.3f, py = y + (sv.y - ph) * 0.5f;
+        unsigned pc = c.points ? 0x3DDC97 : AR_MUTED;
+        dl->AddRectFilled(ImVec2(px - fs * 0.45f, py), ImVec2(px + sp.x + fs * 0.45f, py + ph), ImGui::GetColorU32(hexc(pc, 0.18f * a)), ph * 0.5f);
+        dl->AddText(font, f2 * 0.6f, ImVec2(px, py + fs * 0.15f), ImGui::GetColorU32(hexc(pc, a)), plus);
+        if (why[0]) dl->AddText(font, f3, ImVec2(x0 + pad, y + sv.y + fs * 0.25f), ImGui::GetColorU32(hexc(AR_MUTED, a)), why);
+        if (!InterlockedExchange(&g_ms_drawn, 1)) { printf("menu: mastery card drawn (presented frame %lld): %s %u -> %u (+%u)\n", g_frame, c.name, c.before, c.after, c.points); fflush(stdout); }
+        mastery_shot(0, c.age_ms);
+    } else InterlockedExchange(&g_ms_drawn, 0);
+    char nm[40], key[24]; uint32_t total = 0; int known = 0;
+    static ULONGLONG css_t0;
+    if (mastery_css_get(nm, sizeof nm, key, sizeof key, &total, &known)) {
+        if (!css_t0) css_t0 = GetTickCount64();
+        float fx = 0.95f, fy = 0.56f;
+        { const char *e = getenv("SSBU_MASTERY_CSS_POS"); float a2, b2; if (e && sscanf(e, "%f,%f", &a2, &b2) == 2) { fx = a2; fy = b2; } }
+        char val[24]; if (known) ms_group(val, sizeof val, total); else snprintf(val, sizeof val, "-");
+        float f1 = fs * 0.8f, f2 = fs * 1.25f, pad = fs * 0.75f;
+        const char *title = "MASTERY";
+        ImVec2 st = font->CalcTextSizeA(f1, FLT_MAX, 0, title), sn = font->CalcTextSizeA(f1, FLT_MAX, 0, nm), sv = font->CalcTextSizeA(f2, FLT_MAX, 0, val);
+        float w = pad + st.x + fs * 0.6f + sn.x + fs * 1.2f + sv.x + pad, h = sv.y + pad * 0.8f;
+        float x1 = W * fx, x0 = x1 - w, y0 = H * fy, y1 = y0 + h;
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), ImGui::GetColorU32(hexc(0x0A1424, 0.9f)), h * 0.5f);
+        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), ImGui::GetColorU32(hexc(0xE6B84A, 0.95f)), h * 0.5f, 0, 2.0f);
+        float cy = (y0 + y1) * 0.5f;
+        dl->AddText(font, f1, ImVec2(x0 + pad, cy - st.y * 0.5f), ImGui::GetColorU32(hexc(0xE6B84A)), title);
+        dl->AddText(font, f1, ImVec2(x0 + pad + st.x + fs * 0.6f, cy - sn.y * 0.5f), ImGui::GetColorU32(hexc(AR_MUTED)), nm);
+        dl->AddText(font, f2, ImVec2(x1 - pad - sv.x, cy - sv.y * 0.5f), ImGui::GetColorU32(hexc(AR_TEXT)), val);
+        static char last[24];
+        if (strcmp(last, key)) { snprintf(last, sizeof last, "%s", key); printf("menu: mastery on the Online select: %s %s\n", nm, val); fflush(stdout); }
+        mastery_shot(1, (int)(GetTickCount64() - css_t0));
+    } else css_t0 = 0;
+}
 extern "C" int menu_shot_wanted(char *path, int n) {
     if (!g_shot_req) return 0;
     g_shot_req = 0;
@@ -2339,7 +2441,7 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
 #ifndef _WIN32
     if (!g_open) InterlockedExchange(&g_text_want, 0);      /* the window thread turns SDL's text input off */
 #endif
-    if (!g_open && !S.overlay && !S.stats && !g_notice_on && !popup_on() && !in_options) { Ev drop[8]; while (q_take(drop, 8) == 8) continue; return 0; }
+    if (!g_open && !S.overlay && !S.stats && !g_notice_on && !popup_on() && !in_options && !mastery_wants_draw()) { Ev drop[8]; while (q_take(drop, 8) == 8) continue; return 0; }
     if (!g_im_ready) im_init(height);
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)width, (float)height);
@@ -2424,11 +2526,14 @@ extern "C" int menu_frame(int width, int height, MenuDraw *out) {
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "%s", title);
         ImGui::Separator();
         ImGui::TextUnformatted(text);
+        g_popup_bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y;      /* (22/11) the mastery card goes under it */
         ImGui::End();
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor();
         if (!InterlockedExchange(&g_popup_drawn, 1)) { printf("menu: online popup drawn (presented frame %lld): %s: %s\n", g_frame, title, text); fflush(stdout); }
     }
+    else g_popup_bottom = -1.0f;
+    mastery_draw();                                      /* (22/11) online_mastery.c */
     if (g_open && !osk_active()) { if (g_ba_screen) draw_squad(); else if (arena_ui()) draw_quick(); else draw_arena(width, height); }
     g_back_blocked = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen(NULL, ImGuiPopupFlags_AnyPopupId) || g_q_confirm == 1;      /* B answers "no" to the exit question asked from the menu (from the tile, B closes it) */
     ImGui::Render();

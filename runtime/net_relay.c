@@ -1177,6 +1177,7 @@ static void rk_verdict(const uint8_t *b, int n) {      /* (client thread) a VERD
     char text[65]; memcpy(text, b + 12, 64); text[64] = 0;
     if (v == 0) return;                                 /* (pending: the other game's result is awaited) */
     if (gid == g_rk_gid) InterlockedExchange(&g_rk_on, 0);
+    { void online_mastery_verdict(uint64_t gid, const uint8_t *body, int n); online_mastery_verdict(gid, b, n); }      /* (22/11) the "MP" block: online_mastery.c */
     int has_el = n >= 76 + 4 + 68 && b[76] == 'E' && b[77] == 'L', key = v * 256 + (has_el ? b[79] : 0);
     if (gid == g_rk_shown_gid && key == g_rk_shown_key) return;      /* (every RESULT sent gets the same answer) */
     g_rk_shown_gid = gid; g_rk_shown_key = key;

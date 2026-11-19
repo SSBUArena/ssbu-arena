@@ -94,6 +94,7 @@ void online_elo_sample(long long real_frames) {        /* rb_rollback.c, once pe
     for (int i = 0; i < 2; i++) { uint64_t ch = 0; if (oe_read(GA(0x71052c41b0ULL) + 0x580 + 0x260ull * (uint64_t)i, &ch, 8) && (ch >> 56) == 0xc1) g_oe_chara[i] = ch; }
 }
 void online_elo_fight_end(long long real_frames) {     /* rb_rollback.c rbg_fight_off, before the session forgets the match */
+    { void online_mastery_fake_end(void); online_mastery_fake_end(); }      /* (22/11, TEST: SSBU_MASTERY_FAKE only) online_mastery.c */
     if (!online_elo_result_on() || !online_rb_on() || !rbn_online_rb()) { g_oe_seen = 0; return; }
     {   int last[2] = {-1, -1};                         /* one more read: the very end */
         for (int i = 0; i < 2; i++) { uint64_t r = oe_info(i); uint32_t v; if (r && oe_read(r + 0xd8, &v, 4) && v < 100) last[i] = (int)v; }
@@ -138,6 +139,10 @@ void online_elo_fight_end(long long real_frames) {     /* rb_rollback.c rbg_figh
 }
 
 /* ---------------------------------------------------------------- phase 1: the notice (net_relay.c's receive thread) */
+int online_elo_side_of(uint64_t gid) {                 /* (22/11) this game's side of a verdict's match (online_mastery.c too) */
+    int side = (int)g_oe_last_side; if (side < 0 || (uint32_t)g_oe_last_mid != (uint32_t)gid) side = rbn_local_player() & 1;
+    return side;
+}
 static const char *const OE_TIER[] = {"Unranked", "Bronze", "Silver", "Gold", "Platinum", "Diamond", "Master", "Elite"};
 /* v: verdict (1 recorded, 2 forfeit, 3 no contest, 4 void), text: the lobby's reason; el: the "EL" block (NULL without one) */
 void online_elo_verdict(uint64_t gid, int v, int winner, int reason, const char *text, const uint8_t *el, int el_n) {
