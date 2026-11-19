@@ -190,6 +190,21 @@ void online_elo_db_numbers(uint32_t mid, const int before[2], const int after[2]
     oe_lock(); int made = oep_db(&g_oe_pan, mid, before, after); LeaveCriticalSection(&g_oe_cs);
     if (made) { printf("[elo] the results panel: %d number(s) of match %08x shown as the database's (SSBU_ONLINE_ELO_UI_DB)\n", made, mid); fflush(stdout); }
 }
+/* (22/11, online_mastery.c ms_num_hook) the results panel shows v: the database's change of the side whose before -> after goes
+ * through v (not its start), when only one side does: 1 and the change in *delta */
+int online_elo_panel_delta(int v, int *delta) {
+    int found = 0, d = 0;
+    oe_lock();
+    if (g_oe_pan.db_have)
+        for (int s = 0; s < 2; s++) {
+            int b = g_oe_pan.db_before[s], a = g_oe_pan.db_after[s], lo = a < b ? a : b, hi = a < b ? b : a;
+            if (a != b && v != b && v >= lo && v <= hi) { found++; d = a - b; }
+        }
+    LeaveCriticalSection(&g_oe_cs);
+    if (found != 1) return 0;
+    *delta = d;
+    return 1;
+}
 static uint32_t oe_panel_number(uint32_t r) {           /* the rating the panel asks for -> the number shown */
     if (!oe_ui_db_on()) return r;
     oe_lock(); int v = oep_fixed(&g_oe_pan, (int)r); LeaveCriticalSection(&g_oe_cs);

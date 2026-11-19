@@ -266,7 +266,51 @@ static void mp_handle_free(Ctx *c, uint8_t h[16]) {
     wr64(o + 16, GA(0x710523c9a8ULL)); wr64(o + 24, 0);
     if (in) { Ctx save = *c; c->x[0] = in; call_guest(c, GA(0x710392e590ULL)); *c = save; }
 }
-static void mp_set_hook(Ctx *c, void *user) {          /* 0x7101a1c070 (pane handle, values) */
+/* ---- (22/11) the numbers of the game's own panels with thousands separators (SSBU_PANEL_GROUPING, default 1) and, on the results
+ * panel, the change in brackets (SSBU_ONLINE_ELO_DELTA, default 1): "1,186 (+86)". The game writes a number into a text pane through
+ * 0x71037ad390 (u16 *buffer, capacity, width, value, flags, ...) -> its length, then 0x71037a1cc0 (pane, buffer, length): the results
+ * panel's elo (0x7101d5aa30: its start, callers 0x7101d5b130 / 0x7101d5b1dc; the count-up and the final value, 0x7101d5f0c4 /
+ * 0x7101d5f120 / 0x7101d5f1c4 / 0x7101d5f220, two panes each) and
+ * the select panel's rows (msbt number tags inside 0x7103779cd0, called by 0x7101a1c070 while mp_set_hook marks this thread). The
+ * buffer is written again with our text; nothing else of the game changes. */
+static volatile DWORD g_ms_arm_tid;                    /* the thread inside the select panel's number setter (mp_set_hook) */
+static ImportFn g_ms_orig_num;
+static int ms_grouping_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_PANEL_GROUPING", 1); return v; }
+static int ms_delta_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_ELO_DELTA", 1); return v; }
+static int ms_group_txt(char *out, size_t n, long long v) {
+    char raw[24]; int k = snprintf(raw, sizeof raw, "%lld", v < 0 ? -v : v), o = 0;
+    if (v < 0 && o + 1 < (int)n) out[o++] = '-';
+    for (int i = 0; i < k && o + 2 < (int)n; i++) { if (i && (k - i) % 3 == 0) out[o++] = ','; out[o++] = raw[i]; }
+    out[o] = 0;
+    return o;
+}
+static void ms_num_hook(Ctx *c, void *user) {
+    (void)user;
+    uint64_t from = c->x[30], buf = c->x[0]; uint32_t cap = (uint32_t)c->x[1]; int v = (int)(int32_t)c->x[3]; int flags = (int)c->x[4];
+    int results = from == GA(0x7101d5b130ULL) || from == GA(0x7101d5b1dcULL) || from == GA(0x7101d5f0c4ULL) || from == GA(0x7101d5f120ULL) || from == GA(0x7101d5f1c4ULL) || from == GA(0x7101d5f220ULL), select = g_ms_arm_tid && g_ms_arm_tid == GetCurrentThreadId();
+    g_ms_orig_num(c);
+    {   static int tr = -1, nn; if (tr < 0) { const char *e = getenv("SSBU_MASTERY_TRACE"); tr = e && e[0] == '2'; }      /* (STUDY) every number in 900..1300 */
+        if (tr && v >= 900 && v <= 1300 && nn++ < 150) { printf("[mastery] STUDY number %d from %llx (cap %u, flags %d)\n", v, (unsigned long long)from, cap, flags); fflush(stdout); } }
+    if (!(results || select) || !buf || cap < 12 || !ms_grouping_on() || (flags & 1)) return;
+    if (v < 1000 && !results) return;                 /* (nothing to group) */
+    char t[48]; int n = ms_group_txt(t, sizeof t, v);
+    if (results && ms_delta_on()) {
+        int online_elo_panel_delta(int v, int *delta);  /* online_elo.c: the database's change of the side this value belongs to */
+        int d;
+        if (online_elo_panel_delta(v, &d) && d) { char g[24]; ms_group_txt(g, sizeof g, d < 0 ? -d : d); n += snprintf(t + n, sizeof t - n, " (%c%s)", d < 0 ? '-' : '+', g); }
+    }
+    if (n >= (int)cap) return;                        /* (does not fit: the game's own text) */
+    for (int i = 0; i <= n; i++) wr16(buf + 2ull * (uint64_t)i, (uint16_t)(uint8_t)t[i]);
+    c->x[0] = (uint64_t)n;
+    {   static int said; if (ms_trace() && said++ < 30) { printf("[mastery] TRACE number %d (%s, from %llx): \"%s\"\n", v, results ? "results panel" : "select panel", (unsigned long long)from, t); fflush(stdout); } }
+}
+static void mp_set_inner(Ctx *c, void *user);
+static void mp_set_hook(Ctx *c, void *user) {          /* 0x7101a1c070 (pane handle, values): this thread marked for the grouping */
+    DWORD was = g_ms_arm_tid; g_ms_arm_tid = GetCurrentThreadId();
+    mp_set_inner(c, user);
+    g_ms_arm_tid = was;
+}
+static void mp_set_inner(Ctx *c, void *user) {
     (void)user;
     uint64_t from = c->x[30], pane = c->x[0], vals = c->x[1];
     if (!mastery_panel_on() || !pane || !vals || (from != GA(MP_FROM_ROW1_BUILD) && from != GA(MP_FROM_ROW2_BUILD) && from != GA(MP_FROM_ROW0_CURSOR)) || !mp_online()) {
@@ -310,9 +354,23 @@ static void mp_set_hook(Ctx *c, void *user) {          /* 0x7101a1c070 (pane han
         if (sw && !done && obj && shown && pts > 0) { done = 1; void menu_shot_later(const char *name, int ms); menu_shot_later("mastery_panel", 1500); } }      /* (a fighter with points) */
     if (ms_trace()) { static uint64_t last; if (ch != last) { last = ch; printf("[mastery] TRACE panel: cursor on %016llx: mastery row %u%s%s\n", (unsigned long long)ch, pts, shown ? "" : " (---)", obj ? "" : " (NO pane)"); fflush(stdout); } }
 }
+/* (STUDY, SSBU_MASTERY_TRACE=2) the message formatter with numbers 0x7103779cd0 (text, label, count, values...): the labels with "pw" */
+static ImportFn g_ms_orig_fmt;
+static void ms_fmt_trace(Ctx *c, void *user) {
+    (void)user; static int n;
+    char lb[64] = {0}; SIZE_T got = 0;
+    if (c->x[1]) ReadProcessMemory(GetCurrentProcess(), (void *)(uintptr_t)c->x[1], lb, 63, &got);
+    if (n < 300 && strstr(lb, "pw")) { n++; printf("[mastery] STUDY fmt %s from %llx: count %llu, values %lld %lld\n", lb, (unsigned long long)c->x[30], (unsigned long long)c->x[2], (long long)(int32_t)c->x[3], (long long)(int32_t)c->x[4]); fflush(stdout); }
+    g_ms_orig_fmt(c);
+}
 void online_mastery_hooks(void) {                      /* debug_mode.c, with the other Online hooks */
     {   const char *e = getenv("SSBU_MASTERY_TRACE"); static int done;
-        if (e && e[0] == '2' && !done) { done = 1; for (int k = 0; k < 5; k++) hook_install(GA(k_ms_set[k]), ms_set_trace, (void *)(intptr_t)k, &g_ms_orig_set[k]); printf("[mastery] STUDY: the select panel's number setters hooked\n"); fflush(stdout); } }
+        if (e && e[0] == '2' && !done) { done = 1; for (int k = 0; k < 5; k++) hook_install(GA(k_ms_set[k]), ms_set_trace, (void *)(intptr_t)k, &g_ms_orig_set[k]);
+            hook_install(GA(0x7103779cd0ULL), ms_fmt_trace, NULL, &g_ms_orig_fmt); printf("[mastery] STUDY: the select panel's number setters and the number formatter hooked\n"); fflush(stdout); } }
+    if (!g_ms_orig_num && (ms_grouping_on() || ms_delta_on())) {
+        int a = hook_install(GA(0x71037ad390ULL), ms_num_hook, NULL, &g_ms_orig_num);
+        printf("[mastery] the panels' numbers: thousands separators (SSBU_PANEL_GROUPING), the results panel's change (SSBU_ONLINE_ELO_DELTA) (hook 0x71037ad390 id %d)\n", a); fflush(stdout);
+    }
     if (mastery_panel_on() && !g_mp_orig_set) {
         int a = hook_install(GA(0x7101a1c070ULL), mp_set_hook, NULL, &g_mp_orig_set);
         printf("[mastery] the Online select's GSP panel: peak rating and mastery points (SSBU_MASTERY_PANEL, hook 0x7101a1c070 id %d)\n", a); fflush(stdout);
