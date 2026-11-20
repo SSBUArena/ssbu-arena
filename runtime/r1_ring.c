@@ -2152,11 +2152,12 @@ static RgsLite g_rgl_h[] = {
 };
 #define RGL_N ((int)(sizeof g_rgl_h / sizeof g_rgl_h[0]))
 static int g_rgs_lite; static uint64_t g_rgl_lo, g_rgl_hi;
-/* (0.2.59, OpenSmash PR 513) SSBU_RB_LITE_MIN=<n> (default 2): re-run passes with g_rgs_left <= n run their lite groups whole (OpenSmash
+/* (0.2.59, OpenSmash PR 513) SSBU_RB_LITE_MIN=<n> (default 1 = off in Arena): re-run passes with g_rgs_left <= n run their lite groups whole (OpenSmash
  * lite_skipped_now: frames at rb_fast <= n); the last re-run pass still follows LASTLITE (OpenSmash's LITE_POST1 exception for rb_fast 1).
- * 1 = as before (every re-run pass but a last one without LASTLITE skips them). */
+ * 1 = as before (every re-run pass but a last one without LASTLITE skips them), the default: Arena never shows a re-run
+ * frame (r1_ra_quiet), so running them whole would only add work; 2 = as OpenSmash. */
 static int g_rgs_litemin = -1;
-static int rgs_litemin(void) { if (g_rgs_litemin < 0) { const char *e = getenv("SSBU_RB_LITE_MIN"); g_rgs_litemin = e && *e ? atoi(e) : 2; } return g_rgs_litemin; }
+static int rgs_litemin(void) { if (g_rgs_litemin < 0) { const char *e = getenv("SSBU_RB_LITE_MIN"); g_rgs_litemin = e && *e ? atoi(e) : 1; } return g_rgs_litemin; }
 static void rgs_lite_hook(Ctx *c, void *user) {
     RgsLite *h = user; uint64_t lr = c->x[30];
     int inloop = lr >= g_rgl_lo && lr < g_rgl_hi, kd = g_ra_phase == 2;
