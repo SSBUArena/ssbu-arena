@@ -1006,21 +1006,23 @@
                     <WrapPanel x:Name="AccStats" Margin="0,0,0,4"/>
                     <TextBlock x:Name="AccNote" Style="{StaticResource Small}" FontSize="15" TextWrapping="Wrap" MaxWidth="760" HorizontalAlignment="Left"/>
                     <StackPanel x:Name="AccTables">
-                      <TextBlock Text="FIGHTERS USED" Style="{StaticResource FieldLabel}" Margin="0,18,0,6" ToolTip="Every decided ranked game, also those over the daily limit against the same player"/>
+                      <TextBlock x:Name="AccFightersTitle" Text="FIGHTERS USED" Style="{StaticResource FieldLabel}" Margin="0,18,0,6" ToolTip="Every decided ranked game, also those over the daily limit against the same player"/>
                       <TextBlock x:Name="AccNoFighters" Style="{StaticResource Small}" FontSize="15" Text="No ranked game yet." Visibility="Collapsed"/>
                       <Grid x:Name="AccFightersHead" Margin="13,0,13,6">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/><ColumnDefinition Width="90"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="140"/><ColumnDefinition Width="90"/><ColumnDefinition Width="80"/><ColumnDefinition Width="70"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="1" Text="FIGHTER" Style="{StaticResource Small}" FontSize="13"/>
-                        <TextBlock Grid.Column="2" Text="GAMES" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
-                        <TextBlock Grid.Column="3" Text="WINS" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
-                        <TextBlock Grid.Column="4" Text="WIN %" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
+                        <TextBlock x:Name="AccFightersTierHead" Grid.Column="2" Text="TIER" Style="{StaticResource Small}" FontSize="13" Visibility="Hidden"/>
+                        <TextBlock x:Name="AccFightersRatingHead" Grid.Column="3" Text="RATING" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right" Visibility="Hidden"/>
+                        <TextBlock Grid.Column="4" Text="GAMES" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
+                        <TextBlock Grid.Column="5" Text="WINS" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
+                        <TextBlock Grid.Column="6" Text="WIN %" Style="{StaticResource Small}" FontSize="13" HorizontalAlignment="Right"/>
                       </Grid>
                       <ItemsControl x:Name="AccFighters" Focusable="False">
                         <ItemsControl.ItemTemplate>
                           <DataTemplate DataType="{x:Type local:AccFighter}">
-                            <Border Margin="0,0,0,6" Padding="12,6" CornerRadius="6" BorderThickness="1" Background="#0F1620" BorderBrush="#233041">
+                            <Border Margin="0,0,0,6" Padding="12,6" CornerRadius="6" BorderThickness="1" Background="#0F1620" BorderBrush="#233041" ToolTip="{Binding RankTip}">
                               <Grid>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/><ColumnDefinition Width="90"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="140"/><ColumnDefinition Width="90"/><ColumnDefinition Width="80"/><ColumnDefinition Width="70"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
                                 <Grid Width="32" Height="32" HorizontalAlignment="Left" VerticalAlignment="Center" UseLayoutRounding="True">
                                   <Border CornerRadius="6" Background="#1A2634" BorderBrush="#2C3B4E" BorderThickness="1" Visibility="{Binding BadgeVisible}">
                                     <TextBlock Text="{Binding Badge}" FontFamily="{StaticResource Condensed}" FontWeight="Bold" FontSize="12.5" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -1028,9 +1030,14 @@
                                   <Rectangle RadiusX="6" RadiusY="6" RenderOptions.BitmapScalingMode="HighQuality"><Rectangle.Fill><ImageBrush ImageSource="{Binding Icon}" Stretch="Uniform"/></Rectangle.Fill></Rectangle>
                                 </Grid>
                                 <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Column="2" Text="{Binding GamesText}" FontSize="17" HorizontalAlignment="Right" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Column="3" Text="{Binding WinsText}" FontSize="17" HorizontalAlignment="Right" VerticalAlignment="Center" ToolTip="{Binding RecordText}"/>
-                                <TextBlock Grid.Column="4" Text="{Binding RateText}" FontSize="17" Foreground="{StaticResource Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                  <local:RankEmblem Spec="{Binding Emblem}" Width="20" Height="22.14" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                  <TextBlock Text="{Binding TierText}" FontSize="15" FontWeight="SemiBold" Foreground="{Binding TierBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                                <TextBlock Grid.Column="3" Text="{Binding RatingText}" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="4" Text="{Binding GamesText}" FontSize="17" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="5" Text="{Binding WinsText}" FontSize="17" HorizontalAlignment="Right" VerticalAlignment="Center" ToolTip="{Binding RecordText}"/>
+                                <TextBlock Grid.Column="6" Text="{Binding RateText}" FontSize="17" Foreground="{StaticResource Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
                               </Grid>
                             </Border>
                           </DataTemplate>

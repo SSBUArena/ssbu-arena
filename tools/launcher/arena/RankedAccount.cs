@@ -8,6 +8,10 @@
 //   public.my_ranked()        the signed-in player's rating, peak, W-L, tier, region, region / board rank, Grandmaster, fighters used,
 //                             last 10 matches; with the player's session (null for anon)
 //   public.ranked_board       the board (MainWindow.Leaderboard.cs)
+// (0.2.58) Ranked PER FIGHTER again (arena-server 20261123_ranked_fighter.sql): my_ranked() has "ranked_fighters" (each fighter its own
+// rating, tier, placement 0-5, peak, region / fighter rank): the card and the badge show the BEST fighter, the fighters' table every one
+// with its own rating and tier; ranked_board rows carry their fighter ("fighter", "fighters" with rating and tier). An older server
+// (no "ranked_fighters"): everything as 0.2.55.
 // Shown rating: one decimal, culture-invariant ("1532.4"). SSBU_RANKED_ACCOUNT=0 (or off) gives back the 0.2.54 launcher (elo per
 // fighter, Ranked.cs); SSBU_RANKED_ELO=0 still gives 0.2.52 (it turns this off too).
 using System;
@@ -86,6 +90,30 @@ namespace Arena
         public string WinsText => Wins.ToString(CultureInfo.InvariantCulture);
         public string RecordText => Wins.ToString(CultureInfo.InvariantCulture) + "–" + Losses.ToString(CultureInfo.InvariantCulture);
         public string RateText => Games > 0 ? (Wins * 100 + Games / 2) / Games + "%" : "–";
+
+        // (0.2.58) ranked PER FIGHTER (my_ranked().ranked_fighters): this fighter's own rating, tier, placement and peak; null rating:
+        // the fighter was used but has no rated game (only matches over the pair limit)
+        public string RankKey { get; set; }      // the server's key (= the game's mastery key)
+        public double? Rating { get; set; }
+        public double? Peak { get; set; }
+        public int RatedGames { get; set; }
+        public bool Placed { get; set; }
+        public bool Gm { get; set; }
+        public string Tier { get; set; }
+        public string TierFamily { get; set; }
+        public int? TierDivision { get; set; }
+        public string TierColor { get; set; }
+        public string PeakTier { get; set; }
+        public int? RegionRank { get; set; }
+        public int? FighterRank { get; set; }
+        public string RatingText => Rating == null ? "–" : RankedAccount.R(Rating.Value);
+        /// <summary>"Gold 2", "Grandmaster", "Unranked 3/5", "–"</summary>
+        public string TierText => Rating == null ? "–" : Placed || Gm ? (Tier ?? "") : RankedAccount.PlacementTier + " " + Math.Min(RatedGames, RankedAccount.PlacementGames) + "/" + RankedAccount.PlacementGames;
+        public Brush TierBrush => Rating != null && (Placed || Gm) ? Ranked.BrushOf(TierColor ?? RankedAccount.TierOf(Tier)?.Color) : (Brush)Application.Current.Resources["Muted"];
+        public EmblemSpec Emblem => Rating != null && (Placed || Gm) ? EmblemSpec.Of(Tier, TierFamily, TierDivision, TierColor) : EmblemSpec.Unranked;
+        public string RankTip => Rating == null ? Name + ": no rated game yet"
+                                 : Name + ": " + TierText + " · " + RatingText + (Peak != null && Peak.Value > Rating.Value + 0.05 ? " (peak " + RankedAccount.R(Peak.Value) + ")" : "")
+                                   + " · " + RatedGames + (RatedGames == 1 ? " rated game" : " rated games") + (FighterRank != null ? " · #" + Ranked.Num(FighterRank.Value) + " " + Name : "");
     }
 
     /// <summary>one ranked game of the signed-in player (my_ranked().recent)</summary>
@@ -131,6 +159,11 @@ namespace Arena
         public int? TierDivision, RegionRank, BoardRank;
         public List<AccFighter> Used = new List<AccFighter>();
         public List<AccMatch> Recent = new List<AccMatch>();
+        /// <summary>(0.2.58) the server rates per fighter (my_ranked().system "fighter"): the numbers above are the BEST fighter's (Best), Used
+        /// holds every fighter with its own rating (rated ones first, best first)</summary>
+        public bool PerFighter;
+        public AccFighter Best;
+        public string BestName => Best?.Name;
 
         public EmblemSpec Emblem => Placed || Gm ? EmblemSpec.Of(Tier, TierFamily, TierDivision, TierColor) : EmblemSpec.Unranked;
         /// <summary>"Gold 2", "Grandmaster", "Unranked 3/5"</summary>
@@ -281,6 +314,41 @@ namespace Arena
                 r.Used.Add(new AccFighter { Label = label.Trim(), Key = ReplayNames.FighterKeyOfLabel(label), Games = g, Wins = w, Losses = Ranked.Int(f, "losses") ?? Math.Max(0, g - w) });
             }
             r.Used = r.Used.OrderByDescending(f => f.Games).ThenByDescending(f => f.Wins).ToList();
+            // (0.2.58) ranked per fighter: each rated fighter's own numbers; the headline = the best fighter (placed first, then rating)
+            r.PerFighter = Ranked.Str(d, "system") == "fighter" || d.ContainsKey("ranked_fighters");
+            if (r.PerFighter)
+            {
+                var rated = new List<AccFighter>();
+                foreach (var f in List(d, "ranked_fighters"))
+                {
+                    string label = Ranked.Str(f, "fighter");
+                    if (string.IsNullOrWhiteSpace(label)) continue;
+                    var u = r.Used.FirstOrDefault(x => string.Equals(x.Label, label.Trim(), StringComparison.OrdinalIgnoreCase));
+                    if (u == null)
+                    {
+                        int g0 = Ranked.Int(f, "games") ?? 0, w0 = Ranked.Int(f, "wins") ?? 0;
+                        u = new AccFighter { Label = label.Trim(), Key = ReplayNames.FighterKeyOfLabel(label), Games = g0, Wins = w0, Losses = Ranked.Int(f, "losses") ?? Math.Max(0, g0 - w0) };
+                        r.Used.Add(u);
+                    }
+                    u.RankKey = Ranked.Str(f, "key"); u.Rating = Dbl(f, "rating"); u.Peak = Dbl(f, "peak"); u.RatedGames = Ranked.Int(f, "games") ?? 0;
+                    u.Tier = Ranked.Str(f, "tier"); u.TierFamily = Ranked.Str(f, "tier_family"); u.TierDivision = Ranked.Int(f, "tier_division");
+                    u.TierColor = Ranked.Str(f, "tier_color"); u.PeakTier = Ranked.Str(f, "peak_tier"); u.Gm = Ranked.Bool(f, "gm");
+                    u.Placed = f.ContainsKey("placed") ? Ranked.Bool(f, "placed") : u.Tier != null && !IsPlacement(u.Tier, u.TierFamily);
+                    u.RegionRank = Ranked.Int(f, "region_rank"); u.FighterRank = Ranked.Int(f, "fighter_rank");
+                    rated.Add(u);
+                }
+                r.Used = rated.Concat(r.Used.Where(x => !rated.Contains(x)).OrderByDescending(x => x.Games).ThenByDescending(x => x.Wins)).ToList();
+                r.Best = rated.FirstOrDefault();
+                if (r.Best != null)
+                {
+                    var b = r.Best;
+                    r.Rating = b.Rating ?? r.Rating; r.Peak = Math.Max(b.Peak ?? r.Rating, r.Rating); r.Games = b.RatedGames; r.Wins = b.Wins; r.Losses = b.Losses;
+                    r.Tier = b.Tier; r.TierFamily = b.TierFamily; r.TierDivision = b.TierDivision; r.TierColor = b.TierColor; r.Placed = b.Placed; r.Gm = b.Gm;
+                    r.RegionRank = b.RegionRank; r.BoardRank = null;      // (my_ranked's board_rank is the MAIN fighter's ladder: the board itself tells)
+                    foreach (var f in List(d, "ranked_fighters"))       // (the rated W-L, not the games over the pair limit)
+                        if (string.Equals(Ranked.Str(f, "fighter")?.Trim(), b.Label, StringComparison.OrdinalIgnoreCase)) { r.Wins = Ranked.Int(f, "wins") ?? r.Wins; r.Losses = Ranked.Int(f, "losses") ?? r.Losses; }
+                }
+            }
             foreach (var m in List(d, "recent"))
             {
                 DateTime? at = null;

@@ -67,8 +67,11 @@ namespace Arena
         public string Tip => Name + (Main ? " (main)" : "") + (HasElo ? ": " + (Ranked.On ? Ranked.Num(Elo) : Elo.ToString()) + " elo" : "")
                              + (Ranked.On && Tier != null ? (HasElo ? " · " : ": ") + Tier : "")
                              + (Games > 0 ? (HasElo || (Ranked.On && Tier != null) ? ", " : ": ") + Games + (Games == 1 ? " ranked match" : " ranked matches") + (Wins + Losses > 0 ? " (" + Wins + "–" + Losses + ")" : "") : "");
-        /// <summary>(0.2.55) ranked per account: "Mario: 12 games, 8 wins (67%)"</summary>
-        public string AccTip => Name + ": " + Games + (Games == 1 ? " game, " : " games, ") + Wins + (Wins == 1 ? " win" : " wins") + (Games > 0 ? " (" + (Wins * 100 + Games / 2) / Games + "%)" : "");
+        /// <summary>(0.2.55) ranked per account: "Mario: 12 games, 8 wins (67%)"; (0.2.58) per fighter: "Mario: Gold 2 · 1612.4, 12 games, 8 wins (67%)"</summary>
+        public string AccTip => Name + ": " + (Rating != null ? (Tier ?? "") + " · " + RankedAccount.R(Rating.Value) + ", " : "")
+                                + Games + (Games == 1 ? " game, " : " games, ") + Wins + (Wins == 1 ? " win" : " wins") + (Games > 0 ? " (" + (Wins * 100 + Games / 2) / Games + "%)" : "");
+        /// <summary>(0.2.58) this fighter's own rating (ranked_board's "fighters"), null: not given</summary>
+        public double? Rating { get; set; }
         /// <summary>the same fighter, the same player: one key, or one label when the key is not known</summary>
         public bool Same(LeaderFighter o) => o != null && (Key != null ? Key == o.Key : string.Equals(Label, o.Label, StringComparison.OrdinalIgnoreCase));
         public string FilterKey => Key ?? "label:" + (Label ?? "").ToLowerInvariant();
@@ -140,7 +143,10 @@ namespace Arena
         public string AccTierTip => Gm ? "Grandmaster: top " + RankedAccount.Season.GmTopN + " of " + (RankedAccount.RegionName(Region) ?? "a region") + " by rating"
                                   : Placed ? Tier + " · " + RatingText + " rating"
                                   : "Placement: " + Math.Min(Games, RankedAccount.PlacementGames) + " of " + RankedAccount.PlacementGames + " rated games played";
-        public string AccRowTip => Name + TagText + ": " + Games + (Games == 1 ? " rated game" : " rated games") + (RegionText != "" ? " · " + RegionText : "");
+        public string AccRowTip => Name + TagText + (PerFighter && Fighters.Count > 0 ? " with " + Fighters[0].Name : "") + ": " + Games + (Games == 1 ? " rated game" : " rated games")
+                                   + (RegionText != "" ? " · " + RegionText : "");
+        /// <summary>(0.2.58) the server's board is per fighter: the row's rating / tier / W-L are those of its fighter (Fighters[0])</summary>
+        public bool PerFighter { get; set; }
         static readonly Brush GmBack = B("#1F1520"), GmLine = B("#8A3A47");
         public Brush AccRowBack => IsMe ? MeBack : Gm ? GmBack : Back;
         public Brush AccRowBorder => Gm ? GmLine : RowBorder;
@@ -159,9 +165,11 @@ namespace Arena
             string S(string k) => d.TryGetValue(k, out object v) ? v as string : null;
             string name = S("username");
             if (string.IsNullOrEmpty(name)) return null;
+            string main = S("main_fighter") ?? S("fighter");      // (0.2.58: ranked_board per fighter: the row's own fighter first)
             var row = new LeaderRow { Rank = I("rank"), Name = name, Tag = I("tag"), Avatar = S("avatar"), Elo = I("elo"), Wins = I("wins"), Losses = I("losses"),
-                                      Games = I("games"), Total = I("total"), Fighter = string.IsNullOrWhiteSpace(S("main_fighter")) ? "-" : S("main_fighter") };
-            row.Fighters = FightersOf(d.TryGetValue("fighters", out object fl) ? fl : null, S("main_fighter"));
+                                      Games = I("games"), Total = I("total"), Fighter = string.IsNullOrWhiteSpace(main) ? "-" : main };
+            row.Fighters = FightersOf(d.TryGetValue("fighters", out object fl) ? fl : null, main);
+            row.PerFighter = d.ContainsKey("fighter_key") || d.ContainsKey("fighter_rank");
             row.Tier = S("tier"); row.TierColor = S("tier_color");
             row.Placed = d.TryGetValue("placed", out object pl) ? pl is bool pb && pb : row.Tier != null && row.Tier != Ranked.PlacementTier;
             // (0.2.55) ranked_board's columns (absent from the older functions)
@@ -190,6 +198,7 @@ namespace Arena
                             if (f == null) continue;
                             int? N(string k) => d.TryGetValue(k, out object x) && x != null && !(x is string) ? Convert.ToInt32(x, CultureInfo.InvariantCulture) : (int?)null;
                             f.HasElo = N("elo") != null; f.Elo = N("elo") ?? 0; f.Games = N("games") ?? 0; f.Wins = N("wins") ?? 0; f.Losses = N("losses") ?? 0;
+                            if (!f.HasElo && RankedAccount.Dbl(d, "rating") is double rt) { f.HasElo = true; f.Elo = (int)Math.Round(rt); f.Rating = rt; }      // (0.2.58 ranked_board)
                             f.Tier = d.TryGetValue("tier", out object tv) ? tv as string : null;
                         }
                         if (f != null && !all.Any(x => x.Same(f))) all.Add(f);

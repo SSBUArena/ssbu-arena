@@ -96,6 +96,7 @@ namespace Arena
                 p.Children.Add(t);
                 return t;
             }
+            if (r.PerFighter && r.Best != null) Line("Best fighter: " + r.BestName, Res("Muted"), 13, FontWeights.SemiBold);      // (0.2.58)
             Line(r.TierText + " · " + RankedAccount.R(r.Rating) + " rating", r.TierBrush, 15, FontWeights.SemiBold);
             if (r.Games == 0) Line("No rated match yet: your tier comes after " + r.PlacementGames + " rated games.", Res("Muted"));
             else if (!r.Placed && !r.Gm) Line((r.PlacementGames - Math.Min(r.Games, r.PlacementGames)) + " more rated games to get your tier", Res("Muted"));
@@ -106,7 +107,12 @@ namespace Arena
             if (pos.Count > 0) Line(string.Join(" · ", pos), null, 14, null, 6);
             if (r.Games > 0) Line(r.Wins + "–" + r.Losses + " · " + RankedAccount.WinRate(r.Wins, r.Losses) + " · " + r.Games + (r.Games == 1 ? " rated game" : " rated games"), null, 14, null, pos.Count > 0 ? 0 : 6);
             if (r.Gm) Line("Grandmaster: top " + RankedAccount.Season.GmTopN + (r.RegionName != null ? " of " + r.RegionName : " of your region"), Ranked.BrushOf("#FF5A6A"), 14, FontWeights.SemiBold, 4);
-            if (r.Used.Count > 0)
+            if (r.PerFighter && r.Used.Any(f => f.Rating != null))      // (0.2.58) each fighter its own rating and tier
+            {
+                Line("Your fighters", Res("Muted"), 13, FontWeights.SemiBold, 6);
+                foreach (var f in r.Used.Where(f => f.Rating != null).Take(5)) Line(f.Name + ": " + f.TierText + " · " + f.RatingText, f.TierBrush);
+            }
+            else if (r.Used.Count > 0)
             {
                 Line("Most played", Res("Muted"), 13, FontWeights.SemiBold, 6);
                 foreach (var f in r.Used.Take(3)) Line(f.Name + ": " + f.Games + (f.Games == 1 ? " game, " : " games, ") + f.Wins + (f.Wins == 1 ? " win" : " wins") + " (" + f.RateText + ")");
@@ -143,7 +149,8 @@ namespace Arena
             AccTier.Text = r.Placed || r.Gm ? (r.Tier ?? "").ToUpperInvariant() : RankedAccount.PlacementTier.ToUpperInvariant();
             AccTier.Foreground = r.TierBrush;
             AccRating.Text = RankedAccount.R(r.Rating);
-            AccSub.Text = (r.SeasonName ?? RankedAccount.Season.Name) + " season" + (r.Gm ? "   ·   Grandmaster: top " + RankedAccount.Season.GmTopN + (r.RegionName != null ? " of " + r.RegionName : "") : "")
+            AccSub.Text = (r.PerFighter && r.Best != null ? "Best fighter: " + r.BestName + "   ·   " : "")
+                        + (r.SeasonName ?? RankedAccount.Season.Name) + " season" + (r.Gm ? "   ·   Grandmaster: top " + RankedAccount.Season.GmTopN + (r.RegionName != null ? " of " + r.RegionName : "") : "")
                         + (myAccFailed ? "   ·   " + AsOf : "");
             // placement: n of 5 as 5 segments
             bool placing = !r.Placed && !r.Gm;
@@ -164,9 +171,15 @@ namespace Arena
                  r.Gm ? Ranked.BrushOf("#FF5A6A") : null);
             if (AccStats.Children[AccStats.Children.Count - 1] is FrameworkElement gmTile)
                 gmTile.ToolTip = "Grandmaster: the top " + RankedAccount.Season.GmTopN + " placed players of a region by rating, with at least " + RankedAccount.R(RankedAccount.Season.GmMinRating);
-            AccNote.Text = "One rating for your account, whatever fighter you play: it moves after every rated game. It starts at 1100.0 and climbs as the system gets "
-                         + "surer of your level. At most " + RankedAccount.Season.PairLimit + " rated games every " + RankedAccount.Season.PairWindowHours + " h against the same player.";
+            AccNote.Text = r.PerFighter
+                ? "Every fighter has its own rating, tier and " + RankedAccount.PlacementGames + " placement games: a rated game moves the rating of the fighter you played. "
+                  + "Each starts at 1100.0 and climbs as the system gets surer of your level with it. The card shows your best fighter. At most "
+                  + RankedAccount.Season.PairLimit + " rated games every " + RankedAccount.Season.PairWindowHours + " h against the same player, whatever the fighters."
+                : "One rating for your account, whatever fighter you play: it moves after every rated game. It starts at 1100.0 and climbs as the system gets "
+                  + "surer of your level. At most " + RankedAccount.Season.PairLimit + " rated games every " + RankedAccount.Season.PairWindowHours + " h against the same player.";
             AccTables.Visibility = Visibility.Visible;
+            AccFightersTitle.Text = r.PerFighter ? "YOUR FIGHTERS" : "FIGHTERS USED";      // (0.2.58)
+            AccFightersRatingHead.Visibility = AccFightersTierHead.Visibility = r.PerFighter ? Visibility.Visible : Visibility.Hidden;
             AccFighters.ItemsSource = r.Used.ToList();
             AccNoFighters.Visibility = r.Used.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             AccFightersHead.Visibility = r.Used.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -199,6 +212,7 @@ namespace Arena
             string notInList = lbRows.Any(x => x.IsMe) ? "" : "   ·   not in this list";
             if (me == null) { LbMeText.Text = "Sign in to see where you are on the board."; return; }
             int? rank = r == null ? null : regionName == null ? r.BoardRank : r.RegionName == regionName ? r.RegionRank : null;
+            if (r != null && r.PerFighter) rank = null;     // (0.2.58: my_ranked's ranks are one fighter's ladder: the board's own row tells)
             if (r != null && r.Games > 0 && rank != null && lbFighter == null)
             {
                 LbMeText.Text = me.Display + "   #" + Ranked.Num(rank.Value) + "   ·   " + r.TierText + "  " + RankedAccount.R(r.Rating)
