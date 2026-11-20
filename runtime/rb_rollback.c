@@ -329,12 +329,15 @@ static void rbg_skipf_hook(Ctx *c, void *user) {
     if (g_ra_phase == 2 && (g_rgs_left > 1 || (g_rbg_skf_last && !s->nonlast))) { s->n++; return; }
     s->orig(c);
 }
-static const char *g_rbg_skipf_def = "71022df110,71022dec30,71022dc3d0,7101357e20,7101358ef0,710375ea70";      /* (2026-11-02: the first three, -0.35 ms, pair IDENTICAL;
+static const char *g_rbg_skipf_def = "71022df110,71022dc3d0,7101358ef0,710375ea70";      /* (2026-11-02: the first three, -0.35 ms, pair IDENTICAL;
  * rb-ms 2026-11-11: three of the six "branches" of the 1/11 desync, each IDENTICAL alone and together, loop bench BF -0.40 ms (re-run cycles -13%);
- * the other three and 71036676e0 desync: see ROLLBACK_STATO.md. SSBU_RB_SKIPF=71022df110,71022dec30,71022dc3d0: the list before; SSBU_RB_SKIPF= (empty) for none) */
+ * the other three and 71036676e0 desync: see ROLLBACK_STATO.md. SSBU_RB_SKIPF=71022df110,71022dec30,71022dc3d0: the list before; SSBU_RB_SKIPF= (empty) for none.
+ * 0.2.59 (OpenSmash PR 514): 71022dec30 and 7101357e20 are no longer skipped: a re-run pass does need them. Skipping 71022dec30 left a stale
+ * picture after a rollback (a stutter, OpenSmash #508); skipping 7101357e20 made the name tag above the fighter bounce. Cost ~+0.14 ms per
+ * rollback tick (fast bench). SSBU_RB_SKIPF=71022df110,71022dec30,71022dc3d0,7101357e20,7101358ef0,710375ea70: the 0.2.58 list) */
 /* (13.0.5) the same list as numbers, so that tools/port/ga_sigs.py and verify_13_0_5.py see them: GA() at hook_install; they are in
  * g_code_13_0_5 (found on a 13.0.5 dump, same code at the same address). Before, GA() stopped a 13.0.5 game when the online rollback started. */
-static const uint64_t g_rbg_skipf_def_a[] = {0x71022df110ull, 0x71022dec30ull, 0x71022dc3d0ull, 0x7101357e20ull, 0x7101358ef0ull, 0x710375ea70ull};
+static const uint64_t g_rbg_skipf_def_a[] = {0x71022df110ull, 0x71022dc3d0ull, 0x7101358ef0ull, 0x710375ea70ull};      /* (the same entries, in the same order, as g_rbg_skipf_def) */
 /* (rb-8ms 13/11) THE LOST-RENDER-JOBS FREEZE (ROLLBACK_STATO 5.2): a render dispatch job (loop 0x7103816180) takes a command buffer object
  * of the frame's pool and begins its recording (f_71037f5160); the begin REFUSES (0xf0044009) when the object's byte + 0xa0 still says
  * "recording" (it is cleared only when main's submission f_71037f0590 ends that object's recording), and the job then ends WITHOUT its
@@ -641,7 +644,7 @@ static void rbg_step_body(Ctx *c) {
         if (!g_rbg_timer) g_rbg_timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
         if (!g_rbg_wab) g_rbg_wab = calloc(RBG_NT, 1);
         if (!g_rbg_work) { g_rbg_work = calloc(RBG_NT, sizeof *g_rbg_work); g_rbg_gap = calloc(RBG_NT, sizeof *g_rbg_gap); g_rbg_wcyc = calloc(RBG_NT, sizeof *g_rbg_wcyc); g_rbg_wk = calloc(RBG_NT, 1); }
-        LOG("r1: RB NET: match start, base state = frame %lld (fight frame %lld); pacing %s; re-run skip mask %d, lite mask %d%s\n", i, g_ff, g_rbg_pace ? "60 Hz" : "off", g_rgs_skip, g_rgs_lite, g_rgs_lastlite ? " (the last re-run pass too)" : "");
+        LOG("r1: RB NET: match start, base state = frame %lld (fight frame %lld); pacing %s; re-run skip mask %d, lite mask %d%s, lite min %d (SSBU_RB_LITE_MIN)\n", i, g_ff, g_rbg_pace ? "60 Hz" : "off", g_rgs_skip, g_rgs_lite, g_rgs_lastlite ? " (the last re-run pass too)" : "", rgs_litemin());
         {   /* start barrier: both games begin frame 1 together (the one that finished loading first waits here, at frame 0,
              * instead of stalling seconds at frame 8 with states it might have to roll back to: rnh2 / rnh3 hung after that) */
             double tb = now_ms(), lastx = 0;

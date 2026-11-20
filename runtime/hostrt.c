@@ -46,7 +46,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x653240, 0x653240},       /* entry set-up (debug_mode.c) */
     {0x6556b0, 0x6556b0},     /* squad element load (debug_mode.c); found on the 13.0.5 dump */
     {0x134c690, 0x134c690},     /* fight scene clean-up (debug_mode.c, room rollback), starts: 12,080 bytes in 13.0.5, 0x2f30 to the next 13.0.4 function */
-    {0x1357e20, 0x1357e20},     /* skipped in re-run passes (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11); found on the dump by its masked code (128 / 128 / 32 words) */
+    {0x1357e20, 0x1357e20},     /* skipped in re-run passes until 0.2.58 (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11; kept for SSBU_RB_SKIPF); found on the dump by its masked code (128 / 128 / 32 words) */
     {0x1358ef0, 0x1358ef0},     /* skipped in re-run passes (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11); found on the dump by its masked code (128 / 128 / 32 words) */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
     {0x14d8620, 0x14d8620}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
@@ -77,7 +77,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x22b67d4, 0x22b67d4},     /* worker return address (newmodule_host.c) */
     {0x22b6f60, 0x22b6f60}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x22dc3d0, 0x22dc3d0},     /* skipped function 3, 10,328 bytes in both (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
-    {0x22dec30, 0x22dec30},     /* skipped function 2, 4 bytes (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
+    {0x22dec30, 0x22dec30},     /* skipped function 2, 4 bytes (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes until 0.2.58; kept for SSBU_RB_SKIPF); found on the 13.0.5 dump, same code */
     {0x22df110, 0x22df110},     /* skipped function 1, 84 bytes in both (rb_rollback.c g_rbg_skipf_def, skipped in re-run passes); found on the 13.0.5 dump, same code */
     {0x2311f00, 0x2311f6c}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09); 2026-11-10: +0x6c checked by hand, the whole range 0x2311f00..0x2312620 is the same code there (456 instructions, its 5 calls of the record builder at +0x6c) */
     {0x2312620, 0x231268c}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09); 2026-11-10: +0x6c checked by hand, the whole range 0x2311f00..0x2312620 is the same code there (456 instructions, its 5 calls of the record builder at +0x6c) */
@@ -198,7 +198,7 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x653240, 0x653240},     /* entry set-up (debug_mode.c) */
     {0x6556b0, 0x6556b0},     /* squad element load (debug_mode.c) */
     {0x134c690, 0x134c690},     /* fight scene clean-up (debug_mode.c, room rollback) */
-    {0x1357e20, 0x1357e20},     /* skipped in re-run passes (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11); found on the dump by its masked code (128 / 128 / 32 words) */
+    {0x1357e20, 0x1357e20},     /* skipped in re-run passes until 0.2.58 (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11; kept for SSBU_RB_SKIPF); found on the dump by its masked code (128 / 128 / 32 words) */
     {0x1358ef0, 0x1358ef0},     /* skipped in re-run passes (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11); found on the dump by its masked code (128 / 128 / 32 words) */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
     {0x14d8620, 0x14d8620},     /* Battle Arena squad (debug_mode.c) */
@@ -229,7 +229,7 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x22b67d4, 0x22b67b4},     /* worker return address (newmodule_host.c) */
     {0x22b6f60, 0x22b6f40},     /* Battle Arena squad (debug_mode.c) */
     {0x22dc3d0, 0x22dc3b0},     /* skipped function 3 */
-    {0x22dec30, 0x22dec10},     /* skipped function 2 */
+    {0x22dec30, 0x22dec10},     /* skipped function 2 (until 0.2.58; kept for SSBU_RB_SKIPF) */
     {0x22df110, 0x22df0f0},     /* skipped function 1 */
     {0x2311f00, 0x2311ee0},     /* Battle Arena squad (debug_mode.c) */
     {0x2312620, 0x2312600},     /* Battle Arena squad (debug_mode.c) */
