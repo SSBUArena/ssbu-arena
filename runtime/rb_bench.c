@@ -43,6 +43,32 @@ static void bn_dist(int from, int to, int want, int side, int *n, double *med, d
     if (m) { qsort(w, (size_t)m, sizeof *w, bn_cmpf); *med = w[m / 2]; *mean = s / m; *p99 = w[m * 99 / 100]; *over = 100.0 * o / m; }
     free(w);
 }
+/* (0.2.58) THE PLAYER BENCHMARK (the launcher's Benchmark page; SSBU_BENCH_OUT, perf_bench.c), one stage: the warm-up and the
+ * rollback segment as above (perf_bench.c phase 1, its numbers given here), then NO walk-off: the same match goes on WITHOUT
+ * rollbacks (rb_net.c g_rbn_loop_ontime: the loop's pads in time) at 60 Hz, 60 real frames to settle and SSBU_BENCH_MATCH real
+ * frames (default 1800) measured (phase 2); then the JSON file and the game ends (no results screen). */
+int pb_on(void); void pb_phase(int ph); void pb_num(int ph, const char *key, double v); void pb_finish(const char *stage, int ok);
+extern volatile long g_rbn_loop_ontime;                /* rb_net.c */
+static int g_pb_state, g_pb_from, g_pb_len; static long long g_pb_real0, g_pb_rb0;
+static void pb_start_match(void) {
+    const char *e = getenv("SSBU_BENCH_MATCH"); g_pb_len = e && atoi(e) > 0 ? atoi(e) : 1800;
+    pb_phase(0); g_rbn_loop_ontime = 1; g_pb_state = 1; g_pb_real0 = g_rbg_real;
+    printf("[pbench] rollback segment over: the match goes on without rollbacks (%d frames measured after 60)\n", g_pb_len); fflush(stdout);
+}
+static void pb_tick(long long i) {
+    long long r = g_rbg_real - g_pb_real0;
+    if (g_pb_state == 1 && r >= 60) { g_pb_state = 2; g_pb_from = g_rbg_nw; g_pb_rb0 = g_rbg_rb; pb_phase(2); }
+    else if (g_pb_state == 2 && r >= 60 + g_pb_len) {
+        int n, n1; double med, mean, p99, over, m1, a1, q1, o1;
+        bn_dist(g_pb_from, g_rbg_nw, 0, -1, &n, &med, &mean, &p99, &over);
+        bn_dist(g_pb_from, g_rbg_nw, 1, -1, &n1, &m1, &a1, &q1, &o1);
+        pb_num(2, "cpu_ms_med", med); pb_num(2, "cpu_ms_avg", mean); pb_num(2, "cpu_ms_p99", p99); pb_num(2, "cpu_over_pct", over); pb_num(2, "ticks", n + n1);
+        pb_num(2, "rollbacks", (double)(g_rbg_rb - g_pb_rb0));
+        const char *dm_bench_stage(void); g_pb_state = 3;
+        pb_finish(dm_bench_stage(), 1);
+        void dm_bench_exit(long long); dm_bench_exit(i);
+    }
+}
 static void bn_segment_end(long long i) {
     int to = g_rbg_nw, n, nn; double med, mean, p99, over, nmed, nmean, np99, nover;
     bn_dist(g_bn0.nw, to, 1, -1, &n, &med, &mean, &p99, &over);
@@ -55,6 +81,11 @@ static void bn_segment_end(long long i) {
     const char *dm_bench_stage(void); unsigned sid = rd32(GA(0x71052c41b0ULL) + 0x420);
     int s = g_bn_done; const char *nm = dm_bench_stage(); snprintf(g_bn_name[s], sizeof g_bn_name[s], "%s", nm && *nm ? nm : "?");
     g_bn_rb[s] = med; g_bn_norm[s] = nmed; g_bn_p99[s] = p99;
+    if (pb_on()) {      /* (0.2.58) the player benchmark's rollback numbers (perf_bench.c phase 1) */
+        pb_num(1, "rb_ms_med", med); pb_num(1, "rb_ms_avg", mean); pb_num(1, "rb_ms_p99", p99); pb_num(1, "rb_over_pct", over); pb_num(1, "rb_ticks", n);
+        pb_num(1, "rollbacks", (double)rb); pb_num(1, "cpu_ms_med", nmed); pb_num(1, "cpu_ms_avg", nmean); pb_num(1, "cpu_ms_p99", np99); pb_num(1, "ticks", n + nn);
+        pb_num(1, "rb_load_ms", (g_rbg_t_load - g_bn0.t_load) / rbd); pb_num(1, "rb_rerun_ms", (g_rbg_t_rerun - g_bn0.t_rerun) / rbd);
+    }
     char line[1200];
     snprintf(line, sizeof line, "BENCH %d %s | stage id 0x%x | frames %lld-%lld | rbmed %.2f p99 %.2f over %.2f mean %.2f n %d | norm %.2f n %d | real %.3f rerun %.3f | pre %.3f load %.3f rr %.3f recap %.3f "
              "| rollbacks %lld (k1 %lld k2 %lld k3 %lld k4+ %lld; extra %lld) | first %.3f last %.3f middle %.3f ms, start->poll %.3f, after a test reload %.3f",
@@ -91,22 +122,26 @@ static void bn_segment_end(long long i) {
           LOG("r1: BENCH SUMMARY ONLINE %d stages: online-like work per period with a rollback, mean of medians %.3f ms\n", g_bn_done, o / g_bn_done);
           printf("[bench] BENCH SUMMARY ONLINE %d stages: online-like work per period with a rollback, mean of medians %.3f ms\n", g_bn_done, o / g_bn_done); }
         fflush(stdout);
-        void dm_bench_exit(long long); dm_bench_exit(i);
+        if (pb_on()) pb_start_match();                  /* (0.2.58) the player benchmark: its match without rollbacks next */
+        else { void dm_bench_exit(long long); dm_bench_exit(i); }
     }
 }
 /* rb_rollback.c rbg_step: the safe point of a real pass (frame i) after its tick was counted */
 extern volatile long long g_bot_walkoff_at;            /* rb_net.c */
 static int g_bn_state;                                  /* this match: 0 warm-up, 1 in the segment, 2 the segment is over */
 static void rbg_bench_tick(long long i) {
-    if (!bn_on() || g_bn_done >= g_bn_n) return;
+    if (!bn_on()) return;
+    if (g_pb_state) { pb_tick(i); return; }             /* (0.2.58) the player benchmark after its rollback segment */
+    if (g_bn_done >= g_bn_n) return;
     long long mn = rbn_match_number();
     if (mn != g_bn_match) { g_bn_match = mn; g_bot_walkoff_at = -1; g_bn_state = 0; }
     if (g_bn_state == 2) { void dm_bench_last_stock(void); dm_bench_last_stock(); return; }      /* the segment is over: one stock (again: a load may bring the old count back) */
     long long r = g_rbg_real;
-    if (g_bn_state == 0 && r >= g_bn_warm) { bn_snap(); g_bn_state = 1; int dm_bench_stocks(int); LOG("r1: BENCH segment %d starts after frame %lld (stocks %d / %d)\n", g_bn_done + 1, i, dm_bench_stocks(0), dm_bench_stocks(1)); }
+    if (g_bn_state == 0 && r >= g_bn_warm) { bn_snap(); g_bn_state = 1; if (pb_on()) pb_phase(1); int dm_bench_stocks(int); LOG("r1: BENCH segment %d starts after frame %lld (stocks %d / %d)\n", g_bn_done + 1, i, dm_bench_stocks(0), dm_bench_stocks(1)); }
     else if (g_bn_state == 1 && r >= (long long)g_bn_warm + g_bn_meas) {
         g_bn_state = 2;
         bn_segment_end(i);
+        if (g_pb_state) return;                         /* (0.2.58) the player benchmark: no walk-off, the match goes on */
         g_bot_walkoff_at = i + 10;
         void dm_bench_last_stock(void); dm_bench_last_stock();
     }

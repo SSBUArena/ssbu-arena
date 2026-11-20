@@ -59,6 +59,12 @@ enum { H_STAGE_DRAW, H_STAGE_WAIT, H_PIPE_DRAW, H_PIPE_WAIT, H_N };
 static LONG64 g_hold_n[H_N], g_hold_tk[H_N], g_hold_max;
 static LONG64 g_w_progs, g_w_stages, g_w_pipes, g_pred_made, g_pred_used, g_set_held, g_set_held_tk;
 static void hold_note(int what, LONG64 ticks) { g_hold_n[what]++; g_hold_tk[what] += ticks; if (ticks > g_hold_max) g_hold_max = ticks; }
+/* (0.2.58) perf_bench.c: the holds of the render thread at a draw so far (count, ms, longest ms): the shader / pipeline hitches */
+void nvn_vk_hold_totals(long long *n, double *ms, double *mx) {
+    LARGE_INTEGER fq; QueryPerformanceFrequency(&fq); LONG64 c = 0, t = 0;
+    for (int i = 0; i < H_N; i++) { c += g_hold_n[i]; t += g_hold_tk[i]; }
+    if (n) *n = c; if (ms) *ms = (double)t * 1000.0 / (double)fq.QuadPart; if (mx) *mx = (double)g_hold_max * 1000.0 / (double)fq.QuadPart;
+}
 static int holdlog_on(void) { static int on = -1; if (on < 0) on = getenv("SSBU_VK_HOLDLOG") && atoi(getenv("SSBU_VK_HOLDLOG")); return on; }      /* session 7: a "nvn_vk_hold:" line for every stage / pipeline made at a draw */
 static volatile LONG g_in_fight;
 /* Session 7: the last frame that had compute dispatches. g_in_fight is per frame and some frames of a fight have none (run

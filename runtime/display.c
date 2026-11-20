@@ -870,6 +870,7 @@ static void clock_stat(LONG64 n, LARGE_INTEGER now) {
         (long long)(g_cs_hist[0] - h_last[0]), (long long)(g_cs_hist[1] - h_last[1]), (long long)(g_cs_hist[2] - h_last[2]), (long long)(g_cs_hist[3] - h_last[3]), (long long)(late - late_last), 10);
     t_last = now; sig_last = sig; late_last = late; steps_last = g_cs_steps; memcpy(h_last, g_cs_hist, sizeof h_last);
 }
+static void pb_present(LARGE_INTEGER now);             /* (0.2.58) perf_bench.c (end of this file): the player benchmark, SSBU_BENCH_OUT */
 /* New pacing, part 1 (nvnQueuePresentTexture, after the frame is in the window): decides the refresh that shows it. */
 static void frame_queued(void) {
     static LARGE_INTEGER second_start;
@@ -895,6 +896,7 @@ static void frame_queued(void) {
     InterlockedExchange(&g_latch_pending, iv != 0);
     }
     clock_stat(n, now);
+    pb_present(now);
     {   /* TEST ONLY, SSBU_FRAMELOG=<k>: a line "frame-mark: <n>" every k presented frames, to place log events in game frames */
         static int every = -1;
         if (every < 0) { const char *e = getenv("SSBU_FRAMELOG"); every = e ? atoi(e) : 0; }
@@ -1377,6 +1379,7 @@ void display_pace(void) {
     LONG64 n = InterlockedIncrement64(&g_frames);
     second_frames++;
     clock_stat(n, now);
+    pb_present(now);
     next.QuadPart += g_freq.QuadPart * g_interval / 60;
     /* P3: wait until `next` exactly. Sleep(ms) cut the wait to whole milliseconds and, at the default 15.6 ms timer period,
      * could overshoot by a frame; a frame that came late was then followed by frames shown early (up to 100 ms of debt).
@@ -1467,3 +1470,5 @@ void display_title_note(const char *note) {
     (void)note;
 #endif
 }
+
+#include "perf_bench.c"                                /* (0.2.58) the player benchmark (SSBU_BENCH_OUT): nothing runs without it */
