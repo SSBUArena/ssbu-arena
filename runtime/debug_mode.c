@@ -1099,6 +1099,7 @@ static void match_player_hook(Ctx *c, void *user) {
     {   int online_nex_on(void);                         /* (online-mm A3 prep, SSBU_ONLINE_NEX=1 only) what the game's own Online match builds, for the log */
         if (online_nex_on() && idx >= 0 && idx < 2) {
             if (idx == 0) printf("[online] fight set-up: melee mode (match block + 0) %u, + 1 %u, sequence %08x, builder return %llx\n", rd8(MELEE_INFO), rd8(MELEE_INFO + 1), rd32(GA(0x71053040f0ULL)), (unsigned long long)c->x[30]);
+            if (idx == 0) { void dm_online_clock_newfight(void); dm_online_clock_newfight(); }      /* (0.2.58, SSBU_ONLINE_RB_CLOCK_RESET) */
             if (idx == 0 && getenv("SSBU_ONLINE_SEQ_TRACE")) { hex_lines("[online] RESEARCH match block", MELEE_INFO, 0x100); hex_lines("[online] RESEARCH panel state 1", st, 0x100); hex_lines("[online] RESEARCH screens table 1", GA(0x7105307770ULL), 0x20); hex_lines("[online] RESEARCH screens table 2", GA(0x7105307770ULL) + 0x1c8, 0x20); hex_lines("[online] RESEARCH rule 0", GA(0x710530454cULL) + 0x50, 0x20); hex_lines("[online] RESEARCH rule 1", GA(0x7105309924ULL) + 0x50, 0x20); hex_lines("[online] RESEARCH rule 2", GA(0x710530f49cULL) + 0x50, 0x20); }      /* (0.2.52, research: the rule header) */
             printf("[online] fight set-up: player %d: ui_chara %016llx colour %u type %u controller slot %d profile %d local %u network %u number %u\n", idx + 1, (unsigned long long)rd64(st + 0x88), rd8(st + 0x90), rd32(st + 0x78),
                    (int)rd32(st + 0x210), (int)rd32(st + 0x214), rd8(st + 0x450), rd8(st + 0x451), rd8(st + 0xa4));
@@ -1763,19 +1764,33 @@ static int onl_netskip(void) { static int on = -1; if (on < 0) { const char *e =
 /* (run a3x5: with the netcode not run for the fight's ~33 s, both games' netcode closed the session when it ran again) the clock
  * of the game's fight netcode stops while it is not run: nnsdk.c os_GetSystemTick takes off, for the call sites inside the
  * netcode's code (0x71016cd000 .. 0x71016e0000), the time of the rollback fights so far (SSBU_ONLINE_RB_CLOCK=0: not). */
-static uint64_t g_onl_clk_bias, g_onl_clk_t0;
+static uint64_t g_onl_clk_bias, g_onl_clk_t0; static int g_onl_clk_said;
 static uint64_t onl_qpc_ticks(void) { LARGE_INTEGER now, freq; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&freq); return (uint64_t)((double)now.QuadPart * 19200000.0 / (double)freq.QuadPart); }
 uint64_t dm_online_net_clock_bias(uint64_t lr) {
     if (!g_onl_clk_bias || lr < GA(0x71016cd000ULL) || lr >= GA(0x71016e0000ULL)) return 0;
     static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_RB_CLOCK"); on = !(e && e[0] == '0'); }
-    if (on) { static int said; if (!said++) { printf("[online] A3: the fight netcode's clock: first read after a rollback fight (call site %llx), %.2f s taken off\n", (unsigned long long)lr, (double)g_onl_clk_bias / 19200000.0); fflush(stdout); } }
+    if (on) { if (!g_onl_clk_said++) { printf("[online] A3: the fight netcode's clock: first read after a rollback fight (call site %llx), %.2f s taken off\n", (unsigned long long)lr, (double)g_onl_clk_bias / 19200000.0); fflush(stdout); } }
     return on ? g_onl_clk_bias : 0;
+}
+/* (0.2.58, SSBU_ONLINE_RB_CLOCK_RESET, default 1) the time taken off is given back when the next fight of the game's Online mode is
+ * set up (a Rematch: the waiting-stage fight, then the match). It was kept for good: in the Rematch's match the fight netcode's
+ * lockstep (net object + 0x62 = 3, 0x71016d7e70 .. 0x71016d8004) waits 20 ms + half the largest player latency before its state 4,
+ * and that latency (net object + 0xd730 + 0x3fd8 i, from the game's station table [[[[0x71053390a0] + 0x30]] + 0x40] + 0x18) mixes
+ * the clock with the time taken off and the game's own: the joiner waited the whole first fight again (run b2: 55.3 s in state 3,
+ * the time taken off 55.28 s; the first match 3.7 s from state 4 to ready-go). A new fight set-up starts the fight netcode's
+ * objects again, so nothing of the old match needs the old clock. SSBU_ONLINE_RB_CLOCK_RESET=0: kept for good, as 0.2.57. */
+void dm_online_clock_newfight(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_ONLINE_RB_CLOCK_RESET"); on = !(e && e[0] == '0'); }
+    if (!on || !g_onl_clk_bias || g_onl_fight || g_onl_clk_t0) return;
+    printf("[online] A3: a new fight set-up: the fight netcode's clock gets back the %.2f s taken off for the rollback fights before (SSBU_ONLINE_RB_CLOCK_RESET)\n", (double)g_onl_clk_bias / 19200000.0); fflush(stdout);
+    g_onl_clk_bias = 0; g_onl_clk_said = 0;
 }
 void dm_online_clock(int on) {
     if (on) { g_onl_clk_t0 = onl_qpc_ticks(); return; }
     if (g_onl_clk_t0) { uint64_t d = onl_qpc_ticks() - g_onl_clk_t0; g_onl_clk_bias += d; g_onl_clk_t0 = 0;
         printf("[online] A3: the fight netcode's clock was stopped for %.2f s (%.2f s in all; SSBU_ONLINE_RB_CLOCK)\n", (double)d / 19200000.0, (double)g_onl_clk_bias / 19200000.0); fflush(stdout); }
 }
+static float onl_f32(uint64_t a) { uint32_t u = rd32(a); float f; memcpy(&f, &u, 4); return f; }
 static void net_state_note(const char *when, uint64_t o) {      /* the net object's state changes, for the log */
     static uint32_t last = 0xffffffffu; static int n;
     if (!o) return;
@@ -1784,6 +1799,8 @@ static void net_state_note(const char *when, uint64_t o) {      /* the net objec
     uint64_t ctl = sr64(GA(0x71052c40f0ULL)); long long rbn_now(void);
     if (n++ < 60) { printf("[online] A3: net object %s: state + 0x62 %u, end + 0x63 %u reason + 0x64 %04x (was %08x); frames + 2 %u + 4 %u; controls + 8 %d masks %02x %02x %02x; rollback fight %d\n", when, v & 255, v >> 8 & 255, v >> 16, last,
                         rd16(o + 2), rd16(o + 4), ctl ? (int)rd32(ctl + 8) : -1, ctl ? rd8(ctl + 0xc) : 0, ctl ? rd8(ctl + 0xd) : 0, ctl ? rd8(ctl + 0xe) : 0, g_onl_fight); fflush(stdout); }
+    if ((v & 255) == 3 && (last & 255) != 3 && n < 60) {      /* (0.2.58) the lockstep's wait before state 4: 20 ms + half the largest latency (ms) */
+        printf("[online] A3: net object: lockstep wait %u ms (latencies ms: %.1f %.1f); clock taken off now %.2f s\n", rd16(o + 0x1a), (double)onl_f32(o + 0xd730), (double)onl_f32(o + 0xd730 + 0x3fd8), (double)g_onl_clk_bias / 19200000.0); fflush(stdout); }
     last = v;
 }
 static void net_pre_hook(Ctx *c, void *user) { (void)user; if (onl_netskip()) { g_onl_netskip[0]++; return; } uint64_t o = c->x[0]; g_orig_net_upd[0](c); net_state_note("after its update before the frame", o); }
