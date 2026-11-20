@@ -175,8 +175,10 @@ static char g_ticket[320];
  * own Online select / results panel (SSBU_ONLINE_ELO_UI, rb_nex --elo-records 1); a 0.2.53 game never meets a 0.2.54 one (another
  * exe: another game code), min_client_level = 7 tells it to update. Ranked stays open from 6 (rk_native_min_level).
  * 8 (0.2.57): the menu step's UI folders arena_elo_text / arena_rank_emblems out of the mod set (another build id "+m..." than
- * 0.2.56, and another game code): a 0.2.56 game never meets a 0.2.57 one, min_client_level = 8 tells it to update. */
-#define NET_CLIENT_LEVEL 8
+ * 0.2.56, and another game code): a 0.2.56 game never meets a 0.2.57 one, min_client_level = 8 tells it to update.
+ * 9 (0.2.58, room_mastery.c): a room's rollback match sends RESULT ("RM" | match id) for the mastery points of Online Rooms and Squad
+ * Strike (the lobby's rm_min_level: rooms between games below it earn nothing; nothing else changes for them). */
+#define NET_CLIENT_LEVEL 9
 /* (0.2.37) SSBU_ONLINE_TICKET_FILE: a file the launcher writes again with a fresh ticket while the game runs (its pass is short);
  * read again when it changes (every 5 s at most) and sent at once with the same nonce: the lobby takes it as a renewal */
 static char g_ticket_file[MAX_PATH];
@@ -1160,26 +1162,35 @@ static void mm_send(int op) {                           /* (client thread) */
  * once per verdict and elo kind. An older lobby answers nothing: the game just stops after 30 s. NET_CLIENT_LEVEL 6 tells the
  * lobby this game sends it (rk_native_min_level). */
 static SRWLOCK g_rk_lock = SRWLOCK_INIT;
-static uint8_t g_rk_body[61]; static uint64_t g_rk_gid, g_rk_t0, g_rk_tx; static volatile LONG g_rk_on;
+static uint8_t g_rk_body[192]; static int g_rk_len = 61; static uint64_t g_rk_gid, g_rk_t0, g_rk_tx; static volatile LONG g_rk_on;      /* (0.2.58) up to 192 bytes: a room's RESULT (room_mastery.c) */
 static uint64_t g_rk_shown_gid; static int g_rk_shown_key = -1;
 void online_elo_verdict(uint64_t gid, int v, int winner, int reason, const char *text, const uint8_t *el, int el_n);      /* online_elo.c */
 void net_ranked_result(const uint8_t body[61], uint64_t gid) {
     AcquireSRWLockExclusive(&g_rk_lock);
-    memcpy(g_rk_body, body, 61); g_rk_gid = gid; g_rk_t0 = 0; g_rk_tx = 0;
+    memcpy(g_rk_body, body, 61); g_rk_len = 61; g_rk_gid = gid; g_rk_t0 = 0; g_rk_tx = 0;
+    ReleaseSRWLockExclusive(&g_rk_lock);
+    InterlockedExchange(&g_rk_on, 1);
+}
+/* (0.2.58, room_mastery.c SSBU_ROOM_MASTERY) a room match's RESULT: the same 61 bytes + our "RX" extension (n bytes in all), game id
+ * "RM" | match id; sent the same way (every second until a final VERDICT, 30 s at most). One match at a time: it takes the slot. */
+void net_room_result(const uint8_t *body, int n, uint64_t gid) {
+    if (n < 61 || n > (int)sizeof g_rk_body) return;
+    AcquireSRWLockExclusive(&g_rk_lock);
+    memcpy(g_rk_body, body, (size_t)n); g_rk_len = n; g_rk_gid = gid; g_rk_t0 = 0; g_rk_tx = 0;
     ReleaseSRWLockExclusive(&g_rk_lock);
     InterlockedExchange(&g_rk_on, 1);
 }
 static void rk_tick(uint64_t t) {                       /* (client thread, joined) */
     if (!g_rk_on) return;
-    uint8_t p[4 + 8 + 61];
+    uint8_t p[4 + 8 + sizeof g_rk_body]; int len = 0;
     AcquireSRWLockExclusive(&g_rk_lock);
     if (!g_rk_t0) g_rk_t0 = t;
     int stop = t - g_rk_t0 > 30000, due = t - g_rk_tx >= 1000;
-    if (due && !stop) { hdr(p, T_RESULT); s64(p + 4, g_cookie); memcpy(p + 12, g_rk_body, 61); g_rk_tx = t; }
+    if (due && !stop) { hdr(p, T_RESULT); s64(p + 4, g_cookie); memcpy(p + 12, g_rk_body, (size_t)g_rk_len); len = 12 + g_rk_len; g_rk_tx = t; }
     uint64_t gid = g_rk_gid;
     ReleaseSRWLockExclusive(&g_rk_lock);
-    if (stop) { InterlockedExchange(&g_rk_on, 0); say("ranked: no verdict from the lobby for match %08x in 30 s (an older lobby?)", (unsigned)gid); return; }
-    if (due) tx(p, (int)sizeof p, &g_lobby);
+    if (stop) { InterlockedExchange(&g_rk_on, 0); say("%s: no verdict from the lobby for match %08x in 30 s (an older lobby?)", (gid >> 48) == 0x524D ? "room mastery" : "ranked", (unsigned)gid); return; }
+    if (due && len) tx(p, len, &g_lobby);
 }
 static void rk_verdict(const uint8_t *b, int n) {      /* (client thread) a VERDICT body: id u64, version, verdict, winner, reason, text[64], "EL" block */
     uint64_t gid = g64(b); int v = b[9], w = b[10], why = b[11];

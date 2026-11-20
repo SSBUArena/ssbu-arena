@@ -2316,7 +2316,65 @@ static void mastery_shot(int which, int age_ms) {     /* (TEST) SSBU_SHOT_MASTER
 /* (22/11, SSBU_MASTERY_END=1, the default) the mastery points of the match just played: a small notice at the top left for 5 s in
  * the Arena menu's own look (the quick menu's slanted bars, its Barlow title font, the Arena mark, the accent colour): it slides in,
  * "MASTERY", the fighter and the points earned, the new total, and a line why only when the points were reduced. */
+/* (0.2.58, Squad Strike in a room: room_mastery.c / online_mastery_room) the same notice with ONE LINE PER FIGHTER that fought: the
+ * fighter, its points of this match and its new total; the line why below when the points were reduced (the side's flags). */
+static void mastery_toast_lines(const MasteryCard &c) {
+    ImGuiIO &io = ImGui::GetIO();
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    float H = io.DisplaySize.y, fs = ImGui::GetFontSize();
+    float in = c.age_ms < 260 ? (float)c.age_ms / 260.0f : 1.0f; in = 1 - (1 - in) * (1 - in);
+    float a = c.age_ms > c.life_ms - 450 ? (float)(c.life_ms - c.age_ms) / 450.0f : 1.0f;
+    if (a < 0) a = 0;
+    int nl = c.nl > 5 ? 5 : c.nl;
+    unsigned fl = 0; for (int i = 0; i < nl; i++) fl |= c.ln[i].flags & ~1u;
+    char why[96] = "";
+    if (fl & 32) snprintf(why, sizeof why, "You left the match: no points");
+    else if (fl & 128) snprintf(why, sizeof why, "Your game sent no result: no points");
+    else if (fl & 2) snprintf(why, sizeof why, "5 matches with this player today: no points");
+    else if (fl & 16) snprintf(why, sizeof why, "Base points only");
+    else if (fl & 8) snprintf(why, sizeof why, "Daily limit reached: 25%%");
+    else if (fl & 4) snprintf(why, sizeof why, "Same network: 25%%");
+    ImFont *tf = g_font_title;
+    float th = fs * 0.95f, nh = fs * 1.15f, bh = fs * 0.8f, wh = fs * 0.78f, gap = fs * 0.7f;
+    char plus[5][24], tot[5][32]; ImVec2 sn[5], sp[5], st[5]; float wn = 0, wp = 0, wt = 0;
+    for (int i = 0; i < nl; i++) {
+        snprintf(plus[i], sizeof plus[i], "+%u", c.ln[i].points);
+        char g[24]; ms_group(g, sizeof g, c.ln[i].after); snprintf(tot[i], sizeof tot[i], "%s", g);
+        sn[i] = tf ? tf->CalcTextSizeA(nh, FLT_MAX, 0, c.ln[i].name) : ImGui::CalcTextSize(c.ln[i].name);
+        sp[i] = tf ? tf->CalcTextSizeA(nh, FLT_MAX, 0, plus[i]) : ImGui::CalcTextSize(plus[i]);
+        st[i] = ImGui::GetFont()->CalcTextSizeA(bh, FLT_MAX, 0, tot[i]);
+        if (sn[i].x > wn) wn = sn[i].x; if (sp[i].x > wp) wp = sp[i].x; if (st[i].x > wt) wt = st[i].x;
+    }
+    ImVec2 swhy = ImGui::GetFont()->CalcTextSizeA(wh, FLT_MAX, 0, why);
+    float pad = fs * 0.9f, inner = wn + gap + wp + gap + wt;
+    if (why[0] && swhy.x > inner) inner = swhy.x;
+    float rowh = nh + fs * 0.12f;
+    float w = inner + pad * 2 + fs * 0.6f, h = pad * 0.6f + th + fs * 0.15f + rowh * (float)nl + (why[0] ? fs * 0.2f + swhy.y : 0) + pad * 0.6f;
+    float skew = fs * 0.7f, x0 = H * 0.03f - (w + skew + H * 0.03f) * (1 - in), y0 = H * 0.03f;
+    ImU32 bg = ImGui::GetColorU32(hexc(0x111B28, 0.93f * a)), acc = ImGui::GetColorU32(hexc(AR_ACCENT, a));
+    q_bar(dl, ImVec2(x0, y0), ImVec2(x0 + w, y0 + h), skew, bg);
+    q_bar(dl, ImVec2(x0 - fs * 0.05f, y0), ImVec2(x0 + fs * 0.35f, y0 + h), skew, acc);
+    float x = x0 + skew + pad, y = y0 + pad * 0.6f;
+    arena_mark(dl, x, y + th * 0.08f, th * 0.86f, acc);
+    q_text(dl, tf, th, ImVec2(x + th * 1.25f, y), acc, "MASTERY");
+    y += th + fs * 0.15f;
+    for (int i = 0; i < nl; i++) {
+        q_text(dl, tf, nh, ImVec2(x, y), ImGui::GetColorU32(hexc(AR_TEXT, a)), c.ln[i].name);
+        q_text(dl, tf, nh, ImVec2(x + wn + gap, y), ImGui::GetColorU32(hexc(c.ln[i].points ? 0x3DDC97 : AR_MUTED, a)), plus[i]);
+        dl->AddText(ImGui::GetFont(), bh, ImVec2(x + wn + gap + wp + gap, y + (sn[i].y - st[i].y) * 0.5f), ImGui::GetColorU32(hexc(AR_TEXT, 0.8f * a)), tot[i]);
+        y += rowh;
+    }
+    if (why[0]) dl->AddText(ImGui::GetFont(), wh, ImVec2(x, y + fs * 0.2f), ImGui::GetColorU32(hexc(AR_MUTED, a)), why);
+    if (!InterlockedExchange(&g_ms_drawn, 1)) {
+        printf("menu: mastery notice drawn (presented frame %lld): %d fighters:", g_frame, nl);
+        for (int i = 0; i < nl; i++) printf(" %s +%u (%u)", c.ln[i].name, c.ln[i].points, c.ln[i].after);
+        printf("\n"); fflush(stdout);
+    }
+    {   static int sw = -1, done; if (sw < 0) { const char *e = getenv("SSBU_SHOT_MASTERY"); sw = e && e[0] == '1'; }      /* (TEST) */
+        if (sw && !done && c.age_ms >= 900) { done = 1; test_shot("mastery_toast_squad"); printf("menu: picture of the mastery notice, one line per fighter (SSBU_SHOT_MASTERY)\n"); fflush(stdout); } }
+}
 static void mastery_toast(const MasteryCard &c) {
+    if (c.nl > 1) { mastery_toast_lines(c); return; }      /* (0.2.58) Squad Strike: a line per fighter */
     ImGuiIO &io = ImGui::GetIO();
     ImDrawList *dl = ImGui::GetForegroundDrawList();
     float H = io.DisplaySize.y, fs = ImGui::GetFontSize();
@@ -2327,6 +2385,7 @@ static void mastery_toast(const MasteryCard &c) {
     snprintf(plus, sizeof plus, "+%u", c.points);
     { char g[24]; ms_group(g, sizeof g, c.after); snprintf(tot, sizeof tot, "%s points", g); }
     if (c.flags & 32) snprintf(why, sizeof why, "You left the match: no points");
+    else if (c.flags & 128) snprintf(why, sizeof why, "Your game sent no result: no points");      /* (0.2.58, a room match) */
     else if (c.flags & 64) snprintf(why, sizeof why, "Fighter not recognised: no points");
     else if (c.flags & 2) snprintf(why, sizeof why, "5 matches with this player today: no points");
     else if (c.flags & 16) snprintf(why, sizeof why, "Base points only");
