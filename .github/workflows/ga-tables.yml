@@ -1,0 +1,22 @@
+# Every game address the runtime names has a 13.0.5 and a 13.0.2 entry in runtime/hostrt.c (tools/port/ga_check.py, docs/VERSIONS.md).
+# A missing one stops the game on those builds at the place it is first used (issue #10). Only the sources are read: no dump, no game files.
+name: GA tables
+
+on:
+  push:
+    paths: ['runtime/**', 'fighter_sdk/**', 'tools/port/**', '.github/workflows/ga-tables.yml']
+  pull_request:
+    paths: ['runtime/**', 'fighter_sdk/**', 'tools/port/**', '.github/workflows/ga-tables.yml']
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Game addresses against the 13.0.5 / 13.0.2 tables
+        run: python tools/port/ga_check.py

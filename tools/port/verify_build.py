@@ -73,11 +73,32 @@ RAW = {0x0: 'the image base',
        0x1a1dbf0: 'the amiibo panel hooks', 0x1a1fa30: 'the amiibo panel hooks',
        0x52c41b0: 'through ga() itself (rb_net.c declares it and does not include hostrt.h, where GA() is)',
        0x22df110: 'g_rbg_skipf_def (rb_rollback.c): a string, GA() where it is read', 0x22dec30: 'g_rbg_skipf_def', 0x22dc3d0: 'g_rbg_skipf_def', 0x1357e20: 'g_rbg_skipf_def', 0x1358ef0: 'g_rbg_skipf_def', 0x375ea70: 'g_rbg_skipf_def',
-       0x80000000: 'a free host range for a test stack (rb_rollback.c, SSBU_RB_NET_TEST_STK), not an address of the image'}
+       0x80000000: 'a free host range for a test stack (rb_rollback.c, SSBU_RB_NET_TEST_STK), not an address of the image',
+       # (issue #10) arrays and #defines of addresses, GA() where they are used
+       0x16acd80: 'k_oe_ph[] (online_elo.c): GA() where the array is used', 0x16acff0: 'k_oe_ph[]', 0x16ad190: 'k_oe_ph[]', 0x16adb80: 'k_oe_ph[]', 0x16adf70: 'k_oe_ph[]',
+       0x1a1c070: 'k_ms_set[] (online_mastery.c): GA() where the array is used', 0x1a1b4a0: 'k_ms_set[]', 0x1a1ba90: 'k_ms_set[]', 0x1a1be30: 'k_ms_set[]', 0x1a1c140: 'k_ms_set[]',
+       0x1a292d8: 'MP_FROM_ROW1_BUILD (online_mastery.c): GA() where it is used', 0x1a29334: 'MP_FROM_ROW2_BUILD', 0x1a19c48: 'MP_FROM_ROW0_CURSOR',
+       0x23675c0: 'k_onl_states[] (competitive.c): GA() where the array is used', 0x2367780: 'k_onl_states[]', 0x2367d00: 'k_onl_states[]', 0x2367d90: 'k_onl_states[]',
+       0x2368280: 'k_onl_states[]', 0x2368e60: 'k_onl_states[]', 0x2368f10: 'k_onl_states[]', 0x2368fe0: 'k_onl_states[]', 0x2369620: 'k_onl_states[]',
+       0x236a200: 'k_onl_states[]', 0x236a460: 'k_onl_states[]', 0x236a4d0: 'k_onl_states[]', 0x236a590: 'k_onl_states[]',
+       0x3776090: 'k_lyt_fns[] (debug_mode.c): GA() where the array is used', 0x3776360: 'k_lyt_fns[]', 0x3777d50: 'k_lyt_fns[]', 0x3779b70: 'k_lyt_fns[]',
+       0x3777b30: 'k_lyt_fns[]', 0x37781b0: 'k_lyt_fns[]',
+       0x42b2d67: 'parts[] (online_mastery.c SSBU_MASTERY_PROBE): GA() where the array is used', 0x436acbd: 'parts[]', 0x4328a08: 'parts[]',
+       0x50a0070: 'GA(q ? ... : ...) (r1_state.c JOBTREE log): GA() of the chosen one', 0x50b5268: 'GA(q ? ... : ...) (r1_state.c)',
+       0x368ab70: 'rc_units[] (rc_test.c): a study tool of -DR1_RDCOUNT builds, 13.0.4 only (ga_check.py ONLY_1304)', 0x36906b0: 'rc_units[]',
+       0x389a390: 'rc_units[]', 0x38d70f0: 'rc_units[]'}
 
 # data addresses that are the bounds of a range, not of an object (no code forms them): only the one-page rule is checked
 BOUNDS = {0x5000000: 'lower bound of the graphics descriptor range (r1_ring.c sd_clear), inside data / bss',
-          0x5400000: 'upper bound of the graphics descriptor range (r1_ring.c sd_clear), inside data / bss'}
+          0x5400000: 'upper bound of the graphics descriptor range (r1_ring.c sd_clear), inside data / bss',
+          # (issue #10) data inside objects that no code forms: only the one-page rule is checked
+          0x530454c: 'k_rules[] (competitive.c, also debug_mode.c logs): bytes inside the rules objects',
+          0x5309924: 'k_rules[]', 0x530f49c: 'k_rules[]',
+          0x52381b0: "the global generators (rb_rollback.c SSBU_RB_GENLOG): formed once by 13.0.4's code and once by each build's at +0x1000; "
+                     "13.0.4's own address is another object in those builds (5 references in each)"}
+# table entries that no source names but that a player's list may (GA() of SSBU_RB_SKIPF entries, rb_rollback.c)
+KEPT = {0x1357e20: 'in the 0.2.58 SKIPF list (SSBU_RB_SKIPF), off by default since 0.2.59',
+        0x22dec30: 'in the SKIPF list before rb-ms and in 0.2.58 (SSBU_RB_SKIPF), off by default since 0.2.59'}
 
 
 class Elf:
@@ -246,9 +267,9 @@ def main(argv=None):
     wrapped, raw = source_addresses()
     for a, where in sorted(raw.items()):
         report(a in RAW, '0x71%08x not passed through GA() (%s): %s' % (a, ', '.join(where[:3]), RAW.get(a, 'NOT EXPLAINED')))
-    names = set(wrapped) | {a for a in raw if a in table}
+    names = set(wrapped) | {a for a in raw if a in table or a in ro_table}
     for a in sorted((set(table) | set(ro_table)) - names):
-        report(False, 'table entry 0x71%08x is not used by any source' % a)
+        report(a in KEPT, 'table entry 0x71%08x is not used by any source%s' % (a, ': kept, ' + KEPT[a] if a in KEPT else ''))
     refs = adrp_targets(e, text[2])
     for old in sorted(names):
         where = ', '.join((wrapped.get(old) or raw.get(old))[:2])

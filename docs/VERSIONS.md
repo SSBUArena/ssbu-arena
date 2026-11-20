@@ -128,6 +128,10 @@ often at its new address than at its old one. It also checks the one-page rule a
 `0x71xxxxxxxx` literal in code bypasses `GA()` without a stated reason. On the author's dump it reports
 `all checks passed` (46 code and data addresses, 3 segment checks, 7 literals that are not addresses of things that move);
 on a 13.0.5 dump on 2026-11-09, after the additions since: `all checks passed` (210 checks); on a 13.0.2 dump on 2026-11-09 with `--ref`: `all checks passed` (234 checks).
+On 2026-11-20 (issue #10: 0.2.51 .. 0.2.59 stopped every 13.0.5 / 13.0.2 game at start on two code addresses added after
+the tables, and 81 more had no entry) with `--ref` on both dumps: `all checks passed` (375 checks on 13.0.5, 378 on 13.0.2).
+Without the decompilation's list, the 13.0.4 `main.elf`'s own unwind table can stand in for `<functions.csv>` (a CSV with
+`Address,Size` of each of its functions): the neighbour check is the same.
 
 ## Adding a game address
 
@@ -136,6 +140,12 @@ Write the 13.0.4 address and wrap it: `GA(0x71xxxxxxxxull)`. If it is in code, r
 add its 13.0.5 counterpart to `g_code_13_0_5` (sorted) and run the check above; likewise `g_code_13_0_2` with a 13.0.2
 dump (a 13.0.2 address missing from it is still looked for by its fingerprint). An address only known on 13.0.5 cannot be written this way; find its
 13.0.4 counterpart with the same method, or say so in the pull request.
+
+`python tools/port/ga_check.py` (no dump needed; CI `GA tables` and `scripts/arena_release.py` run it) fails when a code
+address the sources name (with `GA()` or in an array GA()'d where it is used) is missing from `g_code_13_0_5` or
+`g_code_13_0_2`, a read-only data address from `g_ro_13_0_2`, or a literal bypasses `GA()` without a reason in
+`verify_build.py` `RAW`. A feature that is deliberately 13.0.4-only (its code checks `g_game_build` and stays off) is
+listed in `ga_check.py` `ONLY_1304` with that reason instead.
 
 ## Not covered
 

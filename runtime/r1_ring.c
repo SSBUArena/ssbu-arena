@@ -2045,7 +2045,7 @@ void r1_unstick(double spun_ms, uint64_t lr, Ctx *c) {
          * the queue whose wake-up was lost gets its worker. In the submission loop (lr 710384f4c8) the log gives the two counters
          * main compares (x22 -> submitted, x21 -> done, f_710384f460): equal again after the wake = it was a lost wake-up. */
         static int u2 = -1; if (u2 < 0) { const char *e = getenv("SSBU_RB_UNSTICK2"); u2 = !(e && e[0] == '0'); }
-        uint64_t sub = 0, done = 0; int sp = lr == 0x710384f4c8ull && c;
+        uint64_t sub = 0, done = 0; int sp = lr == GA(0x710384f4c8ull) && c;
         if (sp) { sub = us_rd64(c->x[22]); done = us_rd64(c->x[21]); }
         if (u2 && spun_ms >= 1000) {
             int os_r1_wake_waits_from(uint64_t lr); int os_r1_wake_cv_waits(int mode);

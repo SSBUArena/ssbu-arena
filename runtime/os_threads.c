@@ -500,7 +500,8 @@ static void os_YieldThread(Ctx *c) {
     ULONGLONG now = GetTickCount64();
     if (c->x[30] != y_lr || now - y_last > 20) { y_lr = c->x[30]; y_t0 = now; y_done = 0; }      /* a new streak of yields from one place */
     y_last = now;
-    if (c->x[30] == 0x710384f4c8ull) g_sub_obj = c->x[19];
+    static uint64_t sub_lr; if (!sub_lr && g_game_build >= 0) sub_lr = GA(0x710384f4c8ull);      /* (issue #10: was a raw 13.0.4 address, never met on 13.0.2 / 13.0.5) */
+    if (c->x[30] == sub_lr) g_sub_obj = c->x[19];
     if (now - y_t0 >= 50 && (!y_done || now - y_done >= 1000)) { y_done = now; r1_unstick((double)(now - y_t0), y_lr, c); }      /* (and again each second while it lasts) */
     SwitchToThread();
 }

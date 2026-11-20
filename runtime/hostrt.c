@@ -25,7 +25,8 @@
  * do, and each read-only data address is in g_ro_13_0_2; code moved by different amounts in different places (13.0.5 changed a handful of
  * functions), so a code address must be in g_code_13_0_5, where each entry was found and checked as docs/VERSIONS.md says
  * (tools/port/verify_build.py repeats the check on a dump; g_code_13_0_2 likewise). A code address missing from it stops the program: calling the
- * wrong function silently would be worse. */
+ * wrong function silently would be worse. tools/port/ga_check.py (CI, arena_release.py) fails when a code address the sources name is missing
+ * from either table (issue #10: 0.2.51 .. 0.2.59 stopped 13.0.5 and 13.0.2 games at start on addresses added after the tables). */
 int g_game_build = -1;                               /* set by load_layout */
 MainLayout g_main;
 static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets from GUEST_BASE, sorted by the first */
@@ -38,7 +39,10 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x07f870, 0x07f870},     /* the HUD font job (r1_state.c SSBU_RB_FONTWAIT); found on the 13.0.5 dump */
     {0x081980, 0x081980},       /* allocation site, caller of a 1.4 MB block (rb_learned.c, the presentation pool) */
     {0x0a3fd8, 0x0a3fd8},       /* allocation site, caller of an 8 MB block (rb_learned.c) */
+    {0xba850, 0xba850},     /* Pia name resolve (nnonline.c, SSBU_ONLINE_NEX); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x138534, 0x138534},       /* clock read return address (nnsdk.c, fixed seed) */
+    {0x1becd0, 0x1becd0},   /* NEX inet from name (nnonline.c, SSBU_ONLINE_NEX); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x249190, 0x249190},   /* NEX login job (nnonline.c, SSBU_ONLINE_NEX); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x2c55e0, 0x2c55e0},       /* nninitStartup */
     {0x2c5620, 0x2c5620},       /* nnMain */
     {0x45b940, 0x45b940},     /* replay clear-all (fighter_host.c); found on the 13.0.5 dump */
@@ -50,29 +54,70 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x1358ef0, 0x1358ef0},     /* skipped in re-run passes (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11); found on the dump by its masked code (128 / 128 / 32 words) */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
     {0x14d8620, 0x14d8620}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x14d8964, 0x14d8964}, /* fight set-up: station check call site (debug_mode.c, Online A3); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x14e58f0, 0x14e58f0},     /* battle builder (competitive.c), starts */
+    {0x1518820, 0x1518820}, /* result handler's reward (debug_mode.c, Online); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x1519430, 0x1519430},     /* hook self-test function (hook_host.c) */
     {0x157c100, 0x157c100},     /* squad init (debug_mode.c); found on the 13.0.5 dump */
     {0x1589830, 0x1589830},     /* squad step (debug_mode.c); found on the 13.0.5 dump */
     {0x158a360, 0x158a360},     /* squad hook 4 (debug_mode.c); found on the 13.0.5 dump */
+    {0x1685520, 0x1685520}, /* step counter call (competitive.c); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x1685cb0, 0x1685cb0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x1698160, 0x1698160}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x16acd80, 0x16acbe0}, /* result phase 0 (online_elo.c, SSBU_ONLINE_ELO_TRACE=2); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x16acff0, 0x16ace50}, /* result phase 1 (online_elo.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x16ad190, 0x16acff0}, /* result phase 2 (online_elo.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x16adb80, 0x16ad9e0}, /* result phase 3 (online_elo.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x16adf70, 0x16addd0}, /* result phase 4 (online_elo.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x16ccae0, 0x16cc940},     /* input delay of a local-wireless match (ldn_online.inc), starts; 400 bytes in both */
+    {0x16cd000, 0x16cce60}, /* fight netcode's clock reads, start of the range (debug_mode.c, SSBU_ONLINE_RB_CLOCK); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x16ce960, 0x16ce7c0}, /* fight netcode's end (debug_mode.c, Online A3); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x16d5ff0, 0x16d5e50}, /* fight netcode (debug_mode.c, Online A3); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x16d78d0, 0x16d7730}, /* fight netcode (debug_mode.c, Online A3); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x16e0000, 0x16dfe60}, /* fight netcode's clock reads, end of the range (debug_mode.c), inside a function; 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x16ea430, 0x16ea290}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x17547f0, 0x1754650}, /* controls object's queue (debug_mode.c, Online A3); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1754990, 0x17547f0}, /* controls object's queue pop (debug_mode.c, Online A3); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1754d80, 0x1754be0}, /* controller slot set (debug_mode.c, Online A3); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1755300, 0x1755160}, /* controls object (debug_mode.c, Online A3); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x177aac8, 0x177a928}, /* stage set-up's wall clock read (nntime.c, SSBU_RB_FIXCLOCK); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x1780440, 0x17802a0},     /* match controls set-up (debug_mode.c, room rollback: each player's own controls; 63 / 63 words) */
     {0x1788260, 0x17880c0},     /* player record builder (debug_mode.c) */
     {0x17911dc, 0x17910fc},     /* return address of the room's waiting-stage record build (debug_mode.c; 43 / 43 words) */
     {0x179d0a0, 0x179d060},     /* the game's clear of the squad table (debug_mode.c); found on the 13.0.5 dump */
     {0x179e440, 0x179e400},     /* select screen table entry copy (debug_mode.c, R3 online: player 2's panel) */
+    {0x179eb70, 0x179eb30}, /* station check (debug_mode.c, Online A3); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x17a55e0, 0x17a55a0}, /* rating update (online_elo.c, SSBU_ONLINE_ELO_UI); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x17d14c0, 0x17d1480}, /* rating shown (online_elo.c, SSBU_ONLINE_ELO_UI); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x17df5f0, 0x17df5b0},     /* path sub-builder (newmodule_host.c) */
     {0x17dfe50, 0x17dfe10},     /* path sub-builder 2 (newmodule_host.c) */
     {0x17e4790, 0x17e4750}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x17e4940, 0x17e4900}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x197c2f0, 0x197c2f0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x197d5f0, 0x197d5f0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x1a19c48, 0x1a19c48}, /* select panel, row 1 call site (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a19cf4, 0x1a19cf4}, /* select panel icon call site (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1b4a0, 0x1a1b4a0}, /* select panel number setter (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1ba90, 0x1a1ba90}, /* select panel number setter (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1bc20, 0x1a1bc20}, /* select panel icon (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1be30, 0x1a1be30}, /* select panel number setter (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1c070, 0x1a1c070}, /* select panel number setter (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1c140, 0x1a1c140}, /* select panel number setter (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a292d8, 0x1a292d8}, /* select panel build, row 2 call site (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a292ec, 0x1a292ec}, /* select panel build icon call site (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a29334, 0x1a29334}, /* select panel build, row 3 call site (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1a29350, 0x1a29350}, /* select panel build call site (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x1af97f0, 0x1af97f0},     /* PalletMenu layout controller (competitive.c comp_pallet_ready, and a function pointer comp_pallet checks), starts */
     {0x1af9ee0, 0x1af9ee0},     /* the other function pointer comp_pallet checks (competitive.c), starts */
+    {0x1bccfc0, 0x1bccfc0}, /* waiting room's plate layout (debug_mode.c, Online); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x1bef020, 0x1bef020},     /* the Lua C function behind prg_func.open_pallet (competitive.c comp_open_local), starts */
+    {0x1d5ae14, 0x1d5ae14}, /* results panel call site (online_elo.c); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5b130, 0x1d5b130}, /* results panel number call site (online_mastery.c); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5b1dc, 0x1d5b1dc}, /* results panel number call site (online_mastery.c); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5f0c4, 0x1d5f0c4}, /* results panel number call site (online_mastery.c); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5f120, 0x1d5f120}, /* results panel number call site (online_mastery.c); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5f1c4, 0x1d5f1c4}, /* results panel number call site (online_mastery.c); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5f220, 0x1d5f220}, /* results panel number call site (online_mastery.c); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x1ea04d0, 0x1ea04d0},     /* formatter (newmodule_host.c) */
     {0x22b67d4, 0x22b67d4},     /* worker return address (newmodule_host.c) */
     {0x22b6f60, 0x22b6f60}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
@@ -90,6 +135,22 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x233de20, 0x233e270}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x2349480, 0x23498d0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
     {0x235cbf0, 0x235d040},     /* scene dispatcher (competitive.c), starts; 25,696 bytes in 13.0.5 */
+    {0x2363970, 0x2363dc0}, /* sequence step (competitive.c, SSBU_QUICK_NATIVE_WATCH=2); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x23675c0, 0x2367a10}, /* Online scene's state 0 (competitive.c, native Online MM); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x2367780, 0x2367bd0}, /* Online scene's state 1 (competitive.c, SSBU_ONLINE_SEQ_TRACE); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x2367d00, 0x2368150}, /* Online scene's state 2 (competitive.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x2367d90, 0x23681e0}, /* Online scene's state 3, Quickplay's first screen (competitive.c SSBU_ONLINE_SOLO); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x2368280, 0x23686d0}, /* Online scene's state 4 (competitive.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x2368e60, 0x23692b0}, /* Online scene's state 5 (competitive.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x2368f10, 0x2369360}, /* Online scene's state 6 (competitive.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x2368fe0, 0x2369430}, /* Online scene's state 7 (competitive.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x2369620, 0x2369a70}, /* Online scene's state 8 (competitive.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x236a200, 0x236a650}, /* Online scene's state 9 (competitive.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x236a460, 0x236a8b0}, /* Online scene's state 10 (competitive.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x236a4d0, 0x236a920}, /* Online scene's state 11 (competitive.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x236a590, 0x236a9e0}, /* Online scene's state 12 (competitive.c, trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x26aee28, 0x26af2b8}, /* Smashville's wall clock read (nntime.c, SSBU_RB_FIXCLOCK); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x26b3980, 0x26b3e10}, /* Smashville's villager fill (rb_rollback.c, SSBU_RB_LIGHTVILL); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x32384c0, 0x3238a70}, /* fighter picture path (newmodule_host.c) */
     {0x3261d60, 0x3262310}, /* name_id getter (newmodule_host.c) */
     {0x353e330, 0x353e8e0},     /* path -> file index (newmodule_host.c) */
@@ -102,6 +163,7 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x35456d8, 0x3545c88},     /* and the end of its range (loose_files.c) */
     {0x3548240, 0x35487f0}, /* job runner (r1_ring.c, profile 2) */
     {0x3549170, 0x3549720}, /* worker kick 2 (r1_state.c) */
+    {0x3549620, 0x3549bd0}, /* job worker pool init (os_threads.c, SSBU_JOB_WORKERS); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x354a5ac, 0x354ab5c},     /* task workers' idle wait, a return address (r1_ring.c); the 17 lifted starts around it at +0x5b0 */
     {0x354c720, 0x354ccd0}, /* worker kick (r1_state.c) */
     {0x3559e08, 0x355a3b8},     /* allocation site of an 8 MB block (rb_learned.c) */
@@ -131,7 +193,9 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x36f6070, 0x36f6620},     /* movie audio output Flush (nnmovie_mf.c), 0x114 bytes, the same in both */
     {0x36f7410, 0x36f79c0}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x3724a80, 0x3725030}, /* task tree walker (r1_ring.c, profile 2) */
+    {0x3725c90, 0x3726240}, /* scene change a (competitive.c, SSBU_QUICK_NATIVE_WATCH); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x3726120, 0x37266d0}, /* Battle Arena squad (debug_mode.c), found by its fingerprint on a 13.0.5 dump (2026-11-09) */
+    {0x3726540, 0x3726af0}, /* scene end (competitive.c, SSBU_QUICK_NATIVE_WATCH=4); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x3747270, 0x3747820}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x3747b10, 0x37480c0},     /* main loop: return address of the Lua collector step (rb_rollback.c); found on the 13.0.5 dump */
     {0x3747b7c, 0x374812c}, /* render loop call site (r1_state.c) */
@@ -147,13 +211,27 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x374e000, 0x374e5b0}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x375ea70, 0x375f020}, /* input dispatch (r1_ring.c, profile 2; also skipped in re-run passes: rb_rollback.c g_rbg_skipf_def) */
     {0x3760cf8, 0x37612a8},     /* allocation site of the 1.4 MB blocks (rb_learned.c) */
+    {0x3776090, 0x3776640}, /* layout helper, parts by name (online_mastery.c, debug_mode.c trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x3776360, 0x3776910}, /* layout helper, pane by name (online_mastery.c, debug_mode.c trace); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x3777b30, 0x37780e0}, /* layout helper (debug_mode.c, SSBU_ONLINE_LYT_TRACE); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x3777d50, 0x3778300}, /* layout helper (debug_mode.c, SSBU_ONLINE_LYT_TRACE); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x37781b0, 0x3778760}, /* layout helper (debug_mode.c, SSBU_ONLINE_LYT_TRACE); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x3779b70, 0x377a120}, /* layout helper (debug_mode.c, SSBU_ONLINE_LYT_TRACE); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x3779cd0, 0x377a280}, /* number formatter (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x37857f0, 0x3785da0}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x37a1cc0, 0x37a2270}, /* text pane set (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x37a3ea0, 0x37a4450}, /* message text (newmodule_host.c) */
     {0x37a3fc0, 0x37a4570}, /* message label exists (newmodule_host.c) */
+    {0x37ad390, 0x37ad940}, /* panels' number (online_mastery.c, 13.0.4 only); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x37cc810, 0x37ccdc0}, /* job worker make (os_threads.c, SSBU_JOB_WORKERS); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x37df7e0, 0x37dfd90},     /* SRV destructor (r1_ring.c SRVDIAG); found on the 13.0.5 dump */
     {0x37df8b0, 0x37dfe60},     /* SRV destructor 2 (r1_ring.c SRVDIAG); found on the 13.0.5 dump */
     {0x37f0590, 0x37f0b40}, /* submission step (r1_state.c) */
+    {0x37f5160, 0x37f5710}, /* command buffer begin (rb_rollback.c SSBU_RB_CBGUARD, r1_ring.c JOBLOG); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x38156f0, 0x3815ca0},     /* binding retainer clear (r1_ring.c SSBU_RB_RETAINFIX); found on the 13.0.5 dump */
+    {0x3815cb0, 0x3816260}, /* render dispatch push (r1_ring.c, SSBU_RB_JOBLOG=2); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x3815da0, 0x3816350}, /* render dispatch pop (r1_ring.c, SSBU_RB_JOBLOG=2); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x38161f0, 0x38167a0}, /* render dispatch thread's idle wait site (r1_ring.c, JOBLOG); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x3816944, 0x3816ef4},     /* allocation site of the graphics 16 MB buffer (rb_learned.c) */
     {0x3817170, 0x3817720},     /* binding retainer fill (r1_ring.c SSBU_RB_RETAINGEN); found on the 13.0.5 dump */
     {0x3817f90, 0x3818540},     /* binding retainer fill 2 (r1_ring.c SSBU_RB_RETAINGEN); found on the 13.0.5 dump */
@@ -163,8 +241,14 @@ static const uint64_t g_code_13_0_5[][2] = {         /* 13.0.4 -> 13.0.5 offsets
     {0x3839a10, 0x3839fc0},     /* function with catch (std::ios_base::failure &) (cxxrt_selftest.h) */
     {0x3839b94, 0x383a144},     /* call site in it */
     {0x3839de8, 0x383a398},     /* its landing pad */
+    {0x384f460, 0x384fa10}, /* render submission (r1_ring.c, JOBLOG); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x384f4c8, 0x384fa78}, /* render submission loop yield site (os_threads.c, r1_ring.c unstick log); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x384f560, 0x384fb10}, /* render submission (r1_ring.c, JOBLOG); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x384f820, 0x384fdd0}, /* render submission (r1_ring.c, JOBLOG); 13.0.5 dump: fingerprint, own function same size (issue #10) */
+    {0x38514f0, 0x3851aa0}, /* command buffer pool (rb_rollback.c, SSBU_RB_CBGUARD); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x3864700, 0x3864cb0}, /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x38697e0, 0x3869d90},     /* EH main test function (nnsdk2.c) */
+    {0x386ab10, 0x386b0c0}, /* frame index (display.c, SSBU_FRAME_INDEX); 13.0.5 dump: fingerprint, own function same size (issue #10) */
     {0x386fc30, 0x38701e0},     /* graphics frame end (fighter_host.c, SSBU_DETERMINISTIC) */
     {0x38fae10, 0x38fb3c0},     /* luaD_throw */
     {0x38faf00, 0x38fb4b0},     /* luaD_rawrunprotected */
@@ -190,7 +274,10 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x07f870, 0x07f870},     /* the HUD font job (r1_state.c SSBU_RB_FONTWAIT) */
     {0x081980, 0x081980},     /* allocation site, caller of a 1.4 MB block (rb_learned.c, the presentation pool) */
     {0x0a3fd8, 0x0a3fd8},     /* allocation site, caller of an 8 MB block (rb_learned.c) */
+    {0xba850, 0xba850},     /* Pia name resolve (nnonline.c, SSBU_ONLINE_NEX); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x138534, 0x138534},     /* clock read return address (nnsdk.c, fixed seed) */
+    {0x1becd0, 0x1becd0},   /* NEX inet from name (nnonline.c, SSBU_ONLINE_NEX); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x249190, 0x249190},   /* NEX login job (nnonline.c, SSBU_ONLINE_NEX); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x2c55e0, 0x2c55e0},     /* nninitStartup */
     {0x2c5620, 0x2c5620},     /* nnMain */
     {0x45b940, 0x45b940},     /* replay clear-all (fighter_host.c) */
@@ -202,29 +289,70 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x1358ef0, 0x1358ef0},     /* skipped in re-run passes (rb_rollback.c g_rbg_skipf_def, rb-ms 2026-11-11); found on the dump by its masked code (128 / 128 / 32 words) */
     {0x147f330, 0x147f330},     /* path formatter (newmodule_host.c) */
     {0x14d8620, 0x14d8620},     /* Battle Arena squad (debug_mode.c) */
+    {0x14d8964, 0x14d8964}, /* fight set-up: station check call site (debug_mode.c, Online A3); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x14e58f0, 0x14e58f0},     /* battle builder (competitive.c) */
+    {0x1518820, 0x1518820}, /* result handler's reward (debug_mode.c, Online); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x1519430, 0x1519430},     /* hook self-test function (hook_host.c) */
     {0x157c100, 0x157c100},     /* squad init (debug_mode.c) */
     {0x1589830, 0x1589830},     /* squad step (debug_mode.c) */
     {0x158a360, 0x158a360},     /* squad hook 4 (debug_mode.c) */
+    {0x1685520, 0x1685520}, /* step counter call (competitive.c); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x1685cb0, 0x1685cb0},     /* Battle Arena squad (debug_mode.c) */
     {0x1698160, 0x1698160},     /* Battle Arena squad (debug_mode.c) */
+    {0x16acd80, 0x16acd80}, /* result phase 0 (online_elo.c, SSBU_ONLINE_ELO_TRACE=2); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x16acff0, 0x16acff0}, /* result phase 1 (online_elo.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x16ad190, 0x16ad190}, /* result phase 2 (online_elo.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x16adb80, 0x16adb80}, /* result phase 3 (online_elo.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x16adf70, 0x16adf70}, /* result phase 4 (online_elo.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x16ccae0, 0x16ccae0},     /* input delay of a local-wireless match (ldn_online.inc) */
+    {0x16cd000, 0x16cd000}, /* fight netcode's clock reads, start of the range (debug_mode.c, SSBU_ONLINE_RB_CLOCK); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x16ce960, 0x16ce960}, /* fight netcode's end (debug_mode.c, Online A3); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x16d5ff0, 0x16d5ff0}, /* fight netcode (debug_mode.c, Online A3); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x16d78d0, 0x16d78d0}, /* fight netcode (debug_mode.c, Online A3); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x16e0000, 0x16e0000}, /* fight netcode's clock reads, end of the range (debug_mode.c), inside a function; 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x16ea430, 0x16ea430},     /* Battle Arena squad (debug_mode.c) */
+    {0x17547f0, 0x17547f0}, /* controls object's queue (debug_mode.c, Online A3); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1754990, 0x1754990}, /* controls object's queue pop (debug_mode.c, Online A3); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1754d80, 0x1754d80}, /* controller slot set (debug_mode.c, Online A3); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1755300, 0x1755300}, /* controls object (debug_mode.c, Online A3); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x177aac8, 0x177aac8}, /* stage set-up's wall clock read (nntime.c, SSBU_RB_FIXCLOCK); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x1780440, 0x1780440},     /* match controls set-up (debug_mode.c, room rollback: each player's own controls) */
     {0x1788260, 0x1788260},     /* player record builder (debug_mode.c) */
     {0x17911dc, 0x17911dc},     /* return address of the room's waiting-stage record build (debug_mode.c) */
     {0x179d0a0, 0x179d0a0},     /* the game's clear of the squad table (debug_mode.c) */
     {0x179e440, 0x179e440},     /* select screen table entry copy (debug_mode.c, R3 online: player 2's panel) */
+    {0x179eb70, 0x179eb70}, /* station check (debug_mode.c, Online A3); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x17a55e0, 0x17a55e0}, /* rating update (online_elo.c, SSBU_ONLINE_ELO_UI); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x17d14c0, 0x17d14c0}, /* rating shown (online_elo.c, SSBU_ONLINE_ELO_UI); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x17df5f0, 0x17df5f0},     /* path sub-builder (newmodule_host.c) */
     {0x17dfe50, 0x17dfe50},     /* path sub-builder 2 (newmodule_host.c) */
     {0x17e4790, 0x17e4790},     /* Battle Arena squad (debug_mode.c) */
     {0x17e4940, 0x17e4940},     /* Battle Arena squad (debug_mode.c) */
     {0x197c2f0, 0x197c2d0},     /* Battle Arena squad (debug_mode.c) */
     {0x197d5f0, 0x197d5d0},     /* Battle Arena squad (debug_mode.c) */
+    {0x1a19c48, 0x1a19c28}, /* select panel, row 1 call site (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a19cf4, 0x1a19cd4}, /* select panel icon call site (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1b4a0, 0x1a1b480}, /* select panel number setter (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1ba90, 0x1a1ba70}, /* select panel number setter (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1bc20, 0x1a1bc00}, /* select panel icon (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1be30, 0x1a1be10}, /* select panel number setter (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1c070, 0x1a1c050}, /* select panel number setter (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a1c140, 0x1a1c120}, /* select panel number setter (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a292d8, 0x1a292b8}, /* select panel build, row 2 call site (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a292ec, 0x1a292cc}, /* select panel build icon call site (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a29334, 0x1a29314}, /* select panel build, row 3 call site (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1a29350, 0x1a29330}, /* select panel build call site (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x1af97f0, 0x1af97d0},     /* PalletMenu layout controller (competitive.c comp_pallet_ready, and a function pointer comp_pallet checks) */
     {0x1af9ee0, 0x1af9ec0},     /* the other function pointer comp_pallet checks (competitive.c) */
+    {0x1bccfc0, 0x1bccfa0}, /* waiting room's plate layout (debug_mode.c, Online); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x1bef020, 0x1bef000},     /* the Lua C function behind prg_func.open_pallet (competitive.c comp_open_local) */
+    {0x1d5ae14, 0x1d5adf4}, /* results panel call site (online_elo.c); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5b130, 0x1d5b110}, /* results panel number call site (online_mastery.c); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5b1dc, 0x1d5b1bc}, /* results panel number call site (online_mastery.c); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5f0c4, 0x1d5f0a4}, /* results panel number call site (online_mastery.c); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5f120, 0x1d5f100}, /* results panel number call site (online_mastery.c); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5f1c4, 0x1d5f1a4}, /* results panel number call site (online_mastery.c); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x1d5f220, 0x1d5f200}, /* results panel number call site (online_mastery.c); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x1ea04d0, 0x1ea04b0},     /* formatter (newmodule_host.c) */
     {0x22b67d4, 0x22b67b4},     /* worker return address (newmodule_host.c) */
     {0x22b6f60, 0x22b6f40},     /* Battle Arena squad (debug_mode.c) */
@@ -242,6 +370,22 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x233de20, 0x233de00},     /* Battle Arena squad (debug_mode.c) */
     {0x2349480, 0x2349460},     /* Battle Arena squad (debug_mode.c) */
     {0x235cbf0, 0x235cbd0},     /* scene dispatcher (competitive.c) */
+    {0x2363970, 0x2363950}, /* sequence step (competitive.c, SSBU_QUICK_NATIVE_WATCH=2); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x23675c0, 0x23675a0}, /* Online scene's state 0 (competitive.c, native Online MM); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x2367780, 0x2367760}, /* Online scene's state 1 (competitive.c, SSBU_ONLINE_SEQ_TRACE); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x2367d00, 0x2367ce0}, /* Online scene's state 2 (competitive.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x2367d90, 0x2367d70}, /* Online scene's state 3, Quickplay's first screen (competitive.c SSBU_ONLINE_SOLO); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x2368280, 0x2368260}, /* Online scene's state 4 (competitive.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x2368e60, 0x2368e40}, /* Online scene's state 5 (competitive.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x2368f10, 0x2368ef0}, /* Online scene's state 6 (competitive.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x2368fe0, 0x2368fc0}, /* Online scene's state 7 (competitive.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x2369620, 0x2369600}, /* Online scene's state 8 (competitive.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x236a200, 0x236a1e0}, /* Online scene's state 9 (competitive.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x236a460, 0x236a440}, /* Online scene's state 10 (competitive.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x236a4d0, 0x236a4b0}, /* Online scene's state 11 (competitive.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x236a590, 0x236a570}, /* Online scene's state 12 (competitive.c, trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x26aee28, 0x26aee08}, /* Smashville's wall clock read (nntime.c, SSBU_RB_FIXCLOCK); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x26b3980, 0x26b3960}, /* Smashville's villager fill (rb_rollback.c, SSBU_RB_LIGHTVILL); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x32384c0, 0x32384a0},     /* fighter picture path (newmodule_host.c) */
     {0x3261d60, 0x3261d40},     /* name_id getter (newmodule_host.c) */
     {0x353e330, 0x353e580},     /* path -> file index (newmodule_host.c) */
@@ -254,6 +398,7 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x35456d8, 0x3545928},     /* and the end of its range (loose_files.c) */
     {0x3548240, 0x3548490},     /* job runner (r1_ring.c, profile 2) */
     {0x3549170, 0x35493c0},     /* worker kick 2 (r1_state.c) */
+    {0x3549620, 0x3549870}, /* job worker pool init (os_threads.c, SSBU_JOB_WORKERS); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x354a5ac, 0x354a7fc},     /* task workers' idle wait, a return address (r1_ring.c); the 17 lifted starts around it at +0x5b0 */
     {0x354c720, 0x354c970},     /* worker kick (r1_state.c) */
     {0x3559e08, 0x355a058},     /* allocation site of an 8 MB block (rb_learned.c) */
@@ -283,7 +428,9 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x36f6070, 0x36f5c70},     /* movie audio output Flush (nnmovie_mf.c) */
     {0x36f7410, 0x36f7010},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x3724a80, 0x3724680},     /* task tree walker (r1_ring.c, profile 2) */
+    {0x3725c90, 0x3725890}, /* scene change a (competitive.c, SSBU_QUICK_NATIVE_WATCH); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x3726120, 0x3725d20},     /* Battle Arena squad (debug_mode.c) */
+    {0x3726540, 0x3726140}, /* scene end (competitive.c, SSBU_QUICK_NATIVE_WATCH=4); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x3747270, 0x3746e70},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x3747b10, 0x3747710},     /* main loop: return address of the Lua collector step (rb_rollback.c) */
     {0x3747b7c, 0x374777c},     /* render loop call site (r1_state.c) */
@@ -299,13 +446,27 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x374e000, 0x374dc00},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x375ea70, 0x375e670},     /* input dispatch (r1_ring.c, profile 2; also skipped in re-run passes: rb_rollback.c g_rbg_skipf_def) */
     {0x3760cf8, 0x37608f8},     /* allocation site of the 1.4 MB blocks (rb_learned.c) */
+    {0x3776090, 0x3775c90}, /* layout helper, parts by name (online_mastery.c, debug_mode.c trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x3776360, 0x3775f60}, /* layout helper, pane by name (online_mastery.c, debug_mode.c trace); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x3777b30, 0x3777730}, /* layout helper (debug_mode.c, SSBU_ONLINE_LYT_TRACE); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x3777d50, 0x3777950}, /* layout helper (debug_mode.c, SSBU_ONLINE_LYT_TRACE); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x37781b0, 0x3777db0}, /* layout helper (debug_mode.c, SSBU_ONLINE_LYT_TRACE); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x3779b70, 0x3779770}, /* layout helper (debug_mode.c, SSBU_ONLINE_LYT_TRACE); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x3779cd0, 0x37798d0}, /* number formatter (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x37857f0, 0x37853f0},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
+    {0x37a1cc0, 0x37a18c0}, /* text pane set (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x37a3ea0, 0x37a3aa0},     /* message text (newmodule_host.c) */
     {0x37a3fc0, 0x37a3bc0},     /* message label exists (newmodule_host.c) */
+    {0x37ad390, 0x37acf90}, /* panels' number (online_mastery.c, 13.0.4 only); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x37cc810, 0x37cc410}, /* job worker make (os_threads.c, SSBU_JOB_WORKERS); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x37df7e0, 0x37df3e0},     /* SRV destructor (r1_ring.c SRVDIAG) */
     {0x37df8b0, 0x37df4b0},     /* SRV destructor 2 (r1_ring.c SRVDIAG) */
     {0x37f0590, 0x37f0190},     /* submission step (r1_state.c) */
+    {0x37f5160, 0x37f4d60}, /* command buffer begin (rb_rollback.c SSBU_RB_CBGUARD, r1_ring.c JOBLOG); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x38156f0, 0x38152f0},     /* binding retainer clear (r1_ring.c SSBU_RB_RETAINFIX) */
+    {0x3815cb0, 0x38158b0}, /* render dispatch push (r1_ring.c, SSBU_RB_JOBLOG=2); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x3815da0, 0x38159a0}, /* render dispatch pop (r1_ring.c, SSBU_RB_JOBLOG=2); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x38161f0, 0x3815df0}, /* render dispatch thread's idle wait site (r1_ring.c, JOBLOG); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x3816944, 0x3816544},     /* allocation site of the graphics 16 MB buffer (rb_learned.c) */
     {0x3817170, 0x3816d70},     /* binding retainer fill (r1_ring.c SSBU_RB_RETAINGEN) */
     {0x3817f90, 0x3817b90},     /* binding retainer fill 2 (r1_ring.c SSBU_RB_RETAINGEN) */
@@ -315,8 +476,14 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
     {0x3839a10, 0x3839610},     /* function with catch (std::ios_base::failure &) (cxxrt_selftest.h) */
     {0x3839b94, 0x3839794},     /* call site in it */
     {0x3839de8, 0x38399e8},     /* its landing pad */
+    {0x384f460, 0x384f060}, /* render submission (r1_ring.c, JOBLOG); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x384f4c8, 0x384f0c8}, /* render submission loop yield site (os_threads.c, r1_ring.c unstick log); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x384f560, 0x384f160}, /* render submission (r1_ring.c, JOBLOG); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x384f820, 0x384f420}, /* render submission (r1_ring.c, JOBLOG); 13.0.2 dump: fingerprint, own function same size (issue #10) */
+    {0x38514f0, 0x38510f0}, /* command buffer pool (rb_rollback.c, SSBU_RB_CBGUARD); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x3864700, 0x3864300},     /* rollback re-run / snapshot ring (r1_ring.c, r1_state.c), test switches only */
     {0x38697e0, 0x38693e0},     /* EH main test function (nnsdk2.c) */
+    {0x386ab10, 0x386a710}, /* frame index (display.c, SSBU_FRAME_INDEX); 13.0.2 dump: fingerprint, own function same size (issue #10) */
     {0x386fc30, 0x386f830},     /* graphics frame end (fighter_host.c, SSBU_DETERMINISTIC) */
     {0x38fae10, 0x38faa10},     /* luaD_throw */
     {0x38faf00, 0x38fab00},     /* luaD_rawrunprotected */
@@ -335,6 +502,9 @@ static const uint64_t g_code_13_0_2[][2] = {         /* 13.0.4 -> 13.0.2 offsets
 /* 13.0.2's read-only data starts where 13.0.4's does but parts of it moved by different amounts (0 before 0x452ac40,
  * then +0x190..+0x1c0, +0x140 at the end): each address is listed, found by its bytes and by the code that forms it */
 static const uint64_t g_ro_13_0_2[][2] = {
+    {0x42b2d67, 0x42b2d67},     /* "set_parts_score_0" (online_mastery.c SSBU_MASTERY_PROBE, 13.0.4 only): the same bytes, formed by 13.0.2's code (issue #10) */
+    {0x4328a08, 0x4328a08},     /* "set_parts_score_2" (the same) */
+    {0x436acbd, 0x436acbd},     /* "set_parts_score_1" (the same) */
     {0x4470aa8, 0x4470aa8},     /* shader stage offsets table (nvn_vk_m4.c) */
     {0x4862158, 0x4862318},     /* jemalloc bin infos (debug_mode.c, alloc check) */
 };

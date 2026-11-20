@@ -12,6 +12,7 @@ commit runs scripts/install.py (the sources go to the release's commit, scripts/
 runtime comes from RUNTIME_RELEASE in scripts/install.py, SHA-256 checked; only what changed is rebuilt here).
 
 Steps (the tree must be clean, on the commit to release):
+ 0. tools/port/ga_check.py: every game address the runtime names has its 13.0.5 / 13.0.2 entry (else no release).
  1. scripts/make_release.py builds and audits the runtime package of HEAD (dist\\).
  2. a release commit: scripts/install.py RUNTIME_RELEASE = (the package's URL on the release, its SHA-256) and the launcher's
     <Version> in ArenaLauncher.csproj. Neither file is part of the tree digest (setup.py STAGE_PLAN), so the package stays valid.
@@ -85,6 +86,12 @@ def main():
     if subprocess.run(['git', 'rev-parse', '-q', '--verify', 'refs/tags/' + tag], cwd=REPO, capture_output=True).returncode == 0:
         sys.exit('tag %s exists already' % tag)
     base = git('rev-parse', 'HEAD')
+
+    # 0. every game address the runtime names has its 13.0.5 / 13.0.2 entry (issue #10: a missing one stops those games)
+    chk = subprocess.run([sys.executable, os.path.join(REPO, 'tools', 'port', 'ga_check.py')], cwd=REPO, capture_output=True, text=True)
+    say(chk.stdout.strip()[-3000:])
+    if chk.returncode:
+        sys.exit('tools/port/ga_check.py failed: a game address has no 13.0.5 / 13.0.2 entry in runtime/hostrt.c (docs/VERSIONS.md)')
 
     # 1. the runtime package of this commit
     out = run([sys.executable, os.path.join('scripts', 'make_release.py'), '--out', DIST] + extra)
