@@ -37,6 +37,7 @@ namespace Arena
             Core.Load();
             InitLeaderboard();
             InitOpenSmash();
+            InitBench();      // (0.2.58) Settings > Benchmark (MainWindow.Bench.cs)
             SpaceOut(this);
             FillSettings();
             loading = false;
@@ -536,9 +537,10 @@ namespace Arena
         void Section_Checked(object sender, RoutedEventArgs e)
         {
             if (BoxPlayer == null) return;
-            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles }, { SecLauncher, BoxLauncher } };
+            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecBench, BoxBench }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles }, { SecLauncher, BoxLauncher } };
             foreach (var kv in map) kv.Value.Visibility = kv.Key == sender ? Visibility.Visible : Visibility.Collapsed;
             if (sender == SecPads && PageSettings.Visibility == Visibility.Visible) PadLiveStart(); else PadLiveStop();
+            if (sender == SecBench) BenchShow();      // (0.2.58) MainWindow.Bench.cs
         }
 
         void OpenSettings(RadioButton section)
@@ -566,7 +568,7 @@ namespace Arena
             else if (parts[0] == "changes") TabChanges.IsChecked = true;
             else if (parts[0] == "settings")
             {
-                var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles }, { "launcher", SecLauncher } };
+                var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "benchmark", SecBench }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles }, { "launcher", SecLauncher } };
                 OpenSettings(parts.Length > 1 && secs.ContainsKey(parts[1]) ? secs[parts[1]] : SecPlayer);
             }
         }

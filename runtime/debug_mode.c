@@ -92,6 +92,7 @@ void debug_mode_frame(long long frame) {
     LONG64 n = InterlockedIncrement64(&g_end_fight_frames);
     if (n == 1) {
         g_end_first_frame = frame;
+        { void pb_event(const char *what); pb_event("fighton"); }      /* (0.2.58) perf_bench.c: the player benchmark's match load time */
         uint64_t sel = GA(0x71053097c0ULL) + 0x20ull * (rd32(GA(0x7105309968ULL)) < 3 ? rd32(GA(0x7105309968ULL)) : 0);
         uint64_t r0 = fighter_info_record(0), r1 = fighter_info_record(1);
         printf("debug match: fight %d on (the game's ready-go) at presented frame %lld: p1 kind %d (%s), p2 kind %d (%s) type %d cpu power %d | stage id 0x%x (match block + 0x420), chosen ui_stage %llx form %d (0 normal, 1 battlefield, 2 omega) flags %x/%x (%s) | rule: stock %d, item appear %d; stocks in the fighters' records %d / %d\n", g_dm_fight, frame,

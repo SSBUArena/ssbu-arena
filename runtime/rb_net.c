@@ -109,6 +109,7 @@ static RbPad bot_pad(unsigned seed, long long f) {       /* (crash phase, test) 
 }
 static int g_bp_remote;                                 /* (round 14, TEST) 1 while loop_remote_pad asks the bot for the other player's pad */
 volatile long long g_bot_walkoff_at = -1;              /* (rb-8ms round 12, TEST: SSBU_BENCH, rb_bench.c) set at run time: from that frame on the bots walk off */
+volatile long g_rbn_loop_ontime;                       /* (0.2.58, player benchmark: rb_bench.c) 1: the loop test's pads arrive in time (no rollbacks) */
 static RbPad bot_pad0(unsigned seed, long long f) {
     /* segments of 6..29 frames; each segment one action. Walking alternates sides around the middle of the stage. */
     RbPad p; memset(&p, 0, sizeof p);
@@ -1075,6 +1076,7 @@ void rbn_drain(long long cur) {
             }
             if (spk && cur < s_end) lat += s_add;
         }
+        if (g_rbn_loop_ontime) lat = 0;                 /* (0.2.58) the player benchmark's match without rollbacks */
         long long upto = cur + g_delay - lat;
         for (long long f = rb_input_remote_latest(g_remote) + 1; f <= upto; f++) rb_input_remote_put(g_remote, (int)f, loop_remote_pad(f));
         return;

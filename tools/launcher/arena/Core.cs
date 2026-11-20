@@ -939,7 +939,7 @@ namespace Arena
         }
 
         /// <summary>what every start of the game gets, a match or the shader preparation</summary>
-        static void GameEnv(System.Collections.Specialized.StringDictionary env)
+        internal static void GameEnv(System.Collections.Specialized.StringDictionary env)      // (0.2.58: internal, Bench.cs)
         {
             foreach (var v in new[] { "SSBU_ONLINE", "SSBU_ONLINE_CODE", "SSBU_ONLINE_NAME", "SSBU_ONLINE_DIRECT", "SSBU_NICKNAME", "SSBU_RB_NET", "SSBU_R1_GAMEDLL", "SSBU_NRO_BIN", "SSBU_NET_PING", "SSBU_COMPETITIVE_UI",
                                       "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_REGION_AUTO", "SSBU_ONLINE_TICKET", "SSBU_ONLINE_TICKET_FILE", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG", "SSBU_MENU", "SSBU_ARENA_MENU_WHY", "SSBU_MASTERY_FILE" })

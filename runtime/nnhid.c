@@ -117,6 +117,7 @@ static volatile LONG g_mark_count, g_frame_draws_seen = -1;
 static LONG64 g_seq_polls;
 
 void input_mark(const char *what) {                       /* any thread: something the sequence can wait for has happened */
+    { void pb_event(const char *what); pb_event(what); }    /* (0.2.58) perf_bench.c: the player benchmark's times (nothing without SSBU_BENCH_OUT) */
     LONG i = InterlockedIncrement(&g_mark_count) - 1;
     if (i < MARK_MAX) { strncpy(g_marks[i], what, sizeof g_marks[i] - 1); MemoryBarrier(); }
 }
