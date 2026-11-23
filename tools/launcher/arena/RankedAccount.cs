@@ -258,7 +258,7 @@ namespace Arena
             return best != null && string.Equals(best.Family, family, StringComparison.OrdinalIgnoreCase);
         }
 
-        /// <summary>the region's name as Settings > Online names it ("Europe", "NA East"); the id itself when not known</summary>
+        /// <summary>the region's name as Settings > Online names it ("Europe", "NA East", "South America"); the id itself when not known</summary>
         public static string RegionName(string id)
         {
             if (string.IsNullOrEmpty(id)) return null;

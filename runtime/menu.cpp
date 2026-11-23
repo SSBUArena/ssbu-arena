@@ -1170,7 +1170,7 @@ static int online_differs(void);
  * signed-in account's name, an Arena server chosen by region, relay only (no player ever sees another's address),
  * rollback. Shown here, not changed: the other modes (LAN, host / join by code, any lobby, direct paths) stay in the
  * code for the plain build. 1 when it drew the section. */
-/* (server region) the region setting, changed here too: graphics.ini online_region = auto | eu | na-east (net_region.h), the
+/* (server region) the region setting, changed here too: graphics.ini online_region = auto | eu | na-east | sa (net_region.h), the
  * same key the launcher's Settings > Online writes and reads back when the game ends; used from the next start. */
 static int g_region_set = -2;                       /* -2: not read yet; -1 = auto; else the place in k_net_regions */
 static void arena_region_setting(void) {

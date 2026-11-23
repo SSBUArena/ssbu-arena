@@ -5,13 +5,15 @@
 // players on different lobbies do not see each other (rooms and matchmaking are per lobby).
 //
 // The setting (graphics.ini, read by the launcher and by the game; SSBU_ONLINE_REGION wins over the file):
-//     online_region = auto | eu | na-east        auto (default): the lobby with the lowest measured round trip
-//     online_region_last = eu | na-east          the last measured pick: what Auto starts with, measured again in the background
+//     online_region = auto | eu | na-east | sa   auto (default): the lobby with the lowest measured round trip
+//     online_region_last = eu | na-east | sa     the last measured pick: what Auto starts with, measured again in the background
 // An explicit server (SSBU_ONLINE_SERVER, or online_server = host:port in launcher.ini) wins: that server, nothing measured.
 // SSBU_ONLINE_REGION_PROBE=0: nothing is measured, Auto = the first region (Europe, as 0.2.50 and older).
 // The measure: the lobby answers a PING only to a game that has joined, so each probe is a JOIN without a pass, which the
 // lobby refuses at once with a REJECT carrying the probe's nonce (no place taken): the time to that answer is the round
 // trip. Samples probes per lobby, all lobbies at once, the median of each. Only names here, never addresses.
+// (23/11, South America) Auto never plays on a lobby that did not answer: a name that does not resolve (yet), a network
+// that cannot reach it, no answer in TimeoutMs = no answer. PLAY with Auto waits for this run's measure (SettleForPlay).
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -32,11 +34,14 @@ namespace Arena
         public static readonly (string Id, string Name, string Host)[] Table = {
             ("eu", "Europe", "eu-germany.ssbuarena.com"),
             ("na-east", "NA East", NA_EAST_HOST),
+            ("sa", "South America", "sa-brazil.ssbuarena.com"),      // (23/11) Sao Paulo
         };
         public const int KeepMs = 10;          // Auto keeps its last pick unless another lobby is more than this much closer
         public const int Samples = 3;          // probes per lobby, GapMs apart, all lobbies at once
         public const int GapMs = 60;
         public const int TimeoutMs = 700;      // the whole measure, at most
+        public const int LookupMs = 1500;      // (sa) the name look-ups, all at once: one that does not resolve in time = no answer
+        public const int PlayWaitMs = 2500;    // (sa) PLAY with Auto before the start's measure ended: wait at most this long
 
         /// <summary>the saved choice: -1 = auto, else a place in Table (graphics.ini online_region)</summary>
         public static int Setting = -1;
@@ -50,7 +55,7 @@ namespace Arena
         static string Env(string name) { var v = Environment.GetEnvironmentVariable(name); return string.IsNullOrWhiteSpace(v) ? null : v.Trim(); }
         static bool Off(string v) { return v == "0" || string.Equals(v, "off", StringComparison.OrdinalIgnoreCase) || string.Equals(v, "no", StringComparison.OrdinalIgnoreCase) || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase); }
 
-        /// <summary>"eu" / "na-east" -> its place in Table; -1: auto, empty or not a region</summary>
+        /// <summary>"eu" / "na-east" / "sa" -> its place in Table; -1: auto, empty or not a region</summary>
         public static int ById(string id)
         {
             for (int i = 0; i < Table.Length; i++) if (string.Equals(Table[i].Id, (id ?? "").Trim(), StringComparison.OrdinalIgnoreCase)) return i;
@@ -75,7 +80,18 @@ namespace Arena
         public static int Choice { get { var e = Env("SSBU_ONLINE_REGION"); return e != null ? ById(e) : Setting; } }
         public static bool Auto => Override == null && Choice < 0;
         /// <summary>the region the game is started on now: the choice, or Auto's last measured pick (none yet: the first)</summary>
-        public static int Pick { get { int c = Choice; return c >= 0 ? c : Probe && Last >= 0 ? Last : 0; } }
+        public static int Pick
+        {
+            get
+            {
+                int c = Choice;
+                if (c >= 0) return c;
+                if (!Probe) return 0;
+                if (Ms == null) return Last >= 0 && !unsettled ? Last : 0;      // (sa) PLAY found no measure in time: the first region
+                int p = Last >= 0 ? Last : 0;
+                return Ms[p] >= 0 || !Ms.Any(m => m >= 0) ? p : Choose(Ms, -1);     // (sa) never one that did not answer while another did
+            }
+        }
         /// <summary>the lobby the game is started with (host:port)</summary>
         public static string Server => Override ?? Address(Pick);
         /// <summary>"Auto (Europe)", "Europe", or the server set by hand</summary>
@@ -104,12 +120,15 @@ namespace Arena
             var rng = RandomNumberGenerator.Create();
             try
             {
+                // (sa) all names at once, LookupMs at most: a name that does not resolve (yet) never holds the others back
+                var look = Table.Select(r => Task.Run(() => Dns.GetHostAddresses(r.Host))).ToArray();
+                try { Task.WaitAll(look, LookupMs); } catch (AggregateException) { }
                 for (int i = 0; i < n; i++)
                 {
                     sent[i] = new Dictionary<ulong, double>(); rtt[i] = new List<double>();
                     try
                     {
-                        var ip = Dns.GetHostAddresses(Table[i].Host).FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                        var ip = look[i].Status == TaskStatus.RanToCompletion ? look[i].Result.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork) : null;
                         if (ip == null) continue;
                         socks[i] = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
                         socks[i].Connect(new IPEndPoint(ip, Port));
@@ -175,23 +194,48 @@ namespace Arena
         }
 
         static int measuring;
+        static Task<int[]> running;      // (sa) the measure in flight
+        static bool unsettled;           // (sa) PLAY found no measure in time
         /// <summary>The measure in the background (nothing when a server is set by hand, the region is chosen, or the probe is
         /// off). done(changed) runs on the caller's context: changed = Auto's pick is another one now (Last is set).</summary>
         public static void MeasureAsync(Action<bool> done)
         {
             if (!Auto || !Probe || System.Threading.Interlocked.Exchange(ref measuring, 1) == 1) return;
-            Task.Run(() => Measure()).ContinueWith(t =>
+            running = Task.Run(() => Measure());
+            running.ContinueWith(t =>
             {
                 measuring = 0;
                 if (t.Status != TaskStatus.RanToCompletion) return;
-                Ms = t.Result;
-                bool any = Ms.Any(m => m >= 0);
-                int pick = Choose(Ms, Last);
-                bool changed = any && pick != Last;
-                if (changed) Last = pick;
-                Updater.Log("regions: " + MsText() + "; Auto picks " + Table[any ? pick : Pick].Name + (any ? "" : " (nobody answered: kept)"));
-                done?.Invoke(changed);
+                done?.Invoke(Apply(t.Result));
             }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+        /// <summary>a measure's result kept: Ms, and Auto's pick in Last; true = the pick is another one now. Once per measure
+        /// (SettleForPlay may have taken it already: then nothing changes the second time).</summary>
+        static bool Apply(int[] ms)
+        {
+            if (ReferenceEquals(Ms, ms)) return false;
+            Ms = ms; unsettled = false;
+            bool any = Ms.Any(m => m >= 0);
+            int pick = Choose(Ms, Last);
+            bool changed = any && pick != Last;
+            if (changed) Last = pick;
+            Updater.Log("regions: " + MsText() + "; Auto picks " + Table[any ? pick : Pick].Name + (any ? "" : " (nobody answered: kept)"));
+            return changed;
+        }
+        /// <summary>(sa) PLAY with Auto: the lobby must be one that answered in this run. The start's measure not ended yet:
+        /// wait for it (PlayWaitMs at most; none running: one now); it ended with no answer at all (the network was down?):
+        /// measured once more now. Still no measure: the first region for this PLAY (Pick). Nobody answers even now: the last
+        /// pick (every lobby is as unreachable as the others). true = Auto's pick changed (the caller saves online_region_last).</summary>
+        public static bool SettleForPlay()
+        {
+            if (!Auto || !Probe || (Ms != null && Ms.Any(m => m >= 0))) return false;
+            var t = (Ms == null ? running : null) ?? Task.Run(() => Measure());
+            bool ended = false;
+            try { ended = t.Wait(PlayWaitMs); } catch (AggregateException) { }
+            if (ended && t.Status == TaskStatus.RanToCompletion) return Apply(t.Result);
+            unsettled = true;
+            Updater.Log("regions: PLAY before the measure ended: " + Table[Pick].Name);
+            return false;
         }
         /// <summary>"Europe 28 ms, NA East 104 ms" (the last measure; "" before it)</summary>
         public static string MsText()

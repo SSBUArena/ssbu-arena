@@ -41,7 +41,7 @@ $HasOnline = (Test-Path $Exe) -and ([System.IO.File]::ReadAllText($Exe, [System.
 # ---- SSBU Arena's lobby servers by region (the PowerShell copy of the table; the game has the same one in
 # runtime/net_region.h and the Arena launcher in arena/Regions.cs: tools/net/test_regions.py checks that the three match).
 # Every lobby is ours, relay only, with the same accounts: players on different lobbies do not see each other.
-# graphics.ini (read by the launchers and by the game; SSBU_ONLINE_REGION wins): online_region = auto | eu | na-east;
+# graphics.ini (read by the launchers and by the game; SSBU_ONLINE_REGION wins): online_region = auto | eu | na-east | sa;
 # online_region_last = Auto's last measured pick. A server written by hand (the box, SSBU_ONLINE_SERVER) wins: nothing is
 # measured. SSBU_ONLINE_REGION_PROBE=0: nothing is measured, Auto = the first region. Only names here, never addresses.
 $RegionPort = 39010
@@ -49,7 +49,8 @@ $NA_EAST_HOST = 'na-east.ssbuarena.com'
 # REGION TABLE (id, name, host): the first one is the default and the fallback
 $Regions = @(
     @{ id = 'eu'; name = 'Europe'; host = 'eu-germany.ssbuarena.com' },
-    @{ id = 'na-east'; name = 'NA East'; host = $NA_EAST_HOST }
+    @{ id = 'na-east'; name = 'NA East'; host = $NA_EAST_HOST },
+    @{ id = 'sa'; name = 'South America'; host = 'sa-brazil.ssbuarena.com' }
 )
 $RegionKeepMs = 10; $RegionSamples = 3; $RegionGapMs = 60; $RegionTimeoutMs = 700
 function Get-RegionById($id) { for ($i = 0; $i -lt $Regions.Count; $i++) { if ($Regions[$i].id -eq "$id".Trim()) { return $i } }; return -1 }

@@ -33,6 +33,7 @@ of them.
 |---|---|
 | Europe | `eu-germany.ssbuarena.com` |
 | NA East | `na-east.ssbuarena.com` |
+| South America | `sa-brazil.ssbuarena.com` |
 
 **Launcher > Settings > Online > Server region** (also in the in-game Arena settings; used from the next start of the
 game):
@@ -40,7 +41,7 @@ game):
 - **Auto** (default): the launcher measures the ping to each server and uses the closest; the box shows the result, for
   example "Auto (Europe)". The last result is remembered, so nothing waits at the start; it is measured again in the
   background each time the launcher starts.
-- **Europe** / **NA East**: always that server.
+- **Europe** / **NA East** / **South America**: always that server. Auto never uses a server that does not answer.
 
 **Players on different servers do not see each other**: Online Rooms and Online Ranked are per server. To play
 with a friend, both pick the same region.
@@ -90,8 +91,8 @@ environment variables or keys in `config\graphics.ini`; environment variables ar
 |---|---|
 | `SSBU_ONLINE=<host:port>` / `online_server` | The server to join (it wins over the region: nothing is measured). `off` (or `online_mode = off`): offline |
 | `SSBU_ONLINE=arena` / `online_mode = arena` | The Arena server of the region below (a game started without the launcher) |
-| `SSBU_ONLINE_REGION` / `online_region` | `auto` (default), `eu`, `na-east`: the server region. The launcher and the game read the same key |
-| `online_region_last` | Auto's last measured pick (`eu`, `na-east`): what Auto starts with; written by the launcher and the game |
+| `SSBU_ONLINE_REGION` / `online_region` | `auto` (default), `eu`, `na-east`, `sa`: the server region. The launcher and the game read the same key |
+| `online_region_last` | Auto's last measured pick (`eu`, `na-east`, `sa`): what Auto starts with; written by the launcher and the game |
 | `SSBU_ONLINE_REGION_PROBE=0` | Nothing is measured: Auto is Europe, as in 0.2.50 and older |
 | `SSBU_ONLINE_SERVER` (launcher: also `online_server` in `launcher.ini`) | A server written by hand for the launcher: it wins over the region |
 | `SSBU_ONLINE_NAME` / `online_name` | Your name in the room and in the server's log |
