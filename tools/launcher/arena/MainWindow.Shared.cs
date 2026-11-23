@@ -181,6 +181,7 @@ namespace Arena
                 {
                     SharedText.Foreground = Res("Muted");
                     SharedText.Text = t.Result != null ? "Off: OpenSmash Ultimate (" + t.Result.Item2 + ") is in " + t.Result.Item1 + "."
+                                    : SharedData.WhyNot != null ? "Off: OpenSmash Ultimate was found, but its game files cannot be shared: " + SharedData.WhyNot + "."      // (fix/shared-install)
                                                        : "Off: no OpenSmash Ultimate install found on this PC (Choose the OpenSmash folder if it is somewhere else).";
                 }, TaskScheduler.FromCurrentSynchronizationContext());
             }
@@ -194,7 +195,7 @@ namespace Arena
             if (want)
             {
                 var cand = SharedData.Candidate();
-                if (cand == null) { Show("Shared game files", "No OpenSmash Ultimate install with game files Arena can use was found on this PC. Choose its folder if it is somewhere else.", null, ("Choose the OpenSmash folder", () => SharedPickFolder(null), true), ("Cancel", null, false)); return; }
+                if (cand == null) { Show("Shared game files", (SharedData.WhyNot != null ? "OpenSmash Ultimate was found, but its game files cannot be shared: " + SharedData.WhyNot + ".\n\nSSBU Arena keeps its own copy. " : "No OpenSmash Ultimate install with game files Arena can use was found on this PC. ") + "Choose its folder if it is somewhere else.", null, ("Choose the OpenSmash folder", () => SharedPickFolder(null), true), ("Cancel", null, false)); return; }
                 SharedAsk(cand, yes => { if (yes) SharedSetup(cand.Item1); });
                 return;
             }
