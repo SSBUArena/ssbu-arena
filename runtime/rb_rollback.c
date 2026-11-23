@@ -1080,6 +1080,7 @@ static void rbg_report(void) {
     r1_hold_prof_report(); rg_meta_prof_report();
     LOG("r1: RB NET report: live host stack check (hs16): thread contexts taken from the hold %lld, asked again %lld (SSBU_R1_LIVECACHE %s)\n", g_live_cached, g_live_asked, g_live_cache ? "on" : "OFF");
     { extern long long g_net_gate_n, g_net_gate_us, g_net_gate_to; if (g_net_gate_n) LOG("r1: RB NET report: network threads held after a sleep until the frame was final: %lld times, %.2f ms each on average, %lld at the 100 ms limit\n", g_net_gate_n, g_net_gate_us / 1000.0 / (double)g_net_gate_n, g_net_gate_to); }
+    { const char *e = getenv("SSBU_RB_SOCKWAIT"); LOG("r1: RB NET report: socket waits (SSBU_RB_SOCKWAIT %s): threads held blocked in a socket call %lld, loads refused for one not back at its place %lld\n", e && e[0] == '0' ? "OFF" : "on", g_sockwait_holds, g_sockwait_refused); }
     rbg_dist("work per tick (real pass + its rollback, without waits)", g_rbg_work, g_rbg_nw, g_rbg_wk, -1);
     rbg_dist("work per tick without rollback", g_rbg_work, g_rbg_nw, g_rbg_wk, 0);
     rbg_dist("work per tick with rollback", g_rbg_work, g_rbg_nw, g_rbg_wk, 1);

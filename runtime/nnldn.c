@@ -827,10 +827,29 @@ static void do_send(Ctx *c, int fd, uint64_t buf, uint64_t len, uint64_t addr, u
 static void so_send(Ctx *c) { do_send(c, (int)c->x[0], c->x[1], c->x[2], 0, 0); }
 static void so_sendto(Ctx *c) { do_send(c, (int)c->x[0], c->x[1], c->x[2], c->x[4], (uint32_t)c->x[5]); }
 
-static int wait_vs(uint64_t deadline) {   /* (vs_lock held) 0 once the deadline has passed */
+/* (A3 online, 0.2.63 field log: ~30 fps for the first ~400 frames of a ranked match) the game's NEX thread "TransportBufferThread(recv)"
+ * loops SleepThread -> nn::socket::Poll (1 socket, 100 ms time-out, called from 0x71001bd870) and spends nearly all its time blocked
+ * HERE, inside Poll (its watchdog stack: so_poll / ms_now). The rollback holds
+ * (r1_state.c ra_hold_save / ra_hold_restore) take a thread only inside a "waiting" import (by its name: Wait / Sleep / Receive ...),
+ * and "_ZN2nn6socket4PollEP6pollfdmi" is not one: each capture waited its whole 30 ms limit for that thread and was skipped (most
+ * frames: 30-43 ms ticks), and each load waited 40 ms and was refused.
+ * SSBU_RB_SOCKWAIT=1 (default): while a socket call of the virtual network is blocked on its condition variable, the thread's import
+ * name is a marker beginning "nn::socket wait" (so a waiting import). Only this span is marked: the thread holds no lock in it
+ * (SleepConditionVariableSRW has released vs_lock while it sleeps; after a wake it takes it back, then the marker is cleared before any
+ * guest memory is read or written) and it writes no guest memory. The holds also ask the kernel (th_blocked: the thread is blocked in a
+ * system call) and never take it by HOLDFAST's "same wait as last time" shortcut, so a thread inside the marked span but running (just
+ * woken, taking the lock back) is not held. 0 = the old way (no marker). */
+static int sockwait_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RB_SOCKWAIT"); v = !(e && e[0] == '0'); } return v; }
+#define SOCKWAIT_POLL "nn::socket wait: Poll (virtual network)"
+#define SOCKWAIT_RECV "nn::socket wait: Recv (virtual network)"
+#define SOCKWAIT_ACCEPT "nn::socket wait: Accept (virtual network)"
+static int wait_vs(Ctx *c, uint64_t deadline, const char *mark) {   /* (vs_lock held) 0 once the deadline has passed */
     DWORD ms = INFINITE;
     if (deadline != ~0ull) { uint64_t now = ms_now(); if (now >= deadline) return 0; ms = (DWORD)(deadline - now); }
+    const char *imp = c->in_import;
+    if (sockwait_on()) c->in_import = mark;
     SleepConditionVariableSRW(&vs_cv, &vs_lock, ms, 0);
+    c->in_import = imp;
     return 1;
 }
 static void do_recv(Ctx *c, int fd, uint64_t buf, uint64_t len, int flags, uint64_t addr, uint64_t alenp) {
@@ -846,7 +865,7 @@ static void do_recv(Ctx *c, int fd, uint64_t buf, uint64_t len, int flags, uint6
         if (s->head) break;
         if (s->shut_rd) { ReleaseSRWLockExclusive(&vs_lock); RET(0); return; }
         if (s->nonblock || (flags & 0x80)) { err = E_AGAIN; break; }
-        if (!wait_vs(deadline)) { err = E_AGAIN; break; }
+        if (!wait_vs(c, deadline, SOCKWAIT_RECV)) { err = E_AGAIN; break; }
     }
     if (err) { ReleaseSRWLockExclusive(&vs_lock); fail(c, err); return; }
     Dgram *d = s->head;
@@ -878,6 +897,11 @@ static void so_poll(Ctx *c) {             /* (pollfd {int fd; short events, reve
     if (!fds && nfds) { fail(c, E_INVAL); return; }
     uint64_t deadline = timeout < 0 ? ~0ull : ms_now() + (uint64_t)timeout;
     uint32_t ready;
+    if (timeout != 0 && LOGL(1)) {      /* (diagnosis, A3 holds) the first places that poll with a wait, and their time-outs */
+        static uint64_t seen[12]; static volatile LONG ns; uint64_t key = c->import_from * 4099u + (uint32_t)timeout; int k;
+        for (k = 0; k < ns && k < 12; k++) if (seen[k] == key) break;
+        if (k == ns && k < 12) { LONG j = InterlockedIncrement(&ns) - 1; if (j < 12) { seen[j] = key; printf("[online] Poll with a wait: %d ms, %llu entries, called from %llx\n", timeout, (unsigned long long)nfds, (unsigned long long)c->import_from); } }
+    }
     AcquireSRWLockExclusive(&vs_lock);
     for (;;) {
         ready = 0;
@@ -896,7 +920,7 @@ static void so_poll(Ctx *c) {             /* (pollfd {int fd; short events, reve
             st16(p + 6, re);
             ready += re != 0;
         }
-        if (ready || timeout == 0 || !wait_vs(deadline)) break;
+        if (ready || timeout == 0 || !wait_vs(c, deadline, SOCKWAIT_POLL)) break;
     }
     ReleaseSRWLockExclusive(&vs_lock);
     RET(ready);
@@ -997,7 +1021,7 @@ static void so_accept(Ctx *c) {           /* no stream ever connects on the virt
     AcquireSRWLockExclusive(&vs_lock);
     VSock *s = vsock(fd);
     err = !s ? E_BADF : s->nonblock ? E_AGAIN : 0;
-    while (!err) { wait_vs(~0ull); if (!(s = vsock(fd)) || s->shut_rd) err = E_BADF; }
+    while (!err) { wait_vs(c, ~0ull, SOCKWAIT_ACCEPT); if (!(s = vsock(fd)) || s->shut_rd) err = E_BADF; }
     ReleaseSRWLockExclusive(&vs_lock);
     fail(c, err);
 }
