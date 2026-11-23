@@ -6,6 +6,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows;
@@ -37,7 +38,8 @@ namespace Arena
                 ServerBox.IsEnabled = byHand == null && !env;
                 string pings = Regions.MsText();
                 RegionHelp.Text = (byHand != null ? "This server is set by hand (online_server / SSBU_ONLINE_SERVER): no region is chosen. "
-                                   : "Auto measures the ping to each server and uses the closest. " + (pings != "" ? "Now: " + pings + ". " : ""))
+                                   : "Auto measures the ping to each server and uses the closest. " + (pings != "" ? "Now: " + pings + ". " : "")
+                                     + (Regions.Ms != null && Regions.Ms.Any(m => m < 0) ? "Auto never uses a server that gives no answer. " : ""))
                                   + "Players on different servers do not see each other: rooms and matchmaking are per server. To play with a friend, both pick the same region.";
             }
             finally { loading = was; }

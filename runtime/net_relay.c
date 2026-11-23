@@ -317,7 +317,7 @@ static void mods_scan(void) {
  * HOST = no server, over the internet: this game runs the lobby inside itself and shows a room code (its public
  * address, learnt by STUN and/or a UPnP port mapping); JOIN = no server: the lobby is the host's game named by the code.
  *   SSBU_ONLINE = 0|off  1|on|auto  lan  host[:<port>]  join:<code or ip:port>  <host:port> (= lobby)
- *                 arena (= the SSBU Arena lobby of online_region / SSBU_ONLINE_REGION: auto | eu | na-east, net_region.h)
+ *                 arena (= the SSBU Arena lobby of online_region / SSBU_ONLINE_REGION: auto | eu | na-east | sa, net_region.h)
  *   graphics.ini: online_mode = off|auto|lobby|lan|host|join, online_server, online_join, online_peer, online_upnp,
  *   online_stun, online_port. auto: online_server given -> LOBBY (no answer for 5 s -> LAN), otherwise LAN. */
 static int g_mode, g_auto, g_upnp = 1, g_list_other = 1;     /* g_list_other: online_list_other (O1) */
@@ -326,7 +326,7 @@ static char g_join[64], g_peer[256], g_stun[128] = "stun.l.google.com:19302";
 
 /* ---------------------------------------------------------------- SSBU Arena regions (net_region.h)
  * SSBU_ONLINE=arena (or online_mode = arena): lobby mode on the region of the setting (online_region / SSBU_ONLINE_REGION:
- * auto | eu | na-east). Auto starts at once with the last measured pick (online_region_last, else the first region) and
+ * auto | eu | na-east | sa). Auto starts at once with the last measured pick (online_region_last, else the first region) and
  * measures again in a background thread for the next start: no wait at the start, and the lobby never changes while the
  * game runs. An explicit server (SSBU_ONLINE=<host:port>, SSBU_ONLINE_SERVER, online_server) wins: nothing is measured
  * (the SSBU Arena launcher measures by itself and starts the game with the lobby it picked).

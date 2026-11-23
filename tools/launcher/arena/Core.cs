@@ -1068,6 +1068,7 @@ namespace Arena
                 if (string.IsNullOrWhiteSpace(n)) throw new Exception("Your Arena name could not be read. Sign in again from the account page, then press PLAY.");      // never online without the player's own name
                 env["SSBU_ONLINE_TICKET"] = Ticket ?? "";              // the lobby takes the player's name from it
                 if (Ticket != null && WriteTicketFile(Ticket)) env["SSBU_ONLINE_TICKET_FILE"] = TicketFile;      // (0.2.37) renewed while the game runs
+                if (Regions.SettleForPlay()) SaveRegionLast();      // (sa) Auto: a lobby that answered in this run, never an unreachable one
                 env["SSBU_ONLINE"] = Server.Trim();                  // (server region) the chosen region's lobby, or Auto's measured pick
                 env["SSBU_ONLINE_REGION_AUTO"] = Regions.Auto ? "1" : "0";      // the in-game settings then say "Auto (Europe)"
                 Updater.Log("PLAY: online server " + Regions.Text + (Regions.Ms != null ? " (" + Regions.MsText() + ")" : ""));

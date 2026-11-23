@@ -5,8 +5,8 @@
  * players on different lobbies do not see each other (rooms and matchmaking are per lobby).
  *
  * The setting (graphics.ini, read by the launcher and by the game; SSBU_ONLINE_REGION wins over the file):
- *     online_region = auto | eu | na-east        auto (default): the lobby with the lowest measured round trip
- *     online_region_last = eu | na-east          the last measured pick: what Auto starts with, measured again in the background
+ *     online_region = auto | eu | na-east | sa   auto (default): the lobby with the lowest measured round trip
+ *     online_region_last = eu | na-east | sa     the last measured pick: what Auto starts with, measured again in the background
  * An explicit server (SSBU_ONLINE=<host:port>, SSBU_ONLINE_SERVER, online_server) always wins: that server, nothing measured.
  * SSBU_ONLINE_REGION_PROBE=0: nothing is measured, Auto = the first region (Europe, as 0.2.50 and older).
  * Only names here, never addresses. */
@@ -22,6 +22,7 @@ typedef struct { const char *id, *name, *host; } NetRegion;
 static const NetRegion k_net_regions[] = {
     {"eu", "Europe", "eu-germany.ssbuarena.com"},
     {"na-east", "NA East", NA_EAST_HOST},
+    {"sa", "South America", "sa-brazil.ssbuarena.com"},      /* (23/11) Sao Paulo */
 };
 #define NET_REGION_COUNT ((int)(sizeof k_net_regions / sizeof k_net_regions[0]))
 #define NET_REGION_KEEP_MS 10          /* Auto keeps its last pick unless another lobby is more than this much closer */
@@ -33,7 +34,7 @@ static inline int net_region_ieq(const char *a, const char *b) {
     for (; *a && *b; a++, b++) { int x = *a, y = *b; if (x >= 'A' && x <= 'Z') x += 32; if (y >= 'A' && y <= 'Z') y += 32; if (x != y) return 0; }
     return *a == *b;
 }
-/* "eu" / "na-east" -> its place in the table; -1: auto, empty or not a region */
+/* "eu" / "na-east" / "sa" -> its place in the table; -1: auto, empty or not a region */
 static inline int net_region_by_id(const char *id) {
     for (int i = 0; id && i < NET_REGION_COUNT; i++) if (net_region_ieq(id, k_net_regions[i].id)) return i;
     return -1;
