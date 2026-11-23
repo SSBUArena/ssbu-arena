@@ -11,7 +11,9 @@
  *     The file size the game sees is the original's.
  * (3) data.arcp.extra next to data.arcp (same format, optional): more ranges, read where data.arcp has none. A small
  *     patch for a light archive already copied elsewhere (tools/competitive/pack_regions.py: every language / region
- *     version of the region-dependent files whose one version data.arcp has). */
+ *     version of the region-dependent files whose one version data.arcp has).
+ * (4) data.arcl next to (in place of) data.arc and data.arcp: the LINKED archive (arclink.c), the whole data.arc read from
+ *     the files of another install (shared game data, scripts/shared_gamedata.py). */
 typedef struct { uint64_t off, len, at; } ArcpRange;
 static struct { HANDLE h; uint64_t size; uint64_t n; ArcpRange *r; HANDLE xh; uint64_t xn; ArcpRange *xr; } g_arcp[16];
 static HANDLE g_arc_handles[16];
@@ -20,8 +22,34 @@ static FILE *g_arc_log;
 static volatile LONG64 g_arcp_missing;
 
 static int ends_with_i(const char *s, const char *t) { size_t a = strlen(s), b = strlen(t); return a >= b && !_stricmp(s + a - b, t); }
+#include "arclink.c"                                   /* (4) the linked archive data.arcl */
 
-/* the original data.arc was opened: remember the handle for SSBU_ARC_LOG */
+/* (test aid) SSBU_READ_STATS=1: the game's reads of data.arc (the file itself or the linked archive, arclink.c) are timed; the
+ * totals are printed at exit and every 2000 reads ("readstats: ..."): count, MB, time, slowest, reads over 4 / 16 ms */
+static int g_rs_on = -1;
+static volatile LONG64 g_rs_n, g_rs_bytes, g_rs_qpc, g_rs_max, g_rs_4ms, g_rs_16ms;
+static void read_stats_print(void) {
+    LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+    double ms = 1000.0 / (double)f.QuadPart;
+    printf("readstats: data.arc %lld reads, %.1f MB, %.1f ms in all, slowest %.2f ms, %lld over 4 ms, %lld over 16 ms\n", (long long)g_rs_n,
+           g_rs_bytes / 1048576.0, g_rs_qpc * ms, g_rs_max * ms, (long long)g_rs_4ms, (long long)g_rs_16ms);
+    fflush(stdout);
+}
+void arc_read_stats_report(void) { if (g_rs_on == 1) read_stats_print(); }     /* (hitch.c hitch_report: at the game's own shutdown) */
+static int read_stats_on(void) {
+    if (g_rs_on < 0) { const char *e = getenv("SSBU_READ_STATS"); g_rs_on = e && e[0] == '1'; if (g_rs_on) atexit(read_stats_print); }
+    return g_rs_on;
+}
+static void read_stats_add(uint64_t bytes, LONG64 qpc) {
+    LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+    LONG64 n = InterlockedIncrement64(&g_rs_n);
+    InterlockedExchangeAdd64(&g_rs_bytes, (LONG64)bytes); InterlockedExchangeAdd64(&g_rs_qpc, qpc);
+    for (LONG64 m = g_rs_max; qpc > m && InterlockedCompareExchange64(&g_rs_max, qpc, m) != m; m = g_rs_max) {}
+    if (qpc * 1000 > 4 * f.QuadPart) InterlockedIncrement64(&g_rs_4ms);
+    if (qpc * 1000 > 16 * f.QuadPart) InterlockedIncrement64(&g_rs_16ms);
+    if (n % 500 == 0) read_stats_print();
+}
+/* the original data.arc was opened: remember the handle for SSBU_ARC_LOG (and SSBU_READ_STATS) */
 static void arc_log_flush(void);
 static void arc_opened(HANDLE h, const char *path) {
     static int on = -1;
@@ -30,11 +58,12 @@ static void arc_opened(HANDLE h, const char *path) {
         on = e && e[0];
         if (on) { g_arc_log = fopen(e, "a"); if (!g_arc_log) on = 0; else { atexit(arc_log_flush); printf("arcpack: reads of data.arc are logged to %s\n", e); } }
     }
-    if (!on || !ends_with_i(path, "\\data.arc")) return;
+    if (!(on || read_stats_on()) || !ends_with_i(path, "\\data.arc")) return;
     AcquireSRWLockExclusive(&g_arcp_lock);
     for (int i = 0; i < 16; i++) if (!g_arc_handles[i]) { g_arc_handles[i] = h; break; }
     ReleaseSRWLockExclusive(&g_arcp_lock);
 }
+static int arc_is_orig(HANDLE h) { for (int i = 0; i < 16; i++) if (h && g_arc_handles[i] == h) return 1; return 0; }
 static void arc_read_logged(HANDLE h, int64_t off, uint64_t size) {
     if (!g_arc_log) return;
     for (int i = 0; i < 16; i++) if (g_arc_handles[i] == h) {
@@ -47,6 +76,7 @@ static void arc_read_logged(HANDLE h, int64_t off, uint64_t size) {
 }
 static void arc_log_flush(void) { if (g_arc_log) fflush(g_arc_log); }
 static void arc_closed(HANDLE h) {                       /* a closed handle value can come back for another file */
+    arcl_closed(h);
     AcquireSRWLockExclusive(&g_arcp_lock);
     for (int i = 0; i < 16; i++) { if (g_arc_handles[i] == h) g_arc_handles[i] = NULL; if (g_arcp[i].h == h) { free(g_arcp[i].r); free(g_arcp[i].xr); if (g_arcp[i].xh) CloseHandle(g_arcp[i].xh); memset(&g_arcp[i], 0, sizeof g_arcp[i]); } }
     ReleaseSRWLockExclusive(&g_arcp_lock);

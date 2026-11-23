@@ -862,12 +862,20 @@ def check_dump(cx):
     for f in ('main', 'sdk'):
         if not os.path.isfile(os.path.join(exefs, f)):
             raise Fail('%s not found: the ExeFS folder needs the files main and sdk' % os.path.join(exefs, f))
-    if not os.path.isfile(os.path.join(romfs, 'data.arc')):
-        raise Fail('%s not found: the RomFS folder needs data.arc' % os.path.join(romfs, 'data.arc'))
+    sys.path.insert(0, os.path.join(REPO, 'tools', 'nro'))
+    import arc_file                               # data.arc, or data.arcl: the linked archive (scripts/shared_gamedata.py)
     arc, size = os.path.join(romfs, 'data.arc'), 0
+    if not arc_file.arc_exists(arc):
+        raise Fail('%s not found: the RomFS folder needs data.arc' % arc)
+    if arc_file.arc_form(arc) == 'arcl':
+        bad = arc_file.arcl_problems(arc + 'l')
+        if bad:
+            raise Fail('the shared game data cannot be used: %s. Run the installer again (it links the data again, or makes '
+                       'a dump of its own from your game files).' % '; '.join(bad))
+        say('  dump: the game data is shared with another install (%s)' % (arc + 'l'))
     try:                                          # a dump cut short: good header, missing end (testers, 2026-10-20)
-        size = os.path.getsize(arc)
-        with open(arc, 'rb') as f:
+        size = arc_file.arc_size(arc)
+        with arc_file.open_arc(arc) as f:
             hdr = struct.unpack('<7Q', f.read(0x38))
             f.seek(hdr[4])
             m, _, comp, _ = struct.unpack('<4I', f.read(16))

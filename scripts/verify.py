@@ -109,6 +109,8 @@ def write(build):
     r = romfs(build)
     if r and os.path.isfile(os.path.join(r, 'data.arc')):
         lines.append('- %d romfs:data.arc' % os.path.getsize(os.path.join(r, 'data.arc')))
+    elif r and os.path.isfile(os.path.join(r, 'data.arcl')):
+        lines.append('- %d romfs:data.arcl' % os.path.getsize(os.path.join(r, 'data.arcl')))
     with open(os.path.join(build, LIST), 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
     say('%s: %d files' % (os.path.join(build, LIST), len(lines) - 1))

@@ -74,7 +74,7 @@ namespace Arena
             xinput = Core.XInputCount();
             if (Environment.GetEnvironmentVariable("SSBU_ARENA_CRASH_TEST") == "1")      // (test) the newest crash file sent as after a game
                 Task.Run(() => { for (int w = 0; w < 60 && !Account.SignedIn; w++) System.Threading.Thread.Sleep(500); bool sent = CrashReport.SendIfCrashed(DateTime.MinValue, out bool crashed); Updater.Log("crash test: crashed " + crashed + ", sent " + sent); });
-            Loaded += (s, e) => { StartOnlineCount(); MeasureRegions(); RunChecks(); FindPads(); OpenFromArgs(); OpenReplayFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); Task.Run(() => Core.MakeAvatars()).ContinueWith(t => FillAvatars(), TaskScheduler.FromCurrentSynchronizationContext()); };
+            Loaded += (s, e) => { StartOnlineCount(); MeasureRegions(); RunChecks(); SharedAtStart(); FindPads(); OpenFromArgs(); OpenReplayFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); Task.Run(() => Core.MakeAvatars()).ContinueWith(t => FillAvatars(), TaskScheduler.FromCurrentSynchronizationContext()); };
             Scaled.SizeChanged += (s, e) => Rescale();
             SizeChanged += (s, e) => Rescale();
         }
@@ -291,7 +291,9 @@ namespace Arena
                 var rows = checks.Select(c => CheckRow(c.Ok, c.Text)).ToList();
                 rows.Add(CheckRow(shaders, shaders ? "Shaders prepared" : "Shaders not prepared yet", shaders ? "ok" : "warn"));
                 CheckList.ItemsSource = rows;
+                RefreshShared();
                 SetState();
+                if (sharedNote != null && bad == 0) Status(sharedNote, "good");      // (shared game data) the relink at start, after the checks' own line
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
@@ -689,6 +691,7 @@ namespace Arena
         {
             if (!SaveQuiet()) return;
             if (Core.GameRunning()) { Show("Already running", "The game is already open.", null, ("OK", null, true)); return; }
+            if (SharedEnsure(() => Play_Click(sender, e), true)) return;      // (shared game data) OpenSmash changed its files: linked again first
             var bad = Core.CheckOnline();
             if (bad.Count > 0) { Show("Online settings", null, bad, ("Open settings", () => OpenSettings(SecOnline), true), ("Cancel", null, false)); return; }
             if (checks == null) { Status("Still checking the game files...", "busy"); return; }
@@ -839,7 +842,13 @@ namespace Arena
             Updater.CleanUp();
             try { System.IO.File.Delete(System.IO.Path.Combine(Core.Repo ?? System.IO.Path.GetDirectoryName(Updater.ExePath), Core.Repo != null ? @"build\launcher_update.log" : "launcher_update.log")); } catch { }
             Updater.Log("launcher " + Updater.Current + ", repo " + (Core.Repo ?? "(not installed)") + ", build " + Core.Build + (Updater.DevCopy ? ", git checkout" : ""));
-            if (Updater.Off) { Updater.Log("SSBU_ARENA_UPDATE=off"); return; }
+            if (Updater.Off)
+            {
+                Updater.Log("SSBU_ARENA_UPDATE=off");
+                // an install whose game is not built yet gets its setup screen without the release check too
+                if (Core.Repo != null && !Updater.DevCopy && !System.IO.File.Exists(Core.Exe)) StartSetup(false);
+                return;
+            }
             // a portable copy (build\ beside dump\romfs, no sources to update: crea_pacchetto.py): it plays as it is
             if (Core.Portable && Core.Repo == null) { Updater.Log("portable copy: no install, no updates"); return; }
             Task.Run(() => { try { return Updater.Latest(); } catch (Exception ex) { Updater.Log("release check failed: " + ex.Message); return null; } }).ContinueWith(t =>

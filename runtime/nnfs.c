@@ -762,7 +762,10 @@ static void romfs_walk(const char *dir, uint32_t *dirs, uint32_t *files, uint64_
             WideCharToMultiByte(CP_ACP, 0, fd.cFileName, -1, utf8, sizeof utf8, NULL, NULL);
             snprintf(sub, sizeof sub, "%s\\%s", dir, utf8);
             romfs_walk(sub, dirs, files, dir_bytes, file_bytes);
-        } else { (*files)++; *file_bytes += 0x20 + (uint64_t)((len + 3) & ~3); }
+        } else {
+            if (!_wcsicmp(fd.cFileName, L"data.arcl")) len = 8;     /* the linked archive stands for data.arc (arclink.c): the same size as a dump's */
+            (*files)++; *file_bytes += 0x20 + (uint64_t)((len + 3) & ~3);
+        }
     } while (FindNextFileW(h, &fd));
     FindClose(h);
 }
@@ -792,6 +795,7 @@ static void fs_OpenFile(Ctx *c) {                     /* (FileHandle *out, const
     if (!r) {
         int found = view_path(m, rel, path) && !is_dir(path);
         if (!found && !write && m->kind == MK_ROM && (h = arcp_open(path)) != INVALID_HANDLE_VALUE) found = 2;      /* data.arcp for data.arc */
+        if (!found && !write && m->kind == MK_ROM && (h = arcl_open(path)) != INVALID_HANDLE_VALUE) found = 2;      /* data.arcl for data.arc (arclink.c) */
         if (!found) r = RESULT_PATH_NOT_FOUND;
         else if (write && m->work[0]) {                    /* copy-on-write: the committed file is never opened for writing */
             char w[MAX_PATH];
@@ -821,10 +825,25 @@ static void fs_CloseFile(Ctx *c) {
     if (A0) { open_mode((HANDLE)A0, 1); arc_closed((HANDLE)A0); CloseHandle((HANDLE)A0); }
 }
 extern int g_hitch_ms; void hitch_note(const char *s);      /* hitch.c: SSBU_HITCH */
+static uint64_t read_at_x(HANDLE h, int64_t offset, void *buf, uint64_t size);
 static uint64_t read_at(HANDLE h, int64_t offset, void *buf, uint64_t size) {
+    if (!read_stats_on() || !(arcl_is(h) || arc_is_orig(h))) return read_at_x(h, offset, buf, size);
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    uint64_t got = read_at_x(h, offset, buf, size);
+    QueryPerformanceCounter(&t1); read_stats_add(got, t1.QuadPart - t0.QuadPart);
+    return got;
+}
+static uint64_t read_at_x(HANDLE h, int64_t offset, void *buf, uint64_t size) {
     uint64_t total = 0;
     arc_read_logged(h, offset, size);
     if (arcp_read(h, offset, buf, size, &total)) { void r1_wrote(uint64_t, uint64_t); r1_wrote((uint64_t)(uintptr_t)buf, size); return total; }
+    if (arcl_is(h)) {                                     /* the linked archive (arclink.c): a read like the one below, SSBU_HITCH notes it too */
+        void r1_wrote(uint64_t, uint64_t); r1_wrote((uint64_t)(uintptr_t)buf, size);
+        if (g_hitch_ms) { char note[80]; snprintf(note, sizeof note, "read of %llu KB (linked)", (unsigned long long)(size >> 10)); hitch_note(note); }
+        arcl_read(h, offset, buf, size, &total);
+        if (g_hitch_ms) hitch_note(NULL);
+        return total;
+    }
     if (g_hitch_ms) { char note[80]; snprintf(note, sizeof note, "read of %llu KB", (unsigned long long)(size >> 10)); hitch_note(note); }
     { void r1_wrote(uint64_t, uint64_t); r1_wrote((uint64_t)(uintptr_t)buf, size); }   /* R1 (r1_state.c): the kernel's write into guest memory is marked (nothing without SSBU_R1_MARK) */
     while (total < size) {
@@ -909,6 +928,7 @@ static void fs_GetFileSize(Ctx *c) {                  /* (s64 *out, handle) */
         return;
     }
     if (arcp_size((HANDLE)A1, &size.QuadPart)) { wr64(A0, (uint64_t)size.QuadPart); RET(0); return; }
+    if (arcl_size((HANDLE)A1, &size.QuadPart)) { wr64(A0, (uint64_t)size.QuadPart); RET(0); return; }
     if (!GetFileSizeEx((HANDLE)A1, &size)) { RET(RESULT_GENERIC_FAILURE); return; }
     wr64(A0, (uint64_t)size.QuadPart);
     RET(0);

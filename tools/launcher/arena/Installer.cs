@@ -40,6 +40,9 @@ namespace Arena
         public List<string> Dlc = new List<string>();
         public int Jobs;
         public bool Dry;
+        /// <summary>install.py --shared-data: an OpenSmash Ultimate folder or "auto" (its game files, no copy of our own), "off"
+        /// (Arena's own copy), null (as the install already is)</summary>
+        public string Shared;
     }
 
     public static class Installer
@@ -157,7 +160,8 @@ namespace Arena
         public static List<PcCheck> Precheck(string py, SetupChoice c)
         {
             var a = new StringBuilder("-u scripts\\precheck.py --json --build " + Q(c.Location));
-            if (IsDump(c.Game)) a.Append(" --dump " + Q(c.Game.TrimEnd('\\')));
+            if (!string.IsNullOrEmpty(c.Shared) && c.Shared != "off" && Directory.Exists(c.Shared)) a.Append(" --dump " + Q(c.Shared.TrimEnd('\\')));      // (shared game data: no room for a dump)
+            else if (IsDump(c.Game)) a.Append(" --dump " + Q(c.Game.TrimEnd('\\')));
             else foreach (var g in new[] { c.Game, c.Update }) if (!string.IsNullOrEmpty(g) && File.Exists(g)) a.Append(" --game " + Q(g));
             var list = new JavaScriptSerializer().Deserialize<ArrayList>(RunJson(py, a.ToString(), 120000));
             return list.Cast<Dictionary<string, object>>().Select(x => new PcCheck { Level = S(x, "level"), What = S(x, "what"), Msg = S(x, "msg") }).ToList();
@@ -200,6 +204,7 @@ namespace Arena
             if (!string.IsNullOrEmpty(c.Location) && !string.Equals(Path.GetFullPath(c.Location).TrimEnd('\\'), DefaultLocation, StringComparison.OrdinalIgnoreCase))
                 a.Append(" --build-dir " + Q(c.Location.TrimEnd('\\')));
             if (c.Jobs > 0) a.Append(" --jobs " + c.Jobs);
+            if (!string.IsNullOrEmpty(c.Shared)) a.Append(" --shared-data " + Q(c.Shared.TrimEnd('\\')));
             if (c.Dry || Environment.GetEnvironmentVariable("SSBU_ARENA_SETUP_DRY") == "1") a.Append(" --dry-run");
             return a.ToString();
         }
@@ -231,7 +236,7 @@ namespace Arena
                 if (Directory.Exists(Path.Combine(build, @"..\dump\romfs"))) return true;
                 var m = System.Text.RegularExpressions.Regex.Match(File.ReadAllText(Path.Combine(build, "state.json")), "\"romfs\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
                 string romfs = m.Success ? System.Text.RegularExpressions.Regex.Unescape(m.Groups[1].Value) : null;
-                return romfs != null && (File.Exists(Path.Combine(romfs, "data.arc")) || File.Exists(Path.Combine(romfs, "data.arcp")));
+                return romfs != null && (File.Exists(Path.Combine(romfs, "data.arc")) || File.Exists(Path.Combine(romfs, "data.arcp")) || File.Exists(Path.Combine(romfs, "data.arcl")));
             }
             catch { return false; }
         }

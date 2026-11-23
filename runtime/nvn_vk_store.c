@@ -28,6 +28,7 @@ static void vks_h_free(Ctx *c) { if (c->x[1]) free((void *)(uintptr_t)c->x[1]); 
 
 static struct {
     HANDLE map;
+    int arcl;                           /* data.arcl (arclink.c, shared game data): no mapping, the bytes are read through the link */
     uint64_t total;
     volatile LONG64 next_slice, frames, opened, wanted, hits, dup, raw, bad, bytes_out, bytes_dec, scanned;
     volatile LONG ncont;
@@ -125,6 +126,25 @@ static uint64_t vks_frame(Ctx *c, const uint8_t *src, uint64_t avail, const uint
     vks_dctx_free(c, d);
     return used;
 }
+/* (shared game data) the linked archive data.arcl cannot be mapped: its views are read through the link into memory of
+ * ours. A slice is read whole (16 MB + the room); the far view of a wanted frame is read 512 KB first, then 4 times more
+ * while the frame goes on past it (vks_frame gives 0 for a frame cut short), up to the 1 GB of the mapped case. */
+uint64_t arcl_pread(uint64_t off, void *buf, uint64_t size); int arcl_load(const char *dir); uint64_t arcl_total(void);   /* arclink.c */
+#define VKS_SLICE_ARCL (16ull << 20)
+static uint64_t vks_far_arcl(Ctx *c, uint64_t at, uint64_t fo, uint64_t flen) {
+    uint64_t want = 512ull << 10, used = 0;
+    for (;;) {
+        uint64_t n = want < flen ? want : flen;
+        uint8_t *b = malloc((size_t)n);
+        if (!b) { InterlockedIncrement(&VKS.fail); return 0; }
+        if (arcl_pread(fo, b, n) != n) { free(b); InterlockedIncrement(&VKS.fail); return 0; }
+        used = vks_frame(c, b + (at - fo), n - (at - fo), b + (at - fo), n - (at - fo));
+        free(b);
+        if (used || n == flen) return used;
+        InterlockedDecrement64(&VKS.opened); InterlockedDecrement64(&VKS.wanted);     /* (counted again by the next try) */
+        want *= 4;
+    }
+}
 static DWORD WINAPI vks_thread(void *arg) {
     Ctx *c = calloc(1, sizeof *c);
     size_t stack_size = 4u << 20;
@@ -132,13 +152,16 @@ static DWORD WINAPI vks_thread(void *arg) {
     (void)arg;
     if (!c || !stack) { InterlockedIncrement(&VKS.fail); return 1; }
     c->x[31] = (uint64_t)(uintptr_t)(stack + stack_size - 256);
-    uint64_t nslice = (VKS.total + VKS_SLICE - 1) / VKS_SLICE;
+    uint64_t slice = VKS.arcl ? VKS_SLICE_ARCL : VKS_SLICE;
+    uint64_t nslice = (VKS.total + slice - 1) / slice;
+    uint8_t *sbuf = VKS.arcl ? malloc((size_t)(slice + VKS_ROOM)) : NULL;
+    if (VKS.arcl && !sbuf) { InterlockedIncrement(&VKS.fail); free(c); _aligned_free(stack); return 1; }
     for (;;) {
         uint64_t s = (uint64_t)InterlockedIncrement64(&VKS.next_slice) - 1;
         if (s >= nslice || g_m4_quit) break;
-        uint64_t lo = s * VKS_SLICE, hi = lo + VKS_SLICE < VKS.total ? lo + VKS_SLICE : VKS.total;
+        uint64_t lo = s * slice, hi = lo + slice < VKS.total ? lo + slice : VKS.total;
         uint64_t vlen = hi + VKS_ROOM < VKS.total ? hi + VKS_ROOM - lo : VKS.total - lo;
-        const uint8_t *v = MapViewOfFile(VKS.map, FILE_MAP_READ, (DWORD)(lo >> 32), (DWORD)lo, (SIZE_T)vlen);
+        const uint8_t *v = VKS.arcl ? (arcl_pread(lo, sbuf, vlen) == vlen ? sbuf : NULL) : MapViewOfFile(VKS.map, FILE_MAP_READ, (DWORD)(lo >> 32), (DWORD)lo, (SIZE_T)vlen);
         if (!v) { InterlockedIncrement(&VKS.fail); continue; }
         uint64_t end = hi - lo, lim = vlen >= 4 ? vlen - 3 : 0;
         if (end > lim) end = lim;
@@ -173,6 +196,12 @@ static DWORD WINAPI vks_thread(void *arg) {
                     }
                     if (!want) continue;
                 }
+                if (VKS.arcl) {                                                       /* the linked archive: read, not mapped */
+                    InterlockedDecrement64(&VKS.opened);                              /* vks_frame counts it again */
+                    used = vks_far_arcl(c, lo + p, fo, flen);
+                    if (used > 4) p += used - 1;
+                    continue;
+                }
                 fv = MapViewOfFile(VKS.map, FILE_MAP_READ, (DWORD)(fo >> 32), (DWORD)fo, (SIZE_T)flen);
                 if (!fv) { InterlockedIncrement(&VKS.fail); continue; }
                 InterlockedDecrement64(&VKS.opened);                                 /* vks_frame counts it again */
@@ -186,14 +215,21 @@ static DWORD WINAPI vks_thread(void *arg) {
                 for (int k = 0x20; k + 4 <= 0x60; k++) if (!memcmp(q + k, "grsc", 4)) { grsc = 1; break; }
                 if (grsc && size >= 0x60 && size <= (64u << 20) && lo + p + size <= VKS.total) {
                     uint64_t fo = (lo + p) & ~0xffffull, flen = lo + p + size - fo;
+                    if (VKS.arcl) {                                                   /* the linked archive: read, not mapped */
+                        uint8_t *b = malloc(size);
+                        if (b && arcl_pread(lo + p, b, size) == size) vks_keep(b, size, 1);
+                        free(b);
+                        continue;
+                    }
                     const uint8_t *fv = MapViewOfFile(VKS.map, FILE_MAP_READ, (DWORD)(fo >> 32), (DWORD)fo, (SIZE_T)flen);
                     if (fv) { vks_keep(fv + (lo + p - fo), size, 1); UnmapViewOfFile(fv); }
                 }
             }
         }
-        UnmapViewOfFile(v);
+        if (!VKS.arcl) UnmapViewOfFile(v);
         InterlockedExchangeAdd64(&VKS.scanned, (LONG64)(hi - lo));
     }
+    free(sbuf);
     _aligned_free(stack);
     free(c);
     return 0;
@@ -210,16 +246,27 @@ static int vks_build(const char *dir) {
     LONG64 t0 = tk(), last = t0;
     snprintf(arc, sizeof arc, "%s\\data.arc", rom && rom[0] ? rom : "..\\romfs");
     if (GetFileAttributesA(arc) == INVALID_FILE_ATTRIBUTES) strcat(arc, "p");      /* the light archive (arcpack.c): its ranges are whole zstd frames */
-    HANDLE fh = CreateFileA(arc, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-    if (fh == INVALID_HANDLE_VALUE || !GetFileSizeEx(fh, &sz)) { printf("nvn_vk_store: %s cannot be opened: no container store\n", arc); if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh); return 0; }
-    memset(&VKS, 0, sizeof VKS);
-    VKS.total = (uint64_t)sz.QuadPart;
-    VKS.map = CreateFileMappingA(fh, NULL, PAGE_READONLY, 0, 0, NULL);
-    if (!VKS.map) { printf("nvn_vk_store: %s cannot be mapped: no container store\n", arc); CloseHandle(fh); return 0; }
+    HANDLE fh = INVALID_HANDLE_VALUE;
+    if (GetFileAttributesA(arc) == INVALID_FILE_ATTRIBUTES) {                        /* the linked archive data.arcl (arclink.c) */
+        char rdir[400];
+        snprintf(rdir, sizeof rdir, "%s", rom && rom[0] ? rom : "..\\romfs");
+        arc[strlen(arc) - 1] = 'l';
+        if (arcl_load(rdir) != 1) { printf("nvn_vk_store: %s cannot be used: no container store\n", arc); return 0; }
+        memset(&VKS, 0, sizeof VKS);
+        VKS.arcl = 1;
+        VKS.total = arcl_total();
+    } else {
+        fh = CreateFileA(arc, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+        if (fh == INVALID_HANDLE_VALUE || !GetFileSizeEx(fh, &sz)) { printf("nvn_vk_store: %s cannot be opened: no container store\n", arc); if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh); return 0; }
+        memset(&VKS, 0, sizeof VKS);
+        VKS.total = (uint64_t)sz.QuadPart;
+        VKS.map = CreateFileMappingA(fh, NULL, PAGE_READONLY, 0, 0, NULL);
+        if (!VKS.map) { printf("nvn_vk_store: %s cannot be mapped: no container store\n", arc); CloseHandle(fh); return 0; }
+    }
     snprintf(VKS.dir, sizeof VKS.dir, "%s", dir);
     CreateDirectoryA("../cache", NULL); CreateDirectoryA(dir, NULL);
     snprintf(mark, sizeof mark, "%s/store_building.txt", dir);
-    { FILE *f = fopen(mark, "wb"); if (f) { fputs("the container store is being written\n", f); fclose(f); } else { printf("nvn_vk_store: the folder %s cannot be written: no container store\n", dir); CloseHandle(VKS.map); CloseHandle(fh); return 0; } }
+    { FILE *f = fopen(mark, "wb"); if (f) { fputs("the container store is being written\n", f); fclose(f); } else { printf("nvn_vk_store: the folder %s cannot be written: no container store\n", dir); if (VKS.map) CloseHandle(VKS.map); if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh); return 0; } }
     InitializeCriticalSection(&VKS.lock);
     VKS.fn_alloc = hostfn_address("vk_store_zstd_alloc", vks_h_alloc);
     VKS.fn_free = hostfn_address("vk_store_zstd_free", vks_h_free);
@@ -245,7 +292,8 @@ static int vks_build(const char *dir) {
         }
     }
     for (int i = 0; i < VKS.nthread; i++) CloseHandle(th[i]);
-    CloseHandle(VKS.map); CloseHandle(fh);
+    if (VKS.map) CloseHandle(VKS.map);
+    if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh);
     display_title_note(NULL);
     {   /* the containers built into the game's EXECUTABLE ("TextureShader", "IconShader", "ui2d_BuildinShader_Nvn_Binary",
          * "font_BuildinShader_Nvn_Binary": 4 in 13.0.4, two of them in its data segment, where the game changes them in place

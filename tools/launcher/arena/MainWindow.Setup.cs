@@ -125,7 +125,17 @@ namespace Arena
             }
             CheckSetupFields();
             RunPrecheck();
+            // (shared game data) OpenSmash Ultimate on this PC: asked once, here, before INSTALL (the PC check and the fields follow)
+            if (fill && Core.SharedData == "" && !sharedAsked)
+                Task.Run(() => SharedData.Candidate()).ContinueWith(t =>
+                {
+                    if (t.Result != null && SetupFiles.Visibility == Visibility.Visible && !setupRunning)
+                        SharedAsk(t.Result, yes => { CheckSetupFields(); RunPrecheck(); });
+                }, TaskScheduler.FromCurrentSynchronizationContext());
         }
+
+        /// <summary>(shared game data) the OpenSmash install whose game files this setup uses (the player said yes), or null</summary>
+        string SetupShared() => Core.SharedData == "on" ? SharedData.Candidate()?.Item1 : null;
 
         void SetupField_Changed(object sender, RoutedEventArgs e) { if (!loading) CheckSetupFields(); }
 
@@ -154,6 +164,18 @@ namespace Arena
         {
             string game = Clean(SetupGame), upd = Clean(SetupUpdate), keys = Clean(SetupKeys), fw = Clean(SetupFirmware);
             bool dump = Installer.IsDump(game), ok = true;
+            string shared = SetupShared();
+            if (shared != null)
+            {
+                // (shared game data) nothing of the game is unpacked: the fields stay as they are (used only if the link fails)
+                SetupPackageFields.Visibility = Visibility.Collapsed;
+                FieldState(SetupGameMark, SetupGameText, "ok", "Not needed: OpenSmash Ultimate's game files are used (no second copy).");
+                SetupGameText.ToolTip = shared;
+                if (fw == "") FieldState(SetupFirmwareMark, SetupFirmwareText, "ok", "Not needed: the system fonts come with OpenSmash's game files.");
+                bool loc = Clean(SetupLocation) != "";
+                SetupGo.IsEnabled = loc;
+                return loc;
+            }
             if (game == "") { FieldState(SetupGameMark, SetupGameText, "bad", "Choose your game: its .xci / .nsp / .nsz file, or a dump folder (exefs and romfs)."); ok = false; }
             else if (dump) FieldState(SetupGameMark, SetupGameText, "ok", "A decrypted dump: no prod.keys and no update needed.");
             else if (File.Exists(game)) FieldState(SetupGameMark, SetupGameText, "ok", "Your game package" + (string.Equals(game, found?.Base, StringComparison.OrdinalIgnoreCase) ? " (found on this PC)." : "."));
@@ -199,6 +221,7 @@ namespace Arena
                 Firmware = Directory.Exists(fw) ? fw : null,
                 Location = Clean(SetupLocation) == "" ? Installer.DefaultLocation : Clean(SetupLocation),
                 Jobs = choice?.Jobs ?? 0,
+                Shared = SetupShared() ?? (Core.SharedData == "off" ? "off" : null),
             };
             if (!dump && SetupDlc.IsChecked == true && found != null) c.Dlc = found.Dlc.ToList();
             return c;
@@ -290,6 +313,10 @@ namespace Arena
                 int jobs = choice?.Jobs ?? 0;
                 choice = ReadChoice();
                 choice.Jobs = jobs;
+                // (shared game data) OpenSmash Ultimate on this PC: asked once whether its game files are used instead of a copy
+                var cand = Core.SharedData == "" && !sharedAsked ? SharedData.Candidate() : null;
+                if (cand != null) { SharedAsk(cand, yes => { choice.Shared = yes ? cand.Item1 : "off"; RunSetup(); }); return; }
+                if (Core.SharedData == "on" && choice.Shared == null) choice.Shared = SharedData.FindOpenSmash() ?? "auto";
             }
             RunSetup();
         }
@@ -558,7 +585,7 @@ namespace Arena
             }).ContinueWith(t =>
             {
                 if (t.IsFaulted) { FileCheckText.Foreground = Res("Bad"); FileCheckText.Text = "The repair stopped: " + t.Exception.GetBaseException().Message; return; }
-                choice = new SetupChoice { Location = Core.Build };
+                choice = new SetupChoice { Location = Core.Build };      // (install.py keeps the shared game data of an install that has it)
                 SetupOverlay.Visibility = Visibility.Visible;
                 RunSetup();
             }, TaskScheduler.FromCurrentSynchronizationContext());
