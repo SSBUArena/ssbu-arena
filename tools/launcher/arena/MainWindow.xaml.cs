@@ -604,7 +604,7 @@ namespace Arena
             TabSettings.IsChecked = true;
         }
 
-        /// <summary>--page replays | leaderboard | community | setup | settings[:player|online|video|controllers|saves|dlc|files] (for screenshots)</summary>
+        /// <summary>--page replays | leaderboard | community | setup[:shared] | settings[:player|online|video|controllers|saves|dlc|files] (for screenshots)</summary>
         void OpenFromArgs()
         {
             var args = Environment.GetCommandLineArgs();
@@ -621,7 +621,12 @@ namespace Arena
             else if (parts[0] == "leaderboard" && TabLeaderboard.Visibility == Visibility.Visible) TabLeaderboard.IsChecked = true;
             else if (parts[0] == "community") TabCommunity.IsChecked = true;
             else if (parts[0] == "changes") TabChanges.IsChecked = true;
-            else if (parts[0] == "setup") { SetupOverlay.Visibility = Visibility.Visible; ShowSetupFiles(false); }      // (hotfix) stage 2 as it looks, nothing scanned or run
+            else if (parts[0] == "setup")      // (hotfix) stage 2 as it looks, nothing scanned or run
+            {
+                SetupOverlay.Visibility = Visibility.Visible; ShowSetupFiles(false);
+                // (shared game data) setup:shared = the one-time OpenSmash question over it, as a first setup shows it (when OpenSmash is found)
+                if (parts.Length > 1 && parts[1] == "shared") { var cand = SharedData.Candidate(); if (cand != null) SharedAsk(cand, yes => { CheckSetupFields(); }); }
+            }
             else if (parts[0] == "settings")
             {
                 var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "benchmark", SecBench }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles }, { "launcher", SecLauncher } };
