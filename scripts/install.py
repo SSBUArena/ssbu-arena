@@ -323,9 +323,36 @@ def nsz_temp_gb(a):
     return 0.0 if a.dump else precheck.nsz_temp_gb([a.base, a.update])
 
 
+def recorded_dump():
+    """(0.2.65) the game files this install already uses, if they are still whole: the dump recorded by the last run
+    (install_state.json inputs.dump) or the setup's own (state.json dump.romfs). An install whose dump lies outside its build
+    folder (chosen by hand, or <build>\\dump_shared) was counted as having none: 17 GB more asked at every update."""
+    found = []
+    try:
+        with open(STATE_FILE, encoding='utf-8') as f:
+            found.append((json.load(f).get('inputs') or {}).get('dump'))
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        with open(os.path.join(BUILD, 'state.json'), encoding='utf-8') as f:
+            romfs = (json.load(f).get('dump') or {}).get('romfs')
+        found.append(os.path.dirname(os.path.normpath(romfs)) if romfs else None)
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    for d in found:
+        try:
+            if d and dump_ok(d):
+                return d
+        except Exception:                   # a check of an old record must never stop the installer
+            pass
+    return None
+
+
 def step_precheck(cx):
     import precheck
     dump = cx.a.dump or (os.path.join(BUILD, 'dump') if dump_ok(os.path.join(BUILD, 'dump')) else None)
+    if not dump and precheck.update_disk_rule():
+        dump = recorded_dump()              # (0.2.65, SSBU_UPDATE_DISK_CHECK) the game files the install already reads
     if not dump:
         root, _ = shared_source(cx.a)
         dump = root                         # (shared game data: no 17 GB dump in the install location)

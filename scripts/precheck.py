@@ -31,6 +31,15 @@ PF_SSE2, PF_SSE3, PF_SSE4_2, PF_AVX, PF_AVX2 = 10, 13, 38, 39, 40
 # The larger one, rounded up, is what a build needs; the dump made from .nsp packages (build/dump) is about 17 GB.
 BUILD_NEED_GB = 8.0
 DUMP_NEED_GB = 17.0
+# (0.2.65, SSBU_UPDATE_DISK_CHECK, default 1; 0 = the rule above for every run) an UPDATE of an install that is already built
+# (its build folder has state.json and work\ssbu_native.exe) does not make the build or the game files again: it unpacks the
+# prebuilt runtime (about 5 MB), makes the Arena menu files again (about 120 MB) and, when the lifter changed, rebuilds game
+# objects in place over the old ones. 0.2.64 asked such an update for the full 25 GB of a first install and STOPPED below it
+# (a player with 15 GB free: no menu step, no shared-data relink, nothing after the check). An update now wants
+# UPDATE_NEED_GB (+ the game files only when they are missing): below that it is a warning, and only below UPDATE_FAIL_GB,
+# where even the menu files and the runtime could not be written, does it stop.
+UPDATE_NEED_GB = 3.0
+UPDATE_FAIL_GB = 1.0
 # RAM: clang -O1 on the largest lifted files takes about 1.5 GB per parallel job (rule of thumb, not measured per file).
 GB_PER_JOB = 1.5
 RAM_WARN_GB = 16
@@ -141,9 +150,23 @@ def nsz_temp_gb(paths):
     return round(tot * 1.25 / 2.0 ** 30, 1)
 
 
-def disk_need(dump_dir=None, temp_gb=0.0):
-    """-> (GB needed in the install location, the parts as text)."""
-    need, parts = BUILD_NEED_GB, ['build %d GB' % BUILD_NEED_GB]
+def update_disk_rule():
+    """(0.2.65) SSBU_UPDATE_DISK_CHECK: 1 (default) = an update of a built install needs only UPDATE_NEED_GB; 0 = the full rule"""
+    return os.environ.get('SSBU_UPDATE_DISK_CHECK', '1').strip() != '0'
+
+
+def built_install(build_dir):
+    """(0.2.65) the install location already holds a built game (an update, a repair): the setup's state.json and the exe"""
+    return bool(build_dir) and os.path.isfile(os.path.join(build_dir, 'state.json')) and \
+        os.path.isfile(os.path.join(build_dir, 'work', 'ssbu_native.exe'))
+
+
+def disk_need(dump_dir=None, temp_gb=0.0, update=False):
+    """-> (GB needed in the install location, the parts as text). update: the build is there already (built_install)."""
+    if update:
+        need, parts = UPDATE_NEED_GB, ['update of a built install: runtime, menu files and margin %d GB' % UPDATE_NEED_GB]
+    else:
+        need, parts = BUILD_NEED_GB, ['build %d GB' % BUILD_NEED_GB]
     if not (dump_dir and os.path.isdir(dump_dir)):
         need += DUMP_NEED_GB
         parts.append('game files from the .nsp packages %d GB' % DUMP_NEED_GB)
@@ -153,10 +176,13 @@ def disk_need(dump_dir=None, temp_gb=0.0):
     return need, parts
 
 
-def check_disk(build_dir, dump_dir=None, temp_gb=0.0):
-    """The free space of the drive of the install location (build_dir: <repo>\\build or the folder chosen in the window)."""
+def check_disk(build_dir, dump_dir=None, temp_gb=0.0, update=None):
+    """The free space of the drive of the install location (build_dir: <repo>\\build or the folder chosen in the window).
+    update: None = found out here (built_install, with SSBU_UPDATE_DISK_CHECK on); True / False = given (tests)."""
     probe = _existing_parent(build_dir)
-    need, parts = disk_need(dump_dir, temp_gb)
+    if update is None:
+        update = update_disk_rule() and built_install(build_dir)
+    need, parts = disk_need(dump_dir, temp_gb, update)
     try:
         free = shutil.disk_usage(probe).free / 2.0 ** 30
     except OSError:
@@ -165,6 +191,13 @@ def check_disk(build_dir, dump_dir=None, temp_gb=0.0):
     txt = '%.0f GB free on %s, %.0f GB needed (%s)' % (free, drive, need, ' + '.join(parts))
     # need_gb / build_gb / dump_gb / free_gb: the installer window shows them next to its "Install location" field
     extra = {'need_gb': need, 'build_gb': BUILD_NEED_GB, 'dump_gb': DUMP_NEED_GB, 'free_gb': round(free, 1), 'drive': drive}
+    if update and need == UPDATE_NEED_GB:      # (0.2.65) the build and the game files are there: only the update's own files
+        extra['update'] = True
+        if free < UPDATE_FAIL_GB:
+            return dict(_r('fail', 'Disk space', txt + "; too little even for the update's own files: free some space"), **extra)
+        if free < need:
+            return dict(_r('warn', 'Disk space', txt + '; the update goes on, but free some space soon'), **extra)
+        return dict(_r('ok', 'Disk space', txt), **extra)
     if free < need:
         return dict(_r('fail', 'Disk space', txt + '; free some space or choose another install location (another drive)'), **extra)
     if free < need * 1.25:
@@ -261,12 +294,16 @@ def main():
     ap.add_argument('--game', action='append', default=[], help='a game file to be unpacked (repeatable): a .nsz adds the space '
                                                                 'its decompression takes for a while')
     ap.add_argument('--need-msvc', action='store_true', help='also check the Microsoft C++ Build Tools')
+    ap.add_argument('--free-gb', type=float, default=None, help='(test) pretend this much space is free on the install drive')
     ap.add_argument('--json', action='store_true', help='print the result as JSON')
     a = ap.parse_args()
     if not a.build:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import build_location
         a.build = build_location.get()
+    if a.free_gb is not None:                   # (0.2.65, test) the disk rule with a made-up free space
+        real = shutil.disk_usage
+        shutil.disk_usage = lambda p: real(p)._replace(free=int(a.free_gb * 2 ** 30))
     res = checks(a.build, a.need_msvc, a.dump, 0.0 if a.dump else nsz_temp_gb(a.game))
     if a.json:
         print(json.dumps(res, indent=1))
