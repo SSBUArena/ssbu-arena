@@ -403,6 +403,11 @@ static long long g_th_audio_other;                   /* (R3 hs11) ring loads tha
 static Th g_th[256]; static int g_nth, g_th_mismatch, g_ninfo, g_park_ms = 500;
 static int g_th_running;                              /* (R3 pub1) ra_hold_restore: threads still RUNNING (not blocked at a wait) after the 500 ms */
 static int waiting_import(const char *s) { return s && (strstr(s, "Wait") || strstr(s, "wait") || strstr(s, "Sleep") || strstr(s, "Receive") || strstr(s, "Fiber") || strstr(s, "Timed")); }
+/* (A3 online, SSBU_RB_SOCKWAIT, nnldn.c wait_vs) a thread blocked inside a socket call of the virtual network (NEX's recv thread in Poll):
+ * its import name is then this marker (a waiting import). Held only when the kernel says it is blocked (never by HOLDFAST) */
+static int sock_wait_mark(const char *s) { return s && !strncmp(s, "nn::socket wait", 15); }
+static int th_blocked(HANDLE h);                            /* (defined below) */
+static long long g_sockwait_holds, g_sockwait_refused;      /* (report) holds that took a thread at a socket wait; loads refused for one not back at its place */
 /* restore_mode 0: hold every guest thread (except this one) once it is inside a waiting import, note where;
  * restore_mode 1: hold each once it waits at the SAME guest return address as at the save (500 ms at most) */
 static struct { HANDLE h; int timeouts; } g_tmo[256]; static int g_ntmo;
@@ -430,6 +435,7 @@ static void park(int restore_mode) {
             if (SuspendThread(t->h) == (DWORD)-1) break;
             const char *imp = t->c->in_import;
             int ok = waiting_import(imp) && (!restore_mode || (t->c->import_from == t->from && imp == t->imp));
+            if (ok && sock_wait_mark(imp)) ok = th_blocked(t->h);      /* (SSBU_RB_SOCKWAIT) only blocked in the kernel */
             if (ok || now_ms() - t0 > g_park_ms) { t->held = 1; t->cok = 0; t->parked = ok; if (!ok && tm) (*tm)++; t->wait_ms = now_ms() - t0; break; }
             ResumeThread(t->h);
             SwitchToThread();
@@ -2203,6 +2209,7 @@ static int hf_same(Th *t) {
     if (g_hf_on < 0) { const char *e = getenv("SSBU_RB_HOLDFAST"); g_hf_on = !(e && e[0] == '0'); }
     if (!g_hf_on || !t->c->in_import) return 0;
     if (hf_work_safe() && strstr(t->name, "TaskWorker")) return 0;
+    if (sock_wait_mark(t->c->in_import)) return 0;      /* (SSBU_RB_SOCKWAIT) the marked span also holds a just-woken thread taking vs_lock back: always ask the kernel */
     unsigned i = (unsigned)(((uintptr_t)t->h >> 2) % HF_N);
     if (g_hf[i].h != t->h || g_hf[i].imp != t->c->in_import || g_hf[i].from != t->c->import_from) return 0;
     t->rsp = g_hf[i].rsp; t->rip = g_hf[i].rip; return 1;
@@ -2277,6 +2284,7 @@ static int ra_hold_save(void) {
         if (g_hp_on) hp_add(t->name, now_ms() - t0, spins);
         t->from = t->c->import_from; t->imp = t->c->in_import; t->regs = *t->c;
     }
+    for (int i = 0; i < g_nth; i++) if (g_th[i].held && sock_wait_mark(g_th[i].imp)) g_sockwait_holds++;
     return 1;
 }
 static void ra_release_save(void) { for (int i = 0; i < g_nth; i++) if (g_th[i].held && !ra_audio(g_th[i].name)) { ResumeThread(g_th[i].h); g_th[i].held = 0; } }
@@ -2305,9 +2313,14 @@ static void ra_hold_restore_tt(void) {
              * rule); on a 4-core PC the sound thread often runs on for the whole 500 ms (a half-second freeze each time, 20 in a
              * match on an i7-6700K). Such a thread is given up after SSBU_RB_RUN_WAIT ms (default 40): the same refusal, sooner. */
             {   static int rw = -1; if (rw < 0) { const char *e = getenv("SSBU_RB_RUN_WAIT"); rw = e ? atoi(e) : 40; }
-                if (rgs_wanted() && rw > 0 && now_ms() - t0 > rw && !(waiting_import(t->c->in_import) && th_blocked(t->h))) {
-                    t->held = 1; g_th_mismatch++; g_th_running++;
-                    static int said_rw; if (said_rw++ < 5) LOG("r1: hold for a load: thread %s still running guest code after %d ms: the load is refused now\n", t->name ? t->name : "?", rw);
+                /* (SSBU_RB_SOCKWAIT) a thread held at a socket wait in the capture, or now at one but not at its captured place, after
+                 * RUN_WAIT ms: refused as a running one (without the marker that wait was "running guest code": the same refusal as
+                 * before, not the 500 ms wait for a thread blocked at another wait) */
+                int sw = sock_wait_mark(t->imp) || sock_wait_mark(t->c->in_import);
+                if (rgs_wanted() && rw > 0 && now_ms() - t0 > rw && (sw || !(waiting_import(t->c->in_import) && th_blocked(t->h)))) {
+                    t->held = 1; g_th_mismatch++; g_th_running++; if (sw) g_sockwait_refused++;
+                    static int said_rw; if (said_rw++ < 5) LOG("r1: hold for a load: thread %s %s after %d ms: the load is refused now\n", t->name ? t->name : "?",
+                        sw ? "not back at its place (a socket wait at the capture or now)" : "still running guest code", rw);
                     break; } }
             if (now_ms() - t0 > 500) { t->held = 1; g_th_mismatch++; if (!(waiting_import(t->c->in_import) && th_blocked(t->h))) g_th_running++;
                 static int said; if (said++ < 20) LOG("r1: hold for a load: thread %s not back at its wait after 500 ms: held at %s @%llx then, now %s @%llx, blocked %d\n", t->name ? t->name : "?",
