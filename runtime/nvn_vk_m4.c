@@ -2902,6 +2902,13 @@ static void prep_start(void) {
     if (getenv("SSBU_VK_PREP_FIGHT")) g_prep_fight_cap = atoi(getenv("SSBU_VK_PREP_FIGHT"));
     g_prep_cap = g_pw_nthread > 1 ? g_pw_nthread / 2 : 1;
     if (getenv("SSBU_VK_PREP_WORKERS") && atoi(getenv("SSBU_VK_PREP_WORKERS")) > 0) g_prep_cap = atoi(getenv("SSBU_VK_PREP_WORKERS"));
+    /* (amd-fixes, from OpenSmash #428 / #434) integrated graphics share the processor's power budget: the preparation that
+     * runs behind the menus while the game is played takes ONE worker there (the first-run screen and LOADING SHADERS, which
+     * hold the game anyway, and the game's own programs keep every worker). SSBU_VK_IGPU_ONE_WORKER=0: half of them, as before. */
+    if (V.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && !getenv("SSBU_VK_PREP_WORKERS") && !(getenv("SSBU_VK_IGPU_ONE_WORKER") && getenv("SSBU_VK_IGPU_ONE_WORKER")[0] == '0')) {
+        g_prep_cap = 1;
+        printf("nvn_vk_prep: integrated GPU: the preparation behind the menus uses one worker (SSBU_VK_IGPU_ONE_WORKER=0: %d)\n", g_pw_nthread > 1 ? g_pw_nthread / 2 : 1);
+    }
     if (getenv("SSBU_VK_PREP_KEEP")) g_prep_keep = atoi(getenv("SSBU_VK_PREP_KEEP"));
     /* session 14: VK_KEYS_VERSION = the version of what feeds the driver's keys besides the shader text: the library layout
      * (the one-layout sets: 66 buffers, 128 samplers) and the dynamic-state list. RAISE IT when either changes: every stage
