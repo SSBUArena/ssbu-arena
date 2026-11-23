@@ -41,7 +41,7 @@ FOOTER = 'ui/layout/menu/main_menu_footer/main_menu_footer/layout.arc'
 MESSAGES = 'ui/message/msg_menu.msbt'
 SCRIPTS = 'ui/script/menu/main/'
 MARKER = 'arena_menu.json'      # (0.2.50) written last: the launcher (Core.ArenaMenuOk) checks the files it names
-MARKER_VERSION = 5              # (0.2.53) 2: the elo texts below too; (22/11) 3: the Peak / Mastery Points labels; 4: the rank emblems; 5: the label slot (the launcher makes the menu again for an older marker)
+MARKER_VERSION = 6              # (0.2.53) 2: the elo texts below too; (22/11) 3: the Peak / Mastery Points labels; 4: the rank emblems; 5: the label slot; 6: the tile "Online Matchmaking" named "Online Ranked" again (the launcher makes the menu again for an older marker)
 # (0.2.53, ranked elo per fighter, PHASE 2: on by default since 0.2.54) with SSBU_ONLINE_ELO_UI (=0 off) the game's own Global Smash Power panel shows the
 # elo (runtime online_elo.c) and its name becomes "Arena Elo". Written from the player's own message files into characters/arena_elo_text
 # (beside arena_menu), a folder the loose-file layer leaves out with SSBU_ONLINE_ELO_UI=0 (the game's own texts). Labels read off the game's msg_common / msg_melee (results item, the
@@ -220,37 +220,37 @@ ICONS = {'spirits': 'online_top_btn3_04_icon_off^s', 'online': 'ranked', 'other'
 # names and help lines, by the message file's region (2 US English, 5 UK English, 10 Italian)
 LABELS = {
     'it': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Squad Strike in una stanza online: 3 personaggi, 1 stock ciascuno, con il rollback.',
-           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Trova un avversario online: regole competitive, con il rollback.',
+           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Classificate 1v1 online: trova un avversario, elo per personaggio, con il rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'Rooms', 'mnu_top_help_other': 'Stanze online con gli altri giocatori, con il rollback.',
            'mnu_top_collection': 'Impostazioni', 'mnu_top_help_collection': 'Impostazioni del gioco. Dentro, premi + per le impostazioni di SSBU Arena.',
            'mnu_top_tip_eshop': 'Esci', 'mnu_top_notices': 'Esci', 'mnu_top_help_eshop': 'Chiudi SSBU Arena.'},
     'en': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Squad Strike in an online room: 3 fighters each, 1 stock each, with rollback.',
-           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Find an opponent online: competitive rules, with rollback.',
+           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Ranked 1v1 online: find an opponent, an elo per fighter, with rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'Rooms', 'mnu_top_help_other': 'Online rooms with other players, with rollback.',
            'mnu_top_collection': 'Settings', 'mnu_top_help_collection': "The game's settings. Inside, press + for the SSBU Arena settings.",
            'mnu_top_tip_eshop': 'Exit', 'mnu_top_notices': 'Exit', 'mnu_top_help_eshop': 'Close SSBU Arena.'},
     'fr': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Squad Strike dans une salle en ligne : 3 combattants chacun, 1 vie chacun, avec le rollback.',
-           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Trouvez un adversaire en ligne : règles compétitives, avec le rollback.',
+           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Classé 1v1 en ligne : trouvez un adversaire, un elo par combattant, avec le rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'Rooms', 'mnu_top_help_other': 'Salles en ligne avec les autres joueurs, avec le rollback.',
            'mnu_top_collection': 'Paramètres', 'mnu_top_help_collection': "Paramètres du jeu. À l'intérieur, appuyez sur + pour les paramètres de SSBU Arena.",
            'mnu_top_tip_eshop': 'Quitter', 'mnu_top_notices': 'Quitter', 'mnu_top_help_eshop': 'Fermer SSBU Arena.'},
     'es': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Squad Strike en una sala en línea: 3 luchadores cada uno, 1 vida cada uno, con rollback.',
-           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Encuentra un rival en línea: reglas competitivas, con rollback.',
+           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Clasificatoria 1v1 en línea: encuentra un rival, un elo por luchador, con rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'Rooms', 'mnu_top_help_other': 'Salas en línea con otros jugadores, con rollback.',
            'mnu_top_collection': 'Ajustes', 'mnu_top_help_collection': 'Ajustes del juego. Dentro, pulsa + para los ajustes de SSBU Arena.',
            'mnu_top_tip_eshop': 'Salir', 'mnu_top_notices': 'Salir', 'mnu_top_help_eshop': 'Cerrar SSBU Arena.'},
     'de': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Squad Strike in einem Online-Raum: je 3 Kämpfer, je 1 Leben, mit Rollback.',
-           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Finde online einen Gegner: Turnierregeln, mit Rollback.',
+           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Ranglistenkämpfe 1v1 online: finde einen Gegner, ein Elo pro Kämpfer, mit Rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'Rooms', 'mnu_top_help_other': 'Online-Räume mit anderen Spielern, mit Rollback.',
            'mnu_top_collection': 'Optionen', 'mnu_top_help_collection': 'Die Spieloptionen. Drücke darin +, um die Einstellungen von SSBU Arena zu öffnen.',
            'mnu_top_tip_eshop': 'Beenden', 'mnu_top_notices': 'Beenden', 'mnu_top_help_eshop': 'SSBU Arena schließen.'},
     'nl': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Squad Strike in een online kamer: 3 vechters elk, 1 leven elk, met rollback.',
-           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Vind online een tegenstander: competitieve regels, met rollback.',
+           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Ranked 1v1 online: vind een tegenstander, een elo per vechter, met rollback.',
            'mnu_top_other': 'Online' + chr(10) + 'Rooms', 'mnu_top_help_other': 'Online kamers met andere spelers, met rollback.',
            'mnu_top_collection': 'Opties', 'mnu_top_help_collection': 'De opties van het spel. Druk daarin op + voor de instellingen van SSBU Arena.',
            'mnu_top_tip_eshop': 'Afsluiten', 'mnu_top_notices': 'Afsluiten', 'mnu_top_help_eshop': 'SSBU Arena afsluiten.'},
     'ru': {'mnu_top_spirits': 'Battle Arena', 'mnu_top_help_spirits': 'Squad Strike в онлайн-комнате: по 3 бойца, по 1 жизни, с роллбэком.',
-           'mnu_top_online': 'Online Matchmaking', 'mnu_top_help_online': 'Найдите соперника онлайн: турнирные правила, с роллбэком.',
+           'mnu_top_online': 'Online Ranked', 'mnu_top_help_online': 'Рейтинговые бои 1v1 онлайн: найдите соперника, эло для каждого бойца, с роллбэком.',
            'mnu_top_other': 'Online' + chr(10) + 'Rooms', 'mnu_top_help_other': 'Онлайн-комнаты с другими игроками, с роллбэком.',
            'mnu_top_collection': 'Настройки', 'mnu_top_help_collection': 'Настройки игры. Внутри нажмите +, чтобы открыть настройки SSBU Arena.',
            'mnu_top_tip_eshop': 'Выход', 'mnu_top_notices': 'Выход', 'mnu_top_help_eshop': 'Закрыть SSBU Arena.'},
@@ -471,7 +471,7 @@ def main():
             raise ValueError('Lua chunk round-trip changed ' + name)
         outputs[SCRIPTS + name + '.lc'] = transform(source)
     outputs[MESSAGES] = msbt_patch.apply_grow(arc.get(MESSAGES, a.region), LABELS[REGIONS.get(a.region, ('en-US', 'en'))[1]])
-    print('routes: Arena, Online Matchmaking, Online Rooms, Settings, Exit; labels for region %d' % a.region)
+    print('routes: Arena, Online Ranked, Online Rooms, Settings, Exit; labels for region %d' % a.region)
     for relative, content in outputs.items():
         dest = a.out / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
