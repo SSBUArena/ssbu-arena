@@ -250,6 +250,8 @@ static DWORD g_render_tid;
 static HWND g_hwnd;
 static HDC g_dc;
 static __declspec(thread) HANDLE t_done;
+/* (0.2.65) a guest thread's done-event is closed when the thread ends (os_threads.c thread_handles_cleanup); gl_run makes it again if asked */
+void nvn_gl_thread_cleanup(void) { if (t_done) { CloseHandle(t_done); t_done = NULL; } }
 static void gl_housekeeping(void);
 static void (*pf_job_submit)(void *), (*pf_job_present)(void *);
 static LONG64 g_joblog_frame, g_joblog_cur;

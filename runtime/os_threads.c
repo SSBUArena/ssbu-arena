@@ -115,9 +115,9 @@ static DWORD ns_to_ms(int64_t ns) { return ns <= 0 ? 0 : (DWORD)((ns + 999999) /
 /* nn::os::SleepThread takes nanoseconds and the console's timer is good to a few microseconds. Sleep() counts whole
  * milliseconds on a 1 ms (or 15.6 ms) grid, so the wait runs on a high-resolution waitable timer (100 ns units,
  * Windows 10 1803 and later); Sleep() is only the fallback. A zero or negative span yields, as on the console. */
+static __declspec(thread) HANDLE timer;               /* (file scope: thread_handles_cleanup closes it when the guest thread ends) */
+static __declspec(thread) int no_timer;
 static void sleep_ns(int64_t ns) {
-    static __declspec(thread) HANDLE timer;
-    static __declspec(thread) int no_timer;
     LARGE_INTEGER due;
     if (ns <= 0) { SwitchToThread(); return; }
     if (!timer && !no_timer) {
@@ -322,6 +322,23 @@ const char *guest_thread_name_of(DWORD tid) {
     return NULL;
 }
 
+/* (0.2.65) the per-thread Windows handles a guest thread made for itself (sleep_ns's high-resolution timer, nvn_gl.c gl_run's
+ * done-event) are closed when it ends: before, each thread that came and went left them open (a room restarts the NetSystem
+ * thread). Called last on that host thread, after the TLS destructors (guest code: it may still sleep or wait for the render
+ * thread); nothing on it uses them after. Both are reset, so a later use would only make them again, as on first use.
+ * The rollback ring never brings an ended thread back (r1_state.c restores a thread only while it is held at a wait; once its
+ * host thread ended there is nothing to restore), and these are host handles outside the guest memory the ring saves.
+ * SSBU_THREAD_HANDLE_CLEANUP=0: left open, as before. */
+static int g_th_cleanup = -1;
+void nvn_gl_thread_cleanup(void);
+static void thread_handles_cleanup(void) {
+    if (g_th_cleanup < 0) { const char *e = getenv("SSBU_THREAD_HANDLE_CLEANUP"); g_th_cleanup = !(e && e[0] == '0'); }
+    if (!g_th_cleanup) return;
+    if (timer) { CloseHandle(timer); timer = NULL; }
+    no_timer = 0;
+    nvn_gl_thread_cleanup();
+}
+
 static DWORD WINAPI thread_main(LPVOID arg) {
     Obj *o = arg;
     t_thread = o->key;
@@ -337,6 +354,7 @@ static DWORD WINAPI thread_main(LPVOID arg) {
     call_guest(c, o->fn);
     pkey_run_destructors(c);                          /* pthread keys a plugin's Rust std made on this game thread */
     tls_run_destructors(c);
+    thread_handles_cleanup();                         /* (0.2.65) last on this host thread: its own timer / event closed */
     trace_printf("--- thread %llx finished\n", (unsigned long long)o->key);
     EnterCriticalSection(&o->cs);
     o->finished = 1;
@@ -1179,6 +1197,7 @@ static DWORD WINAPI pthread_main(LPVOID arg) {
     uint64_t ret = c->x[0];
     pkey_run_destructors(c);
     tls_run_destructors(c);
+    thread_handles_cleanup();
     trace_printf("--- pthread %llx finished\n", (unsigned long long)o->key);
     EnterCriticalSection(&o->cs);
     o->retval = ret;
