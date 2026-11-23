@@ -2,7 +2,7 @@
 """One-click install: from your own game files to a playable build. Started by `Install SSBU.bat` (through the installer window).
 
     python scripts/install.py [--no-gui] [--progress-json] [--dry-run] [--base F] [--update F] [--dlc F ...] [--keys F]
-                              [--dump DIR] [--firmware DIR] [--runtime ZIP | --no-runtime] [--jobs N]
+                              [--dump DIR] [--shared-data off|auto|DIR] [--firmware DIR] [--runtime ZIP | --no-runtime] [--jobs N]
                               [--no-shortcuts] [--no-self-update] [--prepare-only] [--build-dir DIR]
 
 build\\ below is the install location: <repo>\\build, or the folder chosen with --build-dir (the installer window's "Install
@@ -326,6 +326,9 @@ def nsz_temp_gb(a):
 def step_precheck(cx):
     import precheck
     dump = cx.a.dump or (os.path.join(BUILD, 'dump') if dump_ok(os.path.join(BUILD, 'dump')) else None)
+    if not dump:
+        root, _ = shared_source(cx.a)
+        dump = root                         # (shared game data: no 17 GB dump in the install location)
     say('   install location: %s%s' % (BUILD, ' (the default)' if build_location.same(BUILD, build_location.default(REPO)) else ''))
     res = precheck.checks(BUILD, need_msvc=not runtime_local(cx.a), dump_dir=dump, temp_gb=0.0 if dump else nsz_temp_gb(cx.a))
     for c in res:
@@ -369,13 +372,81 @@ def step_packages(cx):
 
 
 # ------------------------------------------------------------------------------------------------------ 4. inputs
+SHARED_DUMP = 'dump_shared'
+
+
+def shared_mode(a):
+    """--shared-data (or SSBU_SHARED_DATA): 'off' (the default: Arena's own dump, as before), 'auto' (an OpenSmash Ultimate
+    install this PC remembers) or an OpenSmash install folder"""
+    return (getattr(a, 'shared_data', None) or os.environ.get('SSBU_SHARED_DATA') or 'off').strip() or 'off'
+
+
+def shared_source(a):
+    """(the OpenSmash install whose game data this install can read, None) or (None, why not; None when sharing is off).
+    Only reading: nothing is written in OpenSmash's folder (scripts/shared_gamedata.py)."""
+    mode = shared_mode(a)
+    if mode.lower() == 'off':
+        return None, None
+    import shared_gamedata as sg
+    roots = sg.find([] if mode.lower() == 'auto' else [mode])
+    if not roots:
+        return None, ('no OpenSmash Ultimate install found on this PC' if mode.lower() == 'auto' else
+                      '%s is not an OpenSmash Ultimate install' % mode)
+    why = None
+    for r in roots:
+        try:
+            sg.check(r)
+            return r, None
+        except sg.NotUsable as e:
+            why = '%s: %s' % (r, e)
+    return None, why
+
+
+def step_shared(cx):
+    """--shared-data: the linked dump <build>\\dump_shared (about 90 MB: exefs copy, .nrr, fonts, romfs\\data.arcl) that reads
+    the game data of an OpenSmash install in place. -> a note, or None when it is not used (the normal dump steps go on)."""
+    root, why = shared_source(cx.a)
+    if not root:
+        return ('shared game data not used: %s' % why) if why else None
+    import shared_gamedata as sg
+    out = os.path.join(BUILD, SHARED_DUMP)
+    try:
+        with open(os.path.join(out, 'shared_from.json'), encoding='utf-8') as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        rec = {}
+    same = rec.get('root') and os.path.normcase(rec['root']) == os.path.normcase(root) and not sg.status(out)
+    if cx.a.dry_run:
+        cx.dump = out
+        return 'would %s the game data of OpenSmash Ultimate in %s (%s, no 17 GB copy)' % ('keep using' if same else 'link to', root, out)
+    if not same:
+        say('   linking to the game data of OpenSmash Ultimate in %s (read in place, nothing written there)' % root)
+        rec = sg.make(root, out, full=os.environ.get('SSBU_SHARED_VERIFY') == 'full', say=say)
+    cx.dump = out
+    try:                                 # a build made from another game version: built again from the conversion on
+        with open(os.path.join(BUILD, 'state.json'), encoding='utf-8') as f:
+            was = json.load(f).get('game_version')
+        if was and was != rec.get('version'):
+            cx.setup_args += ['--from', 'convert']
+            say('   the game was built for %s, OpenSmash has %s: it is built again' % (was, rec.get('version')))
+    except (OSError, ValueError):
+        pass
+    own = os.path.join(BUILD, 'dump')
+    if dump_ok(own):
+        say('   note: the installer\'s own copy of the game data, %s (about 17 GB), is not used any more while the data is '
+            'shared; it is kept (delete it to free the space, or run the installer with --shared-data off to go back to it)' % own)
+    return 'game data shared with OpenSmash Ultimate (%s, %s): %s' % (root, rec.get('version'), out)
+
+
 def arc_complete(path):
     """data.arc is whole: its header's tables lie inside the file and the file-system table is all there. A dump cut short
     (a full disk, the window closed) leaves a data.arc with a good header and a missing end (testers, 2026-10-20)."""
     import struct
+    sys.path.insert(0, os.path.join(REPO, 'tools', 'nro'))
+    import arc_file                     # data.arc, or data.arcl (shared game data: scripts/shared_gamedata.py)
     try:
-        size = os.path.getsize(path)
-        with open(path, 'rb') as f:
+        size = arc_file.arc_size(path)
+        with arc_file.open_arc(path) as f:
             magic, stream, files, shared, fs, search, _ = struct.unpack('<7Q', f.read(0x38))
             if magic != 0xABCDEF9876543210 or max(stream, files, shared, fs, search) + 16 > size:
                 return False
@@ -404,7 +475,12 @@ def step_inputs(cx):
     a, st = cx.a, cx.st
     notes = []
     ready = os.path.join(BUILD, 'dump')
-    if a.dump:
+    shared = None if a.dump else step_shared(cx)
+    if shared:
+        notes.append(shared)
+    if cx.dump:
+        pass                                # the shared game data (step_shared)
+    elif a.dump:
         for sub in ('exefs', 'romfs'):
             if not os.path.isdir(os.path.join(a.dump, sub)):
                 raise Stop('the dump folder %s has no %s\\ inside' % (a.dump, sub), 'Choose the folder that holds exefs\\ and romfs\\.')
@@ -1144,6 +1220,9 @@ def parse(argv):
     ap.add_argument('--dlc', action='append', default=[], help='a DLC package (repeatable); its add-on id is read from the file name and listed in build/config/dlc.txt')
     ap.add_argument('--keys', help='your prod.keys (used where it is, never copied)')
     ap.add_argument('--dump', help='a dump folder you already have (exefs\\ and romfs\\ inside)')
+    ap.add_argument('--shared-data', help='"auto" or an OpenSmash Ultimate install folder: read the game data of that install in place '
+                                          '(scripts/shared_gamedata.py) instead of unpacking a 17 GB copy of our own; "off" (the '
+                                          'default, also SSBU_SHARED_DATA): our own copy, as before')
     ap.add_argument('--firmware', help='your firmware folder (.nca files) or the extracted system fonts')
     ap.add_argument('--build-dir', help='install location: the folder for the unpacked game, the build, the logs, the saves and the '
                                         '.nsz decompression (about 25 GB; default <repo>\\build). Remembered in build_location.txt, '

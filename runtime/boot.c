@@ -417,6 +417,7 @@ static void launch_defaults(void) {
     p = json_blank(p);
     if (*p != '"' || !json_path(p, g_state_romfs, sizeof g_state_romfs, &g_state_romfs_lossy)) { g_state_romfs[0] = 0; return; }     /* not a string (null) */
     snprintf(probe, sizeof probe, "%s\\data.arc", g_state_romfs);
+    if (GetFileAttributesA(probe) == INVALID_FILE_ATTRIBUTES) strcat(probe, "l");      /* the linked archive (arclink.c: shared game data) */
     if (g_state_romfs[0] && !g_state_romfs_lossy && GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES) {
         _putenv_s("SSBU_ROMFS", g_state_romfs);
         printf("SSBU_ROMFS not set: taken from ..\\state.json\n");
@@ -442,6 +443,20 @@ static void check_romfs(void) {
     for (size_t i = 0; i < sizeof no_data / sizeof no_data[0]; i++) if (getenv(no_data[i])) return;
     snprintf(probe, sizeof probe, "%s\\data.arcp", dir);                       /* the light archive (arcpack.c) will do */
     if (GetFileAttributesA(probe) == INVALID_FILE_ATTRIBUTES) snprintf(probe, sizeof probe, "%s\\data.arc", dir);
+    if (GetFileAttributesA(probe) == INVALID_FILE_ATTRIBUTES) {                  /* the linked archive (arclink.c: shared game data) */
+        char l[MAX_PATH + 16];
+        snprintf(l, sizeof l, "%s\\data.arcl", dir);
+        if (GetFileAttributesA(l) != INVALID_FILE_ATTRIBUTES) {
+            int arcl_load(const char *); const char *arcl_why(void);
+            if (arcl_load(dir) != 1) {
+                snprintf(msg, sizeof msg, "This install reads the game data of your OpenSmash Ultimate install (shared game data), and that "
+                         "data cannot be used now:\n\n%s\n\nOpenSmash was updated, moved or removed. Open the SSBU Arena launcher and "
+                         "choose Repair: it links the data again, or makes a copy of Arena's own from your game files.", arcl_why());
+                romfs_fail(msg);
+            }
+            snprintf(probe, sizeof probe, "%s", l);
+        }
+    }
     if (GetFileAttributesA(probe) == INVALID_FILE_ATTRIBUTES) {
         static const char how[] = "Start the game with  python scripts\\run.py --userdata <folder>  from the repository, "
                                   "or set SSBU_ROMFS to the RomFS folder of your dump (the one that holds data.arc).";

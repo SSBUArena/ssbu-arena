@@ -231,7 +231,7 @@ namespace Arena
                 if (Directory.Exists(Path.Combine(build, @"..\dump\romfs"))) return true;
                 var m = System.Text.RegularExpressions.Regex.Match(File.ReadAllText(Path.Combine(build, "state.json")), "\"romfs\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
                 string romfs = m.Success ? System.Text.RegularExpressions.Regex.Unescape(m.Groups[1].Value) : null;
-                return romfs != null && (File.Exists(Path.Combine(romfs, "data.arc")) || File.Exists(Path.Combine(romfs, "data.arcp")));
+                return romfs != null && (File.Exists(Path.Combine(romfs, "data.arc")) || File.Exists(Path.Combine(romfs, "data.arcp")) || File.Exists(Path.Combine(romfs, "data.arcl")));
             }
             catch { return false; }
         }

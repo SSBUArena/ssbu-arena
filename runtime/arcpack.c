@@ -11,7 +11,9 @@
  *     The file size the game sees is the original's.
  * (3) data.arcp.extra next to data.arcp (same format, optional): more ranges, read where data.arcp has none. A small
  *     patch for a light archive already copied elsewhere (tools/competitive/pack_regions.py: every language / region
- *     version of the region-dependent files whose one version data.arcp has). */
+ *     version of the region-dependent files whose one version data.arcp has).
+ * (4) data.arcl next to (in place of) data.arc and data.arcp: the LINKED archive (arclink.c), the whole data.arc read from
+ *     the files of another install (shared game data, scripts/shared_gamedata.py). */
 typedef struct { uint64_t off, len, at; } ArcpRange;
 static struct { HANDLE h; uint64_t size; uint64_t n; ArcpRange *r; HANDLE xh; uint64_t xn; ArcpRange *xr; } g_arcp[16];
 static HANDLE g_arc_handles[16];
@@ -20,6 +22,7 @@ static FILE *g_arc_log;
 static volatile LONG64 g_arcp_missing;
 
 static int ends_with_i(const char *s, const char *t) { size_t a = strlen(s), b = strlen(t); return a >= b && !_stricmp(s + a - b, t); }
+#include "arclink.c"                                   /* (4) the linked archive data.arcl */
 
 /* the original data.arc was opened: remember the handle for SSBU_ARC_LOG */
 static void arc_log_flush(void);
@@ -47,6 +50,7 @@ static void arc_read_logged(HANDLE h, int64_t off, uint64_t size) {
 }
 static void arc_log_flush(void) { if (g_arc_log) fflush(g_arc_log); }
 static void arc_closed(HANDLE h) {                       /* a closed handle value can come back for another file */
+    arcl_closed(h);
     AcquireSRWLockExclusive(&g_arcp_lock);
     for (int i = 0; i < 16; i++) { if (g_arc_handles[i] == h) g_arc_handles[i] = NULL; if (g_arcp[i].h == h) { free(g_arcp[i].r); free(g_arcp[i].xr); if (g_arcp[i].xh) CloseHandle(g_arcp[i].xh); memset(&g_arcp[i], 0, sizeof g_arcp[i]); } }
     ReleaseSRWLockExclusive(&g_arcp_lock);

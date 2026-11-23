@@ -26,7 +26,9 @@ class Arc:
     def __init__(self, path=ARC):
         import zstandard
         self.path = path
-        self.f = open(path, 'rb')
+        sys.path.insert(0, HERE)
+        import arc_file                     # data.arc, or its linked form data.arcl (shared game data)
+        self.f = arc_file.open_arc(path)
         hdr = self.f.read(0x38)
         (magic, self.stream_off, self.file_off, self.shared_off,
          self.fs_off, self.search_off, _) = struct.unpack('<7Q', hdr)

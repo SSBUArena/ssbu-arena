@@ -91,6 +91,7 @@ namespace Arena
             }
             string arc = Core.RomFS == null ? null : Path.Combine(Core.RomFS, "data.arc");
             if (arc != null && File.Exists(arc)) { sb.Append("- ").Append(new FileInfo(arc).Length).Append(" romfs:data.arc\n"); rels.Add("arc"); }
+            else if (arc != null && File.Exists(arc + "l")) { sb.Append("- ").Append(new FileInfo(arc + "l").Length).Append(" romfs:data.arcl\n"); rels.Add("arcl"); }
             File.WriteAllText(ListPath, sb.ToString(), new UTF8Encoding(false));
             return rels.Count;
         }

@@ -168,6 +168,7 @@ namespace Arena
             if (!Directory.Exists(CompDir)) MakeCompetitive();
             HasCompetitive = Directory.Exists(CompDir);
             LightArc = RomFS != null && File.Exists(Path.Combine(RomFS, "data.arcp")) && !File.Exists(Path.Combine(RomFS, "data.arc"));
+            SharedArc = RomFS != null && !File.Exists(Path.Combine(RomFS, "data.arc")) && !LightArc && File.Exists(Path.Combine(RomFS, "data.arcl"));
 
             var L = ReadIni(LauncherIni);
             var O = ReadIni(OnlineIni);
@@ -356,13 +357,19 @@ namespace Arena
         /// <summary>(0.2.8) build\characters\competitive (6 stages, no items, no Final Smash meter) made from the dump's
         /// data.arc by tools/competitive/make_competitive.py (half a second): no install made it, so the Arena menu and
         /// the competitive rules stayed off (they need it). Here once, when it is missing and the sources are there.</summary>
+        /// <summary>(shared game data) the RomFS folder holds data.arc only as data.arcl, a map into the files of an OpenSmash
+        /// Ultimate install (scripts/shared_gamedata.py): the tools read it when given the path of data.arc (tools/nro/arc_file.py)</summary>
+        public static bool SharedArc;
+        /// <summary>data.arc there in a form the tools read: the archive itself or the linked one (data.arcl)</summary>
+        public static bool ArcThere(string arc) { return arc != null && (File.Exists(arc) || File.Exists(arc + "l")); }
+
         static void MakeCompetitive()
         {
             try
             {
                 string py = Repo == null ? null : Path.Combine(Repo, @"deps\python\python.exe"), script = Repo == null ? null : Path.Combine(Repo, @"tools\competitive\make_competitive.py");
                 string arc = RomFS == null ? null : Path.Combine(RomFS, "data.arc");
-                if (py == null || !File.Exists(py) || !File.Exists(script) || arc == null || !File.Exists(arc)) return;
+                if (py == null || !File.Exists(py) || !File.Exists(script) || !ArcThere(arc)) return;
                 var psi = new ProcessStartInfo(py, "\"" + script + "\" --out \"" + Path.Combine(Build, "characters") + "\" --arc \"" + arc + "\"")
                 { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
                 using (var p = Process.Start(psi)) p.WaitForExit(60000);
@@ -382,7 +389,7 @@ namespace Arena
                 if (StagesReady()) return true;
                 if (Repo == null || RomFS == null) return false;
                 string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\stages\extract_backgrounds.py"), arc = Path.Combine(RomFS, "data.arc");
-                if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return false;
+                if (!File.Exists(py) || !File.Exists(script) || !ArcThere(arc)) return false;
                 var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + StagesDir + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
                 using (var p = Process.Start(psi)) { p.WaitForExit(300000); if (p.ExitCode != 0) return false; }
                 File.WriteAllText(Path.Combine(StagesDir, "done_v3.txt"), "ok");
@@ -399,7 +406,7 @@ namespace Arena
             if (File.Exists(list) && ReplayAssetsThere(dir, list)) return list;
             if (Repo == null || RomFS == null) return File.Exists(list) ? list : null;
             string py = Path.Combine(Repo, @"deps\python\python.exe"), script = Path.Combine(Repo, @"tools\replay\replay_assets.py"), arc = Path.Combine(RomFS, "data.arc");
-            if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return null;
+            if (!File.Exists(py) || !File.Exists(script) || !ArcThere(arc)) return null;
             var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + dir + "\" --replay \"" + replay + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true };
             // (0.2.46) what the tool said, in build\replay_assets.log: in 0.2.41 .. 0.2.45 it failed on every compact (version 5)
@@ -519,7 +526,7 @@ namespace Arena
                 // (0.2.52) stock: the small stock icons of the Leaderboard, once the sources have the script that makes them
                 bool stockDone = File.Exists(Path.Combine(AvatarsDir, "stock", "done.txt")) || !File.Exists(script) || !File.ReadAllText(script).Contains("chara_2");
                 if (File.Exists(Path.Combine(AvatarsDir, "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "more", "done.txt")) && File.Exists(Path.Combine(AvatarsDir, "all", "icons.txt")) && File.Exists(Path.Combine(AvatarsDir, "all", "v2.txt")) && stockDone) return;      // (0.2.34: all, every profile icon; 0.2.37: v2, with the Assist Trophies)
-                if (!File.Exists(py) || !File.Exists(script) || !File.Exists(arc)) return;
+                if (!File.Exists(py) || !File.Exists(script) || !ArcThere(arc)) return;
                 var psi = new ProcessStartInfo(py, "\"" + script + "\" --arc \"" + arc + "\" --out \"" + AvatarsDir + "\"") { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true };
                 using (var p = Process.Start(psi)) p.WaitForExit(120000);
             }
@@ -724,7 +731,7 @@ namespace Arena
                 string py = Repo == null ? null : Path.Combine(Repo, @"deps\python\python.exe"), script = Repo == null ? null : Path.Combine(Repo, @"tools\ui\prepare_menu_classic.py");
                 string arc = RomFS == null ? null : Path.Combine(RomFS, "data.arc");
                 if (py == null || !File.Exists(py) || !File.Exists(script)) { Updater.Log("arena menu: no python or menu tool in " + Repo); return false; }
-                if (arc == null || !File.Exists(arc)) { Updater.Log("arena menu: no data.arc (" + (arc ?? "no dump in state.json") + ")"); return false; }
+                if (!ArcThere(arc)) { Updater.Log("arena menu: no data.arc (" + (arc ?? "no dump in state.json") + ")"); return false; }
                 Directory.CreateDirectory(Path.Combine(Build, "logs"));
                 var psi = new ProcessStartInfo(py, "-u \"" + script + "\" --out \"" + ArenaMenuDir + "\" --build \"" + Build + "\" --arc \"" + arc + "\"")
                 { WorkingDirectory = Repo, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
@@ -750,8 +757,8 @@ namespace Arena
                 r.Add(File.Exists(x[0]) ? new Check(true, x[1]) : new Check(false, x[1] + " missing: " + x[0]));
             int mods = Directory.Exists(Path.Combine(Work, "nro_bin_eh_o2r1")) ? Directory.GetFiles(Path.Combine(Work, "nro_bin_eh_o2r1"), "*.dll").Length : 0;
             r.Add(new Check(mods >= 98, "Fighter modules: " + mods + " of 98"));
-            bool arc = RomFS != null && (File.Exists(Path.Combine(RomFS, "data.arc")) || File.Exists(Path.Combine(RomFS, "data.arcp")));
-            r.Add(new Check(arc, arc ? "Game data (" + (LightArc ? "light archive" : "data.arc") + ")" : "data.arc not found (RomFS of the dump)"));
+            bool arc = RomFS != null && (File.Exists(Path.Combine(RomFS, "data.arc")) || File.Exists(Path.Combine(RomFS, "data.arcp")) || File.Exists(Path.Combine(RomFS, "data.arcl")));
+            r.Add(new Check(arc, arc ? "Game data (" + (LightArc ? "light archive" : SharedArc ? "shared with OpenSmash Ultimate" : "data.arc") + ")" : "data.arc not found (RomFS of the dump)"));
             // (0.2.50) without Arena's menu the game starts as the original game (original menu, full stats overlay): never silently
             if (!ArenaMenuOk) EnsureArenaMenu();      // (0.2.50) made here (this runs in the background) when missing or incomplete
             r.Add(ArenaMenuOk ? new Check(true, "Arena menu") : new Check(false, ArenaMenuMissingText));

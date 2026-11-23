@@ -339,7 +339,7 @@ def dump_at(d):
     if _isdir(ex) and _isdir(rom):
         files = {x.lower() for x in _listdir(ex)}
         missing = [x for x in ('main', 'rtld', 'sdk', 'subsdk0', 'main.npdm') if x not in files]
-        has_arc = _isfile(os.path.join(rom, 'data.arc'))
+        has_arc = _isfile(os.path.join(rom, 'data.arc')) or _isfile(os.path.join(rom, 'data.arcl'))   # (data.arcl: shared game data)
         fonts = _isdir(os.path.join(d, 'sysdata', 'fonts'))
         problems = (['exefs lacks ' + ', '.join(missing)] if missing else []) + ([] if has_arc else ['romfs\\data.arc missing'])
         return {'kind': 'dump', 'path': d, 'complete': not problems, 'problems': problems, 'fonts': fonts,
