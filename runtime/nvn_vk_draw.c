@@ -87,8 +87,9 @@ static int vk_amd_forced(void) { static int f = -1; if (f < 0) { const char *e =
 static int vk_as_amd(void) { return V.props.vendorID == 0x1002 || vk_amd_forced(); }
 static int vk_amd_safe(void) {
     static int a = -1;
-    if (a < 0) { const char *e = getenv("SSBU_VK_AMD_SAFE"); a = vk_as_amd() && !(e && e[0] == '0');
-                 if (a) printf("nvn_vk: AMD GPU%s: whole pipelines, vertex buffers in system memory, compute buffers not kept (SSBU_VK_AMD_SAFE=0: the usual defaults)\n", V.props.vendorID == 0x1002 ? "" : " (TEST: SSBU_VK_AMD_SAFE=2 on another GPU)"); }
+    if (a < 0) { const char *e = getenv("SSBU_VK_AMD_SAFE"); int lost = vk_lost_safe_on(); a = (vk_as_amd() || lost) && !(e && e[0] == '0');      /* (amd-fixes) lost: nvn_vk.c, the safer settings after an early device lost */
+                 if (a) printf("nvn_vk: %s: whole pipelines, vertex buffers in system memory, compute buffers not kept (SSBU_VK_AMD_SAFE=0: the usual defaults)\n",
+                               V.props.vendorID == 0x1002 ? "AMD GPU" : lost ? "SAFER SETTINGS after a device lost at the start (device_lost_safe.txt)" : "AMD GPU (TEST: SSBU_VK_AMD_SAFE=2 on another GPU)"); }
     return a;
 }
 static int vk_gpl_mode(void) {
@@ -4172,6 +4173,12 @@ static void vk_present2(void *arg, int progress) {
         static int wt = -2, ws = 12;
         if (wt == -2) { const char *e = getenv("SSBU_VK_WD_TEST"); wt = e ? atoi(e) : -1; if (e && strchr(e, ',')) ws = atoi(strchr(e, ',') + 1); }
         if (wt > 0 && frame == wt && !progress) { printf("nvn_vk_watchdog: TEST: the render thread is held %d s at frame %lld (SSBU_VK_WD_TEST)\n", ws, (long long)frame); fflush(stdout); wt = -1; Sleep((DWORD)ws * 1000); }
+    }
+    {   /* (amd-fixes) TEST ONLY: SSBU_VK_LOST_TEST=<frame>: at that presented frame the render thread reports a device lost
+         * (vk_fatal), to see what an early loss does (nvn_vk.c SSBU_VK_LOST_SAFE: on NVIDIA only with =2) */
+        static int lt = -2;
+        if (lt == -2) { const char *e = getenv("SSBU_VK_LOST_TEST"); lt = e ? atoi(e) : -1; }
+        if (lt > 0 && frame == lt && !progress) { printf("nvn_vk: TEST: a device lost is reported at frame %lld (SSBU_VK_LOST_TEST)\n", (long long)frame); fflush(stdout); vk_fatal("TEST (SSBU_VK_LOST_TEST)", VK_ERROR_DEVICE_LOST); }
     }
     if (progress) goto swap;
     if (j != &g_osk_job) { g_osk_job = *j; g_osk_job_ok = 1; }      /* osk.c: what to show again under the keyboard */
