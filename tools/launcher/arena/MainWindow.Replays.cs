@@ -40,7 +40,7 @@ namespace Arena
             get
             {
                 if (R.LoopTest) return "Rollback test (one PC)";
-                return R.Kind == 1 ? "Matchmaking" : R.Kind == 2 ? "Online room" : R.Kind == 3 ? "Online" : R.Rollback ? "Online (rollback)" : "Local match";
+                return R.Kind == 1 ? "Online Ranked" : R.Kind == 2 ? "Online room" : R.Kind == 3 ? "Online" : R.Rollback ? "Online (rollback)" : "Local match";
             }
         }
         RvFighter F(int i) => i < R.Fighters.Count ? R.Fighters[i] : null;

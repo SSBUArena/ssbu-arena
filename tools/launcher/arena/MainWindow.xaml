@@ -1131,7 +1131,7 @@
                            Text="The game records your matches frame by frame, for the Replays page. This PC keeps the last 100; older ones are deleted."/>
                 <TextBlock Text="RECORD" Style="{StaticResource FieldLabel}"/>
                 <CheckBox x:Name="RecMmBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,4,0,0">
-                  <StackPanel><TextBlock Text="Matchmaking" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Online Matchmaking (the server finds you an opponent), and matches by code."/></StackPanel>
+                  <StackPanel><TextBlock Text="Online Ranked" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Ranked matches (the server finds you an opponent), and matches by code."/></StackPanel>
                 </CheckBox>
                 <CheckBox x:Name="RecLdnBox" Style="{StaticResource Switch}" Checked="Field_Changed" Unchecked="Field_Changed" Margin="0,14,0,0">
                   <StackPanel><TextBlock Text="Online rooms" FontSize="16"/><TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" Text="Rooms with other players, played over the Arena server."/></StackPanel>

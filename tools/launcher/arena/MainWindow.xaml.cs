@@ -260,7 +260,7 @@ namespace Arena
             OnlineFields.Opacity = on ? 1 : 0.45;
             OnlineHelp.Text = !Core.HasOnline ? "This build of the game has no online." : !on ? "Online off: local play only."
                             : Core.RollbackBlocked1305 ? Core.Rollback1305Text + " Local play is not affected."      // (issue #6)
-                            : "Online Matchmaking finds you an opponent; every online match plays with rollback.";
+                            : "Online Ranked finds you an opponent and moves your elo; every online match plays with rollback.";
         }
 
         void SetPadState()
