@@ -313,6 +313,8 @@ static void tex_store_mask(Mx *e, unsigned mask, unsigned rd, int is_int) {
         r = r == 255 ? 255 : r + 1;
     }
 }
+/* (amd-fixes) the float -> half pair packing of the text: MxIn.f16exact */
+static const char *PH(const Mx *e) { return e->in->target == 1 && e->in->f16exact ? "mx_ph2" : "packHalf2x16"; }
 /* TEXS / TLDS / TLD4S: components into rd0, rd0+1, rd1, rd1+1, or packed as halves */
 static void tex_store_pair(Mx *e, unsigned mask, unsigned rd0, unsigned rd1, int f16, int is_int) {
     unsigned idx = 0;
@@ -326,8 +328,8 @@ static void tex_store_pair(Mx *e, unsigned mask, unsigned rd0, unsigned rd1, int
         idx++;
     }
     if (f16) {
-        if (idx >= 1 && rd0 != 255) emit(e, " %s = packHalf2x16(vec2(%s, %s));", D(e, rd0), v[0], idx >= 2 ? v[1] : "0.0");
-        if (idx >= 3 && rd1 != 255) emit(e, " %s = packHalf2x16(vec2(%s, %s));", D(e, rd1), v[2], idx >= 4 ? v[3] : "0.0");
+        if (idx >= 1 && rd0 != 255) emit(e, " %s = %s(vec2(%s, %s));", D(e, rd0), PH(e), v[0], idx >= 2 ? v[1] : "0.0");
+        if (idx >= 3 && rd1 != 255) emit(e, " %s = %s(vec2(%s, %s));", D(e, rd1), PH(e), v[2], idx >= 4 ? v[3] : "0.0");
     }
 }
 static const char *tv_decl(int is_int, int sint) { return is_int ? (sint ? "ivec4 tv = " : "uvec4 tv = ") : "vec4 tv = "; }
@@ -809,7 +811,8 @@ static void insn(Mx *e, unsigned pc, uint64_t i) {
         emit(e, "float f = %s;", src);
         if (ssz == dsz && rop >= 8) emit(e, " f = %s(f);", rnd[rop & 3]);
         if (MXB(i, 50, 1)) emit(e, " f = clamp(f, 0.0, 1.0);");
-        if (dsz == 1) emit(e, " %s = packHalf2x16(vec2(f, 0.0));", DST); else emit(e, " %s = U(f);", DST);
+        if (dsz == 1 && PH(e)[0] == 'm') emit(e, MXB(i, 39, 2) ? " %s = mx_f2h(f, %uu);" : " %s = mx_h1(f);", DST, (unsigned)MXB(i, 39, 2));      /* (amd-fixes) the conversion's rounding mode, bits 39-40: RN RM RP RZ */
+        else if (dsz == 1) emit(e, " %s = packHalf2x16(vec2(f, 0.0));", DST); else emit(e, " %s = U(f);", DST);
         if (MXB(i, 47, 1)) { e->uses_cc = 1; emit(e, " cz = f == 0.0 || isnan(f); cs = f < 0.0 || isnan(f); ccf = false; cov = false;"); }
         break;
     }
@@ -836,7 +839,8 @@ static void insn(Mx *e, unsigned pc, uint64_t i) {
         if (MXB(i, 49, 1) && sgn) v = S(e, "abs(%s)", v);
         emit(e, "float f = float(%s);", v);
         if (MXB(i, 45, 1)) emit(e, " f = -f;");
-        if (fsz == 1) emit(e, " %s = packHalf2x16(vec2(f, 0.0));", DST); else emit(e, " %s = U(f);", DST);
+        if (fsz == 1 && PH(e)[0] == 'm') emit(e, MXB(i, 39, 2) ? " %s = mx_f2h(f, %uu);" : " %s = mx_h1(f);", DST, (unsigned)MXB(i, 39, 2));
+        else if (fsz == 1) emit(e, " %s = packHalf2x16(vec2(f, 0.0));", DST); else emit(e, " %s = U(f);", DST);
         if (MXB(i, 47, 1)) { e->uses_cc = 1; emit(e, " cz = f == 0.0; cs = f < 0.0; ccf = false; cov = false;"); }
         break;
     }
@@ -1459,11 +1463,38 @@ static void analyze(Mx *e) {
 }
 
 /* ---------------------------------------------------------------- whole shader */
+/* (amd-fixes, SSBU_VK_F16EXACT) float -> half bit for bit as the hardware the game was made for: rm = the rounding mode
+ * (0 to nearest even, 1 down, 2 up, 3 toward zero), subnormal halves kept, a value out of range infinity (the largest
+ * finite half when rounding toward zero or away from its sign), infinity kept, a NaN 0x7fff (NVIDIA's canonical NaN, what
+ * its packHalf2x16 gives). packHalf2x16 leaves the conversion to the driver: NVIDIA's rounds toward zero (every input
+ * checked on an RTX 2080 SUPER), and with AMD's the stages' pixel programs, which keep their light in half pairs, wrote
+ * NaN: stages black, fighters drawn (OpenSmash #353 / #510; a conversion like this one fixed it on two Radeon cards).
+ * Checked against x86 F16C in all four modes (1/16 of every input each, 0 differences). */
+static const char *const k_f16exact =
+    "uint mx_f2h(float f, uint rm) {\n"
+    "  uint x = U(f), s = (x >> 16) & 0x8000u, a = x & 0x7fffffffu;\n"
+    "  if (a >= 0x7f800000u) return a == 0x7f800000u ? s | 0x7c00u : 0x7fffu;\n"
+    "  bool aw = rm == 2u ? s == 0u : rm == 1u && s != 0u;\n"
+    "  if (a >= 0x47800000u) return s | (rm == 0u || aw ? 0x7c00u : 0x7bffu);\n"
+    "  uint e = a >> 23, r, rem, mid;\n"
+    "  if (e < 102u) { r = 0u; rem = a; mid = 0xffffffffu; }\n"
+    "  else if (e < 113u) { uint m = (a & 0x7fffffu) | 0x800000u, sh = 126u - e; r = m >> sh; rem = m & ((1u << sh) - 1u); mid = 1u << (sh - 1u); }\n"
+    "  else { r = ((e - 112u) << 10) | ((a & 0x7fffffu) >> 13); rem = a & 0x1fffu; mid = 0x1000u; }\n"
+    "  r += uint(rm == 0u ? rem > mid || (rem == mid && (r & 1u) != 0u) : aw && rem != 0u);\n"
+    "  return s | r; }\n"
+    /* the same for rounding to nearest even, with no branch (F. Giesen's float_to_half_fast3_rtne): the normal range by
+     * integer arithmetic, the subnormal one by an f32 add of 0.5 (which rounds to nearest even on every GPU); a quarter of
+     * mx_f2h's instructions. It is what the half arithmetic (HM) runs after every half instruction: mx_f2h there cost
+     * 0.8 ms of GPU time per fight frame on an RTX 2080 SUPER (3.3 -> 4.1 ms). */
+    "uint mx_h1(float f) { uint x = U(f), a = x & 0x7fffffffu;\n"
+    "  uint r = a < 0x38800000u ? U(F(a) + 0.5) - 0x3f000000u : a < 0x47800000u ? (a + 0xc8000fffu + ((a >> 13) & 1u)) >> 13 : 0x7c00u;\n"
+    "  return a > 0x7f800000u ? 0x7fffu : ((x >> 16) & 0x8000u) | r; }\n"
+    "uint mx_ph2(vec2 v) { return mx_h1(v.x) | (mx_h1(v.y) << 16); }\n";
 static const char *const k_prelude =
     "#define F(x) uintBitsToFloat(x)\n#define U(x) floatBitsToUint(x)\n"
     "bool cz = false, cs = false, ccf = false, cov = false;\n"
-    "vec2 H(uint r, uint s) { vec2 v = unpackHalf2x16(r); return s == 0u ? v : s == 1u ? vec2(F(r)) : s == 2u ? v.xx : v.yy; }\n"
-    "uint HM(uint d, vec2 v, uint m) { uint p = packHalf2x16(v); return m == 0u ? p : m == 1u ? U(v.x) : m == 2u ? ((d & 0xffff0000u) | (p & 0xffffu)) : ((d & 0xffffu) | (p & 0xffff0000u)); }\n"
+    "vec2 H(uint r, uint s) { vec2 v = unpackHalf2x16(r); return s == 0u ? v : s == 1u ? vec2(F(r)) : s == 2u ? v.xx : v.yy; }\n";
+static const char *const k_prelude_b =      /* (amd-fixes) the rest, after HM: mx_translate writes HM between the two parts */
     "uint mx_addc(uint a, uint b, uint ci) { uint c1, c2; uint r = uaddCarry(a, b, c1); r = uaddCarry(r, ci, c2); cz = r == 0u; cs = int(r) < 0; ccf = (c1 | c2) != 0u; cov = (((a ^ r) & (b ^ r)) >> 31) != 0u; return r; }\n"
     "uint mx_bfe(uint base, uint ctl, bool sgn) { uint off = ctl & 255u, cnt = (ctl >> 8) & 255u;\n"
     "  if (cnt == 0u) return 0u;\n"
@@ -1552,6 +1583,9 @@ int mx_translate(const MxIn *in, MxOut *out) {
                  "#extension GL_ARB_shader_ballot : enable\n#extension GL_ARB_shader_group_vote : enable\n#extension GL_EXT_texture_shadow_lod : enable\n");
         if (e->uses_layer_out || e->uses_vp_out) emit(&h, "#extension GL_ARB_shader_viewport_layer_array : require\n");
         emit(&h, "%s", k_prelude);
+        if (vk && in->f16exact) emit(&h, "%s", k_f16exact);
+        emit(&h, "uint HM(uint d, vec2 v, uint m) { uint p = %s(v); return m == 0u ? p : m == 1u ? U(v.x) : m == 2u ? ((d & 0xffff0000u) | (p & 0xffffu)) : ((d & 0xffffu) | (p & 0xffff0000u)); }\n", vk && in->f16exact ? "mx_ph2" : "packHalf2x16");
+        emit(&h, "%s", k_prelude_b);
         if (vk && in->stage == MX_FRAGMENT && in->screen_scale && e->uses_fcs) emit(&h, "layout(push_constant) uniform MXPC { uvec2 mx_alpha; float mx_point_size; float mx_fcs; };\n");      /* track O */
         else
         if (vk && (in->stage == MX_VERTEX || (in->stage == MX_FRAGMENT && e->uses_alpha))) emit(&h, "layout(push_constant) uniform MXPC { uvec2 mx_alpha; float mx_point_size; };\n");

@@ -66,6 +66,12 @@ typedef struct {
      * per real pixel of the pass, 1.0 on a target that is not scaled), and the coordinates of a texelFetch from a 2D sampler
      * are mapped from the game's texel grid (the size table in c2) to the image's real one (textureSize). */
     int screen_scale;
+    /* (amd-fixes) target 1 only: 1 = every float -> half conversion (F2F / I2F to F16, the half-pair results, TEXS .F16) is
+     * mx_f2h, a software conversion bit for bit as Maxwell does it (the instruction's rounding mode, round to nearest even
+     * for the half arithmetic, subnormal halves kept, overflow to infinity, NaN 0x7fff); 0 = packHalf2x16, the driver's own
+     * conversion (round toward zero on NVIDIA; AMD's made stages black: OpenSmash #353 / #510). nvn_vk_m4.c sets it from
+     * SSBU_VK_F16EXACT; the text with 0 is the one of 0.2.62 (MX_VK_VERSION 6). */
+    int f16exact;
 } MxIn;
 
 typedef struct {

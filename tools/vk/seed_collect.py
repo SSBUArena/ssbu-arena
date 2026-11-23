@@ -7,15 +7,26 @@ variant key and forced outputs, and the pass key (formats, samples, topology cla
 dynamic state 3). A player's game turns every entry into a pipeline of ITS GPU at start (AMD: whole pipelines, made once by
 the first-run preparation, then pipeline-cache hits).
 
-  python tools/vk/seed_collect.py matchlist <out.txt> [--per-match 4]
+  python tools/vk/seed_collect.py matchlist <out.txt> [--per-match 4] [--cpu 9]
         the SSBU_DEBUG_MATCH_LIST lines of a collection session: every fighter at least once, the six competitive stages in
-        turn (4 fighters a match: p1 / p2 / p3 / p4)
+        turn (4 fighters a match: p1 / p2 / p3 / p4; CPU level 9 so the CPUs end a match quickly), and a last idle match
+        (Mario against a level-1 CPU) that SSBU_DEBUG_END ends: the session ends by itself
+  python tools/vk/seed_collect.py seq <out.txt> <matches>
+        (amd-fixes) the SSBU_SEQ of such a session on the SSBU Arena menu: the way to the first match, then for every match
+        its set-up (mark dmsetup<n>), a few moves of player 1, player 1 off the left edge (stock=1), A through the results
+        until the character select (549-559 draws for 2 s; player 1's fighter is cleared there), the hand moves of the first
+        match, then + until the next set-up
   python tools/vk/seed_collect.py merge <out pipes_seed.bin> <collected file> [<collected file> ...]
         the SSBU_VK_SEED_OUT files of several runs -> one list (same header everywhere, duplicates removed, sorted)
   python tools/vk/seed_collect.py info <file>
         what a list holds
 
-A collection run (one game; the files of several runs are merged):
+A collection run (one game; the files of several runs are merged). (amd-fixes) The session of the shipped list:
+  python tools/vk/seed_collect.py matchlist list.txt ; python tools/vk/seed_collect.py seq seq.txt <lines of list.txt - 1>
+  SSBU_VK_AMD_SAFE=2 SSBU_VK_SNORM_EMU=1 SSBU_VK_PREWARM=0 SSBU_VK_PREP=0 SSBU_VK_NOHOLD=0 SSBU_VK_SEED_OUT=<file>
+  SSBU_DEBUG_MATCH_LIST=list.txt SSBU_SEQ=<seq.txt, comment lines dropped, one line> SSBU_SKIP_MOVIES=1 SSBU_DEBUG_END=180s
+  (no fight of the list lasts 180 s: only the last, idle one reaches it), on a test copy of an install with a fresh cache;
+  then merge and info.
   SSBU_VK_SEED_OUT=<file>     every pipeline used first in the run is appended (header + records)
   SSBU_VK_CACHE=<empty folder> SSBU_VK_PREWARM=0
                               a stage made from a record of an earlier run has no code hash and is not collected
@@ -100,21 +111,61 @@ def merge(out, inputs):
     describe(hdr0, sorted(all_recs))
 
 
-def matchlist(out, per):
+def matchlist(out, per, cpu=9):
     lines = []
     for i in range(0, len(FIGHTERS), per):
         group = FIGHTERS[i:i + per]
         while len(group) < per:
             group.append(FIGHTERS[len(lines) % len(FIGHTERS)])
         stage = COMPETITIVE_STAGES[len(lines) % len(COMPETITIVE_STAGES)]
-        lines.append(','.join('p%d=%s' % (n + 1, f) for n, f in enumerate(group)) + ',stage=%s,stock=1' % stage)
+        lines.append(','.join('p%d=%s' % (n + 1, f) for n, f in enumerate(group)) + ',stage=%s,cpu=%d,stock=1' % (stage, cpu))
     for n, stage in enumerate(COMPETITIVE_STAGES):            # each stage at least twice
         if sum(stage in l for l in lines) < 2:
-            lines.append('p1=mario,p2=fox,stage=%s,stock=1' % stage)
+            lines.append('p1=mario,p2=fox,stage=%s,cpu=%d,stock=1' % (stage, cpu))
+    lines.append('p1=mario,p2=mario,stage=battle_field,cpu=1,stock=3')      # (amd-fixes) the last match: idle, SSBU_DEBUG_END ends it
     with open(out, 'w', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
     print('%s: %d matches (%d fighters, %d a match; stages %s); DLC fighters are skipped by a game without them' % (
         out, len(lines), len(FIGHTERS), per, ', '.join(COMPETITIVE_STAGES)))
+
+
+SEQ_HEAD = """# seed collection on the SSBU Arena menu (tools/vk/seed_collect.py seq): boot -> Smash -> ruleset (one down) ->
+# character select -> start; then one block per match of SSBU_DEBUG_MATCH_LIST. Use with SSBU_SKIP_MOVIES=1.
+@movie
+@draws:22-26/30
+@draws:36-44/30
+30:Z
+@draws:700-800/40
+60:W
+60:Z
+240:W
+60:Z
+240:W
+20:d/6
+40:W
+30:Z
+300:W
+@draws:300-900/40
+30:u/30 20:r/18 30:Z
+120:W
+300:W
+30:Z
+"""
+
+
+def seq(out, matches):
+    """(amd-fixes) The input sequence of a collection session: see the module's text."""
+    text = SEQ_HEAD
+    def next_match(n):      # A through the results until the character select (player 1's fighter is cleared there): the
+        # same hand moves and A as for the first match, then + until set-up n (A does not start a match at that screen)
+        return '@dmsetup1\n' if n == 1 else '@until:549-559/120:Z/40\n30:u/30 20:r/18 30:Z\n120:W\n300:W\n30:Z\n@untilmark:dmsetup%d:!/90\n' % n
+    for n in range(1, matches + 1):
+        text += next_match(n)
+        text += '900\n30:X/10 30:rX/10 30:uX/10 30:dX/10 30:Z/10 30:rZ/10 30:C/10\n1:l/900\n'
+    text += next_match(matches + 1)                # the idle last match: SSBU_DEBUG_END ends the session
+    with open(out, 'w', newline='\n') as f:
+        f.write(text)
+    print('%s: %d steps for %d matches and the idle last one' % (out, len([t for l in text.splitlines() if not l.startswith('#') for t in l.split()]), matches))
 
 
 def main(a):
@@ -124,7 +175,9 @@ def main(a):
     elif len(a) >= 3 and a[0] == 'merge':
         merge(a[1], a[2:])
     elif len(a) >= 2 and a[0] == 'matchlist':
-        matchlist(a[1], int(a[a.index('--per-match') + 1]) if '--per-match' in a else 4)
+        matchlist(a[1], int(a[a.index('--per-match') + 1]) if '--per-match' in a else 4, int(a[a.index('--cpu') + 1]) if '--cpu' in a else 9)
+    elif len(a) >= 3 and a[0] == 'seq':
+        seq(a[1], int(a[2]))
     else:
         print(__doc__)
         return 2

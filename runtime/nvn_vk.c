@@ -148,6 +148,62 @@ static const char *vk_result_name(VkResult r) {
 }
 static void vkd_lost_report(void);                                    /* nvn_vk_draw.c (PR #32): what the driver and the markers say about the loss */
 static void vk_unavailable(void);
+static void vk_restart_self(const wchar_t *var, const wchar_t *value);
+/* (amd-fixes) SSBU_VK_LOST_SAFE: what a device lost in the first 20 s does on a GPU that is NOT NVIDIA. The OpenGL fallback
+ * below cannot work there (Arena's OpenGL renderer needs NVIDIA's GL_NV_gpu_shader5 and bindless textures), so instead:
+ * 1 (default) = the marker <vk cache>/device_lost_safe.txt names this GPU and driver, and the game starts again at once with
+ * Vulkan and safer settings (vk_lost_safe_on: whole pipelines instead of pipeline libraries, vertex buffers in system
+ * memory, compute buffers not kept: the AMD defaults, on any GPU; no device-coherent memory type); a second early loss
+ * with them only says so (log and a message: update the driver), nothing else is switched. 0 = as before (graphics.ini
+ * renderer = opengl on every GPU); 2 = the safe path on NVIDIA too (tests). The marker is not used once the driver
+ * version changes, and deleting it brings the usual settings back. */
+static const char *vkc_dir(void);                  /* nvn_vk_m4.c */
+static int vk_lost_safe_mode(void) { static int m = -1; if (m < 0) { const char *e = getenv("SSBU_VK_LOST_SAFE"); m = e && e[0] ? atoi(e) : 1; } return m; }
+static int vk_lost_safe_wanted(void) { int m = vk_lost_safe_mode(); return m == 2 || (m == 1 && V.props.vendorID != 0x10de); }
+static const char *vk_lost_safe_path(void) { static char p[260]; snprintf(p, sizeof p, "%s/device_lost_safe.txt", vkc_dir()); return p; }
+static int vk_lost_safe_level(void) {              /* the marker of THIS GPU and driver: 0 none, 1 safer settings in use, 2 they failed too */
+    static int lv = -1;
+    if (lv >= 0) return lv;
+    lv = 0;
+    FILE *f = vk_lost_safe_mode() ? fopen(vk_lost_safe_path(), "rb") : NULL;
+    if (f) {
+        unsigned ven = 0, dev = 0, drv = 0; int l = 0;
+        if (fscanf(f, "level %d gpu %x %x driver %x", &l, &ven, &dev, &drv) == 4 && ven == V.props.vendorID && dev == V.props.deviceID && drv == V.props.driverVersion) lv = l > 0 ? l : 0;
+        fclose(f);
+        printf("nvn_vk: %s: %s\n", vk_lost_safe_path(), lv ? "a device lost at the start in an earlier run on this GPU and driver: SAFER SETTINGS (delete the file for the usual ones)" : "from another GPU or driver: not used");
+    }
+    return lv;
+}
+static int vk_lost_safe_on(void) { return vk_lost_safe_level() > 0; }
+static int vk_quiet_run(void) { const char *off = getenv("SSBU_ERROR_DIALOG"); return (off && off[0] == '0') || getenv("SSBU_SEQ") || getenv("SSBU_PLAY") || getenv("SSBU_PRESS") || getenv("SSBU_SCRIPT"); }
+static void vk_lost_safe_restart(void) {
+    int was = vk_lost_safe_level();
+    const char *rs = getenv("SSBU_VK_LOST_RESTARTED");
+    FILE *f = fopen(vk_lost_safe_path(), "wb");
+    if (f) {
+        fprintf(f, "level %d gpu %04x %04x driver %08x\r\n; SSBU Arena: %s lost the Vulkan device at frame %lld, at the start, %s.\r\n; Delete this file to try the usual graphics settings again.\r\n",
+                was || (rs && rs[0]) ? 2 : 1, (unsigned)V.props.vendorID, (unsigned)V.props.deviceID, (unsigned)V.props.driverVersion, V.props.deviceName, nvn_front_frame_next(),
+                was || (rs && rs[0]) ? "with the safer settings too" : "with the usual settings");
+        fclose(f);
+    }
+    if (was || (rs && rs[0])) {
+        printf("nvn_vk: the device was lost at frame %lld, at the start, WITH the safer settings of an earlier loss (%s): nothing else is tried; update the GPU driver "
+               "(graphics.ini is NOT switched to OpenGL: that renderer needs an NVIDIA GPU)\n", nvn_front_frame_next(), vk_lost_safe_path());
+        fflush(stdout);
+        if (!vk_quiet_run()) MessageBoxA(NULL, "The graphics driver stopped (Vulkan device lost) at the start, also with safer graphics settings.\n\n"
+                                         "Please update your graphics driver and start the game again.\n(The OpenGL renderer cannot be used on this graphics card.)",
+                                         "SSBU Arena", MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+        ExitProcess(5);
+    }
+    printf("nvn_vk: the device was lost at frame %lld, at the start, on a GPU that is not NVIDIA (%s%s): the OpenGL renderer needs NVIDIA, so the game starts again "
+           "with Vulkan and SAFER settings (whole pipelines, vertex buffers in system memory, no device-coherent memory); marker %s (delete it for the usual settings; "
+           "SSBU_VK_LOST_SAFE=0: the OpenGL fallback as before)\n", nvn_front_frame_next(), V.props.deviceName,
+           V.props.vendorID == 0x10de ? "; TEST: SSBU_VK_LOST_SAFE=2 on NVIDIA" : "", vk_lost_safe_path());
+    fflush(stdout);
+    if (!vk_quiet_run()) MessageBoxA(NULL, "The graphics driver stopped (Vulkan device lost) at the start.\n\nThe game starts again now with safer graphics settings "
+                                     "(loading can take longer). If it happens again, please update your graphics driver.", "SSBU Arena", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST);
+    vk_restart_self(L"SSBU_VK_LOST_RESTARTED", L"1");
+}
 static void vk_fatal(const char *what, VkResult r) {
     printf("nvn_vk: %s failed: %s\n", what, vk_result_name(r));
     fflush(stdout);
@@ -155,6 +211,7 @@ static void vk_fatal(const char *what, VkResult r) {
     /* (2026-10-21, tester: Quadro M1200, the device lost at the 4th frame, every start) a device lost in the first 20 s: this
      * driver cannot run the game's Vulkan; graphics.ini gets renderer = opengl (F1 > Graphics switches back) and the game
      * starts again with OpenGL (vk_unavailable) */
+    if (r == VK_ERROR_DEVICE_LOST && nvn_front_frame_next() < 1200 && !getenv("SSBU_RENDERER") && vk_lost_safe_wanted()) vk_lost_safe_restart();      /* (amd-fixes) not NVIDIA: Vulkan again, safer settings (no return) */
     if (r == VK_ERROR_DEVICE_LOST && nvn_front_frame_next() < 1200 && !getenv("SSBU_RENDERER")) {
         printf("nvn_vk: the device was lost at frame %lld, at the start: graphics.ini now says renderer = opengl\n", nvn_front_frame_next());
         fflush(stdout);
@@ -270,26 +327,34 @@ static void *vk_sym(const char *name) {
  * (no driver, no surface, no device): unless a renderer was asked for (SSBU_RENDERER), this exe starts again with the
  * OpenGL renderer, same arguments and standard handles, and this process ends. Otherwise the exit code 5 as before. */
 static void vk_unavailable(void) {
-#ifdef _WIN32
     const char *e = getenv("SSBU_RENDERER");
     if (!(e && e[0])) {
-        wchar_t dir[MAX_PATH], pid[16];
-        STARTUPINFOW si; PROCESS_INFORMATION pi;
-        GetCurrentDirectoryW(MAX_PATH, dir);
-        swprintf(pid, 16, L"%lu", GetCurrentProcessId());
-        SetEnvironmentVariableW(L"SSBU_RESTART_WAIT_PID", pid);
-        SetEnvironmentVariableW(L"SSBU_RENDERER", L"gl");
-        memset(&si, 0, sizeof si); si.cb = sizeof si;
-        HANDLE h[3] = {GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE)};
-        for (int i = 0; i < 3; i++) if (h[i] && h[i] != INVALID_HANDLE_VALUE) SetHandleInformation(h[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-        si.dwFlags = STARTF_USESTDHANDLES; si.hStdInput = h[0]; si.hStdOutput = h[1]; si.hStdError = h[2];
-        wchar_t *cmd = _wcsdup(GetCommandLineW());
         printf("nvn_vk: Vulkan cannot be used on this PC: the game starts again with the OpenGL renderer (F1 > Graphics > renderer)\n");
         fflush(stdout);
-        if (cmd && CreateProcessW(NULL, cmd, NULL, NULL, TRUE, 0, NULL, dir, &si, &pi)) { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); ExitProcess(0); }
-        printf("nvn_vk: starting again with OpenGL FAILED (error %lu)\n", GetLastError());
-        fflush(stdout);
+        vk_restart_self(L"SSBU_RENDERER", L"gl");
     }
+    ExitProcess(5);
+}
+/* this exe again, same arguments and standard handles, with var = value in its environment; this process ends (exit code 0
+ * once the new one runs, 5 when it could not be started). (amd-fixes) taken out of vk_unavailable, unchanged. */
+static void vk_restart_self(const wchar_t *var, const wchar_t *value) {
+#ifdef _WIN32
+    wchar_t dir[MAX_PATH], pid[16];
+    STARTUPINFOW si; PROCESS_INFORMATION pi;
+    GetCurrentDirectoryW(MAX_PATH, dir);
+    swprintf(pid, 16, L"%lu", GetCurrentProcessId());
+    SetEnvironmentVariableW(L"SSBU_RESTART_WAIT_PID", pid);
+    SetEnvironmentVariableW(var, value);
+    memset(&si, 0, sizeof si); si.cb = sizeof si;
+    HANDLE h[3] = {GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE)};
+    for (int i = 0; i < 3; i++) if (h[i] && h[i] != INVALID_HANDLE_VALUE) SetHandleInformation(h[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    si.dwFlags = STARTF_USESTDHANDLES; si.hStdInput = h[0]; si.hStdOutput = h[1]; si.hStdError = h[2];
+    wchar_t *cmd = _wcsdup(GetCommandLineW());
+    if (cmd && CreateProcessW(NULL, cmd, NULL, NULL, TRUE, 0, NULL, dir, &si, &pi)) { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); ExitProcess(0); }
+    printf("nvn_vk: starting again FAILED (error %lu)\n", GetLastError());
+    fflush(stdout);
+#else
+    (void)var; (void)value;
 #endif
     ExitProcess(5);
 }

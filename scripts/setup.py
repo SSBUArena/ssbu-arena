@@ -1152,7 +1152,7 @@ def step_link(cx):
         with open(os.path.join(cx.runtime_dir, 'manifest.json')) as f:
             files = json.load(f)['files']
         for name in files:
-            if name.lower().endswith(('.exe', '.dll')):
+            if name.lower().endswith(('.exe', '.dll')) or name == 'pipes_seed.bin':      # (amd-fixes) the seed pipeline list (nvn_vk_m4.c) beside the exe
                 shutil.copy2(os.path.join(cx.runtime_dir, name), os.path.join(cx.work, name))
                 if sha256_file(os.path.join(cx.work, name)) != files[name]['sha256']:
                     raise Fail('%s does not match the runtime package after copying' % name)
@@ -1183,6 +1183,9 @@ def step_link(cx):
     if opus:                                            # under a name nnaudio.c looks for (opus.dll or libopus-0.dll)
         name = os.path.basename(opus) if os.path.basename(opus).lower() in ('opus.dll', 'libopus-0.dll') else 'opus.dll'
         shutil.copy2(opus, os.path.join(cx.work, name))
+    seed = os.path.join(REPO, 'tools', 'vk', 'pipes_seed.bin')      # (amd-fixes) a source build: the repository's seed pipeline list, when it has one
+    if os.path.isfile(seed):
+        shutil.copy2(seed, os.path.join(cx.work, 'pipes_seed.bin'))
     say('  %s %.1f MB, SDL3.dll, ssbu_glslang.dll, %s%s beside it' % (EXE, os.path.getsize(exe) / 1048576.0, game_lib(cx),
                                                                                          ', ' + name if opus else ''))
     install_launcher(cx)
