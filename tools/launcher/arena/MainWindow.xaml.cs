@@ -776,7 +776,13 @@ namespace Arena
             Updater.CleanUp();
             try { System.IO.File.Delete(System.IO.Path.Combine(Core.Repo ?? System.IO.Path.GetDirectoryName(Updater.ExePath), Core.Repo != null ? @"build\launcher_update.log" : "launcher_update.log")); } catch { }
             Updater.Log("launcher " + Updater.Current + ", repo " + (Core.Repo ?? "(not installed)") + ", build " + Core.Build + (Updater.DevCopy ? ", git checkout" : ""));
-            if (Updater.Off) { Updater.Log("SSBU_ARENA_UPDATE=off"); return; }
+            if (Updater.Off)
+            {
+                Updater.Log("SSBU_ARENA_UPDATE=off");
+                // an install whose game is not built yet gets its setup screen without the release check too
+                if (Core.Repo != null && !Updater.DevCopy && !System.IO.File.Exists(Core.Exe)) StartSetup(false);
+                return;
+            }
             // a portable copy (build\ beside dump\romfs, no sources to update: crea_pacchetto.py): it plays as it is
             if (Core.Portable && Core.Repo == null) { Updater.Log("portable copy: no install, no updates"); return; }
             Task.Run(() => { try { return Updater.Latest(); } catch (Exception ex) { Updater.Log("release check failed: " + ex.Message); return null; } }).ContinueWith(t =>

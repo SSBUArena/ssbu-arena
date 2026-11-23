@@ -160,7 +160,8 @@ namespace Arena
         public static List<PcCheck> Precheck(string py, SetupChoice c)
         {
             var a = new StringBuilder("-u scripts\\precheck.py --json --build " + Q(c.Location));
-            if (IsDump(c.Game)) a.Append(" --dump " + Q(c.Game.TrimEnd('\\')));
+            if (!string.IsNullOrEmpty(c.Shared) && c.Shared != "off" && Directory.Exists(c.Shared)) a.Append(" --dump " + Q(c.Shared.TrimEnd('\\')));      // (shared game data: no room for a dump)
+            else if (IsDump(c.Game)) a.Append(" --dump " + Q(c.Game.TrimEnd('\\')));
             else foreach (var g in new[] { c.Game, c.Update }) if (!string.IsNullOrEmpty(g) && File.Exists(g)) a.Append(" --game " + Q(g));
             var list = new JavaScriptSerializer().Deserialize<ArrayList>(RunJson(py, a.ToString(), 120000));
             return list.Cast<Dictionary<string, object>>().Select(x => new PcCheck { Level = S(x, "level"), What = S(x, "what"), Msg = S(x, "msg") }).ToList();
