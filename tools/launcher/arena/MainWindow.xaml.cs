@@ -302,6 +302,7 @@ namespace Arena
             SizeBox.IsEnabled = Core.WindowMode == 0;
             AspectBox.SelectedIndex = Core.Aspect;
             ShaderBox.SelectedIndex = Core.ShaderLoad;
+            WaitBox.SelectedIndex = Core.ShaderWait;      // (0.2.61) graphics.ini shader_wait
             CloseBox.SelectedIndex = Core.CloseToTray ? 1 : 0;
             CompleteBox.SelectedIndex = Core.CompleteSave ? 1 : 0;      // (complete save) BaseSave.Complete
             BgBox.SelectedIndex = Core.StageBg; BgFolder.Visibility = Core.StageBg == 2 ? Visibility.Visible : Visibility.Collapsed;
@@ -335,6 +336,7 @@ namespace Arena
             if (SizeBox.SelectedIndex != filledSize) Core.WindowSize = (SizeBox.SelectedItem as ComboBoxItem)?.Content as string ?? Core.WindowSize;      // (0.2.12) a size set in the game, not in this list, stays
             Core.Aspect = Math.Max(0, AspectBox.SelectedIndex);
             Core.ShaderLoad = Math.Max(0, ShaderBox.SelectedIndex);
+            Core.ShaderWait = Math.Max(0, WaitBox.SelectedIndex);
             Core.CloseToTray = CloseBox.SelectedIndex == 1;
             if ((CompleteBox.SelectedIndex == 1) != Core.CompleteSave) Core.CompleteSaveChosen = true;      // (0.2.47) a choice of the player: kept
             Core.CompleteSave = CompleteBox.SelectedIndex == 1;

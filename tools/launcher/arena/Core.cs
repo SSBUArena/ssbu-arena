@@ -80,6 +80,7 @@ namespace Arena
         public static bool Rumble = true;                                 // (0.2.31) [general] rumble
         public static double RumbleStrength = 1.0;                        // (0.2.31) [general] rumble_strength (0..2)
         public static bool[] Invert = new bool[4];                        // (0.2.31) [general] invert.LX / LY / RX / RY (on top of a device's own setting)
+        public static int ShaderWait;                                     // (0.2.61) graphics.ini shader_wait: 0 auto (also a missing key), 1 hold, 2 skip (runtime/gfx_options.c)
         public static int ShaderLoad;                                     // (0.2.19) launcher.ini shader_load: 0 automatic, 1 all at the start, 2 per match (graphics.ini shader_load)
         public static string OpenSmashPath;                               // (0.2.52) launcher.ini opensmash_path: OpenSmash Ultimate's folder or launcher exe, set by hand when the OpenSmash tab does not find it (MainWindow.OpenSmash.cs)
         public const string CommunityDiscord = "https://discord.gg/pkgyYGf3YB";   // (0.2.51) the OpenSmash-Ultimate Discord (their README's invite): Arena's players meet there
@@ -233,11 +234,49 @@ namespace Arena
             if (Get(G, "width") != null && Get(G, "height") != null) WindowSize = G["width"] + "x" + G["height"];
             Volume = int.TryParse(Get(G, "volume"), out var vol) ? Math.Max(0, Math.Min(100, vol)) : 100;
             Fps = Get(G, "stats_overlay") == "on";
+            // (0.2.61) shader_wait: auto when missing or not known, as the game reads it; the "hold" of the old template (its old
+            // comment line is still there) is shown as auto, the value the game moves it to at its next start (wait_migrate): the
+            // launcher leaves that file as it is (gfxSeen holds auto, so Save writes the key only when the player changes it here)
+            string sw = (Get(G, "shader_wait") ?? "auto").Trim().ToLowerInvariant();
+            ShaderWait = sw == "hold" ? 1 : sw == "skip" ? 2 : 0;
+            if (ShaderWait == 1 && WaitOldComment() >= 0 && WaitMigrate()) ShaderWait = 0;
             if (Get(G, "ping_overlay") != null) Ping = Get(G, "ping_overlay") != "off";      // (0.2.8) the in-game menu's choice wins: one switch in both places
             Regions.Setting = Regions.ById(Get(G, "online_region"));      // (server region) one key for the launcher and the game; the in-game menu's choice wins
             if (Regions.ById(Get(G, "online_region_last")) >= 0) Regions.Last = Regions.ById(Get(G, "online_region_last"));
             gfxSeen = GfxValues().Where(kv => Get(G, kv.Key) != null).ToDictionary(kv => kv.Key, kv => kv.Value);      // a key not in the file yet is written
             if (Get(G, "shader_load") != null) gfxSeen["shader_load"] = Get(G, "shader_load");      // (0.2.19) as it is in the file: automatic may want another value
+        }
+
+        /// <summary>(0.2.61) the comment line of the graphics.ini template from before shader_wait had auto: the game moves that
+        /// file's "hold" to auto once (runtime/gfx_options.c wait_migrate). Its line index, -1 = not there.</summary>
+        const string WaitOldLine = "; shader_wait = hold | skip";
+        static int WaitOldComment()
+        {
+            if (!File.Exists(GfxIni)) return -1;
+            var lines = File.ReadAllLines(GfxIni);
+            for (int i = 0; i < lines.Length; i++) if (lines[i].TrimStart(' ', '\t').StartsWith(WaitOldLine, StringComparison.Ordinal)) return i;
+            return -1;
+        }
+        /// <summary>SSBU_GFX_WAIT_MIGRATE=0 (atoi as the game reads it): the game keeps that hold</summary>
+        static bool WaitMigrate()
+        {
+            string e = Environment.GetEnvironmentVariable("SSBU_GFX_WAIT_MIGRATE");
+            if (e == null) return true;
+            var m = Regex.Match(e, @"^\s*[+-]?(\d+)");
+            return m.Success && m.Groups[1].Value.TrimStart('0') != "";
+        }
+        /// <summary>(0.2.61) the player chose shader_wait here: the old comment line becomes the new one (as wait_migrate does), so
+        /// the game takes this hold as a choice and does not move it to auto</summary>
+        static void WaitNewComment()
+        {
+            int i = WaitOldComment();
+            if (i < 0) return;
+            var lines = File.ReadAllLines(GfxIni).ToList();
+            lines.RemoveAt(i);
+            lines.InsertRange(i, new[] { "; shader_wait = auto | hold | skip      (Vulkan)",
+                ";   auto: skip where the GPU draws with whole pipelines (AMD, or a driver without pipeline libraries: a missing pipeline",
+                ";   costs 0.1 to 1 s there), hold where pipeline libraries are in use (a missing one costs well under a frame)." });
+            File.WriteAllLines(GfxIni, lines, Encoding.ASCII);
         }
 
         [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern bool GetPhysicallyInstalledSystemMemory(out long kb);
@@ -257,7 +296,7 @@ namespace Arena
                 { "aspect", Aspect == 1 ? "stretch" : "keep" },
                 { "window", new[] { "windowed", "borderless", "fullscreen" }[Math.Max(0, Math.Min(2, WindowMode))] },
                 { "latency", "normal" },        // input latency: always normal (the option is gone)
-                { "shader_load", ShaderLoadValue() }, { "volume", Volume.ToString() }, { "stats_overlay", Fps ? "on" : "off" }, { "ping_overlay", Ping ? "on" : "off" },
+                { "shader_load", ShaderLoadValue() }, { "shader_wait", new[] { "auto", "hold", "skip" }[Math.Max(0, Math.Min(2, ShaderWait))] }, { "volume", Volume.ToString() }, { "stats_overlay", Fps ? "on" : "off" }, { "ping_overlay", Ping ? "on" : "off" },
                 { "online_region", Regions.Id(Regions.Setting) } };
             var m = Regex.Match(WindowSize.Trim(), @"^(\d{3,5})\s*[xX*]\s*(\d{3,5})$");
             if (m.Success) { gfx["width"] = m.Groups[1].Value; gfx["height"] = m.Groups[2].Value; }
@@ -304,7 +343,9 @@ namespace Arena
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off") }, Encoding.ASCII);
             var gfx = GfxValues();
-            SetIniValues(GfxIni, null, gfx.Where(kv => kv.Key == "latency" || !gfxSeen.TryGetValue(kv.Key, out var v) || v != kv.Value).ToDictionary(kv => kv.Key, kv => kv.Value));
+            var gfxNew = gfx.Where(kv => kv.Key == "latency" || !gfxSeen.TryGetValue(kv.Key, out var v) || v != kv.Value).ToDictionary(kv => kv.Key, kv => kv.Value);
+            SetIniValues(GfxIni, null, gfxNew);
+            if (gfxNew.ContainsKey("shader_wait")) WaitNewComment();      // (0.2.61)
             gfxSeen = gfx;
             SetIniValues(PadIni, "players", new Dictionary<string, string> { { "player1", Player1 }, { "player2", Player2 } });
             SetIniValues(PadIni, "keyboard", new Dictionary<string, string> { { "player", new[] { "auto", "1", "2", "none" }[Math.Max(0, Math.Min(3, Keyboard))] } });
