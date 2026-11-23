@@ -1287,8 +1287,10 @@ static void spawn_stage_fo(const SSrc *src, const uint32_t *key) {      /* as sp
  * a queued stage, pair library or pipeline: the game leaves its loading screen only when everything handed over is ready.
  * On by default with pipeline libraries (SSBU_VK_BARRIER=0 / =1 forces it). Time-out 20 s, logged loudly. */
 static LONG64 g_bar_n, g_bar_tk, g_bar_max, g_bar_timeout;
+static void pcache_save_live(LONG64 frame, LONG64 draws);
 static void m4_barrier(LONG64 frame, LONG64 draws) {
     static int on = -1;
+    pcache_save_live(frame, draws);                /* (amd-fixes) on every path (whole pipelines too, where the barrier below is off) */
     if (on < 0) { const char *e = getenv("SSBU_VK_BARRIER"); on = e ? atoi(e) != 0 : D.has_gpl; }
     if (!on || draws > 60 || !g_pw_nthread) return;
     /* (Arena) in a rollback match a frame with few draws is the picture after a lite re-run pass, not a loading screen:
@@ -2157,6 +2159,7 @@ static volatile LONG64 g_gap_prev, g_gap_max;      /* nvn_vk_draw.c vk_present2:
 static int g_prep_limited;                         /* SSBU_VK_PREP_LIMIT (test): not the whole game: no marker */
 static HANDLE g_pcw_thread;
 typedef struct { void *data; size_t n; int marker, where, one_call, prio; LONG64 t_get, t_q; } PcWrite;
+extern volatile LONG g_pcache_saving;             /* (amd-fixes) display.c: a save is in progress (read-out or file write): the end of the game waits for it */
 static void pcache_write(PcWrite *w) {
     LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
     char tmp[176];
@@ -2164,13 +2167,17 @@ static void pcache_write(PcWrite *w) {
     int ok = 0;
     snprintf(tmp, sizeof tmp, "%s.tmp", g_pcache_path);
     FILE *fp = fopen(tmp, "wb");
+    {   /* (amd-fixes) TEST ONLY: SSBU_VK_PCSAVE_TEST_DELAY=<ms>: a slow disk / a 0.9 GB file, to see the end of the game wait for the write */
+        const char *e = getenv("SSBU_VK_PCSAVE_TEST_DELAY");
+        if (e && atoi(e) > 0) { printf("nvn_vk: TEST: the pipeline cache file write is made %d ms longer (SSBU_VK_PCSAVE_TEST_DELAY)\n", atoi(e)); fflush(stdout); Sleep((DWORD)atoi(e)); }
+    }
     if (fp) { ok = fwrite(w->data, 1, w->n, fp) == w->n; fclose(fp); if (ok) ok = MoveFileExA(tmp, g_pcache_path, MOVEFILE_REPLACE_EXISTING) != 0; }
     LONG64 t1 = tk();
     if (w->where == 2) Sleep(300);                 /* the frame that was held behind the driver's lock has been presented by now */
     printf("nvn_vk: pipeline cache %s: %llu KB, %s; vkGetPipelineCacheData %.0f ms (%s), on a thread of priority %d; file written in %.0f ms%s; longest time between two presented frames while the cache was read out: %.0f ms (frame %lld, %s)\n",
            ok ? "saved" : "NOT SAVED (the file could not be written)", (unsigned long long)(w->n >> 10),
-           w->where == 0 ? "on the exit path" : w->where == 1 ? "by the render thread inside a held loading screen" : "BY THE PREPARATION THREAD DURING PLAY (SSBU_VK_PCSAVE=prep: the behaviour before session 12)",
-           (double)w->t_get * 1000.0 / (double)fq.QuadPart, w->one_call ? "one call" : "two calls: size, then data", w->prio, (double)(t1 - t0) * 1000.0 / (double)fq.QuadPart, w->where == 1 ? " by a thread of its own" : "",
+           w->where == 0 ? "on the exit path" : w->where == 1 ? "by the render thread inside a held loading screen" : w->where == 3 ? "by the render thread at a loading screen or after the window was closed (SSBU_VK_PCSAVE_LOADING)" : "BY THE PREPARATION THREAD DURING PLAY (SSBU_VK_PCSAVE=prep: the behaviour before session 12)",
+           (double)w->t_get * 1000.0 / (double)fq.QuadPart, w->one_call ? "one call" : "two calls: size, then data", w->prio, (double)(t1 - t0) * 1000.0 / (double)fq.QuadPart, (w->where == 1 || w->where == 3) ? " by a thread of its own" : "",
            (double)g_gap_max * 1000.0 / (double)fq.QuadPart, (long long)nvn_front_frame_next(), g_in_fight ? "IN A FIGHT" : "no fight");
     if (ok && w->marker && !g_prep_limited && g_prep_marker[0]) {
         FILE *mf = fopen(g_prep_marker, "wb");
@@ -2179,6 +2186,7 @@ static void pcache_write(PcWrite *w) {
     }
     fflush(stdout);
     free(w->data);
+    InterlockedDecrement(&g_pcache_saving);
 }
 static DWORD WINAPI pcw_main(void *arg) { PcWrite *w = arg; pcache_write(w); free(w); return 0; }
 /* TEST ONLY (with SSBU_VK_PCSAVE=prep): while the preparation thread reads the cache out, this thread (normal priority) makes
@@ -2207,13 +2215,18 @@ static DWORD WINAPI pcprobe_main(void *arg) {
     }
     return 0;
 }
-/* where: 0 the exit path, 1 the render thread inside a held loading screen, 2 the preparation thread at once (old behaviour) */
+/* where: 0 the exit path, 1 the render thread inside a held loading screen, 2 the preparation thread at once (old behaviour),
+ * 3 (amd-fixes) the render thread at a loading screen or after the window was closed (pcache_save_live) */
 static void pcache_save_at(int where, int marker) {
     size_t n = 0;
     VkResult r = VK_INCOMPLETE;
     void *data = NULL;
     int one = 0;
     if (!g_pcache) return;
+    if (where == 0 && g_pcw_thread) {      /* (amd-fixes) a save of pcache_save_live still being written: the exit waits for it (at most 60 s), whatever follows */
+        if (WaitForSingleObject(g_pcw_thread, 0) != WAIT_OBJECT_0) { printf("nvn_vk: exit: waiting for the pipeline cache file being written\n"); fflush(stdout); }
+        WaitForSingleObject(g_pcw_thread, 60000); CloseHandle(g_pcw_thread); g_pcw_thread = NULL;
+    }
     if (where == 0) {       /* session 14: the exit path rewrote the whole file (0.9 GB: 5-11 s with the window still there) even when nothing was added */
         const char *e = getenv("SSBU_VK_PCSAVE");
         WIN32_FILE_ATTRIBUTE_DATA fa0;
@@ -2226,8 +2239,9 @@ static void pcache_save_at(int where, int marker) {
         }
         printf("nvn_vk: pipeline cache: %lld creations since %s were not in it%s: written at exit\n", (long long)added, g_pc_dirty_saved ? "the last save" : "the start", marker ? " and the preparation's marker is due" : !have_file ? " and there is no file yet" : "");
     }
-    g_pc_dirty_saved = g_pc_dirty;
     if (g_pcw_thread) { WaitForSingleObject(g_pcw_thread, where ? 0 : 60000); if (where && WaitForSingleObject(g_pcw_thread, 0) != WAIT_OBJECT_0) return; CloseHandle(g_pcw_thread); g_pcw_thread = NULL; }
+    g_pc_dirty_saved = g_pc_dirty;                 /* (amd-fixes) after the check above: a save given up because the last one is still being written keeps its count */
+    InterlockedIncrement(&g_pcache_saving);        /* (amd-fixes) until pcache_write has written the file (or the read-out failed) */
     HANDLE probe = NULL, ready = NULL;
     if (where == 2) { ready = CreateEventA(NULL, TRUE, FALSE, NULL); g_pcprobe_stop = 0; probe = CreateThread(NULL, 0, pcprobe_main, ready, 0, NULL); WaitForSingleObject(ready, 3000); }
     g_gap_max = 0;
@@ -2242,9 +2256,9 @@ static void pcache_save_at(int where, int marker) {
     }
     if (!data) {
         n = 0;
-        if (vkGetPipelineCacheData(V.device, g_pcache, &n, NULL) != VK_SUCCESS || !n) return;
-        if (!(data = malloc(n))) return;
-        if (vkGetPipelineCacheData(V.device, g_pcache, &n, data) != VK_SUCCESS) { free(data); return; }
+        if (vkGetPipelineCacheData(V.device, g_pcache, &n, NULL) != VK_SUCCESS || !n) { InterlockedDecrement(&g_pcache_saving); return; }
+        if (!(data = malloc(n))) { InterlockedDecrement(&g_pcache_saving); return; }
+        if (vkGetPipelineCacheData(V.device, g_pcache, &n, data) != VK_SUCCESS) { free(data); InterlockedDecrement(&g_pcache_saving); return; }
     }
     if (probe) {
         LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
@@ -2254,10 +2268,37 @@ static void pcache_save_at(int where, int marker) {
     }
     PcWrite *w = calloc(1, sizeof *w);
     w->data = data; w->n = n; w->marker = marker; w->where = where; w->one_call = one; w->prio = GetThreadPriority(GetCurrentThread()); w->t_get = tk() - t0;
-    if (where == 1 && (g_pcw_thread = CreateThread(NULL, 0, pcw_main, w, 0, NULL)) != NULL) return;
+    if ((where == 1 || where == 3) && (g_pcw_thread = CreateThread(NULL, 0, pcw_main, w, 0, NULL)) != NULL) return;
     pcache_write(w); free(w);
 }
 static void pcache_save(void) { pcache_save_at(0, InterlockedExchange(&g_pcsave_want, 0)); }      /* the exit path (vkd_shutdown) */
+/* (amd-fixes) SSBU_VK_PCSAVE_LOADING=<n> (default 8; 0 = off: saved at exit only, as before): the pipeline cache is also saved
+ * WHILE the game runs. The exit's save rewrites the whole file (0.9 GB with stage libraries: 5-11 s) and closing the window
+ * or F1 > Exit game ends the process after 4 s (display.c close_watchdog, menu.cpp exit_game): what a run had added was
+ * lost, and the next start made those pipelines again. Now, on this thread (the only one that may read the live cache out
+ * without holding a draw behind the driver's lock, see above), the file being written by a thread of its own:
+ *   - at a loading screen (the 30th frame in a row with 60 draws or fewer; frame 300 on; no fight in the last 600 frames;
+ *     never in a rollback match) when n or more creations were added since the last save;
+ *   - at the first present after the window was closed, when anything was added;
+ * and the end of the game waits for a save in progress (display.c display_exit_wait_cache, SSBU_VK_PCSAVE_EXITWAIT). */
+extern volatile LONG g_display_close;              /* display.c */
+static void pcache_save_live(LONG64 frame, LONG64 draws) {
+    static int n = -2, low, closed;
+    if (n == -2) { const char *e = getenv("SSBU_VK_PCSAVE_LOADING"); n = e && e[0] ? atoi(e) : 8; }
+    if (n <= 0 || !g_pcache || g_offline) return;
+    low = draws <= 60 ? low + 1 : 0;
+    int close_now = g_display_close && !closed;
+    if (!close_now && (low != 30 || frame < 300 || fight_recent())) return;
+    { int r1_rb_paced(void); if (r1_rb_paced()) return; }
+    if (close_now) closed = 1;
+    LONG64 added = g_pc_dirty - g_pc_dirty_saved;
+    if (added < (close_now ? 1 : n) && !g_pcsave_want) return;
+    if (g_pcw_thread && WaitForSingleObject(g_pcw_thread, 0) != WAIT_OBJECT_0) return;      /* the last save is still being written */
+    printf("nvn_vk: pipeline cache: %lld creations added since %s: saved now (%s; SSBU_VK_PCSAVE_LOADING=0: at exit only)\n", (long long)added, g_pc_dirty_saved ? "the last save" : "the start",
+           close_now ? "the window was closed" : "a loading screen");
+    fflush(stdout);
+    pcache_save_at(3, InterlockedExchange(&g_pcsave_want, 0));
+}
 
 /* ---------------------------------------------------------------- session 6: the shader container scan
  * The game keeps its Maxwell stages in "BNSH" containers (a file of their own, or embedded in an effect / shader-database

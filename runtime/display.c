@@ -96,6 +96,7 @@ static volatile LONG64 g_defer_target;                 /* a finished frame is ke
 void nvn_front_post_present_flush(void);               /* nvn_gl.c: the kept present, as a job of the render thread */
 static volatile LONG g_planned;
 volatile LONG g_display_close;                         /* the window was closed (WM_CLOSE): nvn_vk_m4.c ends its first-run hold */
+volatile LONG g_pcache_saving;                         /* (amd-fixes) nvn_vk_m4.c: the driver's pipeline cache is being read out or written (display_exit_wait_cache) */
 volatile LONG g_display_holding;                      /* hitch.c: the render thread is holding a finished frame for its tick = pacing */
 static volatile LONG64 g_hold_ticks, g_hold_n, g_hold_late;
 /* what the screen got */
@@ -504,11 +505,30 @@ void display_set_window_mode(int mode) { if (g_hwnd_menu) PostMessageA(g_hwnd_me
 void display_set_client_size(int w, int h) { if (g_hwnd_menu) PostMessageA(g_hwnd_menu, WM_APP + 0x52, (WPARAM)w, (LPARAM)h); }
 int display_window_mode(void) { return g_full ? (g_topmost ? 2 : 1) : 0; }
 #include "loading_anim.c"                            /* U3: the loading animation until the game's first present */
+/* (amd-fixes) the hard end of the game (close_watchdog below, menu.cpp exit_game) first waits for a save of the pipeline cache
+ * in progress (nvn_vk_m4.c pcache_save_live / the exit path), at most SSBU_VK_PCSAVE_EXITWAIT seconds (default 30; 0 = no
+ * wait, as before), with the window hidden: a cache cut off there was lost, and the next start made its pipelines again. */
+void display_exit_wait_cache(void) {
+    if (!g_pcache_saving) return;
+    const char *e = getenv("SSBU_VK_PCSAVE_EXITWAIT");
+    int cap = e && e[0] ? atoi(e) : 30;
+    if (cap <= 0) return;
+#ifdef _WIN32
+    if (g_hwnd_menu) ShowWindowAsync(g_hwnd_menu, SW_HIDE);
+#endif
+    ULONGLONG t0 = GetTickCount64();
+    printf("\nthe game is ending: the pipeline cache is being saved, the end waits for it (at most %d s, SSBU_VK_PCSAVE_EXITWAIT)\n", cap);
+    fflush(stdout);
+    while (g_pcache_saving && GetTickCount64() - t0 < (ULONGLONG)cap * 1000) Sleep(50);
+    printf("the pipeline cache save %s after %.1f s of waiting\n", g_pcache_saving ? "was NOT finished" : "finished", (double)(GetTickCount64() - t0) / 1000.0);
+    fflush(stdout);
+}
 /* closing the window: a game that does not end within 4 s (an exit handler or a thread that never returns: testers saw the
  * window freeze after the X while closing the console window worked) is ended here, its log flushed first */
 static DWORD WINAPI close_watchdog(LPVOID arg) {
     (void)arg;
     Sleep(4000);
+    display_exit_wait_cache();
     printf("\nwindow closed but the game did not end within 4 s: ended now\n");
     fflush(stdout);
     TerminateProcess(GetCurrentProcess(), 0);

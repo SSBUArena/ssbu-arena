@@ -69,6 +69,7 @@ const char *nvn_vk_device_name(void);                                /* nvn_vk_m
 int osk_active(void);                                                /* osk.c */
 int osk_run(const wchar_t *header, const wchar_t *guide, const wchar_t *initial, int max_len, int min_len, int password, wchar_t *out);      /* osk.c */
 extern "C" void display_refresh_info(double *hz, int *lock_k);      /* display.c */
+extern "C" void display_exit_wait_cache(void);      /* display.c: (amd-fixes) a pipeline cache save in progress, waited for at the end */
 #include "online_mastery.h"                                          /* (22/11) mastery points: the end card, the Online select card */
 #include "net_region.h"                                              /* SSBU Arena's lobbies by region (the table) */
 const char *net_region_text(void);                                   /* net_relay.c: "Europe", "Auto (Europe)", "" = another server */
@@ -1734,7 +1735,7 @@ static void exit_game(void) {                              /* F1 -> Exit game: t
     printf("menu: exit game\n");
     fflush(stdout);
     CreateThread(NULL, 0, restart_thread, NULL, 0, NULL);
-    CreateThread(NULL, 0, [](LPVOID) -> DWORD { Sleep(4000); fflush(stdout); _Exit(0); return 0; }, NULL, 0, NULL);
+    CreateThread(NULL, 0, [](LPVOID) -> DWORD { Sleep(4000); display_exit_wait_cache(); fflush(stdout); _Exit(0); return 0; }, NULL, 0, NULL);      /* (amd-fixes) a pipeline cache save in progress is waited for (display.c) */
 }
 /* The settings as SSBU Arena's screen: the whole window, nothing to move or resize; the sections on the left (L / R, or the
  * d-pad and A on the list), the chosen one on a card on the right, the controller hints at the top. B goes back (menu_frame). */
