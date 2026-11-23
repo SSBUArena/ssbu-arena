@@ -91,6 +91,7 @@ namespace Arena
         {
             var all = new[] { SetupStage1, SetupStage2, SetupStage3 };
             for (int i = 0; i < 3; i++) all[i].Foreground = i + 1 == n ? Res("Accent") : i + 1 < n ? Res("Text") : Res("Dim");
+            SetupScroll.ScrollToTop();      // (hotfix setup-scroll) each stage from its top
         }
 
         static void SetBar(ColumnDefinition done, ColumnDefinition left, double f)

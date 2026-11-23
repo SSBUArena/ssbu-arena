@@ -1523,9 +1523,11 @@
         </RadialGradientBrush>
       </Grid.Background>
       <Path Data="{StaticResource BrandMarkGeometry}" Width="760" Stretch="Uniform" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-120,-140" Opacity="0.05" Fill="{StaticResource Accent}" IsHitTestVisible="False"/>
-      <Border Style="{StaticResource Panel}" Background="#F00F1620" Width="1120" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="52,40,52,36">
+      <!-- (hotfix setup-scroll) the panel never grows past the window: the title and the stage buttons stay, what is between scrolls -->
+      <Border Style="{StaticResource Panel}" Background="#F00F1620" Width="1120" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,16" Padding="52,40,52,36">
         <Border.Effect><DropShadowEffect BlurRadius="60" ShadowDepth="0" Opacity="0.55" Color="Black"/></Border.Effect>
-        <StackPanel>
+        <Grid>
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <Grid>
             <StackPanel Orientation="Horizontal">
               <Path Data="{StaticResource BrandMarkGeometry}" Fill="{StaticResource Accent}" Width="46" Height="40" Stretch="Uniform"/>
@@ -1539,6 +1541,8 @@
               <TextBlock x:Name="SetupStage3" Text="3  INSTALL" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
             </StackPanel>
           </Grid>
+          <ScrollViewer x:Name="SetupScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False" PreviewMouseWheel="WheelToOuter">
+          <StackPanel>
           <TextBlock x:Name="SetupIntro" Style="{StaticResource Small}" FontSize="16" Margin="0,12,0,26" TextWrapping="Wrap"/>
 
           <!-- stage 1 (and the download before it): one bar and what happens -->
@@ -1642,8 +1646,11 @@
             </StackPanel>
           </Grid>
 
+          </StackPanel>
+          </ScrollViewer>
+
           <!-- the buttons of stages 2 and 3 -->
-          <Grid x:Name="SetupFooter" Margin="0,30,0,0" Visibility="Collapsed">
+          <Grid x:Name="SetupFooter" Grid.Row="2" Margin="0,30,0,0" Visibility="Collapsed">
             <Button x:Name="SetupLogButton" Style="{StaticResource Link}" HorizontalAlignment="Left" VerticalAlignment="Center" FontSize="15" Click="SetupOpenLog_Click">Open the log</Button>
             <Button x:Name="SetupExisting" Style="{StaticResource Link}" HorizontalAlignment="Left" VerticalAlignment="Center" FontSize="15" Click="SetupExisting_Click"
                     ToolTip="A folder where SSBU Arena was already built: it has work\ssbu_native.exe and state.json (or a build folder with them inside)">Already built? Use that install folder</Button>
@@ -1657,19 +1664,24 @@
               </Button>
             </StackPanel>
           </Grid>
-        </StackPanel>
+        </Grid>
       </Border>
     </Grid>
 
     <Grid x:Name="Dialog" Grid.RowSpan="3" Visibility="Collapsed" Background="#B3050810">
-      <Border Style="{StaticResource Panel}" Background="#101824" BorderBrush="#2E4057" MinWidth="460" MaxWidth="680" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="34,28">
+      <Border Style="{StaticResource Panel}" Background="#101824" BorderBrush="#2E4057" MinWidth="460" MaxWidth="680" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,16" Padding="34,28">
         <Border.Effect><DropShadowEffect BlurRadius="40" ShadowDepth="0" Opacity="0.6" Color="Black"/></Border.Effect>
-        <StackPanel>
+        <Grid>
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <TextBlock x:Name="DialogTitle" Style="{StaticResource SectionTitle}" FontSize="32"/>
-          <TextBlock x:Name="DialogText" Style="{StaticResource Small}" FontSize="16" Foreground="#C9D3DD" Margin="0,10,0,0"/>
-          <ItemsControl x:Name="DialogList" Margin="0,12,0,0"/>
-          <StackPanel x:Name="DialogButtons" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,26,0,0"/>
-        </StackPanel>
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False" PreviewMouseWheel="WheelToOuter">
+            <StackPanel>
+              <TextBlock x:Name="DialogText" Style="{StaticResource Small}" FontSize="16" Foreground="#C9D3DD" Margin="0,10,0,0"/>
+              <ItemsControl x:Name="DialogList" Margin="0,12,0,0"/>
+            </StackPanel>
+          </ScrollViewer>
+          <StackPanel x:Name="DialogButtons" Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,26,0,0"/>
+        </Grid>
       </Border>
     </Grid>
     </Grid>

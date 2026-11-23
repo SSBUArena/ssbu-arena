@@ -31,9 +31,12 @@ namespace Arena
             // (0.2.18) opens at the design size (DesignW x DesignH under the title bar: the page is not scaled, its text is sharp) when
             // the screen has room, else at 88 % of the work area in the same shape
             {   var wa = SystemParameters.WorkArea; double dw = DesignW, dh = DesignH + 36, k = Math.Min(1.0, Math.Min(wa.Width * 0.88 / dw, wa.Height * 0.88 / dh));
+                // (hotfix setup-scroll) with a big Windows scaling the screen can be smaller than 960 x 600: the smallest size is then the screen's
+                MinWidth = Math.Min(MinWidth, Math.Floor(wa.Width)); MinHeight = Math.Min(MinHeight, Math.Floor(wa.Height));
                 Width = Math.Max(MinWidth, Math.Round(dw * k)); Height = Math.Max(MinHeight, Math.Round(dh * k)); }
             // (0.2.8) resizing keeps the window's proportions (the page is laid out for one shape)
-            SourceInitialized += (s0, e0) => System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(this).Handle).AddHook(KeepAspect);
+            SourceInitialized += (s0, e0) => { FitMinSize(); System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(this).Handle).AddHook(KeepAspect); };
+            DpiChanged += (s0, e0) => FitMinSize();      // another monitor, another scaling
             Core.Load();
             InitLeaderboard();
             InitOpenSmash();
@@ -44,7 +47,7 @@ namespace Arena
             RefreshPlayer();
             RefreshOnline();
             SetPadState();
-            StateChanged += (s, e) => Root.Margin = WindowState == WindowState.Maximized ? new Thickness(7) : new Thickness(0);
+            // (hotfix setup-scroll) maximized = the monitor's work area exactly (WM_GETMINMAXINFO in KeepAspect), no frame past the screen: no margin
             Closing += (s, e) =>
             {
                 // (online-mm 15/11) while an online game runs the X leaves the launcher in the notification area whatever the setting:
@@ -79,12 +82,60 @@ namespace Arena
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
         struct Rect32 { public int Left, Top, Right, Bottom; }
 
-        /// <summary>WM_SIZING: the dragged edge decides, the other side follows the MinWidth : MinHeight shape</summary>
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct MinMaxInfo { public int ResX, ResY, MaxSizeX, MaxSizeY, MaxPosX, MaxPosY, MinTrackX, MinTrackY, MaxTrackX, MaxTrackY; }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct MonitorInfo { public int Size; public Rect32 Monitor, Work; public uint Flags; }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+        const double ShapeW = 960, ShapeH = 600;      // the window's shape (the XAML's MinWidth x MinHeight)
+
+        /// <summary>(hotfix setup-scroll) the work area of the window's monitor, in pixels; false when it cannot be read</summary>
+        static bool WorkArea(IntPtr hwnd, out Rect32 work, out Rect32 monitor)
+        {
+            var mi = new MonitorInfo { Size = System.Runtime.InteropServices.Marshal.SizeOf(typeof(MonitorInfo)) };
+            bool ok = GetMonitorInfo(MonitorFromWindow(hwnd, 2), ref mi);      // MONITOR_DEFAULTTONEAREST
+            work = mi.Work; monitor = mi.Monitor;
+            return ok && work.Right > work.Left && work.Bottom > work.Top;
+        }
+
+        /// <summary>(hotfix setup-scroll) the smallest size never larger than the monitor's work area (a big Windows scaling makes it small)</summary>
+        void FitMinSize()
+        {
+            var src = PresentationSource.FromVisual(this);
+            if (src?.CompositionTarget == null) return;
+            if (!WorkArea(new System.Windows.Interop.WindowInteropHelper(this).Handle, out var work, out _)) return;
+            var dip = src.CompositionTarget.TransformFromDevice.Transform(new Vector(work.Right - work.Left, work.Bottom - work.Top));
+            double w = Math.Min(ShapeW, Math.Floor(dip.X)), h = Math.Min(ShapeH, Math.Floor(dip.Y));
+            if (Math.Abs(w - MinWidth) > 0.5) MinWidth = w;
+            if (Math.Abs(h - MinHeight) > 0.5) MinHeight = h;
+        }
+
+        /// <summary>WM_SIZING: the dragged edge decides, the other side follows the window's shape. WM_GETMINMAXINFO (hotfix setup-scroll):
+        /// without a Windows frame (WindowStyle None) maximized covered the whole monitor, the taskbar too: now its work area, on any
+        /// side and any scaling; the smallest size within it</summary>
         IntPtr KeepAspect(IntPtr hwnd, int msg, IntPtr wp, IntPtr lp, ref bool handled)
         {
+            if (msg == 0x0024)
+            {
+                if (!WorkArea(hwnd, out var work, out var mon)) return IntPtr.Zero;
+                var mm = (MinMaxInfo)System.Runtime.InteropServices.Marshal.PtrToStructure(lp, typeof(MinMaxInfo));
+                mm.MaxPosX = work.Left - mon.Left; mm.MaxPosY = work.Top - mon.Top;
+                mm.MaxSizeX = work.Right - work.Left; mm.MaxSizeY = work.Bottom - work.Top;
+                var src = System.Windows.Interop.HwndSource.FromHwnd(hwnd);
+                var dev = src?.CompositionTarget != null ? src.CompositionTarget.TransformToDevice.Transform(new Vector(MinWidth, MinHeight)) : new Vector(MinWidth, MinHeight);
+                mm.MinTrackX = Math.Min((int)Math.Ceiling(dev.X), mm.MaxSizeX); mm.MinTrackY = Math.Min((int)Math.Ceiling(dev.Y), mm.MaxSizeY);
+                mm.MaxTrackX = Math.Max(mm.MaxTrackX, mm.MaxSizeX); mm.MaxTrackY = Math.Max(mm.MaxTrackY, mm.MaxSizeY);
+                System.Runtime.InteropServices.Marshal.StructureToPtr(mm, lp, false);
+                handled = true;
+                return IntPtr.Zero;
+            }
             if (msg != 0x0214) return IntPtr.Zero;
             var r = (Rect32)System.Runtime.InteropServices.Marshal.PtrToStructure(lp, typeof(Rect32));
-            double ratio = MinWidth / MinHeight;
+            double ratio = ShapeW / ShapeH;
             int edge = wp.ToInt32(), w = r.Right - r.Left, h = r.Bottom - r.Top;
             if (edge == 3 || edge == 6) r.Right = r.Left + (int)Math.Round(h * ratio);       // top / bottom: the width follows
             else if (edge == 4 || edge == 5) r.Top = r.Bottom - (int)Math.Round(w / ratio);  // top corners: the top moves
@@ -551,7 +602,7 @@ namespace Arena
             TabSettings.IsChecked = true;
         }
 
-        /// <summary>--page replays | leaderboard | community | settings[:player|online|video|controllers|saves|dlc|files] (for screenshots)</summary>
+        /// <summary>--page replays | leaderboard | community | setup | settings[:player|online|video|controllers|saves|dlc|files] (for screenshots)</summary>
         void OpenFromArgs()
         {
             var args = Environment.GetCommandLineArgs();
@@ -568,6 +619,7 @@ namespace Arena
             else if (parts[0] == "leaderboard" && TabLeaderboard.Visibility == Visibility.Visible) TabLeaderboard.IsChecked = true;
             else if (parts[0] == "community") TabCommunity.IsChecked = true;
             else if (parts[0] == "changes") TabChanges.IsChecked = true;
+            else if (parts[0] == "setup") { SetupOverlay.Visibility = Visibility.Visible; ShowSetupFiles(false); }      // (hotfix) stage 2 as it looks, nothing scanned or run
             else if (parts[0] == "settings")
             {
                 var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "benchmark", SecBench }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles }, { "launcher", SecLauncher } };
@@ -588,6 +640,20 @@ namespace Arena
         void Started_Click(object sender, RoutedEventArgs e) { Core.Open(Core.Site + "getting-started"); }
         void Recomp_Click(object sender, RoutedEventArgs e) { Core.Open("https://github.com/OpenSmash-Ultimate/ssbu-recomp"); }
         void FrameData_Click(object sender, RoutedEventArgs e) { Core.Open("https://ultimateframedata.com/"); }
+
+        /// <summary>(hotfix setup-scroll) PreviewMouseWheel of a scrolling page (setup, dialog): a text box or list inside it that can
+        /// still scroll that way scrolls; anything else (a text box swallows the wheel even when it has nothing to scroll) scrolls the page</summary>
+        void WheelToOuter(object sender, System.Windows.Input.MouseWheelEventArgs e)
+        {
+            var outer = (ScrollViewer)sender;
+            for (var d = e.OriginalSource as DependencyObject; d != null && d != outer;
+                 d = d is Visual || d is System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
+            {
+                if (d is ScrollViewer sv && sv.ScrollableHeight > 0 && (e.Delta > 0 ? sv.VerticalOffset > 0 : sv.VerticalOffset < sv.ScrollableHeight)) return;
+            }
+            outer.ScrollToVerticalOffset(outer.VerticalOffset - e.Delta / 120.0 * 48);
+            e.Handled = true;
+        }
 
         void Minimize_Click(object sender, RoutedEventArgs e) { WindowState = WindowState.Minimized; }
         void Maximize_Click(object sender, RoutedEventArgs e) { WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized; }
