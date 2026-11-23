@@ -20,7 +20,14 @@ Checks before anything is used (any failure: nothing is made, the normal install
     - the update's blocks were all confirmed by OpenSmash's installer (romfs.unverified.txt absent or empty)
     - main in its exefs is a game build Arena handles (scripts/setup.py GAME_BUILDS: OpenSmash is 13.0.5)
     - data.arc read through the map is whole (its header and file-system table) and has the size of that build's data.arc
-    - with --full: every byte of data.arc is read once through the map (SHA-256 recorded in shared_from.json)
+    - (SSBU_SHARED_STRICT, default on) the cfg is one of the two forms Arena knows (layered with an SSBUROM1 map, or plain:
+      one decrypted file and the RomFS offset in it), and data.arc read through the map is that build's own: its header and
+      file-system table and 65 pieces of 64 KB have the recorded SHA-256 (ARC_TABLE_SHA256, ARC_SAMPLE_SHA256); the map as
+      written is read back the runtime's way and checked the same; shared_from.json "checks": 2 (the runtime and the launcher
+      refuse a link without it: one made by 0.2.64 is checked and made again). A RomFS that cannot be read as such is "not
+      usable", never an error. SSBU_SHARED_STRICT=0: the checks of 0.2.64 only.
+    - with --full (the installer's default when strict; SSBU_SHARED_VERIFY=quick skips it): every byte of data.arc is read once
+      through the map and must have the build's SHA-256 (ARC_SHA256; recorded in shared_from.json)
 
     python scripts/shared_gamedata.py find                      the OpenSmash installs this PC remembers
     python scripts/shared_gamedata.py check <opensmash folder>  the checks above, nothing written
@@ -46,9 +53,31 @@ GAME_BUILDS = {0x39c7a90: '13.0.2', 0x39c7e90: '13.0.4', 0x39c8440: '13.0.5'}   
 ARC_SIZES = {'13.0.4': 17600869448, '13.0.5': 17600880952}                       # data.arc of each build, bytes
 # SHA-256 of a whole data.arc (--full): 13.0.5's measured 2026-11-23 through the link to an OpenSmash install whose update
 # blocks OpenSmash's installer had all confirmed (no romfs.unverified.txt); it differs from 13.0.4's data.arc in 13.6 MB
-ARC_SHA256 = {'13.0.5': 'ae9ebecfc570933cd4d2d85595b231de59ba1c9d2990e8eb07a5ec421da03a14'}
+ARC_SHA256 = {'13.0.5': 'ae9ebecfc570933cd4d2d85595b231de59ba1c9d2990e8eb07a5ec421da03a14',
+              '13.0.4': 'ef615e671e1d4907f0a707f2eb13e3cb0c8539c4e67ac51c89ef547c22b82995'}     # (13.0.4: a dump made by the installer)
 LAYER_MAGIC = b'SSBUROM1'
 LAYER_ZERO = 0xFFFFFFFF
+
+# (fix/shared-install) SSBU_SHARED_STRICT (default 1; 0 = the checks of 0.2.64 only): before anything is linked, the game data
+# read through the other install must BE the data.arc of the game build its exefs says, not only have its size:
+#   - ARC_TABLE_SHA256: SHA-256 of data.arc's header (0x38 bytes) + its whole file-system table (~13 MB)
+#   - ARC_SAMPLE_SHA256: SHA-256 of ARC_SAMPLES pieces of 64 KB spread evenly over data.arc (arc_samples; ~4 MB read)
+# Hashes only (nothing of the game). Measured 2026-11-23: 13.0.5 through the link to an OpenSmash install whose data.arc as a
+# whole has ARC_SHA256's hash, 13.0.4 on a dump made by the installer. A build missing here is not linked when strict.
+# A layout of OpenSmash's that Arena does not know (another cfg form, a layer map of another version, game data read from an
+# encrypted file, a map that pieces the data together wrongly) then gives a clear "not shared" instead of a game reading
+# wrong bytes. STRICT also makes the check pick romfs.cfg (the data the game reads) over romfs_vanilla.cfg unless romfs.cfg
+# names a mods map, and reads the plain form of romfs.cfg (one decrypted file: a game dumped with its update merged in).
+CHECKS_VERSION = 2              # shared_from.json 'checks': a link made with fewer checks is checked again (SharedData.cs)
+ARC_TABLE_SHA256 = {'13.0.4': '9a6d6f5795f4ee5142412019be4373db199b253d452c70ad1fdccb7807a8251b',
+                    '13.0.5': '55c762af22dc5a922f0f464cdb0b19a18f0f72c290cac1977bf4a3bb5620081e'}
+ARC_SAMPLES = 64
+ARC_SAMPLE_SHA256 = {'13.0.4': '4b8a47ae3e7bd590e5de9c99a0d1513eedf73ca765f66248ffcb2d14083321c2',
+                     '13.0.5': 'c8fc72769283e7d769605899691af176606d08cf6e8c5954f9b6f933c5e4c26b'}
+
+
+def strict():
+    return os.environ.get('SSBU_SHARED_STRICT', '1').strip() != '0'
 
 
 class NotUsable(Exception):
@@ -98,10 +127,11 @@ class RomImage:
     def __init__(self, root):
         self.root = root
         mod = os.path.join(root, 'dump', 'modules')
-        cfg = os.path.join(mod, 'romfs_vanilla.cfg')
+        cfg = self._pick_cfg(mod) if strict() else os.path.join(mod, 'romfs_vanilla.cfg')
         if not os.path.isfile(cfg):
             cfg = os.path.join(mod, 'romfs.cfg')
         self.cfg = cfg
+        self.plain = None
         if os.path.isfile(os.path.join(mod, 'romfs.crypt')):
             raise NotUsable('its game data is read in place from the encrypted game file (romfs.crypt): only a decrypted '
                             'copy can be shared')
@@ -110,8 +140,12 @@ class RomImage:
                 lines = [l.strip() for l in f.read().splitlines() if l.strip()]
         except OSError as e:
             raise NotUsable('no game data cfg (%s)' % e)
+        if strict() and len(lines) == 2 and lines[0] != 'layered' and lines[1].isdigit():
+            self._plain(lines, mod, root)          # (the plain form: "<file>\n<RomFS offset>", one decrypted file)
+            return
         if not lines or lines[0] != 'layered' or len(lines) < 3:
-            raise NotUsable('%s is not the layered form (base + update)' % cfg)
+            raise NotUsable('%s is not a form of OpenSmash\'s game data this Arena knows (the layered form: base + update%s)'
+                            % (cfg, ', or the plain form' if strict() else ''))
         if 'mods' in os.path.basename(lines[1]).lower():
             raise NotUsable('%s names a mods map (%s): only the vanilla game data is shared' % (cfg, lines[1]))
         self.map = self._local(lines[1], mod)
@@ -124,9 +158,30 @@ class RomImage:
         with open(self.map, 'rb') as f:
             d = f.read()
         if d[:8] != LAYER_MAGIC:
-            raise NotUsable('%s is not a layer map' % self.map)
+            raise NotUsable('%s is not a layer map of a version this Arena knows (%r)' % (self.map, d[:8]))
         self.size, n, _ = struct.unpack_from('<QII', d, 8)
+        if strict() and (len(d) != 24 + n * 24 or not n):
+            raise NotUsable('%s: %d bytes for %d layers (a layer map of another version?)' % (self.map, len(d), n))
         self.layers = [(at, src, off) for at, off, src, _ in struct.iter_unpack('<QQII', d[24:24 + n * 24])]
+        self._open()
+
+    def _plain(self, lines, mod, root):
+        """romfs.cfg's plain form (OpenSmash's nca.py romfs-cfg): the RomFS image lies whole in one file from an offset (the game
+        decrypted into dump\\modules, a dump with its update merged in)"""
+        p = self._local(lines[0], mod)
+        if not inside(p, root):
+            raise NotUsable('%s is outside the OpenSmash folder: not read' % p)
+        if not os.path.isfile(p):
+            raise NotUsable('%s is missing' % p)
+        off = int(lines[1])
+        size = os.path.getsize(p)
+        if off >= size:
+            raise NotUsable('%s: the RomFS offset %d is past the end of %s' % (self.cfg, off, p))
+        self.plain, self.map, self.paths = p, None, [p]
+        self.size, self.layers = size - off, [(0, 0, off)]
+        self._open()
+
+    def _open(self):
         if not self.layers or self.layers[0][0] != 0:
             raise NotUsable('%s: the layers do not start at 0' % self.map)
         for i, (at, src, off) in enumerate(self.layers):
@@ -138,8 +193,22 @@ class RomImage:
         self.files = [open(p, 'rb') for p in self.paths]
         h = struct.unpack('<10Q', self.read(0, 0x50))
         if h[0] != 0x50:
-            raise NotUsable('no RomFS image behind %s' % cfg)
+            raise NotUsable('no RomFS image behind %s' % self.cfg)
         self.dirs, self.ftab, self.data = self.read(h[3], h[4]), self.read(h[7], h[8]), h[9]
+
+    @staticmethod
+    def _pick_cfg(mod):
+        """(strict) the cfg of the game's own data: romfs.cfg, which the game reads, unless it names a mods map (OpenSmash's
+        tools/mods.py); then romfs_vanilla.cfg, the copy mods.py kept. (0.2.64 took romfs_vanilla.cfg first: a copy kept from
+        the first time mods were applied, possibly older than romfs.cfg.)"""
+        cfg, vanilla = os.path.join(mod, 'romfs.cfg'), os.path.join(mod, 'romfs_vanilla.cfg')
+        try:
+            with open(cfg, encoding='utf-8-sig') as f:
+                lines = [l.strip() for l in f.read().splitlines() if l.strip()]
+            modded = len(lines) > 1 and lines[0] == 'layered' and 'mods' in os.path.basename(lines[1].replace('\\', '/')).lower()
+        except OSError:
+            modded = True
+        return vanilla if modded and os.path.isfile(vanilla) else cfg
 
     @staticmethod
     def _local(p, mod):
@@ -213,8 +282,56 @@ def arc_whole(read, size):
     return m == 0x10 and fs + 16 + comp <= size
 
 
+def arc_samples(size):
+    """the offsets of the ARC_SAMPLES pieces of 64 KB (arc_fingerprint): spread evenly, 64 KB aligned, the last one at the end"""
+    step = size // ARC_SAMPLES
+    return [min(i * step, size - 0x10000) & ~0xffff for i in range(ARC_SAMPLES)] + [size - 0x10000]
+
+
+def arc_fingerprint(read, size):
+    """(SHA-256 of data.arc's header + file-system table, SHA-256 of its sample pieces): what ARC_TABLE_SHA256 and
+    ARC_SAMPLE_SHA256 hold for each game build. read(offset, n) reads data.arc; ~17 MB is read."""
+    hdr = read(0, 0x38)
+    fs = struct.unpack('<7Q', hdr)[4]
+    comp = struct.unpack('<4I', read(fs, 16))[2]
+    table = hashlib.sha256(hdr + read(fs, 16 + comp)).hexdigest()
+    h = hashlib.sha256()
+    for o in arc_samples(size):
+        h.update(read(o, 0x10000))
+    return table, h.hexdigest()
+
+
+def check_content(version, read, size):
+    """(strict) data.arc as read is the build's own: header + file-system table and the sample pieces (arc_fingerprint)"""
+    table, sample = arc_fingerprint(read, size)
+    want_t, want_s = ARC_TABLE_SHA256.get(version), ARC_SAMPLE_SHA256.get(version)
+    if not want_t or not want_s:
+        raise NotUsable('Arena has no fingerprint of %s\'s data.arc to check it against: not shared' % version)
+    if table != want_t:
+        raise NotUsable('its data.arc read as Arena reads it is not %s\'s (the file-system table differs): a layout of '
+                        'OpenSmash\'s game data this Arena does not read right, or other data' % version)
+    if sample != want_s:
+        raise NotUsable('its data.arc read as Arena reads it is not %s\'s (the file data differs at some of %d places checked): '
+                        'a layout of OpenSmash\'s game data this Arena does not read right, or data OpenSmash could not '
+                        'confirm' % (version, ARC_SAMPLES + 1))
+    return table, sample
+
+
 def check(root):
-    """-> dict describing what would be shared; raises NotUsable with the reason."""
+    """-> dict describing what would be shared; raises NotUsable with the reason. (strict) Anything that cannot be read as the
+    layout this Arena knows (a RomFS table out of its bounds, a short read) is NotUsable too: never an error that stops the
+    installer or the launcher's link."""
+    if not strict():
+        return _check(root)
+    try:
+        return _check(root)
+    except NotUsable:
+        raise
+    except (struct.error, ValueError, IndexError, OSError, UnicodeError, MemoryError, OverflowError) as e:
+        raise NotUsable('its game data cannot be read as the layout of OpenSmash\'s this Arena knows (%s: %s)' % (type(e).__name__, e))
+
+
+def _check(root):
     root = os.path.abspath(root)
     if not is_opensmash(root):
         raise NotUsable('%s is not an OpenSmash Ultimate install (no tools\\install_windowsmash.ps1 / dump\\modules)' % root)
@@ -244,6 +361,7 @@ def check(root):
             raise NotUsable('its data.arc has %d bytes, %s\'s has %d' % (asize, version, want))
         if not arc_whole(lambda o, n: img.read(aoff + o, n), asize):
             raise NotUsable('its data.arc is not whole (header or file-system table)')
+        content = check_content(version, lambda o, n: img.read(aoff + o, n), asize) if strict() else None
         nrr = [f for f in files if f[0].lower().startswith('/.nrr/') and f[0].lower().endswith('.nrr')]
         if not nrr:
             raise NotUsable('no .nrr files in its RomFS image')
@@ -253,7 +371,8 @@ def check(root):
                 'arc_size': asize, 'ranges': len(ext), 'nrr': [(p, o, s) for p, o, s in nrr],
                 'other_files': [p for p, _, _ in files if p.lower() != '/data.arc' and not p.lower().startswith('/.nrr/')],
                 'fonts': sorted(n for n in os.listdir(fonts) if n.lower().endswith('.bfttf')) if os.path.isdir(fonts) else [],
-                'source_bytes': sum(os.path.getsize(p) for p in img.paths)}
+                'source_bytes': sum(os.path.getsize(p) for p in img.paths), 'form': 'plain' if img.plain else 'layered',
+                'checks': CHECKS_VERSION if content else 1}
     finally:
         img.close()
 
@@ -302,12 +421,21 @@ def make(root, out, full=False, say=print):
             os.makedirs(fonts_out, exist_ok=True)
             with open(os.path.join(fonts_out, n[:-6] + '.ttf'), 'wb') as f:
                 f.write(plain)
-    rec = {'from': 'OpenSmash Ultimate', 'root': info['root'], 'version': info['version'], 'cfg': info['cfg'],
+    rec = {'checks': info['checks'], 'from': 'OpenSmash Ultimate', 'root': info['root'], 'version': info['version'], 'cfg': info['cfg'],
            'arc_size': info['arc_size'], 'ranges': len(ranges), 'made': time.strftime('%Y-%m-%d %H:%M:%S'),
            'fonts': len(os.listdir(fonts_out)) if os.path.isdir(fonts_out) else 0, 'other_romfs_files': info['other_files'],
            # OpenSmash's game data cfg and layer map as they were: a re-extraction or update rewrites them (status, the launcher)
-           'stamps': {p: list(arc_file.file_stamp(p)) for p in (info['cfg'], info['map'])}}
+           'stamps': {p: list(arc_file.file_stamp(p)) for p in (info['cfg'], info['map']) if p},
+           'form': info['form']}
     arcl = os.path.join(part, 'romfs', 'data.arcl')
+    if strict():                       # the map as written, read the way the runtime reads it (arclink.c): the same fingerprint
+        with arc_file.ArclFile(arcl) as f:
+            try:
+                check_content(info['version'], f.pread, info['arc_size'])
+            except NotUsable as e:
+                f.close()
+                shutil.rmtree(part, ignore_errors=True)
+                raise NotUsable('the link as written: %s' % e)
     if full:
         say('   reading all of data.arc once through the link (%.1f GB)...' % (info['arc_size'] / 2 ** 30))
         t0, h = time.time(), hashlib.sha256()
@@ -344,9 +472,12 @@ def status(dump):
     bad = arc_file.arcl_problems(arcl)
     try:
         with open(os.path.join(dump, 'shared_from.json'), encoding='utf-8') as f:
-            stamps = json.load(f).get('stamps') or {}
+            rec = json.load(f)
     except (OSError, ValueError):
-        stamps = {}
+        rec = {}
+    stamps = rec.get('stamps') or {}
+    if strict() and (rec.get('checks') or 1) < CHECKS_VERSION:
+        bad.append('the link was made without the content check of this Arena (it is checked and made again)')
     for p, st in stamps.items():
         try:
             if list(arc_file.file_stamp(p)) != list(st):

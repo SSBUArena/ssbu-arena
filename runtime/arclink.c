@@ -34,6 +34,29 @@ static HANDLE arcl_open_utf8(const char *path, DWORD share) {
     return CreateFileW(w, GENERIC_READ, share, NULL, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS, NULL);
 }
 
+/* (fix/shared-install) shared_from.json's "checks" beside the RomFS folder (<dir>\..\shared_from.json): -1 = no file, 1 = no such
+ * line (a link made by 0.2.64), else its number */
+static int arcl_checks(const char *dir) {
+    char p[MAX_PATH + 32];
+    snprintf(p, sizeof p, "%s\\..\\shared_from.json", dir);
+    FILE *f = fopen(p, "rb");
+    if (!f) return -1;
+    char *b = malloc(4u << 20);
+    size_t n = b ? fread(b, 1, (4u << 20) - 1, f) : 0;
+    fclose(f);
+    if (!b) return 1;
+    b[n] = 0;
+    const char *k = strstr(b, "\"checks\"");
+    int r = 1;
+    if (k) {
+        k += 8;
+        while (*k == ' ' || *k == '\t' || *k == ':' || *k == '\r' || *k == '\n') k++;
+        r = atoi(k);
+    }
+    free(b);
+    return r;
+}
+
 /* load <dir>\data.arcl once (later calls: the result of the first). 1 = usable, 0 = none there, -1 = refused (why says it). */
 int arcl_load(const char *dir) {
     AcquireSRWLockExclusive(&g_arcl_lock);
@@ -93,6 +116,18 @@ int arcl_load(const char *dir) {
         at += r->len;
     }
     if (at != g_arcl.size) { snprintf(g_arcl.why, sizeof g_arcl.why, "%s covers %llu of %llu bytes", p, (unsigned long long)at, (unsigned long long)g_arcl.size); goto refuse; }
+    {   /* (fix/shared-install) SSBU_SHARED_STRICT (default on; 0 = as 0.2.64): the link is used only when the installer checked the
+         * data it reads (scripts/shared_gamedata.py CHECKS_VERSION 2: OpenSmash's layout one Arena knows, data.arc read through
+         * the link the game build's own). <dir>\..\shared_from.json says so ("checks": 2); a link made by 0.2.64 has no such line
+         * and is refused here (the launcher checks OpenSmash's data and links again before the next start). */
+        const char *e = getenv("SSBU_SHARED_STRICT");
+        int checks = arcl_checks(dir);
+        if (!(e && e[0] == '0') && checks < 2) {
+            snprintf(g_arcl.why, sizeof g_arcl.why, "the link %s was made before SSBU Arena checked the game data it reads (%s). The SSBU "
+                     "Arena launcher checks it and links again when it starts", p, checks < 0 ? "no shared_from.json beside it" : "made by 0.2.64");
+            goto refuse;
+        }
+    }
     free(d);
     g_arcl.state = 1;
     printf("arclink: %s: data.arc (%.2f GB) read from %u file(s) of another install, %llu ranges (shared game data)\n", p,

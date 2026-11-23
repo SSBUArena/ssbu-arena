@@ -418,6 +418,7 @@ def step_shared(cx):
     the game data of an OpenSmash install in place. -> a note, or None when it is not used (the normal dump steps go on)."""
     root, why = shared_source(cx.a)
     if not root:
+        cx.shared_why = why                 # (fix/shared-install) said again if the install then stops for want of game files
         return ('shared game data not used: %s' % why) if why else None
     import shared_gamedata as sg
     out = os.path.join(BUILD, SHARED_DUMP)
@@ -432,7 +433,10 @@ def step_shared(cx):
         return 'would %s the game data of OpenSmash Ultimate in %s (%s, no 17 GB copy)' % ('keep using' if same else 'link to', root, out)
     if not same:
         say('   linking to the game data of OpenSmash Ultimate in %s (read in place, nothing written there)' % root)
-        rec = sg.make(root, out, full=os.environ.get('SSBU_SHARED_VERIFY') == 'full', say=say)
+        # (fix/shared-install) strict: the install reads all of data.arc once through the new link (1-3 minutes) and links only
+        # when it is the build's own byte for byte (ARC_SHA256); SSBU_SHARED_VERIFY=quick: the fingerprint check alone
+        verify = os.environ.get('SSBU_SHARED_VERIFY', 'full' if sg.strict() else '')
+        rec = sg.make(root, out, full=verify == 'full', say=say)
     cx.dump = out
     try:                                 # a build made from another game version: built again from the conversion on
         with open(os.path.join(BUILD, 'state.json'), encoding='utf-8') as f:
@@ -583,7 +587,9 @@ def step_inputs(cx):
                 cx.blockers[:] = []
                 a.firmware = a.firmware or cx.firmware
                 return step_inputs(cx)
-        raise Stop('missing: ' + '; '.join(cx.blockers), 'Give them with --base / --update / --keys, or put the game files in Downloads / Documents and your '
+        shared_why = getattr(cx, 'shared_why', None)
+        raise Stop(('the game files of OpenSmash Ultimate cannot be shared (%s), so SSBU Arena needs a copy of its own; ' % shared_why
+                    if shared_why else '') + 'missing: ' + '; '.join(cx.blockers), 'Give them with --base / --update / --keys, or put the game files in Downloads / Documents and your '
                    'prod.keys in %USERPROFILE%\\.switch, then start again.')
     _record_inputs(cx)
     return 'done', '; '.join(notes) if notes else 'nothing found'
@@ -957,12 +963,39 @@ def dlc_rows(paths):
     return rows
 
 
+def shared_dlc_rows(cx):
+    """(fix/shared-install, SSBU_SHARED_DLC=0: off) {index: label} of the add-on contents listed in the dump\\modules\\aoc.cfg of
+    the OpenSmash Ultimate install whose game data this install shares ("<index> <add-on content id> v<n> ..." lines, made by
+    OpenSmash's tools/nca.py aoc-cfg from the DLC packages it was given). A shared install gets no game files of its own, so
+    without this nothing was unlocked although the player has the DLC. Only ids are read."""
+    if not cx.dump or os.path.normcase(os.path.abspath(cx.dump)) != os.path.normcase(os.path.join(BUILD, SHARED_DUMP)):
+        return {}
+    try:
+        with open(os.path.join(cx.dump, 'shared_from.json'), encoding='utf-8') as f:
+            root = json.load(f).get('root')
+        rows = {}
+        with open(os.path.join(root, 'dump', 'modules', 'aoc.cfg'), encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = re.match(r'\s*\d+\s+([0-9A-Fa-f]{16})\b', line)
+                if m:
+                    index = int(m.group(1), 16) - 0x01006A800016E000 - 0x1000
+                    if 0 < index < 0x1000:
+                        rows[index] = 'from OpenSmash Ultimate (%s)' % m.group(1).upper()
+        if rows:
+            say('   DLC: %d add-on contents listed by OpenSmash Ultimate (dump\\modules\\aoc.cfg of %s)' % (len(rows), root))
+        return rows
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
 def step_dlc(cx):
     """build\\config\\dlc.txt, which the runtime reads (nnmisc.c aoc_load; SSBU_DLC_LIST overrides the path). The DLC
     fighters, stages and costumes are data of the game update: an owned add-on content only unlocks them, so the DLC packages
     themselves are never opened or read by the runtime (checked in runtime/nnmisc.c: nothing in nnfs.c touches add-on data)."""
     out = os.environ.get('SSBU_DLC_LIST') or os.path.join(BUILD, 'config', 'dlc.txt')
     rows = dlc_rows(cx.dlc)
+    if not rows and os.environ.get('SSBU_SHARED_DLC', '1') != '0':
+        rows = shared_dlc_rows(cx)          # (fix/shared-install) the add-on contents OpenSmash Ultimate was given
     if not rows:
         return 'skip', 'no DLC package named (give --dlc, or put them next to the game); nothing is unlocked'
     old = {}

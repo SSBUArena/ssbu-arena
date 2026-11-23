@@ -64,6 +64,7 @@ namespace Arena
                     if (!fi.Exists) return kv.Key + " is not there any more";
                     if (fi.Length != kv.Value.Item1 || FileTime(fi) != kv.Value.Item2) return kv.Key + " changed since the link was made";
                 }
+                if (Strict && ChecksOf() < ChecksVersion) return "the link was made without the content check of this SSBU Arena";      // (0.2.64's links: checked and made again)
                 return null;
             }
             catch (Exception e) { return arcl + ": " + e.Message; }
@@ -82,6 +83,13 @@ namespace Arena
             foreach (var kv in m)
                 if (kv.Value is ArrayList a && a.Count == 2)
                     yield return new KeyValuePair<string, Tuple<long, long>>(kv.Key, Tuple.Create(Convert.ToInt64(a[0]), Convert.ToInt64(a[1])));
+        }
+
+        /// <summary>shared_from.json's "checks": 2 = made with the content check (fix/shared-install), 1 = without (0.2.64)</summary>
+        static int ChecksOf()
+        {
+            var j = FromJson();
+            try { return j != null && j.TryGetValue("checks", out var c) ? Convert.ToInt32(c) : 1; } catch { return 1; }
         }
 
         /// <summary>the OpenSmash folder the link was made from (shared_from.json), or null</summary>
@@ -124,16 +132,75 @@ namespace Arena
             return null;
         }
 
-        /// <summary>a usable OpenSmash install with a game update Arena handles: (folder, update), or null</summary>
+        /// <summary>(fix/shared-install) SSBU_SHARED_STRICT=0: as 0.2.64 (the quick look below only, and links made by 0.2.64 kept
+        /// as they are). Otherwise the question is asked only for an OpenSmash install whose game data shared_gamedata.py check
+        /// accepts (its layout one Arena knows, data.arc read through it the game build's own: header, file table and samples),
+        /// and a link made without that check is checked and made again before the next start.</summary>
+        public static bool Strict => Environment.GetEnvironmentVariable("SSBU_SHARED_STRICT") != "0";
+        public const int ChecksVersion = 2;         // scripts/shared_gamedata.py CHECKS_VERSION
+        /// <summary>why the OpenSmash install found was not offered (Candidate), or null</summary>
+        public static string WhyNot;
+        static string checkedKey, checkedWhy;       // the last check: its folder and the dates of its game data files; its answer
+
+        /// <summary>a usable OpenSmash install with a game update Arena handles: (folder, update), or null (WhyNot says why when an
+        /// install was found)</summary>
         public static Tuple<string, string> Candidate()
         {
+            WhyNot = null;
             string dir = FindOpenSmash();
-            string v = dir == null ? null : Version(dir);
-            if (v == null) return null;
+            if (dir == null) return null;
+            string v = Version(dir);
+            if (v == null) { WhyNot = "its game update is not one SSBU Arena handles"; return null; }
             string mod = Path.Combine(dir, @"dump\modules");
-            if (!File.Exists(Path.Combine(mod, "romfs_vanilla.cfg")) && !File.Exists(Path.Combine(mod, "romfs.cfg"))) return null;
-            if (File.Exists(Path.Combine(mod, "romfs.crypt"))) return null;      // read in place from the encrypted game file: not shared
+            if (!File.Exists(Path.Combine(mod, "romfs_vanilla.cfg")) && !File.Exists(Path.Combine(mod, "romfs.cfg"))) { WhyNot = "its game data is not set up"; return null; }
+            if (File.Exists(Path.Combine(mod, "romfs.crypt"))) { WhyNot = "its game data is read from the encrypted game file (OpenSmash's \"save disk space\"): only a decrypted copy can be shared"; return null; }
+            if (Strict)
+            {
+                string why = Check(dir);
+                if (why != null) { WhyNot = why; Updater.Log("shared data: OpenSmash Ultimate in " + dir + " not offered: " + why); return null; }
+            }
             return Tuple.Create(dir, v);
+        }
+
+        /// <summary>shared_gamedata.py check (about a second the first time; the answer kept while OpenSmash's game data files keep
+        /// their dates): null when its game data can be shared, else why not. No Python yet (a first install): null, the installer
+        /// makes the same check before it links anything.</summary>
+        static string Check(string dir)
+        {
+            string py = Installer.Python;
+            if (py == null || Core.Repo == null || !File.Exists(Path.Combine(Core.Repo, @"scripts\shared_gamedata.py"))) return null;
+            string key = dir;
+            try
+            {
+                foreach (var n in new[] { "romfs.cfg", "romfs_vanilla.cfg", "romfs.layers", "romfs.unverified.txt", "romfs.crypt" })
+                {
+                    var fi = new FileInfo(Path.Combine(dir, @"dump\modules", n));
+                    key += "|" + (fi.Exists ? fi.Length + ":" + fi.LastWriteTimeUtc.Ticks : "-");
+                }
+            }
+            catch { }
+            lock (typeof(SharedData)) if (key == checkedKey) return checkedWhy;
+            string why = null;
+            var psi = new ProcessStartInfo(py, "-u scripts\\shared_gamedata.py check " + Installer.Q(dir))
+            { WorkingDirectory = Core.Repo, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8 };
+            psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+            try
+            {
+                using (var p = Process.Start(psi))
+                {
+                    var err = p.StandardError.ReadToEndAsync();
+                    string o = p.StandardOutput.ReadToEnd();
+                    if (!p.WaitForExit(120000)) { try { p.Kill(); } catch { } return "the check of its game data took too long"; }
+                    if (p.ExitCode != 0)
+                    {
+                        string line = o.Split('\n').Select(l => l.Trim()).LastOrDefault(l => l.StartsWith("not usable:"));
+                        why = line != null ? line.Substring("not usable:".Length).Trim() : "the check of its game data failed: " + (err.Result.Trim().Split('\n').LastOrDefault() ?? "") ;
+                    }
+                }
+            }
+            catch (Exception) { return null; }        // (the check could not run: the installer checks again before linking)
+            lock (typeof(SharedData)) { checkedKey = key; checkedWhy = why; }
+            return why;
         }
 
         /// <summary>the map made again (shared_gamedata.py relink <build> [folder]): (true, update) or (false, why). Blocks ~2 s.</summary>
