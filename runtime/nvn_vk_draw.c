@@ -4633,6 +4633,7 @@ static void pcache_save(void) {
 #endif
 #include "nvn_vk_wd.c"                             /* session 12: the freeze watchdog (wd_start / wd_stop) */
 static void vkd_init(void) {
+    vk_f16_decide(V.props.vendorID);               /* (amd-fixes) before anything is hashed or translated */
 #define X(n) n = (PFN_##n)vkGetDeviceProcAddr(V.device, #n); if (!n) vkd_fail("the device has no " #n);
     VKD(X)
 #undef X

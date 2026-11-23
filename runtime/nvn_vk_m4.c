@@ -25,7 +25,27 @@ typedef struct VStage {
     VkPipeline lib, lib2; volatile LONG lib_state, lib2_state;      /* session 9 (SSBU_VK_GPL=2): the stage's pipeline library; lib2: a vertex stage with the empty fragment shader state */
     uint64_t hp;                                   /* (amd-shader-prep) the code's hash before the version / resolution-scale parts (ssrc_hpre): what the seed list names; 0 = not known (a stage from a record without its code) */
 } VStage;
-#define MX_VK_VERSION 6u                        /* part of every hash: change it when mx_translate's Vulkan text or these records change */
+/* MX_VK_VERSION, part of every hash: change it when mx_translate's Vulkan text or these records change. (amd-fixes) 7 = the
+ * text with exact float -> half conversions (MxIn.f16exact); 6 = the text of 0.2.62 (packHalf2x16), kept for
+ * SSBU_VK_F16EXACT=0, whose caches are then those of 0.2.62. vk_f16_decide sets it before any stage is hashed. */
+#define MX_VK_VERSION_EXACT 7u
+#define MX_VK_VERSION_PACK 6u
+static uint32_t g_mx_vk_version = MX_VK_VERSION_EXACT;
+#define MX_VK_VERSION g_mx_vk_version
+/* SSBU_VK_F16EXACT: 1 = mx_f2h on every GPU (the default, VK_F16EXACT_DEFAULT), 0 = packHalf2x16 as before, 2 = mx_f2h on
+ * every GPU but NVIDIA (and with SSBU_VK_AMD_SAFE=2, the AMD test path on NVIDIA). */
+#ifndef VK_F16EXACT_DEFAULT
+#define VK_F16EXACT_DEFAULT 1
+#endif
+static int g_vk_f16x = 1;
+static void vk_f16_decide(unsigned vendor) {
+    const char *e = getenv("SSBU_VK_F16EXACT");
+    int m = e && e[0] ? atoi(e) : VK_F16EXACT_DEFAULT;
+    g_vk_f16x = m == 2 ? (vendor != 0x10de || vk_amd_forced()) : m != 0;
+    g_mx_vk_version = g_vk_f16x ? MX_VK_VERSION_EXACT : MX_VK_VERSION_PACK;
+    printf("nvn_vk: float -> half conversions in the shaders: %s (SSBU_VK_F16EXACT=%d%s; shader version %u)\n", g_vk_f16x ? "exact, as the Switch's GPU (mx_f2h)" : "the driver's packHalf2x16, as in 0.2.62",
+           m, e && e[0] ? "" : " default", (unsigned)g_mx_vk_version);
+}
 typedef struct { uint32_t magic; int32_t stage, code_len; uint32_t key[4], fo; uint64_t spv, hb; uint32_t cbufs, ssbos, ssbo_w, images, dep, tex_units, in_attr, out_attr; int32_t uses_alpha, nsmp; VSmp smp[64]; } StageRec;
 typedef struct { uint32_t magic, key[4], fo, dep, tex; uint64_t vh; } VarRec;      /* ..\cache\vk\stage\<stage>_<hb>.var: the variants of one code */
 #define STAGEREC_MAGIC (0x52545356u + MX_VK_VERSION)
@@ -277,7 +297,7 @@ static void vstage_build(VStage *v, const SSrc *src) {
         memset(&in, 0, sizeof in); memset(&out, 0, sizeof out);
         in.stage = s; in.code = src->code; in.code_len = src->code_len; in.cdata = src->cdata; in.cdata_size = src->cdata ? src->cdata_size : 0;
         in.int_attrs = v->key[0]; in.sint_attrs = v->key[1]; in.int_tex = v->key[2]; in.sint_tex = v->key[3]; in.force_out = v->fo;
-        in.target = 1; in.binding_base = 40u * (unsigned)s; in.ssbo_base = 40u * (unsigned)s + 20; in.tex_base = 40u * (unsigned)s; in.image_base = 40u * (unsigned)s + 32; in.wmask_binding = 40u * (unsigned)s + 38;
+        in.target = 1; in.f16exact = g_vk_f16x; in.binding_base = 40u * (unsigned)s; in.ssbo_base = 40u * (unsigned)s + 20; in.tex_base = 40u * (unsigned)s; in.image_base = 40u * (unsigned)s + 32; in.wmask_binding = 40u * (unsigned)s + 38;
         if (s == 5) {                              /* compute has a layout of its own (design, section 4): the bindings of stage 0 */
             in.binding_base = 0; in.ssbo_base = 20; in.tex_base = 0; in.image_base = 32; in.wmask_binding = 38; in.track_writes = 1;
             memcpy(in.local_size, src->local, sizeof in.local_size); in.smem_bytes = src->smem; in.lmem_bytes = src->lmem;
@@ -2975,6 +2995,7 @@ int nvn_vk_prepare_shaders(const char *dir) {
     long long vars = 0, jobs = 0;
     if (!dir) dir = "../cache/vk_containers";
     g_offline = 1; g_game_tables = 0; g_cpredict = 0;
+    vk_f16_decide(0);
     InitializeCriticalSection(&g_sh_lock); InitializeCriticalSection(&g_gpl_lock);
     InitializeConditionVariable(&g_sh_cv); InitializeConditionVariable(&g_jq_cv);
     CreateDirectoryA("../cache", NULL); CreateDirectoryA(vkc_dir(), NULL); CreateDirectoryA(vkc_file("spv"), NULL); CreateDirectoryA(vkc_file("stage"), NULL); vkp_open();
