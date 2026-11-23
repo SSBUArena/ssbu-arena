@@ -35,6 +35,7 @@ static void read_stats_print(void) {
            g_rs_bytes / 1048576.0, g_rs_qpc * ms, g_rs_max * ms, (long long)g_rs_4ms, (long long)g_rs_16ms);
     fflush(stdout);
 }
+void arc_read_stats_report(void) { if (g_rs_on == 1) read_stats_print(); }     /* (hitch.c hitch_report: at the game's own shutdown) */
 static int read_stats_on(void) {
     if (g_rs_on < 0) { const char *e = getenv("SSBU_READ_STATS"); g_rs_on = e && e[0] == '1'; if (g_rs_on) atexit(read_stats_print); }
     return g_rs_on;
@@ -46,7 +47,7 @@ static void read_stats_add(uint64_t bytes, LONG64 qpc) {
     for (LONG64 m = g_rs_max; qpc > m && InterlockedCompareExchange64(&g_rs_max, qpc, m) != m; m = g_rs_max) {}
     if (qpc * 1000 > 4 * f.QuadPart) InterlockedIncrement64(&g_rs_4ms);
     if (qpc * 1000 > 16 * f.QuadPart) InterlockedIncrement64(&g_rs_16ms);
-    if (n % 2000 == 0) read_stats_print();
+    if (n % 500 == 0) read_stats_print();
 }
 /* the original data.arc was opened: remember the handle for SSBU_ARC_LOG (and SSBU_READ_STATS) */
 static void arc_log_flush(void);

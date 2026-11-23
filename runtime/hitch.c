@@ -230,7 +230,9 @@ void hitch_frame(long long frame, double ms, int battle) {
 }
 
 void cxxrt_readable_report(FILE *out);             /* nncxxrt.c */
+void arc_read_stats_report(void);   /* arcpack.c (nnfs.c): SSBU_READ_STATS */
 void hitch_report(FILE *out) {
+    arc_read_stats_report();
     if (!g_hitch_ms) return;
     cxxrt_readable_report(out);
     fprintf(out, "\nhitch log (SSBU_HITCH=%d): %lld of %.0f frames took more than %d ms, %.0f ms in all; longest gap between two samples of the watchdog %.1f ms\n", g_hitch_ms,
