@@ -19,10 +19,10 @@ both players down.
 4. The **ping** of each player to the server is shown next to them in the match (green, yellow, red). It can be turned
    off in the launcher's settings or in the in-game Arena menu.
 
-**Smash** (versus) stays a local fight: friends on the same PC and CPUs. **Online Matchmaking** finds you an opponent:
+**Smash** (versus) stays a local fight: friends on the same PC and CPUs. **Online Ranked** finds you an opponent:
 pick a fighter and a stage, the server pairs you with another player searching, and the match plays with rollback and
-competitive rules (no ranking yet). **Battle Arena** is coming: Arena lobbies with friends and invites
-([roadmap](https://www.ssbuarena.com/project)).
+competitive rules; its result moves the elo of the fighter you played (the launcher's Leaderboard). **Battle Arena** is
+coming: Arena lobbies with friends and invites ([roadmap](https://www.ssbuarena.com/project)).
 
 ## Server region
 
@@ -42,7 +42,7 @@ game):
   background each time the launcher starts.
 - **Europe** / **NA East**: always that server.
 
-**Players on different servers do not see each other**: Online Rooms and Online Matchmaking are per server. To play
+**Players on different servers do not see each other**: Online Rooms and Online Ranked are per server. To play
 with a friend, both pick the same region.
 
 ## Rollback in rooms

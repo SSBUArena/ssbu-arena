@@ -263,7 +263,7 @@ static int comp_quick_begin(void) {           /* 1 = the quick match starts (the
     else if (!net_rb_ready()) why = "Not connected to the online lobby (yet). Check your internet connection and try again in a few seconds.";
     if (why) {
         printf("competitive UI: Online Ranked: no online matchmaking: %s\n", why); fflush(stdout);
-        menu_popup("Online matchmaking", why);
+        menu_popup("Online Ranked", why);
         return 0;
     }
     {   const char *e = getenv("SSBU_QUICK_RULE_KIND"); g_quick_kind = e && *e ? atoi(e) : 1; }
@@ -277,7 +277,7 @@ static int comp_quick_begin(void) {           /* 1 = the quick match starts (the
     InterlockedExchange(&g_quick_skip_rules, 1);       /* (comp_rule_state) */
     comp_quick_rules();
     printf("competitive UI: Online Ranked -> online matchmaking (no rating yet): the Smash versus select screens; the fight searches an opponent through the lobby\n"); fflush(stdout);
-    menu_popup("Online matchmaking", "Choose your fighter, then start: the game finds an opponent in the online lobby (no rating yet). Player 2 (shown as a CPU on the select screen) is only a placeholder: your online opponent takes that place. Rules: 1 on 1, 3 stocks, 7 minutes, no items, no hazards.");
+    menu_popup("Online Ranked", "Choose your fighter, then start: the game finds an opponent in the online lobby. The ranked server does not answer now, so this match is not ranked. Player 2 (shown as a CPU on the select screen) is only a placeholder: your online opponent takes that place. Rules: 1 on 1, 3 stocks, 7 minutes, no items, no hazards.");
     return 1;
 }
 /* (0.2.51) the Online Matchmaking tile with the game's own Online mode as the default (SSBU_ONLINE_MM): it is opened when the
