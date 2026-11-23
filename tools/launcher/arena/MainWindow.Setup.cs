@@ -289,6 +289,10 @@ namespace Arena
                 int jobs = choice?.Jobs ?? 0;
                 choice = ReadChoice();
                 choice.Jobs = jobs;
+                // (shared game data) OpenSmash Ultimate on this PC: asked once whether its game files are used instead of a copy
+                var cand = Core.SharedData == "" && !sharedAsked ? SharedData.Candidate() : null;
+                if (cand != null) { SharedAsk(cand, yes => { choice.Shared = yes ? cand.Item1 : "off"; RunSetup(); }); return; }
+                choice.Shared = Core.SharedData == "on" ? (SharedData.FindOpenSmash() ?? "auto") : Core.SharedData == "off" ? "off" : null;
             }
             RunSetup();
         }
@@ -557,7 +561,7 @@ namespace Arena
             }).ContinueWith(t =>
             {
                 if (t.IsFaulted) { FileCheckText.Foreground = Res("Bad"); FileCheckText.Text = "The repair stopped: " + t.Exception.GetBaseException().Message; return; }
-                choice = new SetupChoice { Location = Core.Build };
+                choice = new SetupChoice { Location = Core.Build };      // (install.py keeps the shared game data of an install that has it)
                 SetupOverlay.Visibility = Visibility.Visible;
                 RunSetup();
             }, TaskScheduler.FromCurrentSynchronizationContext());

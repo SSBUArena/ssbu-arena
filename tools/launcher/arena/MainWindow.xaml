@@ -1447,6 +1447,15 @@
                   <CheckBox x:Name="FileCheckFull" Style="{StaticResource Switch}" VerticalAlignment="Center" Margin="6,0,0,10" Content="Full check (reads every file: a few minutes)"/>
                 </WrapPanel>
                 <TextBlock x:Name="FileCheckText" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                <!-- shared game data (MainWindow.Shared.cs) -->
+                <TextBlock Text="SHARED GAME FILES" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
+                <CheckBox x:Name="SharedBox" Style="{StaticResource Switch}" Click="SharedBox_Click" Content="Use OpenSmash Ultimate's game files instead of a copy of Arena's own (about 16 GB less)"/>
+                <TextBlock Style="{StaticResource Small}" Margin="0,8,0,6" TextWrapping="Wrap"
+                           Text="Arena reads the game data of your OpenSmash Ultimate install in place (nothing is written there). While Arena is open, OpenSmash cannot update."/>
+                <TextBlock x:Name="SharedText" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="SharedFolder_Click" FontSize="16">Choose the OpenSmash folder</Button>
+                </WrapPanel>
               </StackPanel>
             </Grid>
           </ScrollViewer>

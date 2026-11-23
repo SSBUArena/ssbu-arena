@@ -2652,8 +2652,10 @@ static DWORD WINAPI prep_main(void *arg) {
         WIN32_FILE_ATTRIBUTE_DATA fa;
         snprintf(arc, sizeof arc, "%s\\data.arc", rom && rom[0] ? rom : "..\\romfs");
         if (GetFileAttributesA(arc) == INVALID_FILE_ATTRIBUTES) strcat(arc, "p");      /* the light archive (arcpack.c) */
-        if (GetFileAttributesA(arc) == INVALID_FILE_ATTRIBUTES) arc[strlen(arc) - 1] = 'l';   /* the linked archive (arclink.c): its own stamp */
-        if (GetFileAttributesExA(arc, GetFileExInfoStandard, &fa)) snprintf(stamp, sizeof stamp, "data.arc size %llu time %08lx%08lx\n", (unsigned long long)(((uint64_t)fa.nFileSizeHigh << 32) | fa.nFileSizeLow), (unsigned long)fa.ftLastWriteTime.dwHighDateTime, (unsigned long)fa.ftLastWriteTime.dwLowDateTime);
+        int arcl_stamp(const char *dir, char *out, size_t n);                           /* arclink.c */
+        if (GetFileAttributesA(arc) == INVALID_FILE_ATTRIBUTES) arc[strlen(arc) - 1] = 'l';   /* the linked archive (arclink.c): its map's stamp */
+        if (arc[strlen(arc) - 1] == 'l') { if (!arcl_stamp(rom && rom[0] ? rom : "..\\romfs", stamp, sizeof stamp)) stamp[0] = 0; }
+        else if (GetFileAttributesExA(arc, GetFileExInfoStandard, &fa)) snprintf(stamp, sizeof stamp, "data.arc size %llu time %08lx%08lx\n", (unsigned long long)(((uint64_t)fa.nFileSizeHigh << 32) | fa.nFileSizeLow), (unsigned long)fa.ftLastWriteTime.dwHighDateTime, (unsigned long)fa.ftLastWriteTime.dwLowDateTime);
         snprintf(spath, sizeof spath, "%s/store_source.txt", dir);
         FILE *sf = fopen(spath, "rb");
         char was[96] = "";

@@ -26,6 +26,7 @@ Checks before anything is used (any failure: nothing is made, the normal install
     python scripts/shared_gamedata.py check <opensmash folder>  the checks above, nothing written
     python scripts/shared_gamedata.py make <opensmash folder> <out folder> [--full]
     python scripts/shared_gamedata.py status <dump folder>      a linked dump still usable? (exit 1 if not)
+    python scripts/shared_gamedata.py relink <build folder> [<opensmash folder>]   make <build>\\dump_shared again (JSON line)
 """
 import bisect
 import hashlib
@@ -303,7 +304,9 @@ def make(root, out, full=False, say=print):
                 f.write(plain)
     rec = {'from': 'OpenSmash Ultimate', 'root': info['root'], 'version': info['version'], 'cfg': info['cfg'],
            'arc_size': info['arc_size'], 'ranges': len(ranges), 'made': time.strftime('%Y-%m-%d %H:%M:%S'),
-           'fonts': len(os.listdir(fonts_out)) if os.path.isdir(fonts_out) else 0, 'other_romfs_files': info['other_files']}
+           'fonts': len(os.listdir(fonts_out)) if os.path.isdir(fonts_out) else 0, 'other_romfs_files': info['other_files'],
+           # OpenSmash's game data cfg and layer map as they were: a re-extraction or update rewrites them (status, the launcher)
+           'stamps': {p: list(arc_file.file_stamp(p)) for p in (info['cfg'], info['map'])}}
     arcl = os.path.join(part, 'romfs', 'data.arcl')
     if full:
         say('   reading all of data.arc once through the link (%.1f GB)...' % (info['arc_size'] / 2 ** 30))
@@ -333,15 +336,62 @@ def make(root, out, full=False, say=print):
 
 
 def status(dump):
-    """[] when the linked dump in `dump` can be used now; else the problems"""
+    """[] when the linked dump in `dump` can be used now; else the problems. Cheap (sizes and dates only): the launcher's check
+    before every start does the same in C# (SharedData.cs)."""
     arcl = os.path.join(dump, 'romfs', 'data.arcl')
     if not os.path.isfile(arcl):
         return ['%s is not there' % arcl]
-    return arc_file.arcl_problems(arcl)
+    bad = arc_file.arcl_problems(arcl)
+    try:
+        with open(os.path.join(dump, 'shared_from.json'), encoding='utf-8') as f:
+            stamps = json.load(f).get('stamps') or {}
+    except (OSError, ValueError):
+        stamps = {}
+    for p, st in stamps.items():
+        try:
+            if list(arc_file.file_stamp(p)) != list(st):
+                bad.append('%s changed since the link was made (size or date)' % p)
+        except OSError:
+            bad.append('%s is not there any more' % p)
+    return bad
+
+
+def relink(build, root=None, say=print):
+    """Makes <build>\\dump_shared again (the quick map, no compile): from the OpenSmash folder given, else the one the link was
+    made from, else the one this PC remembers. -> shared_from.json's content; NotUsable with the reason."""
+    out = os.path.join(build, 'dump_shared')
+    roots = [root] if root else []
+    try:
+        with open(os.path.join(out, 'shared_from.json'), encoding='utf-8') as f:
+            roots.append(json.load(f).get('root'))
+    except (OSError, ValueError):
+        pass
+    cands = find([r for r in roots if r])
+    if not cands:
+        raise NotUsable('no OpenSmash Ultimate install found (it was moved or removed)')
+    try:                                     # the game this install was built for: the link must give the same build
+        with open(os.path.join(build, 'state.json'), encoding='utf-8') as f:
+            built = json.load(f).get('game_version')
+    except (OSError, ValueError):
+        built = None
+    why = None
+    for r in cands:
+        try:
+            got = check(r)['version']
+            if built and got != built:
+                raise NotUsable('it has the game update %s, this install is built for %s (the setup builds it again)' % (got, built))
+            rec = make(r, out, say=say)
+            bad = status(out)
+            if bad:
+                raise NotUsable('; '.join(bad))
+            return rec
+        except NotUsable as e:
+            why = '%s: %s' % (r, e)
+    raise NotUsable(why)
 
 
 def main(argv):
-    if not argv or argv[0] not in ('find', 'check', 'make', 'status'):
+    if not argv or argv[0] not in ('find', 'check', 'make', 'status', 'relink'):
         print(__doc__)
         return 2
     cmd = argv[0]
@@ -354,6 +404,14 @@ def main(argv):
         print('usable' if not bad else '\n'.join(bad))
         return 1 if bad else 0
     try:
+        if cmd == 'relink':                     # relink <build> [<OpenSmash folder>]: one JSON line for the launcher
+            try:
+                rec = relink(os.path.abspath(argv[1]), argv[2] if len(argv) > 2 else None, say=lambda s: None)
+                print(json.dumps({'ok': True, 'root': rec['root'], 'version': rec['version']}))
+                return 0
+            except NotUsable as e:
+                print(json.dumps({'ok': False, 'why': str(e)}))
+                return 1
         if cmd == 'check':
             info = check(argv[1])
             info['nrr'] = len(info['nrr'])

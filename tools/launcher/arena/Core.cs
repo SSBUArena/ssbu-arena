@@ -82,6 +82,9 @@ namespace Arena
         public static bool[] Invert = new bool[4];                        // (0.2.31) [general] invert.LX / LY / RX / RY (on top of a device's own setting)
         public static int ShaderWait;                                     // (0.2.61) graphics.ini shader_wait: 0 auto (also a missing key), 1 hold, 2 skip (runtime/gfx_options.c)
         public static int ShaderLoad;                                     // (0.2.19) launcher.ini shader_load: 0 automatic, 1 all at the start, 2 per match (graphics.ini shader_load)
+        // (shared game data, SharedData.cs) launcher.ini shared_data: "" = not asked yet, "on" = read OpenSmash Ultimate's game files
+        // (install.py --shared-data), "off" = Arena's own copy; shared_old_copy = keep: the player kept build\dump after the switch
+        public static string SharedData = "", SharedOldCopy = "";
         public static string OpenSmashPath;                               // (0.2.52) launcher.ini opensmash_path: OpenSmash Ultimate's folder or launcher exe, set by hand when the OpenSmash tab does not find it (MainWindow.OpenSmash.cs)
         public const string CommunityDiscord = "https://discord.gg/pkgyYGf3YB";   // (0.2.51) the OpenSmash-Ultimate Discord (their README's invite): Arena's players meet there
         public static bool CrashReports = true;                           // (0.2.18) launcher.ini crash_reports (CrashReport.cs)
@@ -135,7 +138,7 @@ namespace Arena
         public static bool RollbackBlocked1305 => GameVersion() == "13.0.5" && Environment.GetEnvironmentVariable("SSBU_R1_1305") == "0";      // (2026-11-09) on by default again: hostrt.c
         public const string Rollback1305Text = "Online matches with rollback are not supported on game update 13.0.5 yet.";
 
-        static string GameVersion()
+        internal static string GameVersion()
         {
             try
             {
@@ -191,6 +194,9 @@ namespace Arena
             RecLocal = Get(L, "replay_local") != "off";
             ShaderStamp = Get(L, "shaders") ?? "";
             OpenSmashPath = string.IsNullOrWhiteSpace(Get(L, "opensmash_path")) ? null : Get(L, "opensmash_path").Trim();
+            SharedData = (Get(L, "shared_data") ?? "").Trim().ToLowerInvariant();
+            if (SharedData != "on" && SharedData != "off") SharedData = "";
+            SharedOldCopy = (Get(L, "shared_old_copy") ?? "").Trim().ToLowerInvariant();
             Competitive = LightArc || HasCompetitive;      // (0.2.8) always: Arena is the competitive game
             if (!HasOnline) Online = false;
             foreach (var old in new[] { "online.ini.off", "online.ini.old" })      // an older launcher's settings: the name
@@ -342,7 +348,9 @@ namespace Arena
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
                 "server = " + Server.Trim(), Regions.IniServer != null ? "online_server = " + Regions.IniServer : "# online_server = host:port   (a server set by hand: wins over the region)", "ping = " + (Ping ? "on" : "off"), OpenSmashPath != null ? "opensmash_path = " + OpenSmashPath : "# opensmash_path = <folder>   (OpenSmash Ultimate's folder or launcher exe, when the OpenSmash tab does not find it)", "shaders = " + ShaderStamp, "input_delay = " + (InputDelay == 0 ? "automatic" : InputDelay.ToString()), "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "complete_save = " + (CompleteSave ? "on" : "off"), "complete_save_choice = " + (CompleteSaveChosen ? "1" : "0"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
-                "replay_local = " + (RecLocal ? "on" : "off") }, Encoding.ASCII);
+                "replay_local = " + (RecLocal ? "on" : "off"),
+                SharedData != "" ? "shared_data = " + SharedData : "# shared_data = on | off   (OpenSmash Ultimate's game files instead of a copy of Arena's own; asked once)",
+                SharedOldCopy != "" ? "shared_old_copy = " + SharedOldCopy : "# shared_old_copy = keep   (Arena's old copy in build\\dump is kept: not asked again)" }, Encoding.ASCII);
             var gfx = GfxValues();
             var gfxNew = gfx.Where(kv => kv.Key == "latency" || !gfxSeen.TryGetValue(kv.Key, out var v) || v != kv.Value).ToDictionary(kv => kv.Key, kv => kv.Value);
             SetIniValues(GfxIni, null, gfxNew);

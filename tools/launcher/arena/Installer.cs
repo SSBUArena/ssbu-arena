@@ -40,6 +40,9 @@ namespace Arena
         public List<string> Dlc = new List<string>();
         public int Jobs;
         public bool Dry;
+        /// <summary>install.py --shared-data: an OpenSmash Ultimate folder or "auto" (its game files, no copy of our own), "off"
+        /// (Arena's own copy), null (as the install already is)</summary>
+        public string Shared;
     }
 
     public static class Installer
@@ -200,6 +203,7 @@ namespace Arena
             if (!string.IsNullOrEmpty(c.Location) && !string.Equals(Path.GetFullPath(c.Location).TrimEnd('\\'), DefaultLocation, StringComparison.OrdinalIgnoreCase))
                 a.Append(" --build-dir " + Q(c.Location.TrimEnd('\\')));
             if (c.Jobs > 0) a.Append(" --jobs " + c.Jobs);
+            if (!string.IsNullOrEmpty(c.Shared)) a.Append(" --shared-data " + Q(c.Shared.TrimEnd('\\')));
             if (c.Dry || Environment.GetEnvironmentVariable("SSBU_ARENA_SETUP_DRY") == "1") a.Append(" --dry-run");
             return a.ToString();
         }

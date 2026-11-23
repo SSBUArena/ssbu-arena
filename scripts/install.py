@@ -486,7 +486,7 @@ def step_inputs(cx):
     a, st = cx.a, cx.st
     notes = []
     ready = os.path.join(BUILD, 'dump')
-    shared = None if a.dump else step_shared(cx)
+    shared = step_shared(cx)               # (--shared-data on: wins over a --dump the window passes as well)
     if shared:
         notes.append(shared)
     if cx.dump:

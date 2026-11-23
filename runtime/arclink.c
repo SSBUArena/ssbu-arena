@@ -110,6 +110,17 @@ refuse:
 }
 const char *arcl_why(void) { return g_arcl.why; }
 uint64_t arcl_total(void) { return g_arcl.state == 1 ? g_arcl.size : 0; }
+/* the container store's stamp (nvn_vk_m4.c) for the linked archive: the archive's size and its map (ranges and their source
+ * offsets), not the date of data.arcl: a link made again over the same data (the launcher's relink after OpenSmash rewrote its
+ * files with the same content) keeps the store; a map of other data makes it stale. 1 when there is a usable link. */
+int arcl_stamp(const char *dir, char *out, size_t n) {
+    if (arcl_load(dir) != 1) return 0;
+    uint64_t h = 0xcbf29ce484222325ULL;
+    const uint8_t *p = (const uint8_t *)g_arcl.r;
+    for (size_t i = 0; i < (size_t)g_arcl.n * sizeof(ArclRange); i++) { h ^= p[i]; h *= 0x100000001b3ULL; }
+    snprintf(out, n, "data.arc size %llu linked map %016llx\n", (unsigned long long)g_arcl.size, (unsigned long long)h);
+    return 1;
+}
 
 /* bytes [off, off + size) of data.arc through the map; returns how many were read (short only at the end or on an error).
  * guest: buf is the game's memory (a read the game asked for): a page the rollback's learned-set save protected is opened
@@ -181,6 +192,7 @@ static int arcl_read(HANDLE h, int64_t off, void *buf, uint64_t size, uint64_t *
 #else
 int arcl_load(const char *dir) { (void)dir; return 0; }
 const char *arcl_why(void) { return ""; }
+int arcl_stamp(const char *dir, char *out, size_t n) { (void)dir; (void)out; (void)n; return 0; }
 uint64_t arcl_total(void) { return 0; }
 uint64_t arcl_pread(uint64_t off, void *buf, uint64_t size) { (void)off; (void)buf; (void)size; return 0; }
 static HANDLE arcl_open(const char *arc_path) { (void)arc_path; return INVALID_HANDLE_VALUE; }

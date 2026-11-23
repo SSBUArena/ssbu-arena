@@ -71,7 +71,7 @@ namespace Arena
             xinput = Core.XInputCount();
             if (Environment.GetEnvironmentVariable("SSBU_ARENA_CRASH_TEST") == "1")      // (test) the newest crash file sent as after a game
                 Task.Run(() => { for (int w = 0; w < 60 && !Account.SignedIn; w++) System.Threading.Thread.Sleep(500); bool sent = CrashReport.SendIfCrashed(DateTime.MinValue, out bool crashed); Updater.Log("crash test: crashed " + crashed + ", sent " + sent); });
-            Loaded += (s, e) => { StartOnlineCount(); MeasureRegions(); RunChecks(); FindPads(); OpenFromArgs(); OpenReplayFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); Task.Run(() => Core.MakeAvatars()).ContinueWith(t => FillAvatars(), TaskScheduler.FromCurrentSynchronizationContext()); };
+            Loaded += (s, e) => { StartOnlineCount(); MeasureRegions(); RunChecks(); SharedAtStart(); FindPads(); OpenFromArgs(); OpenReplayFromArgs(); ResumeAccount(); CheckUpdates(); Task.Run(() => Core.MakeLoadingArt()); Task.Run(() => Core.MakeAvatars()).ContinueWith(t => FillAvatars(), TaskScheduler.FromCurrentSynchronizationContext()); };
             Scaled.SizeChanged += (s, e) => Rescale();
             SizeChanged += (s, e) => Rescale();
         }
@@ -240,6 +240,7 @@ namespace Arena
                 var rows = checks.Select(c => CheckRow(c.Ok, c.Text)).ToList();
                 rows.Add(CheckRow(shaders, shaders ? "Shaders prepared" : "Shaders not prepared yet", shaders ? "ok" : "warn"));
                 CheckList.ItemsSource = rows;
+                RefreshShared();
                 SetState();
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
@@ -623,6 +624,7 @@ namespace Arena
         {
             if (!SaveQuiet()) return;
             if (Core.GameRunning()) { Show("Already running", "The game is already open.", null, ("OK", null, true)); return; }
+            if (SharedEnsure(() => Play_Click(sender, e), true)) return;      // (shared game data) OpenSmash changed its files: linked again first
             var bad = Core.CheckOnline();
             if (bad.Count > 0) { Show("Online settings", null, bad, ("Open settings", () => OpenSettings(SecOnline), true), ("Cancel", null, false)); return; }
             if (checks == null) { Status("Still checking the game files...", "busy"); return; }
