@@ -10,7 +10,8 @@
  *   SSBU_RB_NET=loop[,<f>] one game: the other player is a bot whose pads "arrive" <f> frames late (default 4):
  *                          rollback without a network, for the determinism proof (f = 0: never late = reference)
  *   SSBU_RB_NET_PLAYER=0|1 this game's player (default: 0, 1 in SSBU_ONLINE=join mode)
- *   SSBU_RB_NET_DELAY=<n>  input delay in frames (default: from the measured round trip, 1..5)
+ *   SSBU_RB_NET_DELAY=<n>  input delay in frames (default: from the measured round trip, 1..5); "auto": from the ping, agreed
+ *                          with the other game (SSBU_RB_AUTO_DELAY_PING, auto_ping_frames: 150 ms -> 5, at most 6)
  *   SSBU_RB_NET_BOT=<seed> the local player's pads come from a test bot instead of the controller / input sequence
  *   SSBU_RB_NET_LOG=<file> one line per finalized frame: "f <frame> h <checksum>" (compare two games' files)
  *   SSBU_RB_NET_AHEAD=<n>  most frames this game runs ahead of the newest remote pad (default 7 = the ring depth)
@@ -535,15 +536,30 @@ static void hs_stage_rule(RbhMatch *m, const RbhMatch *peer) {
  * auto one is raised to the connection's value, never lowered); both fixed: nothing agreed, each keeps its own as before. A game
  * without this (0.2.49) sends and reads 0 there: it keeps its own delay and the other game its own (in sync either way: each
  * game's pads go out for every frame, the empty first ones too). -1 = no round trip measured yet. */
-static int auto_rule_delay(void);
+/* (0.2.65, SSBU_RB_AUTO_DELAY_PING, default 1; 0 = the rule above, 0.2.50..0.2.64) Auto = the delay that covers the one-way trip of
+ * the ping (auto_ping_frames below: 150 ms -> 5, 180 ms -> 6). 0.2.64 gave 4 at 150 ms, and next to a fixed player it could
+ * take the fixed value: the joiner sent its CHOICE before its first round trip was measured (an Auto CHOICE without a round
+ * trip says 2), so a host fixed at 3 agreed 3. Now: (1) an Auto joiner holds its CHOICE until it has measured the ping (3
+ * round trips, at most 3 s); (2) the host, when either side is Auto, waits for its own ping too and never agrees less than
+ * the ping-based value it measured itself on the same connection (also with an older joiner that sent 2). Both games still
+ * play ONE delay, the larger of the two wishes (a fixed player next to an Auto one is raised, never lowered; two fixed: the
+ * larger, as since 0.2.52). No change to the handshake format (pad0 bits 3..7 as before; RBH_PROTO stays 6). */
+static int auto_rule_delay(void), auto_rule_delay_ex(int final), auto_ping_on(void);
+static int auto_rtt_shown_ms(int final, int *samples, double *best_ms);
 static void hs_delay_want(RbhMatch *m) {                 /* this game's own wish into pad0 (CHOICE and the host's proposal) */
-    int w = g_delay_auto ? auto_rule_delay() : g_delay_cfg;
+    int w = g_delay_auto ? auto_rule_delay_ex(1) : g_delay_cfg;
     if (g_delay_auto && w < 1) w = 2;
     m->pad0 = (uint8_t)((m->pad0 & 0x07) | (g_delay_auto ? 0x08 : 0) | ((w > 0 ? (w > 15 ? 15 : w) : 0) << 4));
 }
 static void hs_delay_agree(RbhMatch *m, const RbhMatch *peer) {      /* host: m = the proposal (pad0 has the host's wish) */
     int mw = m->pad0 >> 4, ma = (m->pad0 & 0x08) != 0, pw = peer->pad0 >> 4, pa = (peer->pad0 & 0x08) != 0;
     int d = mw > pw ? mw : pw;
+    if (auto_ping_on() && (ma || pa)) {                 /* (0.2.65) never under the ping-based value of this connection */
+        int n = 0; double best = -1; int rtt = auto_rtt_shown_ms(1, &n, &best), pd = auto_rule_delay_ex(1);
+        printf("[rbnet] handshake: input delay Auto (%s): round trip %d ms (median of the last %d, best %.1f ms) -> %d frames from the ping%s\n",
+               ma && pa ? "both games" : ma ? "this game" : "the other game", rtt, n < 5 ? n : 5, best, pd, pd > d ? ": raised to it" : "");
+        if (pd > d) d = pd;
+    }
     m->pad0 &= 0x07;
     /* (0.2.52, SSBU_RB_NET_DELAY_AGREE_FIXED, default 1) both fixed: both games use the larger one too, so both show the same "<n>f"
      * (the overlay) and play one delay; a peer that sent none (0: a 0.2.49 game, or no SSBU_RB_NET_DELAY) still keeps its own. A
@@ -687,7 +703,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
         AcquireSRWLockExclusive(&g_hs_lock);
         if (phase == 0) { /* searching: nothing to send yet */ }
         else if (g_local == 0) {                             /* host: proposal = our choice + the joiner's */
-            int rtt_wait = g_delay_auto && auto_rule_delay() < 0 && now - t0 < 3000;      /* (rb-8ms, delay auto) a round trip first, at most 3 s */
+            int rtt_wait = (g_delay_auto || (auto_ping_on() && g_hs_have_peer && (g_hs_peer.m.pad0 & 0x08))) && auto_rule_delay() < 0 && now - t0 < 3000;      /* (rb-8ms, delay auto) a round trip first, at most 3 s; (0.2.65) also when only the other game is Auto */
             if (!g_hs_have_prop && g_hs_have_peer && lwr && !rtt_wait) {      /* (R3 lwr) the room's match: both games built it from the room; only the seed is new */
                 if (g_hs_peer.exe_stamp != exe_stamp()) printf("[rbnet] handshake: NOTE the other game's exe was linked at another time (stamp %08x here, %08x there): a different build may desync\n", exe_stamp(), g_hs_peer.exe_stamp);
                 if (g_hs_peer.m.chara[0] != mine->chara[0] || g_hs_peer.m.rule_kind != mine->rule_kind || g_hs_peer.m.stock != mine->stock) {
@@ -716,7 +732,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
             if (g_hs_have_prop) {
                 if (g_hs_prop.exe_stamp != exe_stamp()) printf("[rbnet] handshake: NOTE the other game's exe was linked at another time (stamp %08x here, %08x there): a different build may desync\n", exe_stamp(), g_hs_prop.exe_stamp);
                 *out = g_hs_prop.m; ok = 1;
-            } else if (now - last_tx >= 100 && net_rb_ready()) { last_tx = now; RbhMsg c; hs_head(&c, RBH_CHOICE); c.m = *mine; if (lwr && rbn_ba_mode()) c.m.pad0 |= 1; hs_delay_want(&c.m); hs_send(&c, sizeof c); }
+            } else if (now - last_tx >= 100 && net_rb_ready() && !(auto_ping_on() && g_delay_auto && auto_rule_delay() < 0 && now - t0 < 3000)) { last_tx = now;      /* (0.2.65) Auto: the ping first (at most 3 s) */ RbhMsg c; hs_head(&c, RBH_CHOICE); c.m = *mine; if (lwr && rbn_ba_mode()) c.m.pad0 |= 1; hs_delay_want(&c.m); hs_send(&c, sizeof c); }
         }
         if (ok) g_hs_waiting = 0;
         ReleaseSRWLockExclusive(&g_hs_lock);
@@ -762,7 +778,13 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
     g_hs_lwr = lwr; g_hs_onl = onl;
     InterlockedExchange(&g_clk_match, 1);
     g_delay_agreed = (out->pad0 & 0x08) ? out->pad0 >> 4 : 0;      /* (rb-8ms) the input delay of both games, or 0 */
-    if (g_delay_agreed) { printf("[rbnet] handshake: input delay %d frames on both games (agreed; this game %s)\n", g_delay_agreed, g_delay_auto ? "auto" : g_delay_cfg >= 0 ? "fixed" : "from the round trip"); fflush(stdout); }
+    if (g_delay_agreed) {
+        int n = 0; double best = -1; int rtt = auto_rtt_shown_ms(1, &n, &best);
+        char own[48]; if (g_delay_auto) snprintf(own, sizeof own, "auto, %d from the ping", auto_rule_delay_ex(1)); else if (g_delay_cfg >= 0) snprintf(own, sizeof own, "fixed %d", g_delay_cfg); else snprintf(own, sizeof own, "from the round trip");
+        printf("[rbnet] handshake: input delay %d frames on both games (agreed; this game %s; round trip %d ms, median of the last %d, best %.1f ms; Auto rule %s)\n", g_delay_agreed, own, rtt, n < 5 ? n : 5, best,
+               auto_ping_on() ? "0.2.65 ping (SSBU_RB_AUTO_DELAY_PING=1)" : "0.2.50 (SSBU_RB_AUTO_DELAY_PING=0)");
+        fflush(stdout);
+    }
     g_sq_agreed = lwr && (out->pad0 & 1);
     if (lwr && (g_sq_agreed || rbn_ba_mode())) { printf("[squad] room match: %s (room maker's Battle Arena mode %s, this game's %d)\n", g_sq_agreed ? "a Battle Arena squad match (Squad Strike, Tag Team, 3 fighters each, 1 stock each)" : "a 1-on-1 match: the room maker is not in Battle Arena", g_sq_agreed ? "on" : "off", rbn_ba_mode()); fflush(stdout); }
     g_hs_pending = 1; g_hs_pending_t = GetTickCount64();      /* (Arena) agreed: the fight's pads are the session's from now on (rbn_fight_pending) */
@@ -919,9 +941,42 @@ static int lock_delay(void) {                           /* the delay that covers
     return d < 1 ? 1 : d > 12 ? 12 : d;
 }
 static int peer_lockstep(void) { return g_peer_mode >= 0 && (g_peer_mode & 0x80) && g_peerdelay; }
-static int auto_rule_delay(void) {                      /* (rb-8ms) SSBU_RB_NET_DELAY=auto: the rule above hs_delay_want; -1 = no round trip yet */
+static int auto_ping_on(void) {                         /* (0.2.65) SSBU_RB_AUTO_DELAY_PING, default 1 */
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_AUTO_DELAY_PING"); on = !(e && e[0] == '0'); }
+    return on;
+}
+/* (0.2.65) the ping the Auto delay is chosen from: the median of the last 5 round trips (the number the ping overlay shows,
+ * rbn_rtt_ms, so a player who sees 150 gets the 150 row), only once 3 are measured; final = 1 (the 3 s wait is over, or the
+ * delay is needed now): the best / last round trip measured, if fewer. -1 = none. */
+static int auto_rtt_shown_ms(int final, int *samples, double *best_ms) {
+    LONG n = g_rtt_hist_n; if (samples) *samples = (int)n;
+    if (best_ms) *best_ms = g_rtt_min_us > 0 ? g_rtt_min_us / 1000.0 : -1.0;
+    if (n >= 3) {
+        long v[5]; int k = n < 5 ? (int)n : 5;
+        for (int i = 0; i < k; i++) v[i] = g_rtt_hist[i];
+        for (int i = 1; i < k; i++) for (int j = i; j > 0 && v[j] < v[j - 1]; j--) { long t = v[j]; v[j] = v[j - 1]; v[j - 1] = t; }
+        return (int)((v[k / 2] + 500) / 1000);
+    }
+    if (!final) return -1;
+    int r = g_rtt_min_us > 0 ? g_rtt_min_us : g_rtt_us;
+    return r > 0 ? (r + 500) / 1000 : -1;
+}
+/* (0.2.65) the Auto delay for a round trip of ms: the frames that cover the one-way trip (half the round trip) plus a quarter frame
+ * (4 ms: the frame's own phase and the send), rounded up: d = ceil(ms / 2 / 16.67 + 0.25); 1 under 15 ms (a home network), at
+ * least 2 otherwise (relay jitter, as before), at most SSBU_RB_NET_DELAY_MAX (default 6). Round trip -> frames:
+ *   0-14 ms 1 | 15-58 ms 2 | 59-91 ms 3 | 92-125 ms 4 | 126-158 ms 5 | 159 ms and more 6
+ * Whatever is left of the trip above the delay is covered by rollback (at most 7 frames). */
+static int auto_ping_frames(double ms, int mx) {
+    if (ms < 15) return 1;
+    int d = ((int)(ms + 0.5) * 3 + 25 + 99) / 100;         /* ceil(ms * 60 / 2000 + 0.25) in integers (no float edge at 125 ms) */
+    if (d < 2) d = 2;
+    return d > mx ? (mx < 1 ? 1 : mx) : d;
+}
+static int auto_rule_delay(void) { return auto_rule_delay_ex(0); }
+static int auto_rule_delay_ex(int final) {              /* (rb-8ms) SSBU_RB_NET_DELAY=auto: the rule above hs_delay_want; -1 = no round trip yet */
     static int mx = 0;
-    if (!mx) { const char *e = getenv("SSBU_RB_NET_DELAY_MAX"); mx = e && atoi(e) >= 1 ? (atoi(e) > 9 ? 9 : atoi(e)) : 5; }
+    if (!mx) { const char *e = getenv("SSBU_RB_NET_DELAY_MAX"); mx = e && atoi(e) >= 1 ? (atoi(e) > 9 ? 9 : atoi(e)) : auto_ping_on() ? 6 : 5; }
+    if (auto_ping_on()) { int ms = auto_rtt_shown_ms(final, NULL, NULL); return ms < 0 ? -1 : auto_ping_frames(ms, mx); }
     int rtt = g_rtt_min_us > 0 ? g_rtt_min_us : g_rtt_us;
     if (rtt <= 0) return -1;
     double ms = rtt / 1000.0, one_way = ms / 2;
@@ -932,7 +987,7 @@ static int auto_rule_delay(void) {                      /* (rb-8ms) SSBU_RB_NET_
 static int auto_delay(void) {
     if (g_delay_agreed > 0 && !g_loop) return g_delay_agreed;      /* (rb-8ms) the one both games agreed (hs_delay_agree) */
     if (g_delay_cfg >= 0) return g_delay_cfg;
-    if (g_delay_auto && !g_lockstep && !peer_lockstep()) { int d = g_loop ? 2 : auto_rule_delay(); return d < 1 ? 2 : d; }    /* (auto with a game that cannot agree: this game's own value) */
+    if (g_delay_auto && !g_lockstep && !peer_lockstep()) { int d = g_loop ? 2 : auto_rule_delay_ex(1); return d < 1 ? 2 : d; }    /* (auto with a game that cannot agree: this game's own value) */
     if (g_lockstep && (!g_peerdelay || g_loop)) return lock_delay();     /* (the old way; the loop test) */
     if (g_lockstep || peer_lockstep()) {                /* (hs14) either game has no ring: both take the larger of the two announced delays */
         int d = g_my_lockd, pd = g_peer_mode >= 0 ? (g_peer_mode & 0x7f) : 0;
