@@ -182,6 +182,14 @@ static void vkd_device_info(VkDeviceCreateInfo *di, const VkExtensionProperties 
 }
 
 /* ---------------------------------------------------------------- memory: 64 MB blocks per memory type and class, first fit */
+/* (amd-fixes, from OpenSmash gpu_vk.c) never one of AMD's device-coherent / device-uncached memory types
+ * (VK_AMD_device_coherent_memory: allocating them needs a feature this device is not given); AMD's drivers list them beside
+ * the plain ones. SSBU_VK_MEMTYPE_SAFE=0: every type, as before. */
+static int vk_memtype_ok(uint32_t i) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_VK_MEMTYPE_SAFE"); on = !(e && e[0] == '0'); }
+    return !on || !(D.mp.memoryTypes[i].propertyFlags & (0x40u | 0x80u));      /* VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD | DEVICE_UNCACHED_BIT_AMD */
+}
 typedef struct { int block; uint64_t off, size; void *map; VkDeviceMemory mem; } VMem;
 typedef struct { VkDeviceMemory mem; uint64_t size; void *map; uint32_t type; int cls, nfree, used; struct { uint64_t off, size; } fr[512]; } VBlock;
 static VBlock *g_blk[2048];
@@ -190,7 +198,7 @@ static LONG64 g_mem_total, g_mem_leak;
 static VMem vmem_alloc(VkMemoryRequirements rq, VkFlags want, int cls) {
     VMem m = {-1, 0, 0, NULL, NULL};
     uint32_t type = 32;
-    for (uint32_t i = 0; i < D.mp.memoryTypeCount && type == 32; i++) if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & want) == want) type = i;
+    for (uint32_t i = 0; i < D.mp.memoryTypeCount && type == 32; i++) if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & want) == want && vk_memtype_ok(i)) type = i;
     if (type == 32) vkd_fail("no memory type for flags 0x%x (bits 0x%x)", (unsigned)want, (unsigned)rq.memoryTypeBits);
     uint64_t al = rq.alignment < 256 ? 256 : rq.alignment;
     for (int pass = 0; pass < 2; pass++) {
@@ -258,7 +266,7 @@ static VkBuffer vbuf_new(uint64_t size, VkFlags usage, VMem *mem) {
         if (mode == 1 && (usage & VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) {
             VkFlags dl = want | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
             for (uint32_t i = 0; i < D.mp.memoryTypeCount; i++)
-                if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & dl) == dl && D.mp.memoryHeaps[D.mp.memoryTypes[i].heapIndex].size >= (2ull << 30)) {
+                if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & dl) == dl && vk_memtype_ok(i) && D.mp.memoryHeaps[D.mp.memoryTypes[i].heapIndex].size >= (2ull << 30)) {
                     want = dl;
                     printf("nvn_vk: SSBU_VK_BUFMEM=1: a %llu MB buffer (usage 0x%x) in memory type %u (device local + host visible, heap %llu MB)\n", (unsigned long long)(size >> 20), (unsigned)usage, i,
                            (unsigned long long)(D.mp.memoryHeaps[D.mp.memoryTypes[i].heapIndex].size >> 20));
@@ -2130,7 +2138,7 @@ static void cb_stg_ensure(CB *c) {               /* the buffer in ordinary (cach
         vkGetBufferMemoryRequirements(V.device, c->stg, &rq);
         VkFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
         int found = 0;
-        for (uint32_t i = 0; i < D.mp.memoryTypeCount; i++) if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & want) == want) found = 1;
+        for (uint32_t i = 0; i < D.mp.memoryTypeCount; i++) if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & want) == want && vk_memtype_ok(i)) found = 1;
         if (!found) want &= ~(VkFlags)VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
         c->stg_mem = vmem_alloc(rq, want, 2);
         VKC(vkBindBufferMemory(V.device, c->stg, c->stg_mem.mem, c->stg_mem.off));
@@ -2503,13 +2511,13 @@ static CB *cb_new(uint64_t addr, uint64_t size) {
         vkGetBufferMemoryRequirements(V.device, c->buf, &rq);
         VkFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | (g_cb_cached ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0);
         int found = 0;
-        for (uint32_t i = 0; i < D.mp.memoryTypeCount; i++) if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & want) == want) found = 1;
+        for (uint32_t i = 0; i < D.mp.memoryTypeCount; i++) if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & want) == want && vk_memtype_ok(i)) found = 1;
         if (!found) want &= ~(VkFlags)VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
         if (g_cb_dl < 0) g_cb_dl = getenv("SSBU_VK_CBMEM") ? atoi(getenv("SSBU_VK_CBMEM")) : vk_amd_safe() ? 0 : cb_keep_mode() ? 1 : 0;      /* default 1 with SSBU_VK_CBKEEP (the CPU then reads them only at a landing), 0 without */
         if (g_cb_dl == 1) {                        /* round 16: where the GPU writes and reads them without the bus (the CPU reads them only at a landing) */
             VkFlags dl = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
             for (uint32_t i = 0; i < D.mp.memoryTypeCount; i++)
-                if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & dl) == dl && D.mp.memoryHeaps[D.mp.memoryTypes[i].heapIndex].size >= (2ull << 30)) { want = dl; break; }
+                if ((rq.memoryTypeBits >> i & 1) && (D.mp.memoryTypes[i].propertyFlags & dl) == dl && vk_memtype_ok(i) && D.mp.memoryHeaps[D.mp.memoryTypes[i].heapIndex].size >= (2ull << 30)) { want = dl; break; }
         }
         c->mem = vmem_alloc(rq, want, want & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? 3 : 2);
         VKC(vkBindBufferMemory(V.device, c->buf, c->mem.mem, c->mem.off));
