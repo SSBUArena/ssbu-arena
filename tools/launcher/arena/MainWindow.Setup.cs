@@ -168,7 +168,8 @@ namespace Arena
             {
                 // (shared game data) nothing of the game is unpacked: the fields stay as they are (used only if the link fails)
                 SetupPackageFields.Visibility = Visibility.Collapsed;
-                FieldState(SetupGameMark, SetupGameText, "ok", "Not needed: the game files of OpenSmash Ultimate in " + shared + " are used (no second copy). Settings > Game files changes this later.");
+                FieldState(SetupGameMark, SetupGameText, "ok", "Not needed: OpenSmash Ultimate's game files are used (no second copy).");
+                SetupGameText.ToolTip = shared;
                 if (fw == "") FieldState(SetupFirmwareMark, SetupFirmwareText, "ok", "Not needed: the system fonts come with OpenSmash's game files.");
                 bool loc = Clean(SetupLocation) != "";
                 SetupGo.IsEnabled = loc;
