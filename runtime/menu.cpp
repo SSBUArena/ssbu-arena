@@ -363,7 +363,7 @@ static const char *const k_renderer[] = {"vulkan", "opengl"};
 static const int k_aniso_v[] = {0, 2, 4, 8, 16};
 static const char *const k_aniso[] = {"game", "2", "4", "8", "16"};
 static const char *const k_profile[] = {"custom", "low"};
-static const char *const k_wait[] = {"hold", "skip"};
+static const char *const k_wait[] = {"hold", "skip", "auto"};      /* indexes = GfxOptions.shader_skip */
 static const char *const k_prepare[] = {"first_run", "background", "off"};
 static const char *const k_load[] = {"start", "loading"};
 static const char *const k_console[] = {"docked", "handheld"};

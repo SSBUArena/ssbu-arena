@@ -80,10 +80,15 @@ static void vkd_fail(const char *fmt, ...) {
  * stages invisible or black with the defaults: whole pipelines, vertex buffers in system memory, compute buffers neither kept
  * on the GPU nor in device memory (copy-back 62 -> 0.3 ms a frame there). Each switch set by hand wins; SSBU_VK_AMD_SAFE=0:
  * the same defaults as on other GPUs. */
+/* (amd-shader-prep, TEST ONLY) SSBU_VK_AMD_SAFE=2: the AMD defaults on ANY GPU (whole pipelines, the AMD-only vertex decode and
+ * depth copy too: vk_as_amd), so that the AMD flow (preparation without libraries, seed list, skip in fights) can be run on
+ * the NVIDIA PC we have. Never set by the launcher. */
+static int vk_amd_forced(void) { static int f = -1; if (f < 0) { const char *e = getenv("SSBU_VK_AMD_SAFE"); f = e && atoi(e) == 2; } return f; }
+static int vk_as_amd(void) { return V.props.vendorID == 0x1002 || vk_amd_forced(); }
 static int vk_amd_safe(void) {
     static int a = -1;
-    if (a < 0) { const char *e = getenv("SSBU_VK_AMD_SAFE"); a = V.props.vendorID == 0x1002 && !(e && e[0] == '0');
-                 if (a) printf("nvn_vk: AMD GPU: whole pipelines, vertex buffers in system memory, compute buffers not kept (SSBU_VK_AMD_SAFE=0: the usual defaults)\n"); }
+    if (a < 0) { const char *e = getenv("SSBU_VK_AMD_SAFE"); a = vk_as_amd() && !(e && e[0] == '0');
+                 if (a) printf("nvn_vk: AMD GPU%s: whole pipelines, vertex buffers in system memory, compute buffers not kept (SSBU_VK_AMD_SAFE=0: the usual defaults)\n", V.props.vendorID == 0x1002 ? "" : " (TEST: SSBU_VK_AMD_SAFE=2 on another GPU)"); }
     return a;
 }
 static int vk_gpl_mode(void) {
@@ -520,7 +525,10 @@ static int vfmt_snorm_emu(void) {
         VkFormatProperties fp; memset(&fp, 0, sizeof fp);
         vkGetPhysicalDeviceFormatProperties(V.gpu, VK_FORMAT_A2B10G10R10_SNORM_PACK32, &fp);
         int test = getenv("SSBU_VK_TEST") && (atoi(getenv("SSBU_VK_TEST")) & 512);
-        on = test || !(fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) || V.props.vendorID == 0x1002;      /* AMD: 2_10_10_10 signed fetches have a history of driver faults (alpha read unsigned, broken fetches): decoded by us there */
+        on = test || !(fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) || vk_as_amd();      /* AMD: 2_10_10_10 signed fetches have a history of driver faults (alpha read unsigned, broken fetches): decoded by us there */
+        /* (amd-shader-prep) SSBU_VK_SNORM_EMU=1 / =0 forces it: the seed-list collection runs with it ON, so that the vertex
+         * stage keys of the list carry the decode bits an AMD GPU needs (a GPU without the decode drops them at load) */
+        {   const char *se = getenv("SSBU_VK_SNORM_EMU"); if (se && se[0]) on = atoi(se) != 0; }
         printf("nvn_vk: vertex format A2B10G10R10_SNORM (NVN 0x69): %s%s\n", (fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) ? "a vertex format on this GPU" : "NOT a vertex format on this GPU",
                on ? (V.props.vendorID == 0x1002 ? ": AMD: fetched as R32_UINT and decoded by the vertex code" : ": fetched as R32_UINT and decoded by the vertex code") : "");
     }
@@ -1652,7 +1660,7 @@ static int depth_copy_on(void) {
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("SSBU_VK_DEPTHCOPY");
-        on = e && e[0] ? atoi(e) != 0 : V.props.vendorID == 0x1002;
+        on = e && e[0] ? atoi(e) != 0 : vk_as_amd();
         printf("nvn_vk: depth targets sampled while bound: %s (%s)\n", on ? "a copy is sampled" : "sampled in place (GENERAL layout)", e && e[0] ? "SSBU_VK_DEPTHCOPY" : on ? "AMD: the default there" : "the default");
     }
     return on;
@@ -2653,7 +2661,7 @@ static void compute_dispatch(uint32_t gx, uint32_t gy, uint32_t gz) {
     }
     int cp_how = 0;
     if (v->cp_state != 2) { LONG64 t0 = tk(); cp_how = compute_pipe_ensure(v); if (cp_how) { hold_note(cp_how == 1 ? H_PIPE_DRAW : H_PIPE_WAIT, tk() - t0); g_tm[5] += tk() - t0; } }
-    if (!v->cp_recorded) { v->cp_recorded = 1; piperec_append(NULL, v, NULL, 1); }
+    if (!v->cp_recorded) { v->cp_recorded = 1; piperec_append(NULL, v, NULL, 1); seed_out(NULL, v, NULL, 1); }
     if (cp_how == 1) {
         g_pipe_miss++;
         printf("nvn_vk: compute program #%d: pipeline made at its first dispatch (%d bytes of machine code, work group %u x %u x %u, constant buffers 0x%x, storage 0x%x written 0x%x, %d samplers)\n", p->serial, st->code_len,
@@ -3062,7 +3070,7 @@ static void stencil_clear_masked(uint32_t mask, uint32_t value, int sx, int sy, 
     if (!vs) {
         vs = calloc(1, sizeof *vs);
         vs->id = ++g_vstage_ids; vs->ok = 1; vs->stage = -1;
-        vs->mod = module_from_glsl(0, "#version 460\nvoid main() { gl_Position = vec4(vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2) * 2.0 - 1.0, 0.0, 1.0); }\n", "internal stencil clear", &g_spv_unused);
+        vs->mod = module_from_glsl(0, "#version 460\nvoid main() { gl_Position = vec4(vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2) * 2.0 - 1.0, 0.0, 1.0); }\n", "internal stencil clear", &g_spv_unused, 0);
         if (!vs->mod) vkd_fail("the internal stencil-clear vertex shader does not compile");
         vs->next = g_vstage[0]; g_vstage[0] = vs;
     }

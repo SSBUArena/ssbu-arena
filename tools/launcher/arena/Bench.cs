@@ -241,7 +241,7 @@ namespace Arena
             {
                 { "renderer", V("renderer", "vulkan") }, { "window", V("window", "windowed") }, { "width", V("width", "1920") }, { "height", V("height", "1080") },
                 { "resolution_scale", V("resolution_scale", "1.0") }, { "vsync", V("vsync", "auto") }, { "profile", V("profile", "custom") },
-                { "anisotropic_filtering", V("anisotropic_filtering", "game") }, { "shader_load", V("shader_load", "start") }, { "shader_wait", V("shader_wait", "hold") },
+                { "anisotropic_filtering", V("anisotropic_filtering", "game") }, { "shader_load", V("shader_load", "start") }, { "shader_wait", V("shader_wait", "auto") },
                 { "stage_bg", new[] { "original", "black", "custom" }[Math.Max(0, Math.Min(2, Core.StageBg))] },
                 { "frame_limit", "60" },      // (the game's own: always 60 frames per second)
             };

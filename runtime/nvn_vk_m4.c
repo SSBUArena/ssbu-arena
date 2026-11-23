@@ -23,6 +23,7 @@ typedef struct VStage {
     VSmp smp[64];
     VkShaderModule mod; struct VStage *next, *next_h;
     VkPipeline lib, lib2; volatile LONG lib_state, lib2_state;      /* session 9 (SSBU_VK_GPL=2): the stage's pipeline library; lib2: a vertex stage with the empty fragment shader state */
+    uint64_t hp;                                   /* (amd-shader-prep) the code's hash before the version / resolution-scale parts (ssrc_hpre): what the seed list names; 0 = not known (a stage from a record without its code) */
 } VStage;
 #define MX_VK_VERSION 6u                        /* part of every hash: change it when mx_translate's Vulkan text or these records change */
 typedef struct { uint32_t magic; int32_t stage, code_len; uint32_t key[4], fo; uint64_t spv, hb; uint32_t cbufs, ssbos, ssbo_w, images, dep, tex_units, in_attr, out_attr; int32_t uses_alpha, nsmp; VSmp smp[64]; } StageRec;
@@ -117,14 +118,21 @@ static int ssrc_of(SSrc *o, const Prog *p, int s) {
     memcpy(o->local, st->local, sizeof o->local); o->smem = st->smem_bytes; o->lmem = st->lmem_bytes;
     return 1;
 }
-static uint64_t ssrc_hb(const SSrc *o) {
-    uint32_t ver = MX_VK_VERSION;
+/* (amd-shader-prep) ssrc_hb in two parts, the same value as before: hpre = the code (and its constants) alone, which is the
+ * same on every PC and for every version of ours; hb_fin adds the resolution-scale part and MX_VK_VERSION. The seed list
+ * (pipes_seed.bin) names stages by hpre, so it stays valid across translator versions and resolution scales. */
+static uint64_t ssrc_hpre(const SSrc *o) {
     uint64_t h = fnv(0xcbf29ce484222325ULL ^ (uint64_t)o->stage, o->code, (size_t)o->code_len);
     if (o->stage == 5) { h = fnv(h, o->local, sizeof o->local); h = fnv(h, &o->smem, 4); h = fnv(h, &o->lmem, 4); }
     if (o->cdata) h = fnv(h ^ o->cdata_size, o->cdata, o->cdata_size);
-    if (o->stage == 1 && RS_ON) h = fnv(h, "rs1", 3);      /* track O: the fragment stages of a run with an internal resolution scale are another translation (MxIn.screen_scale); at 1.0 the hash is the one it always was */
+    return h;
+}
+static uint64_t hb_fin(uint64_t h, int stage) {
+    uint32_t ver = MX_VK_VERSION;
+    if (stage == 1 && RS_ON) h = fnv(h, "rs1", 3);      /* track O: the fragment stages of a run with an internal resolution scale are another translation (MxIn.screen_scale); at 1.0 the hash is the one it always was */
     return fnv(h, &ver, 4);
 }
+static uint64_t ssrc_hb(const SSrc *o) { return hb_fin(ssrc_hpre(o), o->stage); }
 #include "nvn_vk_pack.inc"                         /* (0.2.21) the small files joined into one */
 static VkShaderModule module_from_spv(uint64_t h) {              /* any thread; NULL when the file is not there */
     char path[128];
@@ -161,19 +169,29 @@ static VkShaderModule module_from_spv(uint64_t h) {              /* any thread; 
     free(words); fclose(fp);
     return mod;
 }
-static VkShaderModule module_from_glsl(int stage, const char *glsl, const char *what, uint64_t *spv_hash) {      /* any thread */
+/* (amd-shader-prep) a stage of the preparation on a device without pipeline libraries needs only its record and SPIR-V file:
+ * no shader module is made (the driver's time, and its heap lock, are kept for the game). SSBU_VK_PREP_NOMOD=0: made as before. */
+static int prep_nomod_on(void) { static int on = -1; if (on < 0) on = !(getenv("SSBU_VK_PREP_NOMOD") && !atoi(getenv("SSBU_VK_PREP_NOMOD"))); return on; }
+static VkShaderModule spv_have(uint64_t h) {        /* any thread: (VkShaderModule)1 when the SPIR-V of h is in the pack or on disk, else NULL */
+    char path[128];
+    size_t pn;
+    if (vkp_get(0x100, h, &pn)) return (VkShaderModule)(uintptr_t)1;
+    snprintf(path, sizeof path, "%s/spv/%016llx.spv", vkc_dir(), (unsigned long long)h);
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES ? (VkShaderModule)(uintptr_t)1 : NULL;
+}
+static VkShaderModule module_from_glsl(int stage, const char *glsl, const char *what, uint64_t *spv_hash, int nomod) {      /* any thread */
     char path[128], log[2000];
     uint32_t *words = NULL;
     size_t count = 0;
     VkShaderModule mod = NULL;
     uint64_t h = fnv(0xcbf29ce484222325ULL ^ (uint64_t)stage ^ 0x5601, glsl, strlen(glsl));
     *spv_hash = h;
-    if ((mod = module_from_spv(h)) != NULL) { InterlockedIncrement64(&R.modules); return mod; }
+    if ((mod = nomod ? spv_have(h) : module_from_spv(h)) != NULL) { InterlockedIncrement64(&R.modules); return mod; }
     if (!g_glsl_to_spirv(stage, glsl, &words, &count, log, sizeof log)) { printf("nvn_vk: %s: glslang rejected the translated text: %s\n", what, log); fflush(stdout); return NULL; }
     snprintf(path, sizeof path, "%s/spv/%016llx.spv", vkc_dir(), (unsigned long long)h);
     FILE *fp = fopen(path, "wb");
     if (fp) { fwrite(words, 4, count, fp); fclose(fp); }
-    if (g_offline) { g_spirv_free(words); InterlockedIncrement64(&R.modules); return (VkShaderModule)(uintptr_t)1; }
+    if (g_offline || nomod) { g_spirv_free(words); InterlockedIncrement64(&R.modules); return (VkShaderModule)(uintptr_t)1; }
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = count * 4; ci.pCode = words;
     VKC(vkCreateShaderModule(V.device, &ci, NULL, &mod));
@@ -227,17 +245,19 @@ static VStage *vstage_new(uint64_t hb, int s, int code_len, const uint32_t *key,
     return v;
 }
 /* Any thread, no lock: fills v (in the table, state 1) from its record on disk, else with the translator and glslang. */
+static int prep_nomod(const VStage *v) { return v->temp && !D.has_gpl && !g_offline && prep_nomod_on(); }
 static void vstage_build(VStage *v, const SSrc *src) {
-    int s = v->stage, done = 0;
+    int s = v->stage, done = 0, nomod = prep_nomod(v);
     char path[128];
     StageRec r;
     size_t pn = 0;
+    v->hp = ssrc_hpre(src);
     const VarRec *pv = vkp_get(0x300u | (uint32_t)s, v->hb, &pn);
     for (size_t pi = 0; pv && !done && pi < pn / sizeof *pv; pi++) {
         VarRec e = pv[pi];
         VkShaderModule mod;
         if (e.magic != STAGEREC_MAGIC || e.fo != v->fo || !key_fits(s, v->key, e.key, e.dep, e.tex)) continue;
-        if (stage_rec_read(s, e.vh, &r) && (mod = module_from_spv(r.spv)) != NULL) { vstage_from_rec(v, &r, e.vh, mod); v->from_rec = 1; InterlockedIncrement64(&R.modules); done = 1; }
+        if (stage_rec_read(s, e.vh, &r) && (mod = nomod ? spv_have(r.spv) : module_from_spv(r.spv)) != NULL) { vstage_from_rec(v, &r, e.vh, mod); v->from_rec = 1; InterlockedIncrement64(&R.modules); done = 1; }
     }
     snprintf(path, sizeof path, "%s/stage/%d_%016llx.var", vkc_dir(), s, (unsigned long long)v->hb);
     FILE *fp = done ? NULL : fopen(path, "rb");
@@ -246,7 +266,7 @@ static void vstage_build(VStage *v, const SSrc *src) {
         while (!done && fread(&e, 1, sizeof e, fp) == sizeof e) {
             VkShaderModule mod;
             if (e.magic != STAGEREC_MAGIC || e.fo != v->fo || !key_fits(s, v->key, e.key, e.dep, e.tex)) continue;
-            if (stage_rec_read(s, e.vh, &r) && (mod = module_from_spv(r.spv)) != NULL) { vstage_from_rec(v, &r, e.vh, mod); v->from_rec = 1; InterlockedIncrement64(&R.modules); done = 1; }
+            if (stage_rec_read(s, e.vh, &r) && (mod = nomod ? spv_have(r.spv) : module_from_spv(r.spv)) != NULL) { vstage_from_rec(v, &r, e.vh, mod); v->from_rec = 1; InterlockedIncrement64(&R.modules); done = 1; }
         }
         fclose(fp);
     }
@@ -268,7 +288,7 @@ static void vstage_build(VStage *v, const SSrc *src) {
         else {
             uint64_t spv_hash = 0;
             if (in.screen_scale) { InterlockedIncrement64(&g_rs_stages); if (strstr(out.glsl, "mx_fcs)")) InterlockedIncrement64(&g_rs_fcs); if (strstr(out.glsl, "mx_tf(")) InterlockedIncrement64(&g_rs_tf); }
-            v->mod = module_from_glsl(s, out.glsl, what, &spv_hash);
+            v->mod = module_from_glsl(s, out.glsl, what, &spv_hash, nomod);
             v->cbufs = out.cbufs; v->ssbos = out.ssbos; v->ssbo_w = out.ssbo_written; v->images = out.images; v->in_attr = out.in_attr; v->out_attr = out.out_attr;
             v->dep = s == 0 ? out.int_dep : 0; v->tex_units = out.tex_units; v->uses_alpha = out.uses_alpha; v->nsmp = out.nsmp;
             for (int i = 0; i < out.nsmp && i < 64; i++) {
@@ -329,7 +349,21 @@ static VStage *stage_ensure(const SSrc *src, uint64_t hb, const uint32_t *key, u
  * out, a worker makes what was missing, and the draw appears in a later frame. Every draw left out is counted
  * ("nvn_vk_skip:" lines, "nvn_vk_skipf:" per frame, total at exit). Compute stages (skinning) are never skipped. Off by
  * default: the picture is wrong for the frames in which something is left out. */
-static int skip_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_VK_NOHOLD"); on = e ? atoi(e) != 0 : gfx_options()->shader_skip; } return on; }
+/* (amd-shader-prep) shader_wait = auto (the new default; SSBU_VK_NOHOLD=2 the same): skip where pipelines are WHOLE (no
+ * pipeline libraries in use: AMD, or a driver without them), hold where a draw only links libraries. On a whole-pipeline device
+ * a pipeline missing at a draw is a full compilation (~180 ms on an RX 6750 XT, up to a second); with libraries it is a link
+ * (microseconds) and at most a stage, so holding there costs little and keeps the picture whole. Rendering only: a draw left
+ * out writes nothing the game reads back (graphics-stage storage writes go to the ring copy; compute is never skipped). */
+static int skip_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SSBU_VK_NOHOLD");
+        int m = e ? atoi(e) : gfx_options()->shader_skip;
+        on = m == 2 ? !D.has_gpl : m != 0;
+        printf("nvn_vk_skip: shader_wait = %s: %s\n", m == 2 ? "auto" : m ? "skip" : "hold", on ? "near a fight a draw whose stage or pipeline is not ready is left out (a worker makes it)" : "a draw waits for its stage or pipeline");
+    }
+    return on;
+}
 static int fight_recent(void);
 static int skip_active(void) { return skip_on() && fight_recent(); }
 static LONG64 g_skip_n, g_skip_frames, g_skip_fr_n, g_skip_stage, g_skip_pipe;
@@ -859,8 +893,13 @@ static double pipe_build(Pipe *p) {
     VkGraphicsPipelineCreateInfo gi = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     gi.pNext = &ri; gi.stageCount = fs ? 2 : 1; gi.pStages = st; gi.pInputAssemblyState = &ia; gi.pViewportState = &vp; gi.pRasterizationState = &rs; gi.pMultisampleState = &ms;
     gi.pDepthStencilState = &ds; gi.pColorBlendState = &cb; gi.pDynamicState = &dy; gi.layout = p->layout; NVK_VI_PIPE(k, dyn, &gi)
+    LONG64 t_whole = tk();
     VkResult r = pw_graphics(g_pcache, &gi, &p->p);
     if (r != VK_SUCCESS) vkd_fail("vkCreateGraphicsPipelines (vertex stage %u, fragment stage %u, %d colour targets, depth format %d): %s", k->vs, k->fs, k->ncolor, k->dfmt, vk_result_name(r));
+    /* (amd-shader-prep) a whole pipeline the driver's cache did not have (over 3 ms) counts for the save at exit, as the
+     * comment of g_pc_dirty always said: before, none was counted, so on a device without libraries the file written by the
+     * first run was never rewritten (pipelines of later runs compiled again every start). SSBU_VK_PCDIRTY_WHOLE=0: as before. */
+    {   static int on = -1; if (on < 0) on = !(getenv("SSBU_VK_PCDIRTY_WHOLE") && !atoi(getenv("SSBU_VK_PCDIRTY_WHOLE"))); if (on) pc_dirty_time(t_whole); }
     InterlockedIncrement64(&R.pipelines);
     EnterCriticalSection(&g_sh_lock);
     p->state = 2;
@@ -872,6 +911,7 @@ static double pipe_build(Pipe *p) {
  * Read at start by the workers. A predicted pipeline is written here only when a draw uses it. */
 typedef struct { uint32_t magic, compute; uint64_t vs_h, fs_h; PKey k; } PipeRec;
 #define PIPEREC_MAGIC (0x31455049u + MX_VK_VERSION)
+static void seed_out(const PKey *k, const VStage *vs, const VStage *fs, int compute);      /* (amd-shader-prep) SSBU_VK_SEED_OUT: the seed list's collection */
 static void piperec_append(const PKey *k, VStage *vs, VStage *fs, int compute) {
     PipeRec r;
     memset(&r, 0, sizeof r);
@@ -1051,6 +1091,7 @@ static Pipe *pipe_get(const PKey *k, VStage *vs, VStage *fs) {
         g_fu_fr_n++; if (mine) { if (D.has_gpl && p->lib_how == 0) g_fu_fr_linked++; else g_fu_fr_made++; g_fu_fr_tk += tk() - t0; } if (waited) g_fu_fr_made++;      /* round 16, SSBU_VK_FIRSTLOG: first draws of a pipeline (pair + pass signature) per frame */
         if (p->predicted && !mine) g_pred_used++;
         if (!p->recorded) { piperec_append(k, vs, fs, 0); p->recorded = 1; }
+        seed_out(k, vs, fs, 0);
     }
     return p;
 }
@@ -1449,17 +1490,22 @@ static void job_scan(Job *j) {                     /* session 7: a container met
 typedef struct { uint64_t key; uint32_t in_attr, out_attr; int ok, done; } PrepSt;
 static PrepSt g_prep_st[1 << 17];
 static LONG64 g_prep_stages, g_prep_fromrec, g_prep_dup, g_prep_had, g_prep_libs, g_prep_tr_tk, g_prep_lib_tk;
-static PrepSt prep_stage(const SSrc *src, uint32_t fo, int alone) {
+/* (amd-shader-prep) vk: the variant key asked for (zero: the variant of a draw without integer attributes / textures; the seed
+ * list asks for others, prep_seed_variants) */
+static PrepSt prep_stage_k(const SSrc *src, const uint32_t *vk, uint32_t fo, int alone) {
     static const uint32_t zero[4];
     PrepSt r;
-    uint64_t hb = ssrc_hb(src), key = fnv(fnv(hb, &fo, 4), &src->stage, 4) * 2 + (uint64_t)(alone != 0);
+    uint64_t hb = ssrc_hb(src), key = fnv(fnv(hb, &fo, 4), &src->stage, 4);
+    if (!vk) vk = zero;
+    if (memcmp(vk, zero, 16)) key = fnv(key, vk, 16);
+    key = key * 2 + (uint64_t)(alone != 0);
     VStage *busy = NULL, *v;
     unsigned i = (unsigned)(key * 0x9E3779B97F4A7C15ull >> 47);
     int how;
     memset(&r, 0, sizeof r);
     if (!key) key = 2;
     EnterCriticalSection(&g_sh_lock);
-    v = vstage_find(hb, src->stage, src->code_len, zero, fo, &busy);
+    v = vstage_find(hb, src->stage, src->code_len, vk, fo, &busy);
     if (!v && !busy) {
         for (;; i = (i + 1) & ((1u << 17) - 1)) {
             if (g_prep_st[i].key == key) { while (!g_prep_st[i].done) WD_SLEEP(&g_sh_cv, &g_sh_lock, INFINITE); r = g_prep_st[i]; g_prep_dup++; LeaveCriticalSection(&g_sh_lock); return r; }
@@ -1468,14 +1514,15 @@ static PrepSt prep_stage(const SSrc *src, uint32_t fo, int alone) {
     }
     LeaveCriticalSection(&g_sh_lock);
     if (v || busy) {                               /* the game handed this code over itself */
-        v = stage_ensure(src, hb, zero, fo, &how);
+        v = stage_ensure(src, hb, vk, fo, &how);
         r.ok = v->ok; r.in_attr = v->in_attr; r.out_attr = v->out_attr; r.done = 1;
         InterlockedIncrement64(&g_prep_had);
         return r;
     }
     VStage *t = calloc(1, sizeof *t);
     LONG64 t0 = tk();
-    t->hb = hb; t->stage = src->stage; t->code_len = src->code_len; t->fo = fo; t->state = 1; t->temp = 1;
+    t->hb = hb; t->stage = src->stage; t->code_len = src->code_len; t->fo = fo; t->state = 1; t->temp = 1; memcpy(t->key, vk, 16);
+    int nomod = prep_nomod(t);
     vstage_build(t, src);
     LONG64 t1 = tk();
     InterlockedIncrement64(&g_prep_stages); if (t->from_rec) InterlockedIncrement64(&g_prep_fromrec);
@@ -1488,7 +1535,7 @@ static PrepSt prep_stage(const SSrc *src, uint32_t fo, int alone) {
     }
     if (t->lib) vkDestroyPipeline(V.device, t->lib, NULL);
     if (t->lib2) vkDestroyPipeline(V.device, t->lib2, NULL);
-    if (t->mod) vkDestroyShaderModule(V.device, t->mod, NULL);
+    if (t->mod && !nomod) vkDestroyShaderModule(V.device, t->mod, NULL);      /* nomod: no module was made (a marker value) */
     r.key = key; r.ok = t->ok; r.in_attr = t->in_attr; r.out_attr = t->out_attr; r.done = 1;
     free(t);
     EnterCriticalSection(&g_sh_lock);
@@ -1497,6 +1544,8 @@ static PrepSt prep_stage(const SSrc *src, uint32_t fo, int alone) {
     LeaveCriticalSection(&g_sh_lock);
     return r;
 }
+static PrepSt prep_stage(const SSrc *src, uint32_t fo, int alone) { return prep_stage_k(src, NULL, fo, alone); }
+static void prep_seed_variants(const SSrc *src);
 static void job_prep(Job *j) {
     static const uint32_t zero[4];
     if (j->has[2]) {
@@ -1509,6 +1558,180 @@ static void job_prep(Job *j) {
     memset(&fs, 0, sizeof fs);
     if (j->has[1]) fs = prep_stage(&j->src[1], 0, 0);
     if (vs.ok && fs.ok && (fs.in_attr & ~vs.out_attr)) prep_stage(&j->src[0], fs.in_attr & ~vs.out_attr, 0);      /* fragment inputs the vertex code never writes: the variant that declares them */
+    prep_seed_variants(&j->src[0]);                /* (amd-shader-prep) the other variants of these codes that the seed list names */
+    if (j->has[1]) prep_seed_variants(&j->src[1]);
+}
+/* ---------------------------------------------------------------- (amd-shader-prep) THE SEED LIST: pipes_seed.bin
+ * pipes.bin names the pipelines a draw on THIS PC used (keys + stage variant hashes). A first run has none, and on a device
+ * without pipeline libraries (AMD: whole pipelines) every pipeline is then compiled at its first draw (~180 ms each on an
+ * RX 6750 XT). The seed is a list of the same kind made by us from our own test runs and shipped beside the exe: keys and
+ * hashes only, no game content. It is portable between GPUs and versions of ours because it names each stage by
+ *   hp   the hash of its code and constants alone (ssrc_hpre: no MX_VK_VERSION, no resolution-scale part),
+ *   key  the canonical variant key (collected with the A2B10G10R10 SNORM decode ON, so the decode bits an AMD GPU needs are
+ *        there; a GPU without the decode drops them at load),
+ *   fo   the forced outputs,
+ * and holds the pass formats as on a GPU with 24-bit depth (mapped at load to what this GPU uses: D32 on AMD). Keys hold no
+ * blend state or vertex layout, so the list serves only GPUs with extended dynamic state 3 and dynamic vertex input (an AMD
+ * RX 6000 / 7000 / 9000 on AMD's driver has both); elsewhere it is not read.
+ * At start each entry becomes a pipes.bin record of this device and is merged into the prewarm (pw_main). On a first run
+ * the stage records do not exist yet: those entries fail at start; the preparation (prep_main, which now also runs without
+ * libraries) translates every stage of the game's data, the variants the seed names included (prep_seed_variants), and then
+ * makes the seed's pipelines on the workers (seed_after_prep) before the first-run screen ends. The player's own pipes.bin
+ * is never written from the seed.
+ *   SSBU_VK_SEED = 0 off | 1 on (default where pipeline libraries are not in use) | <file> another file (on)
+ *   SSBU_VK_SEED_OUT = <file>: collection: every pipeline a draw or dispatch uses first in this run is appended (tools/vk/
+ *     seed_collect.py merges the files of several runs into pipes_seed.bin). Run it with an empty SSBU_VK_CACHE,
+ *     SSBU_VK_PREWARM=0 and SSBU_VK_SNORM_EMU=1: a stage made from a record without its code has no hp and is not collected. */
+#define SEED_MAGIC 0x44454553u                     /* "SEED" */
+#define SEED_VERSION 1
+enum { SEED_F_SNORM = 1, SEED_F_D24 = 2, SEED_F_EDS3 = 4, SEED_F_VIDS = 8 };
+typedef struct { uint32_t magic, version, pkey_size, flags; } SeedHdr;
+typedef struct { uint64_t hp; uint32_t key[4], fo; int32_t stage; } SeedStage;
+typedef struct { uint32_t compute, has_fs; SeedStage vs, fs; PKey k; } SeedRec;
+static PipeRec *g_seed_pr;                          /* the seed as records of this device (kept for seed_after_prep) */
+static int g_seed_n, g_seed_on;
+static SeedStage *g_seed_var;                       /* the variants it names with a key or forced outputs, sorted by hp (prep_seed_variants) */
+static int g_seed_nvar;
+static LONG64 g_seed_made, g_seed_had, g_seed_missing, g_seed_varmade, g_seed_out_n, g_seed_out_skip;
+static uint32_t seed_flags_here(void) {
+    int ex, dec;
+    uint32_t f = 0;
+    if (vfmt_snorm_emu()) f |= SEED_F_SNORM;
+    if (tex_vkfmt(0x33, &ex, &dec) == VK_FORMAT_X8_D24_UNORM_PACK32 && tex_vkfmt(0x35, &ex, &dec) == VK_FORMAT_D24_UNORM_S8_UINT) f |= SEED_F_D24;
+    if (D.has_eds3) f |= SEED_F_EDS3;
+    if (D.has_vids) f |= SEED_F_VIDS;
+    return f;
+}
+static void seed_stage_of(SeedStage *o, const VStage *v) { memset(o, 0, sizeof *o); o->hp = v->hp; memcpy(o->key, v->key, 16); o->fo = v->fo; o->stage = v->stage; }
+static void seed_out(const PKey *k, const VStage *vs, const VStage *fs, int compute) {      /* render thread: a pipeline's first use */
+    static int on = -1;
+    static char path[260];
+    if (on < 0) { const char *e = getenv("SSBU_VK_SEED_OUT"); on = e && e[0]; if (on) snprintf(path, sizeof path, "%s", e); }
+    if (!on) return;
+    if (!vs || !vs->hp || vs->stage < 0 || (fs && !fs->hp)) { g_seed_out_skip++; return; }      /* no code hash (a stage from a record, an internal stage): not collected */
+    SeedRec r;
+    memset(&r, 0, sizeof r);
+    r.compute = (uint32_t)compute; r.has_fs = fs != NULL;
+    seed_stage_of(&r.vs, vs);
+    if (fs) seed_stage_of(&r.fs, fs);
+    if (k) { r.k = *k; r.k.vs = r.k.fs = 0; }
+    FILE *fp = fopen(path, "ab");
+    if (!fp) return;
+    _fseeki64(fp, 0, SEEK_END);
+    if (_ftelli64(fp) == 0) { SeedHdr h = {SEED_MAGIC, SEED_VERSION, (uint32_t)sizeof(PKey), seed_flags_here()}; fwrite(&h, 1, sizeof h, fp); }
+    fwrite(&r, 1, sizeof r, fp);
+    fclose(fp);
+    g_seed_out_n++;
+}
+static int seedvar_cmp(const void *a, const void *b) { const SeedStage *x = a, *y = b; return x->hp < y->hp ? -1 : x->hp > y->hp ? 1 : memcmp(x, y, sizeof *x); }
+static uint64_t seed_vh(SeedStage *st, int snorm_here) {      /* the variant hash on this device (st's key normalised in place) */
+    if (st->stage == 0 && !snorm_here) st->key[0] &= 0xffffu;      /* bits 16 + n: attribute n decoded from A2B10G10R10 SNORM (this GPU fetches it as it is) */
+    return fnv(fnv(hb_fin(st->hp, st->stage), st->key, 16), &st->fo, 4);
+}
+/* prewarm_start, before the workers: the seed's entries as pipes.bin records of this device, appended to g_pw_rec; the
+ * caller sorts and removes the duplicates. */
+static void seed_load(void) {
+    const char *e = getenv("SSBU_VK_SEED");
+    char path[300];
+    int want = e && e[0] ? strcmp(e, "0") != 0 : !D.has_gpl;
+    if (getenv("SSBU_VK_SEED_OUT") && getenv("SSBU_VK_SEED_OUT")[0] && !(e && e[0])) want = 0;      /* a collection run reads no seed (its stages would come from records: no code hash) */
+    if (!want) { printf("nvn_vk_seed: the shipped pipeline list is not read (%s)\n", e && e[0] ? "SSBU_VK_SEED=0" : D.has_gpl ? "pipeline libraries are in use: a draw links, no list needed" : "SSBU_VK_SEED_OUT: a collection run"); return; }
+    if (e && e[0] && strcmp(e, "1")) snprintf(path, sizeof path, "%s", e);
+    else {
+        char exe[MAX_PATH]; GetModuleFileNameA(NULL, exe, MAX_PATH);
+        char *sl = strrchr(exe, '\\'); if (sl) sl[1] = 0;
+        snprintf(path, sizeof path, "%spipes_seed.bin", exe);
+    }
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { printf("nvn_vk_seed: no shipped pipeline list (%s)\n", path); return; }
+    SeedHdr h;
+    const char *why = NULL;
+    if (fread(&h, 1, sizeof h, fp) != sizeof h || h.magic != SEED_MAGIC) why = "not a seed file";
+    else if (h.version != SEED_VERSION || h.pkey_size != sizeof(PKey)) why = "another version of the list (key size or format)";
+    else if (!(h.flags & SEED_F_EDS3) || !(h.flags & SEED_F_VIDS)) why = "collected on a GPU without extended dynamic state 3 / dynamic vertex input";
+    else if (!D.has_eds3 || !D.has_vids) why = "this GPU lacks extended dynamic state 3 or dynamic vertex input: its keys hold blend state / the vertex layout, the list's do not";
+    if (why) { fclose(fp); printf("nvn_vk_seed: %s NOT used: %s\n", path, why); return; }
+    _fseeki64(fp, 0, SEEK_END); long long bytes = _ftelli64(fp); _fseeki64(fp, sizeof h, SEEK_SET);
+    int n = (int)((bytes - (long long)sizeof h) / (long long)sizeof(SeedRec));
+    SeedRec *in = n > 0 ? malloc((size_t)n * sizeof *in) : NULL;
+    if (!in || fread(in, sizeof *in, (size_t)n, fp) != (size_t)n) { fclose(fp); free(in); printf("nvn_vk_seed: %s could not be read\n", path); return; }
+    fclose(fp);
+    g_seed_pr = malloc((size_t)n * sizeof *g_seed_pr);
+    g_seed_var = malloc((size_t)n * 2 * sizeof *g_seed_var);
+    if (!g_seed_pr || !g_seed_var) { free(in); free(g_seed_pr); free(g_seed_var); g_seed_pr = NULL; g_seed_var = NULL; return; }
+    int snorm = vfmt_snorm_emu(), ex, dec, nd24 = 0;
+    VkFormat d24 = tex_vkfmt(0x33, &ex, &dec), d24s8 = tex_vkfmt(0x35, &ex, &dec);
+    for (int i = 0; i < n; i++) {
+        SeedRec *r = &in[i];
+        PipeRec *o = &g_seed_pr[g_seed_n];
+        memset(o, 0, sizeof *o);
+        o->magic = PIPEREC_MAGIC; o->compute = r->compute;
+        o->k = r->k; o->k.vs = o->k.fs = 0;
+        if (h.flags & SEED_F_D24) {                /* the pass formats of a GPU with 24-bit depth -> this GPU's */
+            if (o->k.dfmt == VK_FORMAT_X8_D24_UNORM_PACK32 && d24 != VK_FORMAT_X8_D24_UNORM_PACK32) { o->k.dfmt = d24; nd24++; }
+            else if (o->k.dfmt == VK_FORMAT_D24_UNORM_S8_UINT && d24s8 != VK_FORMAT_D24_UNORM_S8_UINT) { o->k.dfmt = d24s8; nd24++; }
+        }
+        o->vs_h = seed_vh(&r->vs, snorm);
+        if (r->has_fs) o->fs_h = seed_vh(&r->fs, snorm);
+        if (r->vs.hp && (r->vs.fo || r->vs.key[0] | r->vs.key[1] | r->vs.key[2] | r->vs.key[3])) g_seed_var[g_seed_nvar++] = r->vs;
+        if (r->has_fs && r->fs.hp && (r->fs.fo || r->fs.key[0] | r->fs.key[1] | r->fs.key[2] | r->fs.key[3])) g_seed_var[g_seed_nvar++] = r->fs;
+        g_seed_n++;
+    }
+    free(in);
+    qsort(g_seed_var, (size_t)g_seed_nvar, sizeof *g_seed_var, seedvar_cmp);
+    {   int k = 0; for (int i = 0; i < g_seed_nvar; i++) if (!k || memcmp(&g_seed_var[k - 1], &g_seed_var[i], sizeof *g_seed_var)) g_seed_var[k++] = g_seed_var[i]; g_seed_nvar = k; }
+    PipeRec *grown = realloc(g_pw_rec, ((size_t)g_pw_n + (size_t)g_seed_n + 1) * sizeof(PipeRec));
+    if (!grown) { printf("nvn_vk_seed: out of memory\n"); return; }
+    g_pw_rec = grown;
+    memcpy(g_pw_rec + g_pw_n, g_seed_pr, (size_t)g_seed_n * sizeof(PipeRec));
+    g_pw_n += g_seed_n;
+    g_seed_on = 1;
+    printf("nvn_vk_seed: %s: %d pipelines of the shipped list merged into the prewarm (%d depth formats mapped to this GPU's, %d stage variants with a key or forced outputs for the preparation; SNORM decode %s here, %s in the list); SSBU_VK_SEED=0 turns it off\n",
+           path, g_seed_n, nd24, g_seed_nvar, snorm ? "on" : "off", (h.flags & SEED_F_SNORM) ? "on" : "OFF (an AMD GPU needs it: some vertex variants will not match)");
+}
+/* A worker of the preparation: the variants of this code that the seed names (other keys / forced outputs than the
+ * preparation's own), translated into the cache like the others. */
+static void prep_seed_variants(const SSrc *src) {
+    if (!g_seed_nvar) return;
+    uint64_t hp = ssrc_hpre(src);
+    int lo = 0, hi = g_seed_nvar;
+    while (lo < hi) { int m = (lo + hi) / 2; if (g_seed_var[m].hp < hp) lo = m + 1; else hi = m; }
+    for (int i = lo; i < g_seed_nvar && g_seed_var[i].hp == hp; i++) {
+        if (g_seed_var[i].stage != src->stage) continue;
+        PrepSt r = prep_stage_k(src, g_seed_var[i].key, g_seed_var[i].fo, 0);
+        if (r.ok) InterlockedIncrement64(&g_seed_varmade);
+    }
+}
+/* A worker (job kind 9): one entry of the seed, after the preparation wrote the stage records */
+static void seed_job(int idx) {
+    PipeRec *r = &g_seed_pr[idx];
+    VStage *vs = pw_stage(r->compute ? 5 : 0, r->vs_h), *fs = r->fs_h ? pw_stage(1, r->fs_h) : NULL;
+    if (!vs || (r->fs_h && !fs)) { InterlockedIncrement64(&g_seed_missing); return; }
+    if (r->compute) { vs->cp_recorded = 1; if (compute_pipe_ensure(vs) == 1) InterlockedIncrement64(&g_seed_made); else InterlockedIncrement64(&g_seed_had); return; }
+    PKey k = r->k;
+    k.vs = vs->id; k.fs = fs ? fs->id : 0;
+    uint64_t h = fnv(0xcbf29ce484222325ULL, &k, sizeof k);
+    int mine = 0;
+    EnterCriticalSection(&g_sh_lock);
+    Pipe *p = pipe_find(&k, h);
+    if (!p) { p = pipe_new(&k, vs, fs, h, 1); p->recorded = 1; mine = 1; }
+    else if (p->state == 0) { p->state = 1; mine = 1; }
+    if (mine) { int idx2; sig_note(&k, &idx2); PairRec *pr0 = pair_get(vs, fs); pr0->drawn = 1; if (idx2 >= 0) pr0->used |= 1ull << idx2; }
+    LeaveCriticalSection(&g_sh_lock);
+    if (mine) { pipe_build(p); InterlockedIncrement64(&g_seed_made); } else InterlockedIncrement64(&g_seed_had);
+}
+/* prep_main, the preparation's own thread, once every stage is translated (a first run): the seed's pipelines on the
+ * workers (the preparation queue: every worker while the first-run screen holds the game), waited for here, so that the
+ * pipeline cache written with the marker holds them. */
+static LONG64 g_seed_t0, g_seed_t1;
+static void seed_after_prep(void) {
+    if (!g_seed_on || !g_seed_n || g_m4_quit) return;
+    {   const char *e = getenv("SSBU_VK_SEED_PREP"); if (e && !atoi(e)) { printf("nvn_vk_seed: SSBU_VK_SEED_PREP=0: the list's pipelines are not made after the preparation (next start, or at their draws)\n"); return; } }
+    g_seed_t0 = tk();
+    EnterCriticalSection(&g_sh_lock);
+    for (int i = 0; i < g_seed_n; i++) { Job *j = calloc(1, sizeof *j); j->kind = 9; j->cont = i; j->prep = 2; job_push_prep(j); }
+    LeaveCriticalSection(&g_sh_lock);
+    prep_line("the shipped list's pipelines queued");
 }
 static DWORD WINAPI pw_main(void *arg) {           /* arg: the worker's number (its SSBU_VK_PREWARM_PROFILE record) */
     g_pw_profile = g_pw_profile_on ? &g_pw_profiles[(uintptr_t)arg & 15] : NULL;
@@ -1572,6 +1795,7 @@ static DWORD WINAPI pw_main(void *arg) {           /* arg: the worker's number (
         else if (j->kind == 7) { int how, lh; VStage *v = stage_ensure(&j->src[1], ssrc_hb(&j->src[1]), j->key1, (uint32_t)j->sshade, &how); if (how == 1) InterlockedIncrement64(&g_w_stages); if (v && v->ok && D.has_gpl && gpl_sep() && stage_fits_universal(v)) stagelib_ensure(v, 0, &lh); }      /* the stage a skipped draw waits for */
         else if (j->kind == 4) job_scan(j);
         else if (j->kind == 8) pix_announce(j->cont, 0);
+        else if (j->kind == 9) seed_job(j->cont);      /* (amd-shader-prep) a pipeline of the seed list, after the preparation */
         else if (p) { pipe_build(p); InterlockedIncrement64(&g_w_pipes); }
         int pk = j->prep == 1;
         free(j);
@@ -1709,11 +1933,14 @@ static void prewarm_start(void) {
         g_pw_rec = malloc((size_t)n + 1);
         g_pw_n = (int)(fread(g_pw_rec, sizeof(PipeRec), (size_t)n / sizeof(PipeRec), fp));
         fclose(fp);
+    } else printf(ahead ? "nvn_vk: no ../cache/vk/pipes.bin: a first run on this PC; stages and pipelines are made when the game hands its programs over\n" : "nvn_vk: SSBU_VK_PREWARM=0: the pipeline list of earlier runs is not read\n");
+    if (ahead) seed_load();                        /* (amd-shader-prep) the shipped list, merged (pipes_seed.bin) */
+    if (g_pw_n) {
         int kept = 0;
         qsort(g_pw_rec, (size_t)g_pw_n, sizeof(PipeRec), piperec_cmp);
         for (int i = 0; i < g_pw_n; i++) if (g_pw_rec[i].magic == PIPEREC_MAGIC && nvk_vl_rec_ok(&g_pw_rec[i].k) && (!kept || memcmp(&g_pw_rec[kept - 1], &g_pw_rec[i], sizeof(PipeRec)))) g_pw_rec[kept++] = g_pw_rec[i];
         g_pw_n = kept;
-    } else printf(ahead ? "nvn_vk: no ../cache/vk/pipes.bin: a first run on this PC; stages and pipelines are made when the game hands its programs over\n" : "nvn_vk: SSBU_VK_PREWARM=0: the pipeline list of earlier runs is not read\n");
+    }
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     g_pw_nthread = (int)si.dwNumberOfProcessors - 2;
@@ -1860,7 +2087,9 @@ static void m4_report(void) {
                (long long)g_fb_fhit[0], (double)g_fb_fhit_tk[0] * q2, (long long)g_fb_fmiss[0], (double)g_fb_fmiss_tk[0] * q2, (long long)g_fb_fhit[1], (double)g_fb_fhit_tk[1] * q2, (long long)g_fb_fmiss[1], (double)g_fb_fmiss_tk[1] * q2);
     }
     if (D.has_gpl) printf("nvn_vk_gpl: mode %s; pipelines linked again with optimisation by the workers: %lld of %lld queued, %.0f ms of worker time\n", gpl_sep() ? "2 (a library per stage)" : "1 (a library per stage pair)", (long long)g_gpl_opt_n, (long long)g_gpl_opt_q, (double)g_gpl_opt_tk * 1000.0 / (double)fq.QuadPart);
-    printf("nvn_vk_skip: shader_wait = %s; draws left out because a stage or pipeline was not ready: %lld in %lld frames (stage not ready %lld, pipeline not ready %lld)\n", skip_on() ? "skip (near a fight)" : "hold (the default)", (long long)g_skip_n, (long long)g_skip_frames, (long long)g_skip_stage, (long long)g_skip_pipe);
+    printf("nvn_vk_skip: shader_wait = %s; draws left out because a stage or pipeline was not ready: %lld in %lld frames (stage not ready %lld, pipeline not ready %lld)\n", skip_on() ? "skip (near a fight)" : "hold", (long long)g_skip_n, (long long)g_skip_frames, (long long)g_skip_stage, (long long)g_skip_pipe);
+    if (g_seed_on) printf("nvn_vk_seed: the shipped list: %d entries merged; made after the preparation of this run: %lld (there already %lld, stages missing %lld)\n", g_seed_n, (long long)g_seed_made, (long long)g_seed_had, (long long)g_seed_missing);
+    if (g_seed_out_n || g_seed_out_skip) printf("nvn_vk_seed: COLLECTION (SSBU_VK_SEED_OUT): %lld pipelines written, %lld not (a stage without its code hash: from a record, or internal)\n", (long long)g_seed_out_n, (long long)g_seed_out_skip);
     if (g_pix_ready) printf("nvn_vk_prep: containers announced whole from the index: %lld because a pool was laid over their code, %lld because one of their programs was handed over (%lld of all these while IN A FIGHT), %lld variations queued; pools looked up: %lld found in the index, %lld not; programs handed over whose variation several files hold (no container named): %lld; header searches not made near a fight: %lld\n",
                             (long long)g_pix_ann_pool, (long long)g_pix_ann_prog, (long long)g_pix_ann_fight, (long long)g_pix_ann_vars, (long long)g_pix_pool_hit, (long long)g_pix_pool_miss, (long long)g_pix_ambiguous, (long long)g_cs_skipped);
     if (g_prep_state == 1 || g_prep_state == 2) { prep_line(g_prep_state == 2 ? "report (finished)" : "report (NOT finished)"); printf("nvn_vk_prep: fight frames that passed while it ran: %lld; times the render thread raised the workers' priority because it had to wait for one: %lld; loading-screen frames that also waited for the containers kept in memory: %lld, %.0f ms in all\n", (long long)g_prep_fight_frames, (long long)g_boosts, (long long)g_bar_keep_n, (double)g_bar_keep_tk * 1000.0 / (double)fq.QuadPart); }
@@ -2539,6 +2768,20 @@ static DWORD WINAPI prep_main(void *arg) {
     }
     int whole = g_pq_done == g_pq_queued && g_prep_read == todo;
     LeaveCriticalSection(&g_sh_lock);
+    if (whole && !g_prep_marked && g_seed_on && !g_prep_limited) {      /* (amd-shader-prep) the stage records exist now: the seed's pipelines */
+        seed_after_prep();
+        EnterCriticalSection(&g_sh_lock);
+        while (g_pq_done < g_pq_queued && !g_m4_quit) {
+            SleepConditionVariableCS(&g_sh_cv, &g_sh_lock, 200);
+            if (tk() - last > 10 * fq.QuadPart) { last = tk(); LeaveCriticalSection(&g_sh_lock); prep_line("progress (the shipped list's pipelines)"); EnterCriticalSection(&g_sh_lock); }
+        }
+        whole = g_pq_done == g_pq_queued;
+        LeaveCriticalSection(&g_sh_lock);
+        g_seed_t1 = tk();
+        if (g_seed_t0) printf("nvn_vk_seed: after the preparation: %lld pipelines of the list made, %lld were there already, %lld still without their stage records (codes not in the game's containers), %lld variants with a key translated for it; %.1f s on the workers\n",
+                              (long long)g_seed_made, (long long)g_seed_had, (long long)g_seed_missing, (long long)g_seed_varmade, (double)(g_seed_t1 - g_seed_t0) / (double)fq.QuadPart);
+        fflush(stdout);
+    }
     {   /* TEST ONLY, SSBU_VK_PREP_END_AT=<frame>: the end below is held back until that game frame (to place it in a fight or a loading screen) */
         LONG64 at = getenv("SSBU_VK_PREP_END_AT") ? atoll(getenv("SSBU_VK_PREP_END_AT")) : 0;
         while (whole && at > 0 && nvn_front_frame_next() < at && !g_m4_quit) Sleep(5);
@@ -2631,7 +2874,11 @@ static void prep_start(void) {
     const char *e = getenv("SSBU_VK_PREP");
     {   const char *o = getenv("SSBU_PREPARE_ONLY"); g_prep_only = o && atoi(o) != 0; }
     if (getenv("SSBU_VK_SWEEP_LOG") && atoi(getenv("SSBU_VK_SWEEP_LOG"))) CloseHandle(CreateThread(NULL, 0, sweep_main, NULL, 0, NULL));
-    int on = e ? atoi(e) != 0 : (D.has_gpl && gpl_sep());
+    /* (amd-shader-prep) also WITHOUT pipeline libraries (AMD, whole pipelines): every stage variant is translated into the cache
+     * (records + SPIR-V, the same on every GPU), no shader module is made, and the seed list's pipelines follow
+     * (seed_after_prep). SSBU_VK_PREP_WHOLE=0: off there, as before. */
+    int whole_on = !(getenv("SSBU_VK_PREP_WHOLE") && !atoi(getenv("SSBU_VK_PREP_WHOLE")));
+    int on = e ? atoi(e) != 0 : D.has_gpl ? gpl_sep() : whole_on;
     if (getenv("SSBU_VK_PREP_FIGHT")) g_prep_fight_cap = atoi(getenv("SSBU_VK_PREP_FIGHT"));
     g_prep_cap = g_pw_nthread > 1 ? g_pw_nthread / 2 : 1;
     if (getenv("SSBU_VK_PREP_WORKERS") && atoi(getenv("SSBU_VK_PREP_WORKERS")) > 0) g_prep_cap = atoi(getenv("SSBU_VK_PREP_WORKERS"));
@@ -2660,7 +2907,8 @@ static void prep_start(void) {
         /* session 11: the thread still runs: it makes the INDEX (hashing, under a second), so that a container is announced
          * whole at its loading screen on every start; it queues nothing (before: no thread, so no index, on a marked start) */
     }
-    if (!on || !g_m4_on) printf("nvn_vk_prep: the preparation of every container is off (%s)\n", e ? "SSBU_VK_PREP=0" : "no stage libraries: SSBU_VK_GPL is not 2 or the driver lacks VK_EXT_graphics_pipeline_library");
+    if (!on || !g_m4_on) printf("nvn_vk_prep: the preparation of every container is off (%s)\n", e ? "SSBU_VK_PREP=0" : !D.has_gpl ? "whole pipelines and SSBU_VK_PREP_WHOLE=0" : "no stage libraries: SSBU_VK_GPL is not 2 or the driver lacks VK_EXT_graphics_pipeline_library");
+    else if (!D.has_gpl) printf("nvn_vk_prep: whole pipelines (no pipeline libraries): the preparation translates every stage of the game's data into the cache (records + SPIR-V, no modules)%s; SSBU_VK_PREP_WHOLE=0 turns it off\n", g_seed_on ? ", then makes the shipped list's pipelines" : "");
     if (g_prep_only && (g_prep_marked || !on || !g_m4_on)) {      /* nothing to prepare: said at once, at the device's creation (the first present is about 30 s later) */
         printf("##prep {\"state\":\"%s\"}\n", g_prep_marked && on && g_m4_on ? "already" : "unsupported");
         fflush(stdout);

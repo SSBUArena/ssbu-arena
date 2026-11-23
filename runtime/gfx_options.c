@@ -100,11 +100,13 @@ static const char *const k_default_ini =
 ";   filters between mip levels (sharper textures at flat angles; changes the picture, costs little on any GPU).\r\n"
 "anisotropic_filtering = game\r\n"
 "\r\n"
-"; shader_wait = hold | skip      (Vulkan)\r\n"
+"; shader_wait = auto | hold | skip      (Vulkan)\r\n"
+";   auto: skip where the GPU draws with whole pipelines (AMD, or a driver without pipeline libraries: a missing pipeline\r\n"
+";   costs 0.1 to 1 s there), hold where pipeline libraries are in use (a missing one costs well under a frame).\r\n"
 ";   What happens when a draw needs a shader or pipeline that is not ready yet (mostly the first time something is shown\r\n"
 ";   on this PC). hold: the frame waits for it (a late frame, a correct picture). skip: in and around a fight the draw is\r\n"
 ";   left out until it is ready (no late frame; the object or effect is missing for some frames). The log counts both.\r\n"
-"shader_wait = hold\r\n"
+"shader_wait = auto\r\n"
 "\r\n"
 "; shader_prepare = first_run | background | off      (Vulkan)\r\n"
 ";   first_run:  the first start on this PC (or after a new graphics driver / new game data) shows 'PREPARING SHADERS NN %'\r\n"
@@ -185,11 +187,47 @@ static void opt_path(char *out) {
     snprintf(tmp, sizeof tmp, "%s\\..\\config\\graphics.ini", exe);
     if (!_fullpath(out, tmp, MAX_PATH)) snprintf(out, MAX_PATH, "%s", tmp);
 }
+/* (amd-shader-prep) graphics.ini files written before shader_wait had "auto" say "shader_wait = hold" because that was the
+ * template's default, not a choice. Such a file (it still has the old comment line) is moved to auto once: the comment line
+ * becomes the new one and the value auto; a "hold" written after that (the menu, by hand) is kept. SSBU_GFX_WAIT_MIGRATE=0:
+ * no change, hold stays hold. The file is rewritten here directly (gfx_ini_set would re-enter gfx_options). */
+static int wait_migrate(const char *path) {
+    const char *e = getenv("SSBU_GFX_WAIT_MIGRATE");
+    if (e && !atoi(e)) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    char *old = n > 0 ? malloc((size_t)n + 1) : NULL, *out = old ? malloc((size_t)n + 512) : NULL, tmp[MAX_PATH + 8];
+    if (!old || !out) { fclose(f); free(old); free(out); return 0; }
+    n = (long)fread(old, 1, (size_t)n, f); old[n] = 0; fclose(f);
+    size_t o2 = 0;
+    int ok = 0, comment = 0, value = 0;
+    for (char *p = old; *p; ) {
+        char *nl = strchr(p, '\n');
+        size_t l = nl ? (size_t)(nl - p) + 1 : strlen(p);
+        const char *q = p;
+        while (*q == ' ' || *q == '\t') q++;
+        if (!comment && !strncmp(q, "; shader_wait = hold | skip", 27)) {
+            o2 += (size_t)sprintf(out + o2, "; shader_wait = auto | hold | skip      (Vulkan)\r\n;   auto: skip where the GPU draws with whole pipelines (AMD, or a driver without pipeline libraries: a missing pipeline\r\n;   costs 0.1 to 1 s there), hold where pipeline libraries are in use (a missing one costs well under a frame).\r\n");
+            comment = 1;
+        } else if (!value && !_strnicmp(q, "shader_wait", 11)) { o2 += (size_t)sprintf(out + o2, "shader_wait = auto\r\n"); value = 1; }
+        else { memcpy(out + o2, p, l); o2 += l; }
+        p += l;
+    }
+    if (comment && value) {
+        snprintf(tmp, sizeof tmp, "%s.tmp", path);
+        if ((f = fopen(tmp, "wb")) != NULL) { ok = fwrite(out, 1, o2, f) == o2; ok = !fclose(f) && ok; ok = ok && MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH); }
+    }
+    printf("graphics options: shader_wait = hold of the old default %s: auto from now on (SSBU_GFX_WAIT_MIGRATE=0 keeps hold)\n", ok ? "moved in the file" : "NOT rewritten (taken as auto for this run)");
+    free(old); free(out);
+    return 1;
+}
 static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
     (void)once; (void)arg; (void)ctx;
     GfxOptions *o = &g_opt;
-    int written = 0, unknown = 0;
+    int written = 0, unknown = 0, wait_old = 0;
     memset(o, 0, sizeof *o);
+    o->shader_skip = 2;                                /* (amd-shader-prep) shader_wait = auto when the key is missing */
     o->aspect = 1;                                     /* keep: 16:9 with black bars (display_fit), as the renderer does without the key */
     o->width = 1280; o->height = 720; o->scale = 1.0f; o->present = 5;      /* vsync = auto when the key is missing (track V session 14) */
     opt_path(o->path);
@@ -205,6 +243,7 @@ static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
     while (f && fgets(line, sizeof line, f)) {
         char *eq, *key = line, *val;
         trim(line);
+        if (!strncmp(line, "; shader_wait = hold | skip", 27)) wait_old = 1;      /* the comment of the template before "auto" */
         if (!line[0] || line[0] == ';' || line[0] == '#' || line[0] == '[' || !(eq = strchr(line, '='))) continue;
         *eq = 0; val = eq + 1;
         trim(key); trim(val);
@@ -219,7 +258,7 @@ static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
         else if (!_stricmp(key, "anisotropic_filtering")) { int v = atoi(val); o->aniso = v == 2 || v == 4 || v == 8 || v == 16 ? v : 0; }
         else if (!_stricmp(key, "frame_time_overlay")) o->overlay = !_stricmp(val, "on") || !strcmp(val, "1");
         else if (!_stricmp(key, "profile")) o->profile = !_stricmp(val, "low");
-        else if (!_stricmp(key, "shader_wait")) o->shader_skip = !_stricmp(val, "skip");
+        else if (!_stricmp(key, "shader_wait")) o->shader_skip = !_stricmp(val, "skip") ? 1 : !_stricmp(val, "hold") ? 0 : 2;      /* auto (or anything else) 2 */
         else if (!_stricmp(key, "runahead")) g_gfx_runahead = !_stricmp(val, "on") || !_stricmp(val, "1");      /* track R1 round 5 (r1_state.c) */
         else if (!_stricmp(key, "refresh_switch")) g_gfx_refresh_switch = !_stricmp(val, "on") || !_stricmp(val, "auto");
         else if (!_stricmp(key, "latency")) g_gfx_latency = !_stricmp(val, "lowest") ? 2 : !_stricmp(val, "low") ? 1 : 0;      /* track L1 (display.c latency_mode) */
@@ -233,6 +272,7 @@ static BOOL CALLBACK opt_load(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
         else unknown++;
     }
     if (f) fclose(f);
+    if (wait_old && o->shader_skip == 0 && wait_migrate(o->path)) o->shader_skip = 2;
     if (o->profile == 1) {       /* the low-end profile wins over the three keys it sets, wherever they stand in the file (values: O1_options.md, session 9) */
         o->scale = GFX_LOW_SCALE; o->aniso = 0; o->present = 0;
     }

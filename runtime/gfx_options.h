@@ -12,7 +12,7 @@ typedef struct {
     int handheld;            /* 1: the game is told it runs handheld = it makes its own 1280x720 render targets instead of 1920x1080 */
     int aniso;               /* 0 = the game's own value; 2, 4, 8, 16 = at least that on samplers that filter between mip levels */
     int overlay;             /* 1: frame time in the title bar and a "frame-time:" log line every second */
-    int shader_skip;         /* shader_wait: 0 hold (a draw waits for its shader or pipeline: the frame is late), 1 skip (near a fight the draw is left out until they are ready; nvn_vk_m4.c skip_on; env SSBU_VK_NOHOLD wins) */
+    int shader_skip;         /* shader_wait: 0 hold (a draw waits for its shader or pipeline: the frame is late), 1 skip (near a fight the draw is left out until they are ready; nvn_vk_m4.c skip_on; env SSBU_VK_NOHOLD wins), 2 auto (the default: skip on a device with whole pipelines, hold where pipeline libraries are in use) */
     int profile;            /* 0 custom (the keys as written), 1 low: scale, aniso and present are set by the profile (gfx_options.c) */
     int shader_prepare;     /* track V session 14 (appended: older objects keep their offsets): 0 first_run (the game is held at its first frame until every shader of the game's data is prepared, once per GPU + driver), 1 background (as before), 2 off;  env SSBU_VK_PREPARE wins */
     int shader_load;        /* 2026-10-16 (appended): 0 start (on a prepared PC every shader of the game's data is loaded into memory before the first frame, behind a "LOADING SHADERS" screen: no shader work at the loading screens before a fight), 1 loading (as before: each at its loading screen);  env SSBU_VK_LOAD_AT_START=0/1 wins */
