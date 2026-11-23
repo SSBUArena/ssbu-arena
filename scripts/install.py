@@ -377,8 +377,19 @@ SHARED_DUMP = 'dump_shared'
 
 def shared_mode(a):
     """--shared-data (or SSBU_SHARED_DATA): 'off' (the default: Arena's own dump, as before), 'auto' (an OpenSmash Ultimate
-    install this PC remembers) or an OpenSmash install folder"""
-    return (getattr(a, 'shared_data', None) or os.environ.get('SSBU_SHARED_DATA') or 'off').strip() or 'off'
+    install this PC remembers) or an OpenSmash install folder. Without either, an install that already reads shared data
+    (install_state.json: its dump is <build>\\dump_shared) keeps 'auto', so Resume / Repair link again after an OpenSmash
+    update instead of falling back to a 17 GB copy; --shared-data off goes back to the own copy."""
+    mode = getattr(a, 'shared_data', None) or os.environ.get('SSBU_SHARED_DATA')
+    if not mode:
+        try:
+            with open(STATE_FILE, encoding='utf-8') as f:
+                was = (json.load(f).get('inputs') or {}).get('dump') or ''
+            if was and os.path.normcase(os.path.abspath(was)) == os.path.normcase(os.path.join(BUILD, SHARED_DUMP)):
+                mode = 'auto'
+        except (OSError, ValueError, AttributeError):
+            pass
+    return (mode or 'off').strip() or 'off'
 
 
 def shared_source(a):
