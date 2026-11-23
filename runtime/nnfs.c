@@ -825,11 +825,25 @@ static void fs_CloseFile(Ctx *c) {
     if (A0) { open_mode((HANDLE)A0, 1); arc_closed((HANDLE)A0); CloseHandle((HANDLE)A0); }
 }
 extern int g_hitch_ms; void hitch_note(const char *s);      /* hitch.c: SSBU_HITCH */
+static uint64_t read_at_x(HANDLE h, int64_t offset, void *buf, uint64_t size);
 static uint64_t read_at(HANDLE h, int64_t offset, void *buf, uint64_t size) {
+    if (!read_stats_on() || !(arcl_is(h) || arc_is_orig(h))) return read_at_x(h, offset, buf, size);
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    uint64_t got = read_at_x(h, offset, buf, size);
+    QueryPerformanceCounter(&t1); read_stats_add(got, t1.QuadPart - t0.QuadPart);
+    return got;
+}
+static uint64_t read_at_x(HANDLE h, int64_t offset, void *buf, uint64_t size) {
     uint64_t total = 0;
     arc_read_logged(h, offset, size);
     if (arcp_read(h, offset, buf, size, &total)) { void r1_wrote(uint64_t, uint64_t); r1_wrote((uint64_t)(uintptr_t)buf, size); return total; }
-    if (arcl_is(h)) { void r1_wrote(uint64_t, uint64_t); r1_wrote((uint64_t)(uintptr_t)buf, size); arcl_read(h, offset, buf, size, &total); return total; }   /* the linked archive (arclink.c) */
+    if (arcl_is(h)) {                                     /* the linked archive (arclink.c): a read like the one below, SSBU_HITCH notes it too */
+        void r1_wrote(uint64_t, uint64_t); r1_wrote((uint64_t)(uintptr_t)buf, size);
+        if (g_hitch_ms) { char note[80]; snprintf(note, sizeof note, "read of %llu KB (linked)", (unsigned long long)(size >> 10)); hitch_note(note); }
+        arcl_read(h, offset, buf, size, &total);
+        if (g_hitch_ms) hitch_note(NULL);
+        return total;
+    }
     if (g_hitch_ms) { char note[80]; snprintf(note, sizeof note, "read of %llu KB", (unsigned long long)(size >> 10)); hitch_note(note); }
     { void r1_wrote(uint64_t, uint64_t); r1_wrote((uint64_t)(uintptr_t)buf, size); }   /* R1 (r1_state.c): the kernel's write into guest memory is marked (nothing without SSBU_R1_MARK) */
     while (total < size) {

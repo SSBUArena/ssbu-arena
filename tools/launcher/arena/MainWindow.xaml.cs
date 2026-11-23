@@ -242,6 +242,7 @@ namespace Arena
                 CheckList.ItemsSource = rows;
                 RefreshShared();
                 SetState();
+                if (sharedNote != null && bad == 0) Status(sharedNote, "good");      // (shared game data) the relink at start, after the checks' own line
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 

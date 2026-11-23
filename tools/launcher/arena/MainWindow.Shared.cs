@@ -13,21 +13,24 @@ namespace Arena
     public partial class MainWindow
     {
         bool sharedBusy, sharedAsked;
+        string sharedNote;          // the relink's line: shown again once the checks after it are done (RunChecks), and in Settings
         const string SharedQuestion = "OpenSmash Ultimate is installed on this PC: use its game files instead of a second copy? Saves about 16 GB.";
 
-        static string Gb(long bytes) => (bytes / 1073741824.0).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " GB";
+        static string Gb(long bytes) => bytes >= 1073741824L ? (bytes / 1073741824.0).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " GB"
+                                                         : (bytes / 1048576.0).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " MB";
 
         /// <summary>at start (Loaded): a stale link made again; an install that does not share yet asked once; the old copy offered</summary>
         void SharedAtStart()
         {
-            if (Core.Repo == null || !File.Exists(Core.Exe) || Environment.GetCommandLineArgs().Any(x => x == "--replay" || x == "--page")) return;      // (a tool's launcher: no question)
+            if (Core.Repo == null || !File.Exists(Core.Exe)) return;
+            bool tool = Environment.GetCommandLineArgs().Any(x => x == "--replay" || x == "--page");      // (a tool's launcher: the link only, no question)
             if (SharedData.InUse)
             {
-                if (SharedEnsure(() => { RunChecks(); SharedOfferOldCopy(); }, false)) return;
-                SharedOfferOldCopy();
+                if (SharedEnsure(() => { RunChecks(); if (!tool) SharedOfferOldCopy(); }, false)) return;
+                if (!tool) SharedOfferOldCopy();
                 return;
             }
-            if (Core.SharedData != "") return;
+            if (Core.SharedData != "" || tool) return;
             Task.Run(() => SharedData.Candidate()).ContinueWith(t =>
             {
                 if (t.Result != null && !setupRunning && Dialog.Visibility != Visibility.Visible) SharedAsk(t.Result, yes => { if (yes) SharedSetup(t.Result.Item1); });
@@ -75,7 +78,8 @@ namespace Arena
                 sharedBusy = false;
                 if (t.Result.Item1 && SharedData.Problem() == null)
                 {
-                    Status("Linked again to OpenSmash Ultimate's game files (" + t.Result.Item2 + ")", "good");
+                    sharedNote = "OpenSmash Ultimate had changed its game files: linked to them again at " + DateTime.Now.ToString("HH:mm") + " (" + t.Result.Item2 + ")";
+                    Status(sharedNote, "good");
                     then?.Invoke();
                     return;
                 }
@@ -168,7 +172,7 @@ namespace Arena
             {
                 string bad = SharedData.Problem();
                 SharedText.Foreground = Res(bad == null ? "Good" : "Warn");
-                SharedText.Text = bad == null ? "On: the game reads OpenSmash Ultimate's game files in " + (SharedData.LinkedFrom() ?? "?") + "."
+                SharedText.Text = bad == null ? "On: the game reads OpenSmash Ultimate's game files in " + (SharedData.LinkedFrom() ?? "?") + "." + (sharedNote != null ? "\n" + sharedNote + "." : "")
                                               : "On, but OpenSmash changed its files (" + bad + "): linked again before the next start.";
             }
             else
