@@ -864,11 +864,12 @@ namespace Arena
                                 (Updater.Installed ? Updater.InstalledCommit() ?? "unknown" : "-") + "; game exe " + (System.IO.File.Exists(Core.Exe) ? "there" : "missing"));
                 if (!Updater.Installed)
                 {
-                    if (release == null) Show("SSBU Arena", "The first install downloads SSBU Arena from GitHub: no connection or no release found. Check the internet connection and start the launcher again.", null, ("OK", null, true));
+                    if (release == null) Show("SSBU Arena", "The first install downloads SSBU Arena from GitHub: " + (Updater.LastCheckError ?? "no release found.") + " Check the internet connection and start the launcher again.", null, ("OK", null, true));
                     else Show("Install SSBU Arena", "SSBU Arena " + release.Version + " is installed in this folder:\n" + System.IO.Path.GetDirectoryName(Updater.ExePath) +
                               "\n\nThe setup then asks for your own game files (about 25 GB of space).", null, ("Install", () => StartSetup(true), true), ("Not now", null, false));
                     return;
                 }
+                if (release == null && Updater.LastCheckError != null && !Updater.DevCopy) Status("Could not check for updates: " + Updater.LastCheckError, "warn");      // (OpenSmash #480)
                 // installed but not finished (the setup was stopped or failed): its screen again, it goes on from where it was
                 if (!Updater.DevCopy && !System.IO.File.Exists(Core.Exe)) { StartSetup(false); return; }
                 // (online-mm 15/11) no update to run: is the game DLL the one this exe expects? (an update runs its own build)

@@ -781,6 +781,7 @@ static void fs_QueryMountRomCacheSize(Ctx *c) {          /* (size_t *out) */
 }
 
 #include "arcpack.c"                                   /* light archive (data.arcp) and SSBU_ARC_LOG */
+static void sysave_mark(HANDLE h, const char *guest, Mount *m, int write);      /* (OpenSmash #466) below */
 static void fs_OpenFile(Ctx *c) {                     /* (FileHandle *out, const char *path, int mode) */
     char rel[MAX_PATH], path[MAX_PATH], sub[FSA_PATH_MAX];
     Mount *m = NULL;
@@ -816,13 +817,56 @@ static void fs_OpenFile(Ctx *c) {                     /* (FileHandle *out, const
         if (on) printf("fslog: open \"%s\" mode %d -> %s\n", STR(1), (int)A2, r ? "NOT FOUND" : "ok"); }
     if (r) { wr64(A0, 0); RET(r); return; }
     open_remember(h, (int)(A2 & 7), m);
+    sysave_mark(h, STR(1), m, write);                      /* (OpenSmash #466) the system save's text language */
     wr64(A0, (uint64_t)h);
     RET(0);
+}
+/* (OpenSmash-Ultimate #466, Denkishi) the game keeps its text language in its system save: the byte at 0x3C6098 of
+ * save_data/system_data.bin (0x5b4af8 bytes, 13.0.4 and 13.0.5), written when the save is made and shown from then on
+ * whatever language the game is given. Arena's launcher puts a prebuilt base save in place (BaseSave.cs), made on an
+ * Italian Windows: its byte is 5 (it), so a new player's game stayed Italian. SSBU_SAVE_LANGUAGE (default 1): the save is
+ * read with the byte of the language the game is given (nnmisc.c desired_language: SSBU_LANGUAGE, graphics.ini language,
+ * else the Windows display language); the game writes it back at its next save. =0: the save's own language stays. */
+#define SYSAVE_SIZE 0x5B4AF8ull
+#define SYSAVE_LANG 0x3C6098ull
+static HANDLE g_sysave[4];
+static int sysave_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SAVE_LANGUAGE"); on = !(e && e[0] == '0'); } return on; }
+static void sysave_mark(HANDLE h, const char *guest, Mount *m, int write) {
+    const char *leaf = guest;
+    for (const char *s = guest; *s; s++) if (*s == '/' || *s == '\\' || *s == ':') leaf = s + 1;
+    if (write || !m || m->kind != MK_SAVE || _stricmp(leaf, "system_data.bin")) return;
+    fs_lock();
+    for (int i = 0; i < 4; i++) if (!g_sysave[i]) { g_sysave[i] = h; break; }
+    fs_unlock();
+}
+static int sysave_is(HANDLE h, int forget) {
+    int hit = 0;
+    if (!h) return 0;
+    fs_lock();
+    for (int i = 0; i < 4; i++) if (g_sysave[i] == h) { hit = 1; if (forget) g_sysave[i] = NULL; break; }
+    fs_unlock();
+    return hit;
+}
+static void sysave_language(HANDLE h, int64_t offset, void *buf, uint64_t got) {
+    if (offset < 0 || (uint64_t)offset > SYSAVE_LANG || SYSAVE_LANG - (uint64_t)offset >= got || !sysave_is(h, 0)) return;
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx(h, &sz) || (uint64_t)sz.QuadPart != SYSAVE_SIZE) return;
+    int nnmisc_save_language(const char **code);
+    const char *code = "";
+    int want = sysave_on() ? nnmisc_save_language(&code) : -2;
+    uint8_t *at = (uint8_t *)buf + (SYSAVE_LANG - (uint64_t)offset);
+    static volatile LONG said;
+    if (want < 0 || *at == (uint8_t)want) {
+        if (!InterlockedExchange(&said, 1)) { printf("fs: the save's text language: %u (%s)\n", *at, want == -2 ? "SSBU_SAVE_LANGUAGE=0: the save's stays" : want < 0 ? "no value for the game's language: the save's stays" : "the game's language"); fflush(stdout); }
+        return;
+    }
+    if (!InterlockedExchange(&said, 1)) { printf("fs: the save's text language: %u; read as %d, the game's language (%s); the game writes it at its next save (SSBU_SAVE_LANGUAGE=0: the save's)\n", *at, want, code); fflush(stdout); }
+    *at = (uint8_t)want;
 }
 static void fs_CloseFile(Ctx *c) {
     int slot = fsa_file_slot(A0);
     if (slot) { if (slot > 0) fsa_close_file(c, slot); return; }
-    if (A0) { open_mode((HANDLE)A0, 1); arc_closed((HANDLE)A0); CloseHandle((HANDLE)A0); }
+    if (A0) { sysave_is((HANDLE)A0, 1); open_mode((HANDLE)A0, 1); arc_closed((HANDLE)A0); CloseHandle((HANDLE)A0); }
 }
 extern int g_hitch_ms; void hitch_note(const char *s);      /* hitch.c: SSBU_HITCH */
 static uint64_t read_at_x(HANDLE h, int64_t offset, void *buf, uint64_t size);
@@ -881,6 +925,7 @@ static void fs_ReadFile(Ctx *c) {                     /* (handle, offset, buffer
         return;
     }
     uint64_t got = read_at((HANDLE)A0, (int64_t)A1, (void *)(uintptr_t)A2, A3);
+    if (got) sysave_language((HANDLE)A0, (int64_t)A1, (void *)(uintptr_t)A2, got);
     if (InterlockedIncrement(&g_read_log) <= 60)
         trace_printf("     fs read offset %llx size %llx -> %llx bytes  from=%llx\n", (unsigned long long)A1,
                      (unsigned long long)A3, (unsigned long long)got, (unsigned long long)c->x[30] - 4);
@@ -897,6 +942,7 @@ static void fs_ReadFileCount(Ctx *c) {                /* (size_t *outRead, handl
         return;
     }
     uint64_t got = read_at((HANDLE)A1, (int64_t)A2, (void *)(uintptr_t)A3, A4);
+    if (got) sysave_language((HANDLE)A1, (int64_t)A2, (void *)(uintptr_t)A3, got);
     wr64(A0, got);
     if (got != A4 && getenv("SSBU_FSLOG")) printf("fslog: ReadFile(count) SHORT handle %llx offset %llx size %llx got %llx from=%llx\n", (unsigned long long)A1, (unsigned long long)A2, (unsigned long long)A4, (unsigned long long)got, (unsigned long long)c->x[30] - 4);   /* D2 debug */
     RET(0);
