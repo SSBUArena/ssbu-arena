@@ -88,7 +88,11 @@ namespace Arena
         public static string OpenSmashPath;                               // (0.2.52) launcher.ini opensmash_path: OpenSmash Ultimate's folder or launcher exe, set by hand when the OpenSmash tab does not find it (MainWindow.OpenSmash.cs)
         public const string CommunityDiscord = "https://discord.gg/pkgyYGf3YB";   // (0.2.51) the OpenSmash-Ultimate Discord (their README's invite): Arena's players meet there
         public static bool CrashReports = true;                           // (0.2.18) launcher.ini crash_reports (CrashReport.cs)
-        public static int InputDelay = 2;                                 // (0.2.14) launcher.ini input_delay: 1..5 frames (SSBU_RB_NET_DELAY); (0.2.38) no automatic any more, 2 by default; (rb-8ms) 0 = "Auto": the game chooses from the ping and agrees one delay with the other player (ini "automatic", SSBU_RB_NET_DELAY=auto)
+        // (0.2.68, SSBU_ARENA_DELAY_AUTO, default on; 0 = fixed 2 by default as 0.2.38..0.2.67) Auto is the default input delay; a
+        // launcher.ini that holds 2 (the old default) is moved to Auto once, then input_delay_auto = done keeps a 2 picked later
+        public static bool DelayAutoDefault => Environment.GetEnvironmentVariable("SSBU_ARENA_DELAY_AUTO") != "0";
+        static bool delayAutoDone;
+        public static int InputDelay = DelayAutoDefault ? 0 : 2;          // (0.2.14) launcher.ini input_delay: 1..5 frames (SSBU_RB_NET_DELAY); (0.2.38) no automatic any more, 2 by default; (rb-8ms) 0 = "Auto": the game chooses from the ping and agrees one delay with the other player (ini "automatic", SSBU_RB_NET_DELAY=auto)
         public static bool Fps;                                           // graphics.ini stats_overlay: the FPS counter in the game                                   // graphics.ini volume (0..100), the game's start volume
         // (0.2.8) which controller button presses each game button ([type ...] map.* of controllers.ini, written for the
         // Xbox, PlayStation, Switch and other pads alike; GameCube controllers keep their own); the default is the
@@ -189,7 +193,10 @@ namespace Arena
             CompleteSave = CompleteSaveChosen ? Get(L, "complete_save") != "off" : true;      // (0.2.47) on unless the player turned it off
             ShaderLoad = Get(L, "shader_load") == "start" ? 1 : Get(L, "shader_load") == "loading" ? 2 : 0;
             CrashReports = Get(L, "crash_reports") != "off";
-            InputDelay = Get(L, "input_delay") == "automatic" ? 0 : int.TryParse(Get(L, "input_delay"), out var idl) && idl >= 1 && idl <= 5 ? idl : 2;      // ("auto" of 0.2.37 and older: 2; "automatic": the Auto choice)
+            InputDelay = Get(L, "input_delay") == "automatic" ? 0 : int.TryParse(Get(L, "input_delay"), out var idl) && idl >= 1 && idl <= 5 ? idl : DelayAutoDefault ? 0 : 2;      // ("auto" of 0.2.37 and older: 2; "automatic": the Auto choice)
+            delayAutoDone = Get(L, "input_delay_auto") == "done";
+            if (DelayAutoDefault && !delayAutoDone && InputDelay == 2) { InputDelay = 0; Updater.Log("input delay: 2 (the old default) -> Auto, once (SSBU_ARENA_DELAY_AUTO=0: keep 2)"); }      // (0.2.68)
+            if (DelayAutoDefault) delayAutoDone = true;      // (written by Save: a 2 chosen from now on stays)
             RecMatchmaking = Get(L, "replay_matchmaking") != "off"; RecLdn = Get(L, "replay_ldn") != "off"; RecArena = Get(L, "replay_arena") != "off";
             RecLocal = Get(L, "replay_local") != "off";
             ShaderStamp = Get(L, "shaders") ?? "";
@@ -346,7 +353,7 @@ namespace Arena
             File.WriteAllLines(LauncherIni, new[] {
                 "# written by the launcher", "saves = " + Saves, "nickname = " + n,
                 "online = " + (Online ? "on" : "off"), "online_choice = 1",
-                "server = " + Server.Trim(), Regions.IniServer != null ? "online_server = " + Regions.IniServer : "# online_server = host:port   (a server set by hand: wins over the region)", "ping = " + (Ping ? "on" : "off"), OpenSmashPath != null ? "opensmash_path = " + OpenSmashPath : "# opensmash_path = <folder>   (OpenSmash Ultimate's folder or launcher exe, when the OpenSmash tab does not find it)", "shaders = " + ShaderStamp, "input_delay = " + (InputDelay == 0 ? "automatic" : InputDelay.ToString()), "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "complete_save = " + (CompleteSave ? "on" : "off"), "complete_save_choice = " + (CompleteSaveChosen ? "1" : "0"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
+                "server = " + Server.Trim(), Regions.IniServer != null ? "online_server = " + Regions.IniServer : "# online_server = host:port   (a server set by hand: wins over the region)", "ping = " + (Ping ? "on" : "off"), OpenSmashPath != null ? "opensmash_path = " + OpenSmashPath : "# opensmash_path = <folder>   (OpenSmash Ultimate's folder or launcher exe, when the OpenSmash tab does not find it)", "shaders = " + ShaderStamp, "input_delay = " + (InputDelay == 0 ? "automatic" : InputDelay.ToString()), delayAutoDone ? "input_delay_auto = done" : "# input_delay_auto = done   (0.2.68: the old default 2 was moved to Auto once)", "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "complete_save = " + (CompleteSave ? "on" : "off"), "complete_save_choice = " + (CompleteSaveChosen ? "1" : "0"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off"),
                 SharedData != "" ? "shared_data = " + SharedData : "# shared_data = on | off   (OpenSmash Ultimate's game files instead of a copy of Arena's own; asked once)",

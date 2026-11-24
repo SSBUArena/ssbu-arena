@@ -11,7 +11,7 @@
  *                          rollback without a network, for the determinism proof (f = 0: never late = reference)
  *   SSBU_RB_NET_PLAYER=0|1 this game's player (default: 0, 1 in SSBU_ONLINE=join mode)
  *   SSBU_RB_NET_DELAY=<n>  input delay in frames (default: from the measured round trip, 1..5); "auto": from the ping, agreed
- *                          with the other game (SSBU_RB_AUTO_DELAY_PING, auto_ping_frames: 150 ms -> 5, at most 6)
+ *                          with the other game (SSBU_RB_AUTO_DELAY_PING, auto_ping_frames: 150 ms -> 4, at most 7; SSBU_RB_AUTO_DELAY_V2=0: 5, at most 6)
  *   SSBU_RB_NET_BOT=<seed> the local player's pads come from a test bot instead of the controller / input sequence
  *   SSBU_RB_NET_LOG=<file> one line per finalized frame: "f <frame> h <checksum>" (compare two games' files)
  *   SSBU_RB_NET_AHEAD=<n>  most frames this game runs ahead of the newest remote pad (default 7 = the ring depth)
@@ -544,7 +544,7 @@ static void hs_stage_rule(RbhMatch *m, const RbhMatch *peer) {
  * the ping-based value it measured itself on the same connection (also with an older joiner that sent 2). Both games still
  * play ONE delay, the larger of the two wishes (a fixed player next to an Auto one is raised, never lowered; two fixed: the
  * larger, as since 0.2.52). No change to the handshake format (pad0 bits 3..7 as before; RBH_PROTO stays 6). */
-static int auto_rule_delay(void), auto_rule_delay_ex(int final), auto_ping_on(void);
+static int auto_rule_delay(void), auto_rule_delay_ex(int final), auto_ping_on(void), auto_v2_on(void);
 static int auto_rtt_shown_ms(int final, int *samples, double *best_ms);
 static void hs_delay_want(RbhMatch *m) {                 /* this game's own wish into pad0 (CHOICE and the host's proposal) */
     int w = g_delay_auto ? auto_rule_delay_ex(1) : g_delay_cfg;
@@ -782,7 +782,7 @@ int rbn_handshake(const RbhMatch *mine, RbhMatch *out) {
         int n = 0; double best = -1; int rtt = auto_rtt_shown_ms(1, &n, &best);
         char own[48]; if (g_delay_auto) snprintf(own, sizeof own, "auto, %d from the ping", auto_rule_delay_ex(1)); else if (g_delay_cfg >= 0) snprintf(own, sizeof own, "fixed %d", g_delay_cfg); else snprintf(own, sizeof own, "from the round trip");
         printf("[rbnet] handshake: input delay %d frames on both games (agreed; this game %s; round trip %d ms, median of the last %d, best %.1f ms; Auto rule %s)\n", g_delay_agreed, own, rtt, n < 5 ? n : 5, best,
-               auto_ping_on() ? "0.2.65 ping (SSBU_RB_AUTO_DELAY_PING=1)" : "0.2.50 (SSBU_RB_AUTO_DELAY_PING=0)");
+               auto_v2_on() ? "0.2.68 ping less one, at most 7 (SSBU_RB_AUTO_DELAY_V2=1)" : auto_ping_on() ? "0.2.65 ping (SSBU_RB_AUTO_DELAY_PING=1, SSBU_RB_AUTO_DELAY_V2=0)" : "0.2.50 (SSBU_RB_AUTO_DELAY_PING=0)");
         fflush(stdout);
     }
     g_sq_agreed = lwr && (out->pad0 & 1);
@@ -945,6 +945,12 @@ static int auto_ping_on(void) {                         /* (0.2.65) SSBU_RB_AUTO
     static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_AUTO_DELAY_PING"); on = !(e && e[0] == '0'); }
     return on;
 }
+/* (0.2.68, SSBU_RB_AUTO_DELAY_V2, default 1; 0 = the 0.2.65 rule) Auto = the 0.2.65 ping rule less one frame, at most 7: rollback
+ * covers the last frame of the trip, so the player feels a frame less of delay (only with the 0.2.65 ping rule on). */
+static int auto_v2_on(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_AUTO_DELAY_V2"); on = !(e && e[0] == '0'); }
+    return on && auto_ping_on();
+}
 /* (0.2.65) the ping the Auto delay is chosen from: the median of the last 5 round trips (the number the ping overlay shows,
  * rbn_rtt_ms, so a player who sees 150 gets the 150 row), only once 3 are measured; final = 1 (the 3 s wait is over, or the
  * delay is needed now): the best / last round trip measured, if fewer. -1 = none. */
@@ -965,17 +971,21 @@ static int auto_rtt_shown_ms(int final, int *samples, double *best_ms) {
  * (4 ms: the frame's own phase and the send), rounded up: d = ceil(ms / 2 / 16.67 + 0.25); 1 under 15 ms (a home network), at
  * least 2 otherwise (relay jitter, as before), at most SSBU_RB_NET_DELAY_MAX (default 6). Round trip -> frames:
  *   0-14 ms 1 | 15-58 ms 2 | 59-91 ms 3 | 92-125 ms 4 | 126-158 ms 5 | 159 ms and more 6
- * Whatever is left of the trip above the delay is covered by rollback (at most 7 frames). */
+ * (0.2.68, SSBU_RB_AUTO_DELAY_V2) one frame less, at least 2, at most 7 (SSBU_RB_NET_DELAY_MAX default 7); 1 under 15 ms as before:
+ *   0-14 ms 1 | 15-91 ms 2 | 92-125 ms 3 | 126-158 ms 4 | 159-191 ms 5 | 192-225 ms 6 | 226 ms and more 7
+ * Whatever is left of the trip above the delay is covered by rollback (at most 7 frames). A 0.2.65..0.2.67 game takes an agreed
+ * 7 as any other value (pad0 bits 4..7, rb_input_reset clamps at 15; launcher-fixed delays were 1..5, Auto at most 6). */
 static int auto_ping_frames(double ms, int mx) {
     if (ms < 15) return 1;
     int d = ((int)(ms + 0.5) * 3 + 25 + 99) / 100;         /* ceil(ms * 60 / 2000 + 0.25) in integers (no float edge at 125 ms) */
+    if (auto_v2_on()) d -= 1;
     if (d < 2) d = 2;
     return d > mx ? (mx < 1 ? 1 : mx) : d;
 }
 static int auto_rule_delay(void) { return auto_rule_delay_ex(0); }
 static int auto_rule_delay_ex(int final) {              /* (rb-8ms) SSBU_RB_NET_DELAY=auto: the rule above hs_delay_want; -1 = no round trip yet */
     static int mx = 0;
-    if (!mx) { const char *e = getenv("SSBU_RB_NET_DELAY_MAX"); mx = e && atoi(e) >= 1 ? (atoi(e) > 9 ? 9 : atoi(e)) : auto_ping_on() ? 6 : 5; }
+    if (!mx) { const char *e = getenv("SSBU_RB_NET_DELAY_MAX"); mx = e && atoi(e) >= 1 ? (atoi(e) > 9 ? 9 : atoi(e)) : auto_v2_on() ? 7 : auto_ping_on() ? 6 : 5; }
     if (auto_ping_on()) { int ms = auto_rtt_shown_ms(final, NULL, NULL); return ms < 0 ? -1 : auto_ping_frames(ms, mx); }
     int rtt = g_rtt_min_us > 0 ? g_rtt_min_us : g_rtt_us;
     if (rtt <= 0) return -1;
