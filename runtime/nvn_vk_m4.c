@@ -916,6 +916,13 @@ static double pipe_build(Pipe *p) {
     LONG64 t_whole = tk();
     VkResult r = pw_graphics(g_pcache, &gi, &p->p);
     if (r != VK_SUCCESS) vkd_fail("vkCreateGraphicsPipelines (vertex stage %u, fragment stage %u, %d colour targets, depth format %d): %s", k->vs, k->fs, k->ncolor, k->dfmt, vk_result_name(r));
+    {   /* (amd-start-hold) TEST ONLY, SSBU_VK_TEST_PIPE_MS=<ms>: every whole pipeline costs that much more (a Sleep on the thread
+         * that makes it), to see on a fast GPU what a start does where one costs ~180 ms (an AMD RX 6750 XT whose pipeline cache
+         * gives the driver little back). 0 / not set: nothing. */
+        static int ms = -1;
+        if (ms < 0) { const char *e = getenv("SSBU_VK_TEST_PIPE_MS"); ms = e ? atoi(e) : 0; if (ms < 0) ms = 0; if (ms) printf("nvn_vk: TEST: every whole pipeline costs %d ms more (SSBU_VK_TEST_PIPE_MS)\n", ms); }
+        if (ms) Sleep((DWORD)ms);
+    }
     /* (amd-shader-prep) a whole pipeline the driver's cache did not have (over 3 ms) counts for the save at exit, as the
      * comment of g_pc_dirty always said: before, none was counted, so on a device without libraries the file written by the
      * first run was never rewritten (pipelines of later runs compiled again every start). SSBU_VK_PCDIRTY_WHOLE=0: as before. */
@@ -1611,7 +1618,7 @@ typedef struct { uint32_t magic, version, pkey_size, flags; } SeedHdr;
 typedef struct { uint64_t hp; uint32_t key[4], fo; int32_t stage; } SeedStage;
 typedef struct { uint32_t compute, has_fs; SeedStage vs, fs; PKey k; } SeedRec;
 static PipeRec *g_seed_pr;                          /* the seed as records of this device (kept for seed_after_prep) */
-static int g_seed_n, g_seed_on;
+static int g_seed_n, g_seed_on, g_seed_late;        /* late: (amd-start-hold) not merged into the start-up prewarm (seed_late_mode) */
 static SeedStage *g_seed_var;                       /* the variants it names with a key or forced outputs, sorted by hp (prep_seed_variants) */
 static int g_seed_nvar;
 static LONG64 g_seed_made, g_seed_had, g_seed_missing, g_seed_varmade, g_seed_out_n, g_seed_out_skip;
@@ -1649,6 +1656,30 @@ static int seedvar_cmp(const void *a, const void *b) { const SeedStage *x = a, *
 static uint64_t seed_vh(SeedStage *st, int snorm_here) {      /* the variant hash on this device (st's key normalised in place) */
     if (st->stage == 0 && !snorm_here) st->key[0] &= 0xffffu;      /* bits 16 + n: attribute n decoded from A2B10G10R10 SNORM (this GPU fetches it as it is) */
     return fnv(fnv(hb_fin(st->hp, st->stage), st->key, 16), &st->fo, 4);
+}
+/* (amd-start-hold, 0.2.67) WHERE THE SEED'S PIPELINES ARE MADE. Until 0.2.66 they were merged into the start-up prewarm
+ * (pw_main part 1) at EVERY start. Part 1 runs before a worker takes anything else, so on an AMD RX 6750 XT (a whole
+ * pipeline ~180 ms, little help from the pipeline cache) the 10 workers spent ~2 minutes on the 4821 pipelines while the
+ * LOADING SHADERS work (shader_load = start) and the programs the game hands over waited: "1 of 521 containers read, 0 of
+ * 1348 done" for minutes, the game's main thread held 30 s in each nvnProgramSetShaders, the Kirby screen at 0 %.
+ *   SSBU_VK_SEED_LATE = 0  as before: merged into the start-up prewarm
+ *                       1  (default, where the preparation runs) not merged: a first run makes them after the preparation
+ *                          (seed_after_prep, as before); a PREPARED start (the marker: the preparation of this driver made
+ *                          them, the driver's own cache holds them) queues them behind the start's shader loading, as
+ *                          background work of the preparation queue (half the workers, below normal priority, paused near a
+ *                          fight); a draw that needs one first makes it itself, as any pipeline
+ *                       2  as 1, but a prepared start does not make them ahead at all (each at its first draw)
+ * Without the preparation (SSBU_VK_PREP=0, SSBU_VK_HANDOVER=0) nothing else would make them: merged as before. */
+static int prep_planned(void) {                     /* prep_start's decision (on && g_m4_on), before it runs */
+    const char *e = getenv("SSBU_VK_PREP");
+    int whole_on = !(getenv("SSBU_VK_PREP_WHOLE") && !atoi(getenv("SSBU_VK_PREP_WHOLE")));
+    int on = e ? atoi(e) != 0 : D.has_gpl ? gpl_sep() : whole_on;
+    return on && !(getenv("SSBU_VK_HANDOVER") && !atoi(getenv("SSBU_VK_HANDOVER")));
+}
+static int seed_late_mode(void) {
+    const char *e = getenv("SSBU_VK_SEED_LATE");
+    int m = e && e[0] ? atoi(e) : 1;
+    return m < 0 || m > 2 ? 1 : m;
 }
 /* prewarm_start, before the workers: the seed's entries as pipes.bin records of this device, appended to g_pw_rec; the
  * caller sorts and removes the duplicates. */
@@ -1702,6 +1733,16 @@ static void seed_load(void) {
     free(in);
     qsort(g_seed_var, (size_t)g_seed_nvar, sizeof *g_seed_var, seedvar_cmp);
     {   int k = 0; for (int i = 0; i < g_seed_nvar; i++) if (!k || memcmp(&g_seed_var[k - 1], &g_seed_var[i], sizeof *g_seed_var)) g_seed_var[k++] = g_seed_var[i]; g_seed_nvar = k; }
+    {   int late = seed_late_mode();
+        if (late && prep_planned()) {              /* (amd-start-hold) not into the start-up prewarm: seed_after_prep / seed_late_queue */
+            g_seed_on = 1; g_seed_late = late;
+            printf("nvn_vk_seed: %s: %d pipelines of the shipped list (%d depth formats mapped to this GPU's, %d stage variants with a key or forced outputs for the preparation; SNORM decode %s here, %s in the list), "
+                   "NOT in the start-up prewarm: made after the preparation on a first run, %s on a prepared start (SSBU_VK_SEED_LATE=%d; 0 = merged into the prewarm as before); SSBU_VK_SEED=0 turns the list off\n",
+                   path, g_seed_n, nd24, g_seed_nvar, snorm ? "on" : "off", (h.flags & SEED_F_SNORM) ? "on" : "OFF (an AMD GPU needs it: some vertex variants will not match)",
+                   late == 2 ? "not made ahead (each at its first draw)" : "in the background after the start's shader loading", late);
+            return;
+        }
+    }
     PipeRec *grown = realloc(g_pw_rec, ((size_t)g_pw_n + (size_t)g_seed_n + 1) * sizeof(PipeRec));
     if (!grown) { printf("nvn_vk_seed: out of memory\n"); return; }
     g_pw_rec = grown;
@@ -1725,11 +1766,19 @@ static void prep_seed_variants(const SSrc *src) {
     }
 }
 /* A worker (job kind 9): one entry of the seed, after the preparation wrote the stage records */
+static LONG64 g_seed_t0, g_seed_t1, g_seed_done, g_seed_late_t0;
+static void seed_job_done(void) {                   /* (amd-start-hold) the end of the background pass of a prepared start, in the log */
+    if (InterlockedIncrement64(&g_seed_done) != (LONG64)g_seed_n || !g_seed_late_t0) return;
+    LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
+    printf("nvn_vk_seed: background pass of a prepared start finished: %lld pipelines of the list made, %lld were there already (a draw made them first), %lld without their stage records; %.1f s after it was queued (frame %lld)\n",
+           (long long)g_seed_made, (long long)g_seed_had, (long long)g_seed_missing, (double)(tk() - g_seed_late_t0) / (double)fq.QuadPart, (long long)nvn_front_frame_next());
+    fflush(stdout);
+}
 static void seed_job(int idx) {
     PipeRec *r = &g_seed_pr[idx];
     VStage *vs = pw_stage(r->compute ? 5 : 0, r->vs_h), *fs = r->fs_h ? pw_stage(1, r->fs_h) : NULL;
-    if (!vs || (r->fs_h && !fs)) { InterlockedIncrement64(&g_seed_missing); return; }
-    if (r->compute) { vs->cp_recorded = 1; if (compute_pipe_ensure(vs) == 1) InterlockedIncrement64(&g_seed_made); else InterlockedIncrement64(&g_seed_had); return; }
+    if (!vs || (r->fs_h && !fs)) { InterlockedIncrement64(&g_seed_missing); seed_job_done(); return; }
+    if (r->compute) { vs->cp_recorded = 1; if (compute_pipe_ensure(vs) == 1) InterlockedIncrement64(&g_seed_made); else InterlockedIncrement64(&g_seed_had); seed_job_done(); return; }
     PKey k = r->k;
     k.vs = vs->id; k.fs = fs ? fs->id : 0;
     uint64_t h = fnv(0xcbf29ce484222325ULL, &k, sizeof k);
@@ -1741,11 +1790,28 @@ static void seed_job(int idx) {
     if (mine) { int idx2; sig_note(&k, &idx2); PairRec *pr0 = pair_get(vs, fs); pr0->drawn = 1; if (idx2 >= 0) pr0->used |= 1ull << idx2; }
     LeaveCriticalSection(&g_sh_lock);
     if (mine) { pipe_build(p); InterlockedIncrement64(&g_seed_made); } else InterlockedIncrement64(&g_seed_had);
+    seed_job_done();
+}
+/* (amd-start-hold) prep_main of a PREPARED start, once the start's shader loading is over (SSBU_VK_SEED_LATE=1): the seed's
+ * pipelines as background jobs of the preparation queue, behind everything else. pw_stage's table of loads is freed by
+ * prewarm_wait (the render thread's first batch): not before that. */
+static volatile LONG g_pw_freed;
+static void seed_late_queue(void) {
+    if (!g_seed_on || !g_seed_late || !g_seed_n || g_m4_quit) return;
+    if (g_seed_late == 2) { printf("nvn_vk_seed: SSBU_VK_SEED_LATE=2: the %d pipelines of the list are not made ahead on this prepared start (each at its first draw)\n", g_seed_n); fflush(stdout); return; }
+    while (!g_pw_freed && !g_m4_quit) Sleep(20);
+    if (g_m4_quit) return;
+    g_seed_late_t0 = tk();
+    EnterCriticalSection(&g_sh_lock);
+    for (int i = 0; i < g_seed_n; i++) { Job *j = calloc(1, sizeof *j); j->kind = 9; j->cont = i; j->prep = 2; job_push_prep(j); }
+    LeaveCriticalSection(&g_sh_lock);
+    printf("nvn_vk_seed: prepared start: the %d pipelines of the shipped list queued in the background (preparation queue: at most %d workers below normal priority, none near a fight; a draw that needs one first makes it) at frame %lld\n",
+           g_seed_n, g_prep_cap, (long long)nvn_front_frame_next());
+    fflush(stdout);
 }
 /* prep_main, the preparation's own thread, once every stage is translated (a first run): the seed's pipelines on the
  * workers (the preparation queue: every worker while the first-run screen holds the game), waited for here, so that the
  * pipeline cache written with the marker holds them. */
-static LONG64 g_seed_t0, g_seed_t1;
 static void seed_after_prep(void) {
     if (!g_seed_on || !g_seed_n || g_m4_quit) return;
     {   const char *e = getenv("SSBU_VK_SEED_PREP"); if (e && !atoi(e)) { printf("nvn_vk_seed: SSBU_VK_SEED_PREP=0: the list's pipelines are not made after the preparation (next start, or at their draws)\n"); return; } }
@@ -1755,9 +1821,60 @@ static void seed_after_prep(void) {
     LeaveCriticalSection(&g_sh_lock);
     prep_line("the shipped list's pipelines queued");
 }
+/* A job the caller took off a queue (g_sh_lock NOT held; p: the pipeline of a kind-1 job, marked as being made; bg: 0 the
+ * job queue, 1 the background queue, 2 the preparation queue): run, counted, freed. Part 2 of pw_main, and part 1 with
+ * SSBU_VK_PW_INTERLEAVE (amd-start-hold). */
+static void pw_job_run(Job *j, Pipe *p, int bg) {
+    if (j->kind == 0) { if (j->prep == 2) job_prep(j); else job_prog(j); }
+    else if (j->kind == 2) job_draw(j);
+    else if (j->kind == 3) { int how; VStage *v = stage_ensure(&j->src[1], ssrc_hb(&j->src[1]), j->key1, 0, &how); if (how == 1) InterlockedIncrement64(&g_w_stages); if (v && v->ok && D.has_gpl && gpl_sep() && !g_offline && stage_fits_universal(v)) { int lh; stagelib_ensure(v, 0, &lh); } else if (j->cont == -7 && v && v->ok) gpl_fo_made(v); }
+    else if (j->kind == 5) { int lh; pairlib_ensure(j->lvs, j->lfs, 1, 0, &lh); }
+    else if (j->kind == 6) gpl_optimise(j->pipe);
+    else if (j->kind == 7) { int how, lh; VStage *v = stage_ensure(&j->src[1], ssrc_hb(&j->src[1]), j->key1, (uint32_t)j->sshade, &how); if (how == 1) InterlockedIncrement64(&g_w_stages); if (v && v->ok && D.has_gpl && gpl_sep() && stage_fits_universal(v)) stagelib_ensure(v, 0, &lh); }      /* the stage a skipped draw waits for */
+    else if (j->kind == 4) job_scan(j);
+    else if (j->kind == 8) pix_announce(j->cont, 0);
+    else if (j->kind == 9) seed_job(j->cont);      /* (amd-shader-prep) a pipeline of the seed list, after the preparation */
+    else if (p) { pipe_build(p); InterlockedIncrement64(&g_w_pipes); }
+    int pk = j->prep == 1;
+    free(j);
+    EnterCriticalSection(&g_sh_lock);
+    if (bg == 2) { g_pq_done++; g_pq_running--; if (pk) g_pk_done++; } else if (bg) g_bq_done++; else g_jq_done++;
+    WakeAllConditionVariable(&g_sh_cv);
+    LeaveCriticalSection(&g_sh_lock);
+}
+/* session 10: a preparation job may be taken when nothing else waits; in a fight by at most g_prep_fight_cap workers */
+#define PQ_OK (g_pq_head && g_pq_running < (g_prep_urgent || g_prep_only ? 64 : fight_recent() ? g_prep_fight_cap : g_prep_cap))
+/* (amd-start-hold, 0.2.67) SSBU_VK_PW_INTERLEAVE (default 1; 0 = as before): part 1 of pw_main (the pipelines of earlier runs,
+ * made before anything else) no longer keeps EVERY worker from the rest. Before each of its entries a worker first runs what
+ * the game handed over (the job queue: nvnProgramSetShaders holds the game's main thread while it is longer than the number
+ * of workers, up to 30 s a call), and while someone waits for the preparation (its start-up hold: LOADING SHADERS or the
+ * first-run screen, g_prep_urgent) the upper half of the workers serve the preparation queue first. Measured on an AMD
+ * RX 6750 XT (0.2.66): part 1 with 4821 entries kept all 10 workers ~2 min, "0 of 1348 done" at the LOADING SHADERS start. */
+static int pw_ilv_on(void) { static int on = -1; if (on < 0) on = !(getenv("SSBU_VK_PW_INTERLEAVE") && !atoi(getenv("SSBU_VK_PW_INTERLEAVE"))); return on; }
+static LONG64 g_pw_ilv_jobs, g_pw_ilv_prep;
+static int pw_part1_take(int widx) {                /* 1: a job was run */
+    int pq_ok = widx >= g_pw_nthread / 2;           /* the upper half may take the preparation's jobs */
+    if (!g_jq_head && !(pq_ok && g_pq_head && (g_prep_urgent || g_prep_only))) return 0;      /* a look without the lock */
+    Job *j = NULL; Pipe *p = NULL; int bg = 0;
+    EnterCriticalSection(&g_sh_lock);
+    if ((j = g_jq_head) != NULL) { g_jq_head = j->next; if (!g_jq_head) g_jq_tail = NULL; }
+    else if (pq_ok && (g_prep_urgent || g_prep_only) && !g_m4_quit && PQ_OK) { j = g_pq_head; g_pq_head = j->next; if (!g_pq_head) g_pq_tail = NULL; bg = 2; g_pq_running++; }
+    if (j && j->kind == 1 && j->pipe->state == 0) { p = j->pipe; p->state = 1; }
+    LeaveCriticalSection(&g_sh_lock);
+    if (!j) return 0;
+    if (bg == 2) g_pw_ilv_prep++; else g_pw_ilv_jobs++;
+    PwProfile *keep = g_pw_profile;
+    g_pw_profile = NULL;                            /* not the prewarm's own work */
+    pw_job_run(j, p, bg);
+    g_pw_profile = keep;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);      /* part 1 runs at normal priority */
+    return 1;
+}
 static DWORD WINAPI pw_main(void *arg) {           /* arg: the worker's number (its SSBU_VK_PREWARM_PROFILE record) */
     g_pw_profile = g_pw_profile_on ? &g_pw_profiles[(uintptr_t)arg & 15] : NULL;
+    int widx = (int)((uintptr_t)arg & 15), ilv = pw_ilv_on();
     for (;;) {                                     /* 1. the keys of earlier runs */
+        if (ilv && g_pw_next < g_pw_n) while (!g_m4_quit && pw_part1_take(widx)) {}      /* (amd-start-hold) the game's programs, the preparation's start-up hold */
         LONG i = InterlockedIncrement(&g_pw_next) - 1;
         if (i >= g_pw_n) break;
         PipeRec *r = &g_pw_rec[i];
@@ -1793,8 +1910,6 @@ static DWORD WINAPI pw_main(void *arg) {           /* arg: the worker's number (
             if (want != prio) { SetThreadPriority(GetCurrentThread(), want); prio = want; }
         }
         EnterCriticalSection(&g_sh_lock);
-        /* session 10: a preparation job may be taken when nothing else waits; in a fight by at most g_prep_fight_cap workers */
-#define PQ_OK (g_pq_head && g_pq_running < (g_prep_urgent || g_prep_only ? 64 : fight_recent() ? g_prep_fight_cap : g_prep_cap))
         while (!g_jq_head && !g_bq_head && !PQ_OK && !g_m4_quit) SleepConditionVariableCS(&g_jq_cv, &g_sh_lock, g_pq_head ? 50 : INFINITE);
         Job *j = g_jq_head;
         int bg = 0;
@@ -1809,22 +1924,7 @@ static DWORD WINAPI pw_main(void *arg) {           /* arg: the worker's number (
             int want = g_prep_urgent || g_prep_only ? THREAD_PRIORITY_NORMAL : g_in_fight ? THREAD_PRIORITY_LOWEST : THREAD_PRIORITY_BELOW_NORMAL;
             SetThreadPriority(GetCurrentThread(), want); prio = -99;      /* set again at the next job (workers_boost may have changed it meanwhile) */
         }
-        if (j->kind == 0) { if (j->prep == 2) job_prep(j); else job_prog(j); }
-        else if (j->kind == 2) job_draw(j);
-        else if (j->kind == 3) { int how; VStage *v = stage_ensure(&j->src[1], ssrc_hb(&j->src[1]), j->key1, 0, &how); if (how == 1) InterlockedIncrement64(&g_w_stages); if (v && v->ok && D.has_gpl && gpl_sep() && !g_offline && stage_fits_universal(v)) { int lh; stagelib_ensure(v, 0, &lh); } else if (j->cont == -7 && v && v->ok) gpl_fo_made(v); }
-        else if (j->kind == 5) { int lh; pairlib_ensure(j->lvs, j->lfs, 1, 0, &lh); }
-        else if (j->kind == 6) gpl_optimise(j->pipe);
-        else if (j->kind == 7) { int how, lh; VStage *v = stage_ensure(&j->src[1], ssrc_hb(&j->src[1]), j->key1, (uint32_t)j->sshade, &how); if (how == 1) InterlockedIncrement64(&g_w_stages); if (v && v->ok && D.has_gpl && gpl_sep() && stage_fits_universal(v)) stagelib_ensure(v, 0, &lh); }      /* the stage a skipped draw waits for */
-        else if (j->kind == 4) job_scan(j);
-        else if (j->kind == 8) pix_announce(j->cont, 0);
-        else if (j->kind == 9) seed_job(j->cont);      /* (amd-shader-prep) a pipeline of the seed list, after the preparation */
-        else if (p) { pipe_build(p); InterlockedIncrement64(&g_w_pipes); }
-        int pk = j->prep == 1;
-        free(j);
-        EnterCriticalSection(&g_sh_lock);
-        if (bg == 2) { g_pq_done++; g_pq_running--; if (pk) g_pk_done++; } else if (bg) g_bq_done++; else g_jq_done++;
-        WakeAllConditionVariable(&g_sh_cv);
-        LeaveCriticalSection(&g_sh_lock);
+        pw_job_run(j, p, bg);
     }
     return 0;
 }
@@ -2092,6 +2192,8 @@ static void prewarm_wait(void) {                   /* render thread, before its 
     pw_profile_report(g_pw_nthread);               /* PR #33: SSBU_VK_PREWARM_PROFILE=1 */
     pw_loads_free();
     free(g_pw_rec); g_pw_rec = NULL;
+    if (g_pw_ilv_jobs || g_pw_ilv_prep) printf("nvn_vk: while the pipelines of earlier runs were made, the workers also ran %lld jobs the game handed over and %lld jobs of the preparation's start-up hold (SSBU_VK_PW_INTERLEAVE=0: none)\n", (long long)g_pw_ilv_jobs, (long long)g_pw_ilv_prep);
+    InterlockedExchange(&g_pw_freed, 1);           /* (amd-start-hold) seed_late_queue may use pw_stage again */
 }
 static void m4_report(void) {
     LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
@@ -2668,6 +2770,39 @@ static void pcache_save(void);
 static volatile int g_store_pct;
 #include "nvn_vk_store.c"                          /* session 11: the container store made by the host from data.arc */
 static int prepfile_cmp(const void *a, const void *b) { const PrepFile *x = a, *y = b; return x->size < y->size ? 1 : x->size > y->size ? -1 : strcmp(x->name, y->name); }
+/* (amd-start-hold, 0.2.67) SSBU_VK_HOLD_COUNT (default 1; 0 = as before): what the start-up shader screens count is what the
+ * game waits for: the preparation's jobs (+ about 90 a container file not read yet) AND the pipelines of earlier runs still
+ * being made ahead (pw_main part 1: the render thread's first batch waits for them, prewarm_wait). Before, the Kirby screen
+ * counted container FILES read (0.2.66 on an AMD RX 6750 XT: "1 of 521" = 0 % for minutes while part 1 ran) and the LOADING
+ * SHADERS screen jobs only; the title and the screen now move with every job done. */
+static int hold_count_on(void) { static int on = -1; if (on < 0) on = !(getenv("SSBU_VK_HOLD_COUNT") && !atoi(getenv("SSBU_VK_HOLD_COUNT"))); return on; }
+static void hold_progress(LONG64 *done, LONG64 *total) {
+    LONG64 dn = g_pq_done, qd = g_pq_queued, left = g_prep_nfiles - g_prep_read;
+    *done = dn; *total = qd + (left > 0 ? left : 0) * 90;
+    if (hold_count_on() && g_pw_n > 0) { LONG nx = g_pw_next; *done += nx < g_pw_n ? nx : g_pw_n; *total += g_pw_n; }
+    if (*done > *total) *done = *total;
+}
+/* the window title (and, before the game's first present, the Kirby screen's percent: loading_anim.c reads "shaders, a of b") */
+static void prep_title(void) {
+    void display_title_note(const char *);
+    char tn[200];
+    LONG64 a, b;
+    hold_progress(&a, &b);
+    int cnt = hold_count_on(), busy = cnt ? g_prep_nfiles && (g_prep_read < g_prep_nfiles || a < b) && g_prep_state != 2 : g_prep_nfiles && g_prep_read < g_prep_nfiles;
+    if (nvn_front_frame_next() <= 2 && busy) {
+        if (g_prep_marked) { if (cnt) snprintf(tn, sizeof tn, "loading the shaders, %lld of %lld", (long long)a, (long long)b); else snprintf(tn, sizeof tn, "loading the shaders, %d of %d", g_prep_read, g_prep_nfiles); }      /* a prepared start (the marker): loading what an earlier run made, not preparing */
+        else if (cnt) snprintf(tn, sizeof tn, "first start: preparing the shaders, %lld of %lld (once; can take 10-30 min on a laptop GPU, the window stays black)", (long long)a, (long long)b);
+        else snprintf(tn, sizeof tn, "first start: preparing the shaders, %d of %d (once; can take 10-30 min on a laptop GPU, the window stays black)", g_prep_read, g_prep_nfiles);
+        display_title_note(tn);
+    } else display_title_note(NULL);      /* (issue #57 / testers: a black window for minutes) */
+}
+static void prep_title_tick(void) {                 /* prep_main's waits: the title every second (the log line stays every 10 s) */
+    static LONG64 last;
+    LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
+    if (!hold_count_on() || tk() - last < fq.QuadPart) return;
+    last = tk();
+    prep_title();
+}
 static void prep_line(const char *what) {
     PROCESS_MEMORY_COUNTERS_EX pm;
     LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
@@ -2681,8 +2816,8 @@ static void prep_line(const char *what) {
     printf("nvn_vk_prep: %s: %d of %d containers read, %lld variations, %lld of %lld done by the workers, %.1f s after its start (frame %lld, %s); stage variants in memory %lld, stage libraries %lld; process memory: %llu MB private, %llu MB working set\n",
            what, g_prep_read, g_prep_nfiles, (long long)g_prep_vars, d, q, (double)((g_prep_t1 ? g_prep_t1 : tk()) - g_prep_t0) / (double)fq.QuadPart, (long long)nvn_front_frame_next(), g_in_fight ? "IN A FIGHT" : "no fight",
            made, libs, (unsigned long long)(pm.PrivateUsage >> 20), (unsigned long long)(pm.WorkingSetSize >> 20));
-    fflush(stdout); { void display_title_note(const char *); char tn[200]; if (nvn_front_frame_next() <= 2 && g_prep_nfiles && g_prep_read < g_prep_nfiles) { if (g_prep_marked) snprintf(tn, sizeof tn, "loading the shaders, %d of %d", g_prep_read, g_prep_nfiles);      /* a prepared start (the marker): loading what an earlier run made, not preparing */
-        else snprintf(tn, sizeof tn, "first start: preparing the shaders, %d of %d (once; can take 10-30 min on a laptop GPU, the window stays black)", g_prep_read, g_prep_nfiles); display_title_note(tn); } else display_title_note(NULL); }      /* (issue #57 / testers: a black window for minutes) */
+    fflush(stdout);
+    prep_title();
 }
 static int prep_list(const char *dir) {
     char pat[300];
@@ -2741,6 +2876,7 @@ static DWORD WINAPI prep_main(void *arg) {
     if (!g_prep_nfiles) {
         g_prep_state = 3;
         printf("nvn_vk_prep: NO PREPARATION: no *.bnsh file in %s and none could be made from data.arc. A container the game hands over inside a fight will be translated and compiled at its draws.\n", dir);
+        seed_late_queue();                         /* (amd-start-hold) the list's pipelines are not in the start-up prewarm: made here instead */
         return 0;
     }
     g_prep_state = 0;
@@ -2822,6 +2958,7 @@ static DWORD WINAPI prep_main(void *arg) {
         EnterCriticalSection(&g_sh_lock);          /* not more than 600 copies of code waiting */
         while (g_pq_queued - g_pq_done > 600 && !g_m4_quit) {
             SleepConditionVariableCS(&g_sh_cv, &g_sh_lock, 200);
+            if (hold_count_on()) { LeaveCriticalSection(&g_sh_lock); prep_title_tick(); EnterCriticalSection(&g_sh_lock); }
             if (tk() - last > 10 * fq.QuadPart) { last = tk(); LeaveCriticalSection(&g_sh_lock); prep_line("progress"); EnterCriticalSection(&g_sh_lock); }
         }
         LeaveCriticalSection(&g_sh_lock);
@@ -2829,6 +2966,7 @@ static DWORD WINAPI prep_main(void *arg) {
     EnterCriticalSection(&g_sh_lock);
     while (g_pq_done < g_pq_queued && !g_m4_quit) {
         SleepConditionVariableCS(&g_sh_cv, &g_sh_lock, 200);
+        if (hold_count_on()) { LeaveCriticalSection(&g_sh_lock); prep_title_tick(); EnterCriticalSection(&g_sh_lock); }
         if (tk() - last > 10 * fq.QuadPart) { last = tk(); LeaveCriticalSection(&g_sh_lock); prep_line("progress"); EnterCriticalSection(&g_sh_lock); }
     }
     int whole = g_pq_done == g_pq_queued && g_prep_read == todo;
@@ -2857,7 +2995,7 @@ static DWORD WINAPI prep_main(void *arg) {
     printf("nvn_vk_prep: into the cache only: %lld stage variants (%lld read from a record of an earlier run, the others translated now), %lld stage libraries compiled and released, %lld met again in a later variation, %lld left to the game's own path (already handed over); worker time: %.0f s stages, %.0f s libraries; at most %d workers at a time (%d in a fight)\n",
            (long long)g_prep_stages, (long long)g_prep_fromrec, (long long)g_prep_libs, (long long)g_prep_dup, (long long)g_prep_had, (double)g_prep_tr_tk / (double)fq.QuadPart, (double)g_prep_lib_tk / (double)fq.QuadPart, g_prep_cap, g_prep_fight_cap);
     if (g_prep_loadall) g_prep_urgent = 0;
-    if (whole && g_prep_marked) { g_prep_state = 2; vkp_after_load(); prep_line(g_prep_loadall ? "FINISHED: every container of the game's data is in memory (shader_load = start)" : "FINISHED (the containers kept in memory; the rest was prepared by an earlier run)"); }
+    if (whole && g_prep_marked) { g_prep_state = 2; vkp_after_load(); prep_line(g_prep_loadall ? "FINISHED: every container of the game's data is in memory (shader_load = start)" : "FINISHED (the containers kept in memory; the rest was prepared by an earlier run)"); seed_late_queue(); }
     else if (whole) {
         g_prep_state = 2;
         prep_line("FINISHED: every stage of every container of the game's data is made");

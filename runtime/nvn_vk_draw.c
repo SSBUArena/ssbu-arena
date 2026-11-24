@@ -4181,6 +4181,9 @@ static void prep_first_hold(LONG64 frame) {
         g_prep_urgent = 1;
         WakeAllConditionVariable(&g_jq_cv);
         LONG64 dn = g_pq_done, qd = g_pq_queued, left_files = g_prep_nfiles - g_prep_read;
+        LONG64 hd, ht;                             /* (amd-start-hold) SSBU_VK_HOLD_COUNT: jobs + the pipelines of earlier runs still being made (nvn_vk_m4.c hold_progress) */
+        hold_progress(&hd, &ht);
+        if (hold_count_on()) { dn = hd; qd = ht; left_files = 0; }      /* the same formulas below, with the counts of what the game waits for */
         double el = (double)(tk() - t0) / (double)fq.QuadPart, f;
         if (loadall) {   /* a safety net, never seen: no job done and no file read for 30 s = let the game go on (the loading screens make the rest) */
             if (dn + g_prep_read != dn_last) { dn_last = dn + g_prep_read; tprog = tk(); }
