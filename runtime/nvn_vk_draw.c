@@ -1531,6 +1531,14 @@ static VkImageView target_view(const TargetRef *r, VTex *vt) {
 }
 static void fl_pass(int w, int h, int fmt, int win, int ncol, int depth);      /* nvn_vk_flash.c (session 13) */
 static int g_vk_test;                              /* session 13, TEST ONLY: SSBU_VK_TEST (see the dynamic state) */
+/* SSBU_LAT_TRACE (test, display.c lat_trace.c): the real frame of the submission being replayed (a job nvn_gl.c posts ahead of
+ * each submission), noted on every texture written; 0 = trace off, nothing noted */
+static long long g_lt_cur;
+void nvn_vk_lat_frame_job(void *arg) { g_lt_cur = *(const long long *)arg; }
+static LONG64 g_sg_pres;                           /* game pictures presented so far (vk_present2; SSBU_STALE_GUARD) */
+#define LT_TAG(t) do { if (t) { (t)->sg_wr = g_sg_pres + 1; if (g_lt_cur) (t)->lt_frame = g_lt_cur; } } while (0)
+static void lt_tag_targets(void) { if (g_lt_cur) for (int i = 0; i < R.ncol; i++) LT_TAG(R.col[i].tex); }
+void display_lat_present(long long pic, long long newest, int idx, int fight, int kept, long long pf, const long long *tags);      /* display.c (lat_trace.c) */
 static int pass_begin(void) {
     VkRenderingAttachmentInfo ca[8], da;
     VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -1547,7 +1555,7 @@ static int pass_begin(void) {
         if (!t || t->dead) continue;
         VTex *vt = vt_get(t);
         if (vt->aspect != VK_IMAGE_ASPECT_COLOR_BIT) { nvn_vk_missing("a depth format bound as colour target"); continue; }
-        t->gpu_written = 1;
+        t->gpu_written = 1; LT_TAG(t);
         vt_layout(vt, vt->feedback ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         ca[i].imageView = target_view(&R.col[i], vt); ca[i].imageLayout = vt->layout;
         if (!w) { w = lvl_(vt->w, target_level(&R.col[i])); h = lvl_(vt->h, target_level(&R.col[i])); if (vt->rs) { R.pass_rs = 1; R.pass_sx = vt->sx; R.pass_sy = vt->sy; } }
@@ -3254,6 +3262,7 @@ static void copy_buf_tex(const Cmd *m) {
     View v;
     int r[6];
     if (!t || t->dead || !m->a[0]) return;
+    LT_TAG(t);
     memcpy(&v, BLOB(m), sizeof v); memcpy(r, BLOB(m) + 24, 24);
     write_region(t, &v, r, P(m->a[0]), (int64_t)m->a[5], (int64_t)m->a[6]);     /* PR #14 (xtlg511): the strides of its own command buffer (nvn_gl.c cmd_copy_buf_tex) */
 }
@@ -3344,7 +3353,7 @@ static void vk_present_movie(void *arg) {
 static void blit_tex(Tex *s, const View *sv, const int *sr, Tex *d, const View *dv, const int *dr, int linear) {
     VTex *vs = vt_get(s), *vd = vt_get(d);
     VkImageBlit b;
-    d->gpu_written = 1;
+    d->gpu_written = 1; LT_TAG(d);
     if (vs == vd) { nvn_vk_missing("CopyTextureToTexture within one texture"); return; }
     pass_end(); cmd_begin();
     vt_layout(vs, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL); vt_layout(vd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -3596,6 +3605,7 @@ static void exec(const Cmd *m, int depth) {
         unsigned i = (unsigned)a[0] & 7, mask = (unsigned)a[2] & 15;
         if (!R.have_targets || R.render_off || (int)i >= R.ncol || !R.col[i].tex) break;
         if (!pass_begin()) break;
+        LT_TAG(R.col[i].tex);
         if (mask != 15) {                          /* a partial channel mask only matters for channels the format has */
             Fmt f; int comps = 4, nf = R.col[i].tex->b.format;
             if (nf >= 1 && nf <= 0x30) comps = (nf - 1) / 12 + 1;
@@ -3646,6 +3656,7 @@ static void exec(const Cmd *m, int depth) {
         { LONG64 t0 = tk(); int ok = draw_prepare((unsigned)a[0]); g_tm[8] += tk() - t0; { int dtag = nvn_front_draw_tag(); if (dtag) dt_vk(dtag, nvn_front_draw_tag_next(), ok, m, 0, NULL); } if (!ok) { R.frame_skipped++; nvn_front_count(1, 1); break; } }
         if (D.has_ckpt) ckpt_mark(0, (unsigned)a[0], (uint32_t)a[2], (uint32_t)a[4], (uint32_t)a[1], 0, 0);
         vkCmdDraw(R.cmd, (uint32_t)a[2], (uint32_t)a[4], (uint32_t)a[1], (uint32_t)a[3]);
+        lt_tag_targets();
         R.frame_draws++; g_cmd_draws++; nvn_front_count(0, 1);
         break;
     case OP_DRAW_ELEMENTS: {
@@ -3666,6 +3677,7 @@ static void exec(const Cmd *m, int depth) {
         vkCmdBindIndexBuffer(R.cmd, ib.buf, ib.off, t == 0 ? VK_INDEX_TYPE_UINT8_EXT : t == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
         if (D.has_ckpt) ckpt_mark(1, (unsigned)a[0], (uint32_t)count, (uint32_t)a[6], 0, (int32_t)a[4], t);
         vkCmdDrawIndexed(R.cmd, (uint32_t)count, (uint32_t)a[6], 0, (int32_t)a[4], (uint32_t)a[5]);
+        lt_tag_targets();
         R.frame_draws++; g_cmd_draws++; nvn_front_count(0, 1);
         break;
     }
@@ -3721,7 +3733,7 @@ static void exec(const Cmd *m, int depth) {
         memcpy(&cv, blob + 48, 16);
         CKPT_OP("clear of a texture (image, level, layer)", vt->img, sr.baseMipLevel, sr.baseArrayLayer, 0);
         vkCmdClearColorImage(R.cmd, vt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &sr);
-        t->gpu_written = 1; t->uploaded = 1;
+        t->gpu_written = 1; t->uploaded = 1; LT_TAG(t);
         break;
     }
     case OP_CALL: for (int i = 0; i < (int)a[0]; i++) { uint64_t h; memcpy(&h, blob + i * 8, 8); if (depth < 8) replay(h, depth + 1); } break;
@@ -4099,13 +4111,14 @@ static void ldn_ping_draw(uint32_t index) {
     }
 }
 static void vk_present2(void *arg, int progress);
+static LONG64 g_sg_said, sg_n, sg_used;            /* (SSBU_STALE_GUARD) the stale count last printed; stale pictures; the last picture shown again instead */
 /* Session 14: THE KEPT PRESENT. vk_present2 has blitted and submitted the frame; when display.c says the frame is to be shown
  * at the next tick, vkQueuePresentKHR is not called there: what it needs is kept here and the vsync thread posts
  * nvn_vk_present_flush_job at the tick (render thread, between two other jobs). An out-of-date swapchain found here is
  * made again at the next present (not in the middle of a frame's commands). */
 int display_present_defer(void); int display_present_due(void); void display_present_flushed(void); void display_present_done(int fight); int display_present_depth(void);      /* display.c */
 /* (0.2.38) up to 2 kept presents, oldest first (the rollback present queue, display.c display_present_depth); one elsewhere */
-typedef struct { int suboptimal, fight; VkSwapchainKHR sc; uint32_t index; VkSemaphore rend; } PendPresent;
+typedef struct { int suboptimal, fight; VkSwapchainKHR sc; uint32_t index; VkSemaphore rend; long long lt_pic, lt_new, lt_pf, lt_t[3]; int lt_idx; } PendPresent;      /* lt_*: SSBU_LAT_TRACE */
 static PendPresent g_pq[2]; static int g_pqn, g_pend_recreate;
 static volatile LONG64 g_gap_prev, g_gap_max, g_wd_beat;
 static void present_flush(void) {                       /* the OLDEST kept present */
@@ -4117,6 +4130,7 @@ static void present_flush(void) {                       /* the OLDEST kept prese
     pr.waitSemaphoreCount = 1; pr.pWaitSemaphores = &p.rend; pr.swapchainCount = 1; pr.pSwapchains = &p.sc; pr.pImageIndices = &p.index;
     VkResult r = vkQueuePresentKHR(V.queue, &pr);
     display_present_done(p.fight);
+    if (g_lt_cur) display_lat_present(p.lt_pic, p.lt_new, p.lt_idx, p.fight, 1, p.lt_pf, p.lt_t);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || p.suboptimal) g_pend_recreate = 1;
     else vk_ok("vkQueuePresentKHR", r);
     if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) { LONG64 nowt = tk(); if (g_gap_prev && nowt - g_gap_prev > g_gap_max) g_gap_max = nowt - g_gap_prev; g_gap_prev = nowt; g_wd_beat = nowt; }
@@ -4241,6 +4255,24 @@ static void vk_present2(void *arg, int progress) {
     Tex *t = j->win && j->index >= 0 && j->index < j->win->count ? j->win->tex[j->index] : NULL;
     VTex *vt = t && !t->dead ? t->vk : NULL;
     LONG64 frame = nvn_front_frame_next();
+    /* STALE PICTURES (found with SSBU_LAT_TRACE, 2026-11-24): the window texture about to be shown was not drawn since the last
+     * picture shown. In a rollback match the real pass after a rollback submits without its picture lists (the last re-run pass
+     * skips their kick), and the texture it presents still holds the picture of ~3 frames before: the screen jumped BACK at every
+     * rollback (bench: 272 of 1519 pictures). Counted always; the last picture is shown again instead (a one-frame hold, as a late
+     * frame), SSBU_STALE_GUARD=0 = the old way. Outside rollback matches it found none (offline fight, trace: 0 older pictures). */
+    static int sg_on = -1; static Tex *sg_prev;
+    if (!progress) {
+        if (sg_on < 0) { const char *e = getenv("SSBU_STALE_GUARD"); sg_on = !(e && e[0] == '0'); }
+        LONG64 k = g_sg_pres + 1;
+        if (t && !t->dead && t->sg_wr && t->sg_wr < k && wintex_is(t)) {
+            sg_n++;
+            if (sg_on && sg_prev && sg_prev != t && !sg_prev->dead && sg_prev->vk && sg_prev->sg_wr) { t = sg_prev; vt = t->vk; sg_used++; }
+        }
+        if ((sg_n == 1 || sg_n % 500 == 0) && sg_n != g_sg_said) { g_sg_said = sg_n; printf("nvn_vk: stale pictures so far %lld (the window texture not drawn since the last picture shown), the last picture shown again instead %lld (SSBU_STALE_GUARD=%d)\n", (long long)sg_n, (long long)sg_used, sg_on); }
+        g_sg_pres = k; sg_prev = t;
+    }
+    long long lt_pic = 0, lt_new = 0, lt_t[3] = {0, 0, 0};      /* SSBU_LAT_TRACE: the real frame of the picture shown, the newest one among the window's textures, the first three's */
+    if (g_lt_cur && t) { lt_pic = t->lt_frame; for (int i = 0; i < j->win->count; i++) if (j->win->tex[i]) { if (j->win->tex[i]->lt_frame > lt_new) lt_new = j->win->tex[i]->lt_frame; if (i < 3) lt_t[i] = j->win->tex[i]->lt_frame; } }
     {   /* session 12, TEST ONLY: SSBU_VK_WD_TEST=<frame>[,<seconds>] holds the render thread at that frame (default 12 s), to see the watchdog's report */
         static int wt = -2, ws = 12;
         if (wt == -2) { const char *e = getenv("SSBU_VK_WD_TEST"); wt = e ? atoi(e) : -1; if (e && strchr(e, ',')) ws = atoi(strchr(e, ',') + 1); }
@@ -4430,11 +4462,13 @@ swap: ;
         g_wd_where = 4;
         if (!progress && display_present_defer()) {      /* session 14: the finished frame goes to the window AT THE TICK (display.c): kept here, presented by present_flush */
             PendPresent *q = &g_pq[g_pqn < 2 ? g_pqn++ : 1]; q->sc = V.swapchain; q->index = index; q->rend = rend; q->suboptimal = suboptimal; q->fight = g_in_fight;
+            q->lt_pic = lt_pic; q->lt_new = lt_new; q->lt_idx = j->index; q->lt_pf = frame; memcpy(q->lt_t, lt_t, sizeof lt_t);
             while (g_pqn && display_present_due()) present_flush();
             r = VK_SUCCESS;
         } else {
         r = vkQueuePresentKHR(V.queue, &pr);
         if (!progress) display_present_done(g_in_fight);
+        if (!progress && g_lt_cur) display_lat_present(lt_pic, lt_new, j->index, g_in_fight, 0, frame, lt_t);
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || suboptimal) { cmd_wait_all(); swapchain_destroy(); InterlockedIncrement64(&g_vk_recreated); }
         else vk_ok("vkQueuePresentKHR", r);
         }
@@ -4830,6 +4864,7 @@ static void frstat_report(void) {
 }
 static void vkd_shutdown(void) {
     wd_stop();
+    if (sg_n) printf("nvn_vk: stale pictures %lld (the window texture not drawn since the last picture shown: rollback), the last picture shown again instead %lld (SSBU_STALE_GUARD)%c", (long long)sg_n, (long long)sg_used, 10);
     if (!R.ring) return;
     {   LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
         double k = 1000.0 / (double)fq.QuadPart;

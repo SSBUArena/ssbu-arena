@@ -1113,10 +1113,21 @@ int r1_rb_rerun_main(void) { return g_ra_phase == 2 && g_rgp_main && GetCurrentT
 /* (0.2.38) THE 1-FRAME PRESENT QUEUE of a rollback match: a tick's picture goes to the screen (1 + n) frames of refreshes after the refresh the tick began at
  * (display.c display_present_plan holds it for that refresh), not as soon as it is ready: a tick of up to ~2 refreshes (a long rollback)
  * no longer shows as a hitch, at the cost of one frame of picture latency. A picture ready after that refresh goes out at once.
- * SSBU_RB_PRESENTQ=<n> refreshes of queue (default 1; 0 = as soon as ready, the old way). */
+ * SSBU_RB_PRESENTQ=<n> refreshes of queue (0 = as soon as ready, the old way). Default (2026-11-24, measured with SSBU_LAT_TRACE): 1 on a
+ * display under 89 Hz, 0 at 89 Hz and above (or 1 when the refresh is not measured). On a 165 Hz display the queue cost 25.7 ms of
+ * picture age (pad read -> vkQueuePresentKHR, bench rollback segment median 31.35 -> 5.75 ms) and smoothed nothing there (bench frame
+ * times as good or better without it); replayed on a 60 Hz vblank grid the same presents lose 5.9 % of the pictures without the queue
+ * (0.75 % with it), on 90+ Hz grids fewer than with it (0.28 % at 90, 0.03 % at 144, against 0.6 %). */
 int r1_rb_present_queue(double *sched_ms) {        /* the queue in frames (0: off), and when this tick was due (QPC ms) */
-    static int q = -1; if (q < 0) { const char *e = getenv("SSBU_RB_PRESENTQ"); q = e ? atoi(e) : 1; if (q < 0) q = 0; if (q > 3) q = 3; }
+    static int q = -1;
     if (!q || g_rbg_go_sched < 0 || !r1_rb_paced()) return 0;
+    if (q < 0) {      /* decided at the first paced tick (the refresh is measured by then; display_present_depth asks at every present) */
+        const char *e = getenv("SSBU_RB_PRESENTQ"); double hz = 0; int lk = 0;
+        void display_refresh_info(double *hz, int *lock_k); display_refresh_info(&hz, &lk);
+        q = e && *e ? atoi(e) : hz >= 89.0 ? 0 : 1; if (q < 0) q = 0; if (q > 3) q = 3;
+        printf("[rbnet] present queue %d frame(s) (%s; display %.1f Hz)\n", q, e && *e ? "SSBU_RB_PRESENTQ" : "default: 0 at 89 Hz and above, else 1", hz);
+        if (!q) return 0;
+    }
     if (sched_ms) *sched_ms = g_rbg_go_sched; return q;
 }
 int r1_rb_paced(void) {
