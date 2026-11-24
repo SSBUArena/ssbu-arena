@@ -12,6 +12,10 @@
 // A git checkout (a developer's copy) is never changed; SSBU_ARENA_UPDATE=off skips everything, =force checks a git checkout too.
 // Tests: SSBU_ARENA_RELEASE=<folder> reads arena-release.json and its files from a folder instead of GitHub;
 // SSBU_ARENA_UPDATE_DRY=1 runs install.py with --dry-run.
+// (OpenSmash #480, Denkishi) the latest release is asked of GitHub's API, and when it does not answer (its limit of 60 requests an
+// hour per address, reached on a shared network or at a tournament) of github.com's releases/latest page, whose redirect names the
+// tag; arena-release.json is then read from that release's download address (not the API). Tested with SSBU_ARENA_API=<base url>
+// and SSBU_ARENA_WEB=<base url> (e.g. http://127.0.0.1:9: nothing answers) in place of https://api.github.com / https://github.com.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -61,10 +65,25 @@ namespace Arena
             using (var m = new MemoryStream()) { s.CopyTo(m); return m.ToArray(); }
         }
 
-        /// <summary>the latest release, or null (no release with arena-release.json, offline: the launcher just goes on)</summary>
+        static string Api => (Environment.GetEnvironmentVariable("SSBU_ARENA_API") ?? "https://api.github.com").TrimEnd('/');
+        static string Web => (Environment.GetEnvironmentVariable("SSBU_ARENA_WEB") ?? "https://github.com").TrimEnd('/');
+
+        /// <summary>why the last release check found nothing, said to the player; null = it answered</summary>
+        public static string LastCheckError;
+
+        static string Why(Exception ex)
+        {
+            if (ex is WebException w && w.Response is HttpWebResponse r)
+                return "HTTP " + (int)r.StatusCode + ((int)r.StatusCode == 403 || (int)r.StatusCode == 429 ? " (the request limit)" : "");
+            return ex.GetBaseException().Message;
+        }
+
+        /// <summary>the latest release, or null (no release with arena-release.json). When neither GitHub's API nor github.com
+        /// answers it throws, with a message for the player (also in LastCheckError): the launcher goes on as it is.</summary>
         public static Release Latest()
         {
             var js = new JavaScriptSerializer();
+            LastCheckError = null;
             string local = Environment.GetEnvironmentVariable("SSBU_ARENA_RELEASE");     // (test) a folder with arena-release.json and its files
             if (!string.IsNullOrEmpty(local))
             {
@@ -73,8 +92,30 @@ namespace Arena
                 return new Release { Tag = "v" + t["version"], Version = t["version"] as string, Commit = t["commit"] as string, Page = local,
                                      LauncherUrl = new Uri(Path.Combine(local, (string)tl["file"])).AbsoluteUri, LauncherSha = (string)tl["sha256"] };
             }
+            string apiWhy;
+            try { return LatestFromApi(js); }
+            catch (Exception ex) { apiWhy = Why(ex); Log("release check: GitHub's API did not answer (" + apiWhy + "): asking github.com's releases/latest page"); }
+            string webWhy = null;
+            for (int attempt = 1; attempt <= 2; attempt++)          // the page, and once more after a moment
+            {
+                try
+                {
+                    var r = LatestFromPage(js);
+                    Log("release check: through github.com's page: " + (r == null ? "no release with arena-release.json" : r.Tag));
+                    return r;
+                }
+                catch (Exception ex) { webWhy = Why(ex); Log("release check: github.com's page, try " + attempt + ": " + webWhy); }
+                if (attempt == 1) System.Threading.Thread.Sleep(2000);
+            }
+            LastCheckError = "GitHub did not answer (API: " + apiWhy + "; github.com: " + webWhy + "). On a shared network GitHub's limit of 60 checks an hour " +
+                             "may be reached: the launcher goes on with this version and checks again at its next start.";
+            throw new WebException("could not check for updates: " + LastCheckError);
+        }
+
+        static Release LatestFromApi(JavaScriptSerializer js)
+        {
             var rel = js.Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(
-                Get("https://api.github.com/repos/" + GitHubRepo + "/releases/latest", "application/vnd.github+json")));
+                Get(Api + "/repos/" + GitHubRepo + "/releases/latest", "application/vnd.github+json")));
             var assets = ((rel["assets"] as System.Collections.ArrayList) ?? new System.Collections.ArrayList()).Cast<Dictionary<string, object>>().ToList();
             string Url(string name) => assets.Where(a => (string)a["name"] == name).Select(a => (string)a["browser_download_url"]).FirstOrDefault();
             string info = Url("arena-release.json");
@@ -88,6 +129,46 @@ namespace Arena
                 Version = d["version"] as string,
                 Commit = d["commit"] as string,
                 LauncherUrl = l != null ? Url((string)l["file"]) : null,
+                LauncherSha = l != null ? (string)l["sha256"] : null,
+            };
+        }
+
+        /// <summary>the latest release without the API: github.com/&lt;repo&gt;/releases/latest redirects to .../releases/tag/&lt;tag&gt;
+        /// (to .../releases when there is none: null); arena-release.json and the launcher come from .../releases/download/&lt;tag&gt;/.
+        /// The SHA-256 checks are the same (ReplaceLauncher, install.py).</summary>
+        static Release LatestFromPage(JavaScriptSerializer js)
+        {
+            string url = Web + "/" + GitHubRepo + "/releases/latest", tag = null;
+            for (int hop = 0; hop < 4 && tag == null; hop++)
+            {
+                var rq = (HttpWebRequest)WebRequest.Create(url);
+                rq.Method = "HEAD"; rq.AllowAutoRedirect = false; rq.Timeout = 15000; rq.ReadWriteTimeout = 15000;
+                rq.UserAgent = "ssbu-arena-launcher/" + Current;
+                using (var rs = (HttpWebResponse)rq.GetResponse())
+                {
+                    string loc = rs.Headers["Location"];
+                    if ((int)rs.StatusCode < 300 || (int)rs.StatusCode >= 400 || string.IsNullOrEmpty(loc))
+                        throw new WebException("github.com's releases/latest did not redirect (HTTP " + (int)rs.StatusCode + ")");
+                    var to = new Uri(new Uri(url), loc);
+                    var m = System.Text.RegularExpressions.Regex.Match(to.AbsolutePath, "/releases/tag/([^/]+)/?$");
+                    if (m.Success) tag = Uri.UnescapeDataString(m.Groups[1].Value);
+                    else if (to.AbsolutePath.TrimEnd('/').EndsWith("/releases")) return null;      // no release
+                    url = to.AbsoluteUri;                                                          // e.g. the repository's old name
+                }
+            }
+            if (tag == null) throw new WebException("github.com's releases/latest: too many redirects");
+            string dl = Web + "/" + GitHubRepo + "/releases/download/" + Uri.EscapeDataString(tag) + "/";
+            Dictionary<string, object> d;
+            try { d = js.Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(Get(dl + "arena-release.json"))); }
+            catch (WebException ex) when (ex.Response is HttpWebResponse r && r.StatusCode == HttpStatusCode.NotFound) { return null; }      // a release without it
+            var l = d.ContainsKey("launcher") ? d["launcher"] as Dictionary<string, object> : null;
+            return new Release
+            {
+                Tag = tag,
+                Page = Web + "/" + GitHubRepo + "/releases/tag/" + Uri.EscapeDataString(tag),
+                Version = d["version"] as string,
+                Commit = d["commit"] as string,
+                LauncherUrl = l != null ? dl + Uri.EscapeDataString((string)l["file"]) : null,
                 LauncherSha = l != null ? (string)l["sha256"] : null,
             };
         }

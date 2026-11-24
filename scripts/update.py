@@ -35,6 +35,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -46,6 +47,9 @@ BACKUP = os.path.join('build', 'update_backup')
 # never written, never deleted (first path component, lower case; a trailing * is a prefix)
 PROTECTED = ('.git', 'build', 'deps', 'config', 'saves', 'userdata*', 'build_location.txt')   # build_location.txt: the install location chosen in the window
 UA = {'User-Agent': 'ssbu-arena-update'}
+# (OpenSmash #480) the latest release without the API (github.com's pages): tests point these at another address
+API = os.environ.get('SSBU_ARENA_API', 'https://api.github.com').rstrip('/')
+WEB = os.environ.get('SSBU_ARENA_WEB', 'https://github.com').rstrip('/')
 
 # changed path prefix -> the earliest setup.py step that has to run again (the list is in STEPS order of setup.py)
 STEPS = ['deps', 'stage', 'convert', 'modules', 'tables', 'lift', 'sdk', 'compile', 'nro', 'link', 'rollback', 'check']
@@ -103,17 +107,69 @@ def remote_sha(repo, branch):
     return None
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None                              # the 3xx comes back as an HTTPError with its Location
+
+
+def release_from_page(repo):
+    """(tag, commit) of the latest release through github.com, not the API (not under its limit of 60 requests an hour):
+    releases/latest redirects to releases/tag/<tag> (to releases when there is none: (None, None)); the commit is the one
+    in that release's arena-release.json. Raises URLError / OSError when github.com does not answer."""
+    opener = urllib.request.build_opener(_NoRedirect)
+    url = '%s/%s/releases/latest' % (WEB, repo)
+    for _ in range(4):
+        try:
+            with opener.open(urllib.request.Request(url, headers=dict(UA), method='HEAD'), timeout=30) as r:
+                raise OSError('releases/latest did not redirect (HTTP %d)' % r.status)
+        except urllib.error.HTTPError as e:
+            if e.code not in (301, 302, 303, 307, 308) or not e.headers.get('Location'):
+                raise
+            loc = urllib.parse.urljoin(url, e.headers.get('Location'))
+        path = urllib.parse.urlparse(loc).path
+        m = re.search(r'/releases/tag/([^/]+)/?$', path)
+        if m:
+            tag = urllib.parse.unquote(m.group(1))
+            try:
+                info = json.loads(http('%s/%s/releases/download/%s/arena-release.json' % (WEB, repo, urllib.parse.quote(tag))).decode('utf-8'))
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    return None, None            # a release without arena-release.json
+                raise
+            s = str(info.get('commit') or '')
+            return (tag, s) if re.fullmatch(r'[0-9a-f]{40}', s) else (None, None)
+        if path.rstrip('/').endswith('/releases'):
+            return None, None                    # no release
+        url = loc                                # e.g. the repository's old name
+    raise OSError('releases/latest: too many redirects')
+
+
 def release_sha(repo):
-    """(tag, commit) of the repository's latest GitHub Release, or (None, None): the commit a player's copy follows
-    (SSBU Arena: a release is a commit with its prebuilt runtime published; main can be ahead of it)."""
+    """(tag, commit, known) of the repository's latest GitHub Release: the commit a player's copy follows (SSBU Arena: a
+    release is a commit with its prebuilt runtime published; main can be ahead of it). (None, None, True) = there is no
+    release; (None, None, False) = GitHub did not answer (neither its API nor github.com's page, each tried; OpenSmash #480)."""
     try:
-        tag = api_json('https://api.github.com/repos/%s/releases/latest' % repo).get('tag_name')
+        tag = api_json('%s/repos/%s/releases/latest' % (API, repo)).get('tag_name')
         if not tag:
-            return None, None
-        s = http('https://api.github.com/repos/%s/commits/%s' % (repo, tag), 'application/vnd.github.sha').decode().strip()
-        return (tag, s) if re.fullmatch(r'[0-9a-f]{40}', s) else (None, None)
-    except (urllib.error.URLError, OSError, ValueError):
-        return None, None
+            return None, None, True
+        s = http('%s/repos/%s/commits/%s' % (API, repo, tag), 'application/vnd.github.sha').decode().strip()
+        if re.fullmatch(r'[0-9a-f]{40}', s):
+            return tag, s, True
+        why = 'no commit for ' + tag
+    except urllib.error.HTTPError as e:
+        why = 'HTTP %d' % e.code
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        why = str(e)
+    say("GitHub's API did not give the latest release (%s): asking github.com's releases/latest page" % why)
+    for attempt in (1, 2):
+        try:
+            tag, s = release_from_page(repo)
+            return tag, s, True
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            say("github.com's page, try %d: %s" % (attempt, e))
+        if attempt == 1:
+            time.sleep(2)
+    return None, None, False
 
 
 # ------------------------------------------------------------------------------------------- rebuild advice
@@ -298,9 +354,12 @@ def update_zip(a):
     old_commit = (old or {}).get('commit')
     sha = None
     if not a.main:                                          # a player's copy: the latest release, main only without one
-        tag, sha = release_sha(repo)
+        tag, sha, known = release_sha(repo)
         if sha:
             say('Latest release: %s (%s)' % (tag, sha[:10]))
+        elif not known:                                     # (OpenSmash #480) not main by mistake: main can be ahead of the release
+            die('could not find the latest release: GitHub did not answer (on a shared network its limit of 60 requests an hour '
+                'may be reached). Nothing was changed; the launcher tries again at its next start.')
     sha = sha or remote_sha(repo, branch)
     ref = sha or branch
     if old_commit and sha and old_commit == sha:

@@ -109,7 +109,7 @@ namespace Arena
             Task.Run(() => { try { return Updater.Latest(); } catch (Exception ex) { Updater.Log("release check failed: " + ex.Message); return null; } }).ContinueWith(t =>
             {
                 Release = t.Result;
-                if (Release == null) { Say("Could not check for updates", "No connection to GitHub: the launcher opens as it is."); Later(1500, OpenLauncher); return; }
+                if (Release == null) { Say("Could not check for updates", Updater.LastCheckError ?? "No release found on GitHub: the launcher opens as it is."); Later(Updater.LastCheckError != null ? 4000 : 1500, OpenLauncher); return; }      // (OpenSmash #480) why, when GitHub did not answer
                 Updater.Log("latest release " + Release.Tag + " (version " + Release.Version + ", commit " + Release.Commit + "); installed commit " + (Updater.InstalledCommit() ?? "unknown"));
                 if (Updater.LauncherOutdated(Release)) { UpdateLauncher(); return; }
                 GameCheck();
