@@ -78,6 +78,13 @@ static void fl_analyse(FlFrame *f, const uint8_t *px) {
         f->lum[i] = (unsigned char)l; sum += l; if (mn >= 225) white++;
     }
     f->mean = sum / (FL_W * FL_H); f->white = white;
+    if (f->fight) {      /* (amd-dark-fighters, log only) a slow brightness timeline of the fight: every 300 fight frames (5 s) the
+                          * picture's mean, its dark and near-white cells of 144; a picture slowly darkening and back shows here */
+        static LONG64 nf; int dark = 0;
+        for (int i = 0; i < FL_W * FL_H; i++) dark += f->lum[i] < 24;
+        if (nf++ % 300 == 0) printf("nvn_vk_lum: fight frame %lld (present %lld): mean brightness %d of 255, dark cells %d, near-white cells %d of %d\n",
+                                    (long long)nf, (long long)f->frame, f->mean, dark, white, FL_W * FL_H);
+    }
     if (g_fl.hn == FL_HIST) { memmove(&g_fl.hist[0], &g_fl.hist[1], sizeof(FlFrame) * (FL_HIST - 1)); g_fl.hn--; }
     g_fl.hist[g_fl.hn++] = *f;
     int last = g_fl.hn - 1;

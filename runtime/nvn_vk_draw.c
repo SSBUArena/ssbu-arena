@@ -175,6 +175,7 @@ static int vk_gpl_mode(void) {
 }
 
 /* ---------------------------------------------------------------- device features */
+static int g_has_dbc_ext;                          /* (amd-dark-fighters) the driver lists VK_EXT_depth_bias_control (reported only) */
 static void vkd_device_info(VkDeviceCreateInfo *di, const VkExtensionProperties *dext, uint32_t ndext) {
     void **tail;
     vkGetPhysicalDeviceFeatures2 = vk_sym("vkGetPhysicalDeviceFeatures2");
@@ -192,7 +193,8 @@ static void vkd_device_info(VkDeviceCreateInfo *di, const VkExtensionProperties 
     if (getenv("SSBU_VK_TEST") && (atoi(getenv("SSBU_VK_TEST")) & 512)) printf("nvn_vk: TEST (SSBU_VK_TEST bit 512): VK_EXT_vertex_input_dynamic_state taken as missing\n");
     else { EXT(has_vids, "VK_EXT_vertex_input_dynamic_state", vids, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT) }
     EXT(has_cbc, "VK_EXT_custom_border_color", cbc, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT)
-    EXT(has_pv, "VK_EXT_provoking_vertex", pv, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT)
+    g_has_dbc_ext = has_name(dext, ndext, "VK_EXT_depth_bias_control");      /* (amd-dark-fighters) only reported (vk_amd_report), not enabled */
+    EXT(has_pv,"VK_EXT_provoking_vertex", pv, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT)
     EXT(has_iu8, "VK_EXT_index_type_uint8", iu8, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT)
     EXT(has_plr, "VK_EXT_primitive_topology_list_restart", plr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT)
     EXT(has_vad, "VK_EXT_vertex_attribute_divisor", vad, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT)
@@ -1892,6 +1894,18 @@ static void set_dynamic_state(void) {
 #undef SFN
     }
     vkCmdSetDepthBiasEnable(R.cmd, (R.poly[3] >> (R.poly[2] < 3 ? R.poly[2] : 2)) & 1);          /* offset enable bits: point, line, fill; the polygon mode picks one */
+    if (((R.poly[3] >> (R.poly[2] < 3 ? R.poly[2] : 2)) & 1) && R.depth.tex && R.depth.tex->vk && (R.polyoff[1] != 0.0f || R.polyoff[0] != 0.0f)) {
+        /* (amd-dark-fighters, log only) a depth bias into a 24-bit depth target drawn as 32-bit float (a GPU without D24, AMD's):
+         * Vulkan scales the constant part by 2^(e-23) of each triangle's largest depth instead of the fixed 2^-24 of the
+         * Switch's 24-bit target, so the bias is smaller below depth 0.5 (shadow maps: acne). Tells whether the game does it. */
+        VTex *dv = (VTex *)R.depth.tex->vk; int nf = R.depth.tex->b.format;
+        static int n;
+        if ((nf == 0x33 || nf == 0x35) && (dv->fmt == VK_FORMAT_D32_SFLOAT || dv->fmt == VK_FORMAT_D32_SFLOAT_S8_UINT) && n < 4) {
+            n++;
+            printf("nvn_vk_amd: depth bias into a 24-bit depth target drawn as 32-bit float (NVN format 0x%x, %d x %d): constant %g, slope %g, clamp %g (VK_EXT_depth_bias_control %s)\n",
+                   nf, dv->w, dv->h, (double)R.polyoff[1], (double)R.polyoff[0], (double)R.polyoff[2], g_has_dbc_ext ? "listed by the driver" : "not listed");
+        }
+    }
     vkCmdSetRasterizerDiscardEnable(R.cmd, R.rast_discard);
 }
 static int have_targets_live(void) { return R.in_pass || R.have_targets; }
@@ -4775,6 +4789,18 @@ static void vkd_init(void) {
 #undef X3
     }
     printf("nvn_vk: descriptors: buffers (set 0) %s, textures (set 1) one set per distinct binding list per command buffer\n", D.has_push ? "pushed (VK_KHR_push_descriptor)" : "one allocated set per draw");
+    {   /* (amd-dark-fighters, log only) every switch where an AMD GPU is drawn differently from an NVIDIA one, with the value in
+         * effect, in one line: a player's game.log says what ran, and each can be flipped alone (a Windows user environment
+         * variable reaches the game through the launcher) to find which one an AMD picture bug follows. */
+        const char *e; int ex, dec;
+        e = getenv("SSBU_VK_CBKEEP"); int cbkeep = e ? atoi(e) : vk_amd_safe() ? 0 : VK_CBKEEP_DEFAULT;
+        e = getenv("SSBU_VK_CBMEM"); int cbmem = e ? atoi(e) : vk_amd_safe() ? 0 : cbkeep ? 1 : 0;
+        e = getenv("SSBU_VK_BUFMEM"); int bufmem = e ? atoi(e) : vk_amd_safe() ? 0 : 1;
+        int d24 = tex_vkfmt(0x35, &ex, &dec) == VK_FORMAT_D24_UNORM_S8_UINT;
+        printf("nvn_vk_amd: %s; in effect: SSBU_VK_GPL=%d SSBU_VK_EDS3=%d SSBU_VK_SNORM_EMU=%d SSBU_VK_DEPTHCOPY=%d SSBU_VK_CBKEEP=%d SSBU_VK_CBMEM=%d SSBU_VK_BUFMEM=%d SSBU_VK_F16EXACT=%d (%s) | 24-bit depth: %s | VK_EXT_depth_bias_control: %s\n",
+               vk_as_amd() ? "AMD path" : "not the AMD path", vk_gpl_mode(), D.has_eds3, vfmt_snorm_emu(), depth_copy_on(), cbkeep, cbmem, bufmem, g_vk_f16x,
+               getenv("SSBU_VK_AMD_SAFE") ? "SSBU_VK_AMD_SAFE set" : "defaults", d24 ? "D24S8" : "drawn as D32S8 (no D24S8 on this GPU)", g_has_dbc_ext ? "listed" : "not listed");
+    }
     vkGetPhysicalDeviceMemoryProperties(V.gpu, &D.mp);
     for (int i = 0; i < NSLOT; i++) {
         VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
