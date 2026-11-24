@@ -2180,12 +2180,20 @@ static void scan_list(uint64_t handle, int depth, Scan *s) {
         off += m->size;
     }
 }
+static int hold_count_on(void);
+static void prep_title(void);
+static void hold_progress(LONG64 *done, LONG64 *total);
 static void prewarm_wait(void) {                   /* render thread, before its first batch */
     if (g_pw_waited) return;
     g_pw_waited = 1;
     LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
     LONG64 t0 = tk();
-    WaitForSingleObject(g_pw_gate, INFINITE);
+    if (hold_count_on()) {                         /* (amd-start-hold) the title / Kirby percent moves while the first batch waits; a log line every 10 s */
+        for (int n = 1; WaitForSingleObject(g_pw_gate, 1000) == WAIT_TIMEOUT; n++) {
+            prep_title();
+            if (n % 10 == 0) { LONG64 a, b; hold_progress(&a, &b); LONG nx = g_pw_next; printf("nvn_vk: the first batch waits for the pipelines of earlier runs: %ld of %d taken, %.0f s so far; the start shows %lld of %lld (%d %%)\n", nx < g_pw_n ? nx : (LONG)g_pw_n, g_pw_n, (double)(tk() - t0) / (double)fq.QuadPart, (long long)a, (long long)b, b > 0 ? (int)(a * 100 / b) : 0); fflush(stdout); }
+        }
+    } else WaitForSingleObject(g_pw_gate, INFINITE);
     printf("nvn_vk: pipelines made ahead: %lld of %d listed (%lld stages from their records, %lld entries without their stage files) in %.0f ms on %d threads; the first batch waited %.0f ms for them\n",
            (long long)g_pw_pipes, g_pw_n, (long long)g_pw_stages, (long long)g_pw_failed, (double)(g_pw_t1 - g_pw_t0) * 1000.0 / (double)fq.QuadPart, g_pw_nthread, (double)(tk() - t0) * 1000.0 / (double)fq.QuadPart);
     fflush(stdout);
@@ -2213,7 +2221,9 @@ static void m4_report(void) {
     }
     if (D.has_gpl) printf("nvn_vk_gpl: mode %s; pipelines linked again with optimisation by the workers: %lld of %lld queued, %.0f ms of worker time\n", gpl_sep() ? "2 (a library per stage)" : "1 (a library per stage pair)", (long long)g_gpl_opt_n, (long long)g_gpl_opt_q, (double)g_gpl_opt_tk * 1000.0 / (double)fq.QuadPart);
     printf("nvn_vk_skip: shader_wait = %s; draws left out because a stage or pipeline was not ready: %lld in %lld frames (stage not ready %lld, pipeline not ready %lld)\n", skip_on() ? "skip (near a fight)" : "hold", (long long)g_skip_n, (long long)g_skip_frames, (long long)g_skip_stage, (long long)g_skip_pipe);
-    if (g_seed_on) printf("nvn_vk_seed: the shipped list: %d entries merged; made after the preparation of this run: %lld (there already %lld, stages missing %lld)\n", g_seed_n, (long long)g_seed_made, (long long)g_seed_had, (long long)g_seed_missing);
+    if (g_seed_on) printf("nvn_vk_seed: the shipped list: %d entries %s: %lld (there already %lld, stages missing %lld)\n", g_seed_n,
+                          g_seed_late && g_seed_late_t0 ? "not in the start-up prewarm (SSBU_VK_SEED_LATE); made in the background pass of this prepared start" : g_seed_late ? "not in the start-up prewarm (SSBU_VK_SEED_LATE); made after the preparation of this run" : "merged; made after the preparation of this run",
+                          (long long)g_seed_made, (long long)g_seed_had, (long long)g_seed_missing);
     if (g_seed_out_n || g_seed_out_skip) printf("nvn_vk_seed: COLLECTION (SSBU_VK_SEED_OUT): %lld pipelines written, %lld not (a stage without its code hash: from a record, or internal)\n", (long long)g_seed_out_n, (long long)g_seed_out_skip);
     if (g_pix_ready) printf("nvn_vk_prep: containers announced whole from the index: %lld because a pool was laid over their code, %lld because one of their programs was handed over (%lld of all these while IN A FIGHT), %lld variations queued; pools looked up: %lld found in the index, %lld not; programs handed over whose variation several files hold (no container named): %lld; header searches not made near a fight: %lld\n",
                             (long long)g_pix_ann_pool, (long long)g_pix_ann_prog, (long long)g_pix_ann_fight, (long long)g_pix_ann_vars, (long long)g_pix_pool_hit, (long long)g_pix_pool_miss, (long long)g_pix_ambiguous, (long long)g_cs_skipped);
@@ -2778,6 +2788,7 @@ static int prepfile_cmp(const void *a, const void *b) { const PrepFile *x = a, *
 static int hold_count_on(void) { static int on = -1; if (on < 0) on = !(getenv("SSBU_VK_HOLD_COUNT") && !atoi(getenv("SSBU_VK_HOLD_COUNT"))); return on; }
 static void hold_progress(LONG64 *done, LONG64 *total) {
     LONG64 dn = g_pq_done, qd = g_pq_queued, left = g_prep_nfiles - g_prep_read;
+    if (g_prep_state == 2 || g_prep_state == 3) { dn = qd; left = 0; }      /* over: what is queued later (the seed's background pass) is not waited for */
     *done = dn; *total = qd + (left > 0 ? left : 0) * 90;
     if (hold_count_on() && g_pw_n > 0) { LONG nx = g_pw_next; *done += nx < g_pw_n ? nx : g_pw_n; *total += g_pw_n; }
     if (*done > *total) *done = *total;
@@ -2788,7 +2799,7 @@ static void prep_title(void) {
     char tn[200];
     LONG64 a, b;
     hold_progress(&a, &b);
-    int cnt = hold_count_on(), busy = cnt ? g_prep_nfiles && (g_prep_read < g_prep_nfiles || a < b) && g_prep_state != 2 : g_prep_nfiles && g_prep_read < g_prep_nfiles;
+    int cnt = hold_count_on(), busy = cnt ? (g_prep_nfiles || g_pw_n) && a < b : g_prep_nfiles && g_prep_read < g_prep_nfiles;
     if (nvn_front_frame_next() <= 2 && busy) {
         if (g_prep_marked) { if (cnt) snprintf(tn, sizeof tn, "loading the shaders, %lld of %lld", (long long)a, (long long)b); else snprintf(tn, sizeof tn, "loading the shaders, %d of %d", g_prep_read, g_prep_nfiles); }      /* a prepared start (the marker): loading what an earlier run made, not preparing */
         else if (cnt) snprintf(tn, sizeof tn, "first start: preparing the shaders, %lld of %lld (once; can take 10-30 min on a laptop GPU, the window stays black)", (long long)a, (long long)b);
