@@ -48,6 +48,7 @@ typedef struct Tex {
     void *vk;                              /* the Vulkan back end's record of this texture (nvn_vk_draw.c: VTex), NULL until first used */
     uint8_t *packaged_copy;                /* PR #41: owned until the initial upload consumes packaged texels */
     long long ahead_seen;                  /* session 8 (nvn_vk_draw.c tex_ahead): 1 + the frame the render thread first saw this record; -1 = looked at, not taken */
+    long long lt_frame;                    /* SSBU_LAT_TRACE (test, display.c lat_trace.c): the real frame whose submission last wrote it (render thread) */
 } Tex;
 Tex *nvn_front_tex_first(void);            /* the newest texture record; ->all_next = the one made before it (records are never freed) */
 typedef struct { Tex *tex; View view; } TexPoolEnt;

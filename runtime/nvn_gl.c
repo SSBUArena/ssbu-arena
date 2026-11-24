@@ -4892,6 +4892,10 @@ static void queue_submit(Ctx *c) {                      /* (queue, count, handle
     if (j.count > 0 && A2 && r1_ra_quiet()) { static LONG64 n; n++; }      /* R1 round 5, run-ahead: the real pass's submission = the lists the speculative pass already ran on the GPU: not run again */
     else if (j.count > 0 && A2) {
         InterlockedIncrement64(&g_r1_posted);          /* (Arena) submissions posted: the rollback cut of nvn_vk_draw.c */
+        {   int lat_trace_on(void); static int lt = -1; if (lt < 0) lt = lat_trace_on() > 0;      /* SSBU_LAT_TRACE (test): the real frame this submission was made in, ahead of it on the render thread */
+            if (lt && g_vk) { long long lat_trace_frame(void); void lat_trace_submitted(void); void nvn_vk_lat_frame_job(void *arg); long long f = lat_trace_frame(); lat_trace_submitted();
+                              if (lat_trace_on() >= 2) { int r1_ra_phase(void); printf("lat: submission of %d lists in real frame %lld (pass phase %d)%c", j.count, f, r1_ra_phase(), 10); }
+                              if (gl_async_on()) gl_post(nvn_vk_lat_frame_job, &f, sizeof f); else gl_run(nvn_vk_lat_frame_job, &f); } }
         if (gl_async_on() && j.count <= 4096) {
             size_t size = sizeof j + (size_t)j.count * 8;
             SubmitJob *copy = malloc(size);

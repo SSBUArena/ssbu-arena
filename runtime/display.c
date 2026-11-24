@@ -891,6 +891,7 @@ static void clock_stat(LONG64 n, LARGE_INTEGER now) {
     t_last = now; sig_last = sig; late_last = late; steps_last = g_cs_steps; memcpy(h_last, g_cs_hist, sizeof h_last);
 }
 static void pb_present(LARGE_INTEGER now);             /* (0.2.58) perf_bench.c (end of this file): the player benchmark, SSBU_BENCH_OUT */
+static void lt_poll(LONG64 qpc); static void lat_trace_report(FILE *out); int lat_trace_on(void);      /* lat_trace.c (end of this file): SSBU_LAT_TRACE, test only */
 /* New pacing, part 1 (nvnQueuePresentTexture, after the frame is in the window): decides the refresh that shows it. */
 static void frame_queued(void) {
     static LARGE_INTEGER second_start;
@@ -1003,13 +1004,26 @@ uint64_t display_p1_buttons(void) { uint64_t b = 0; for (int i = 0; i < 8; i++) 
  * f_710386ab10 (13.0.4; 0x710386b0c0 on 13.0.5) picks the texture of a ring of three (this + 0xa0, count at ring + 0x30, entries
  * 0x20 apart from ring + 0x50) that the frame is drawn into: entry (count + 2) % 3, "two behind". 1 = one behind, 0 = immediate:
  * the count the function reads is moved for the duration of the call and put back after it (the function only reads it).
- * Default 2 = the game's own (off) until measured. Sync: nothing of the simulation reads it. */
+ * Default 2 = the game's own (off). Sync: nothing of the simulation reads it.
+ * MEASURED 2026-11-24 (SSBU_LAT_TRACE, offline CPU fight, latency = low, pipe on): keep 2. With the game's own index the window
+ * texture presented (the one acquired last, nvn_gl.c pipe) is always the one the newest submission drew: 0 frames behind, picture
+ * age 15.5 ms (pad read -> vkQueuePresentKHR). With 1 the game draws into another texture of the ring and every present shows the
+ * picture of 2 frames before: 2 frames behind, 48.8 ms. (OpenSmash's gain comes from its own present path; ours already shows the
+ * newest picture.) */
 static ImportFn g_fi_orig; static int g_fi_shift; static volatile LONG64 g_fi_calls;
+static LONG64 g_fi_rel[3]; static int g_fi_rel_last = -1;
 static void fi_hook(Ctx *c, void *u) {
     (void)u;
     uint64_t ring = rd64(c->x[0] + 0xa0);
     if (!ring) { g_fi_orig(c); return; }
     uint32_t cnt = rd32(ring + 0x30), set = cnt + 3u - (uint32_t)g_fi_shift;
+    if (lat_trace_on() > 0) {      /* SSBU_LAT_TRACE (test): the ring entry this frame is drawn into against the window texture index acquired last (nvn_gl.c win_acquire) */
+        long nvn_win_acq_next(void); long an = nvn_win_acq_next();
+        int ent = (int)((set + 2u) % 3u), acq = (int)(((an % 3) + 3) % 3), rel = (ent - acq + 3) % 3;
+        g_fi_rel[rel]++;
+        static int said; if ((rel != g_fi_rel_last || g_fi_calls < 4) && said < 60) { said++; printf("lat-trace: frame index: ring count %u, entry drawn %d (SSBU_FRAME_INDEX shift %d), last window acquire index %d (host counter %ld): entry - acquire = %d%s%c", cnt, ent, g_fi_shift, acq, an, rel, rel != g_fi_rel_last && g_fi_rel_last >= 0 ? " CHANGED" : "", 10); g_fi_rel_last = rel; }
+    }
+    if (!g_fi_shift) { InterlockedIncrement64(&g_fi_calls); g_fi_orig(c); return; }      /* (the trace only looks: the game's own entry) */
     wr32(ring + 0x30, set);
     g_fi_orig(c);
     if (rd32(ring + 0x30) == set) wr32(ring + 0x30, cnt);
@@ -1022,7 +1036,7 @@ void display_frame_index_init(void) {                   /* boot.c, after the gam
     const char *e = getenv("SSBU_FRAME_INDEX");
     int n = e && *e ? atoi(e) : 2;
     if (n < 0 || n > 2) n = 2;
-    if (n == 2) return;
+    if (n == 2 && lat_trace_on() <= 0) return;           /* (SSBU_LAT_TRACE: the hook only looks, see fi_hook) */
     int hook_install(uint64_t addr, void (*repl)(Ctx *, void *), void *user, ImportFn *orig);
     g_fi_shift = 2 - n;
     printf("display: frame index (SSBU_FRAME_INDEX=%d): the frame is drawn %s (the game's own: two behind): hook %s%c", n, n == 1 ? "one behind" : "into the texture shown now",
@@ -1034,6 +1048,7 @@ void display_l1_poll(uint64_t buttons, long long fight_ticks, long long poll) {
     LARGE_INTEGER now;
     latency_mode();
     QueryPerformanceCounter(&now);
+    lt_poll(now.QuadPart);                                 /* SSBU_LAT_TRACE (test): a real frame */
     g_l1_poll_qpc = now.QuadPart; g_l1_polls++; g_l1_ticks = fight_ticks;
     if (g_l1_trace_left > 0) printf("l1-trace: %+8.2f %-26s POLL player 1 buttons %llx, fight ticks %lld%c", display_l1_ms(), "(poll)", (unsigned long long)buttons, fight_ticks, 10);
     if (g_l1 && fight_ticks > 0 && buttons && !(prev & buttons)) {
@@ -1443,6 +1458,7 @@ void display_report(FILE *out) {
                 (long long)g_ps_phase[4], (long long)g_ps_phase[5], (long long)g_ps_phase[6], (long long)g_ps_phase[7], (long long)g_ps_phase[8], (long long)g_ps_phase[9]);
     }
     l1_report(out);
+    lat_trace_report(out);
     nvn_gl_report(out);
 }
 
@@ -1492,3 +1508,4 @@ void display_title_note(const char *note) {
 }
 
 #include "perf_bench.c"                                /* (0.2.58) the player benchmark (SSBU_BENCH_OUT): nothing runs without it */
+#include "lat_trace.c"                                 /* SSBU_LAT_TRACE (test only): the frame of each picture shown */
