@@ -1649,6 +1649,69 @@ static void send_join(void) {
     tx(p, n, &g_lobby);
 }
 
+/* ---------------------------------------------------------------- (0.2.68) the own side of the ping
+ * SSBU_RB_PING_OWN_SIDE (default 1): the ping shown in an online rollback match (the overlay next to the delay frames and the
+ * F2 numbers) is THIS game's round trip to the relay server, not the round trip between the two games. Every message of a
+ * match goes through the lobby (relay only), so the round trip between the games is (about) the sum of both players' own
+ * sides: 16 ms + 35 ms showed 51 to both players; now each one sees his own 16 or 35.
+ *   1  this game's own side, next to its own player only (the other player's slot is not drawn)
+ *   2  also the other player's own side next to him (the round trip his game reports to the lobby, "--" when unknown)
+ *   0  as 0.2.14..0.2.67: the round trip between the two games under both players
+ * Measured with the lobby's existing PING / PONG (every second, the keepalive; the lobby echoes the 8-byte time as it is):
+ * nothing new on the wire and nothing new on the server. The send time is kept here with the high-resolution clock (the
+ * PING's own time is GetTickCount64, steps of ~15.6 ms: a 16 ms trip read as 0, 15, 16, 31 or 32) and matched to the echo.
+ * The shown value is the median of the last 5. No answer yet: the lobby round trip of the coarse clock, else the round trip
+ * between the games (today's number), else "--". The input delay (Auto included), the time sync and every log line of
+ * rb_net.c keep using the round trip between the two games (rb_net.c rbn_rtt_ms): only the number shown changes. */
+static int own_side_mode(void) {
+    static int m = -1;
+    if (m < 0) { const char *e = getenv("SSBU_RB_PING_OWN_SIDE"); m = e && *e ? atoi(e) : 1; if (m < 0 || m > 2) m = 1; }
+    return m;
+}
+static double qpc_us(void) {
+    static LARGE_INTEGER f; LARGE_INTEGER c;
+    if (!f.QuadPart) QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (double)c.QuadPart * 1e6 / (double)f.QuadPart;
+}
+static struct { uint64_t t; double us; } g_os_sent[8];     /* the last PINGs sent (client thread only) */
+static unsigned g_os_sent_n;
+static volatile LONG g_os_hist[5], g_os_n;                 /* the last 5 own-side round trips, microseconds */
+static void own_side_sent(uint64_t t) { unsigned i = g_os_sent_n++ % 8; g_os_sent[i].t = t; g_os_sent[i].us = qpc_us(); }
+static int own_side_ms(void) {                             /* the median of the last 5 (fewer at the start), -1 = none yet */
+    LONG n = g_os_n; if (n <= 0) return -1;
+    long v[5]; int k = n < 5 ? (int)n : 5;
+    for (int i = 0; i < k; i++) v[i] = g_os_hist[i];
+    for (int i = 1; i < k; i++) for (int j = i; j > 0 && v[j - 1] > v[j]; j--) { long x = v[j]; v[j] = v[j - 1]; v[j - 1] = x; }
+    return (int)((v[k / 2] + 500) / 1000);
+}
+static void own_side_pong(uint64_t echo) {                 /* client thread: a PONG with this PING time */
+    double now = qpc_us();
+    for (int i = 0; i < 8; i++) {
+        if (g_os_sent[i].t != echo || g_os_sent[i].us <= 0) continue;
+        double us = now - g_os_sent[i].us; g_os_sent[i].us = 0;
+        if (us <= 0 || us >= 5e6) return;
+        LONG k = InterlockedIncrement(&g_os_n) - 1; InterlockedExchange(&g_os_hist[k % 5], (LONG)us);
+        int rbn_started(void), rbn_rtt_ms(void);
+        static int s_was, s_k;
+        int st = rbn_started();
+        if (st && (!s_was || ++s_k % 10 == 0)) {        /* at a match's start, then every 10 s */
+            printf("[net] own side: round trip to the relay %.1f ms, shown %d ms (median of the last %d); between the two games %d ms (the input delay's%s)\n",
+                   us / 1000.0, own_side_ms(), k + 1 < 5 ? (int)(k + 1) : 5, rbn_rtt_ms(), own_side_mode() ? "" : ", shown: SSBU_RB_PING_OWN_SIDE=0");
+            fflush(stdout);
+        }
+        if (!st) s_k = 0;
+        s_was = st;
+        return;
+    }
+}
+static int own_side_shown(int rt) {                        /* the number shown for this game in a rollback match */
+    int own = own_side_ms();
+    if (own < 0) own = (int)g_ping;
+    if (own < 0) own = rt > 0 ? rt : -1;
+    return own;
+}
+
 static DWORD WINAPI client_thread(LPVOID unused) {
     (void)unused;
     /* (0.2.47) the receive thread: it blocks in recvfrom and works for microseconds, but at normal priority it waited behind
@@ -1712,7 +1775,9 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             for (int i = 0; i < g_npeers; i++) nd += fresh(&g_peers[i], t);
             ReleaseSRWLockShared(&g_peers_lock);
             p[20] = (uint8_t)nd;
-            { LONG me = g_ping; s16(p + 21, me < 0 ? 0xFFFF : me > 65534 ? 65534 : (uint16_t)me); }
+            { LONG me = g_ping; if (own_side_mode() && own_side_ms() >= 0) me = own_side_ms();      /* (0.2.68) the fine clock's, for the others' overlay */
+              s16(p + 21, me < 0 ? 0xFFFF : me > 65534 ? 65534 : (uint16_t)me); }
+            own_side_sent(t);
             tx(p, sizeof p, &g_lobby);
             last_ping = t;
         }
@@ -1760,6 +1825,7 @@ static DWORD WINAPI client_thread(LPVOID unused) {
             if (n >= 16) {
                 g_last_pong = ms_now();
                 InterlockedExchange(&g_ping, (LONG)(g_last_pong - g64(buf + 4)));
+                own_side_pong(g64(buf + 4));             /* (0.2.68) the same round trip on the fine clock */
                 InterlockedExchange(&g_players, g16(buf + 12));
                 InterlockedExchange(&g_rooms, g16(buf + 14));
                 if (n >= 20) { InterlockedExchange(&g_searching, g16(buf + 16)); InterlockedExchange(&g_code_players, g16(buf + 18)); }   /* O2 (a newer lobby) */
@@ -1897,7 +1963,8 @@ int net_ping_overlay(int *ms, int max) {
         uint32_t other = nnldn_other_ip(); if (!other) other = g_rb_match_peer; if (!other) other = g_rb_peer;
         /* (0.2.14) the round trip between the two games (rb_net.c's own pings, the number the input delay is chosen from) under
          * both players: each one's ping to the lobby said little in a match (the relay's path is what the inputs take) */
-        int rbn_rtt_ms(void), rt = rbn_rtt_ms();
+        int rbn_rtt_ms(void), rt = rbn_rtt_ms(), mode = own_side_mode();
+        if (mode) { ms[me] = own_side_shown(rt); ms[1 - me] = mode == 2 ? peer_rtt(other) : -2; return 2; }      /* (0.2.68) each player his own side */
         if (rt > 0) { ms[0] = ms[1] = rt; return 2; }
         ms[me] = (int)g_ping; ms[1 - me] = peer_rtt(other);
         return 2;
@@ -1927,7 +1994,7 @@ void net_stats_get(NetStats *o) {
     o->state = NET_CONNECTED;
     {   /* R3: an online rollback match (rb_net.c / rb_rollback.c) fills delay and rollback; its own round trip */
         int rbn_started(void), rbn_rtt_ms(void); void rbn_stats(int *delay, int *last, int *maxk);
-        if (rbn_started()) { rbn_stats(&o->delay, &o->rollback_last, &o->rollback_max); o->players = 2; o->ping_ms = rbn_rtt_ms(); return; }
+        if (rbn_started()) { rbn_stats(&o->delay, &o->rollback_last, &o->rollback_max); o->players = 2; o->ping_ms = own_side_mode() ? own_side_shown(rbn_rtt_ms()) : rbn_rtt_ms(); return; }      /* (0.2.68) own side */
     }
     int in_room = nnldn_players();
     o->players = in_room ? in_room : 1;
