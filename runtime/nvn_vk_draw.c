@@ -4258,11 +4258,11 @@ static void vk_present2(void *arg, int progress) {
     /* STALE PICTURES (found with SSBU_LAT_TRACE, 2026-11-24): the window texture about to be shown was not drawn since the last
      * picture shown. In a rollback match the real pass after a rollback submits without its picture lists (the last re-run pass
      * skips their kick), and the texture it presents still holds the picture of ~3 frames before: the screen jumped BACK at every
-     * rollback (bench: 272 of 1519 pictures). Counted always; SSBU_STALE_GUARD=1 shows the last picture again instead (a one-frame
-     * hold, as a late frame). Outside rollback matches it found none (offline fight, trace: 0 older pictures). */
+     * rollback (bench: 272 of 1519 pictures). Counted always; the last picture is shown again instead (a one-frame hold, as a late
+     * frame), SSBU_STALE_GUARD=0 = the old way. Outside rollback matches it found none (offline fight, trace: 0 older pictures). */
     static int sg_on = -1; static Tex *sg_prev;
     if (!progress) {
-        if (sg_on < 0) { const char *e = getenv("SSBU_STALE_GUARD"); sg_on = e && atoi(e) > 0; }
+        if (sg_on < 0) { const char *e = getenv("SSBU_STALE_GUARD"); sg_on = !(e && e[0] == '0'); }
         LONG64 k = g_sg_pres + 1;
         if (t && !t->dead && t->sg_wr && t->sg_wr < k && wintex_is(t)) {
             sg_n++;
