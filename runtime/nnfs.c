@@ -641,6 +641,7 @@ static uint32_t mount_add(const char *name, int kind, const char *root) {
     return 0;
 }
 
+static void sysave_settle(const char *save);              /* (OpenSmash #466) the system save's text language, below */
 static void save_dir(char *dir, const char *leaf) { fs_roots(); snprintf(dir, MAX_PATH, "%s\\%s", g_user_root, leaf); }
 /* Save data of the one local user lives in <userdata>\save. It exists once EnsureSaveData has created it;
  * MountSaveData of save data that does not exist fails as on the console. */
@@ -656,6 +657,7 @@ static void fs_MountSaveData(Ctx *c) {                   /* (const char *name, c
     save_dir(dir, "save");
     if (!save_exists()) { trace_printf("     fs mount save data \"%s\": no save data (EnsureSaveData was not called)\n", STR(0)); RET(RESULT_TARGET_NOT_FOUND); return; }
     journal_recover(dir);
+    sysave_settle(dir);                                    /* (SSBU_SAVE_LANGUAGE=1) the base save's language, once */
     uint32_t r = mount_add(STR(0), MK_SAVE, dir);
     trace_printf("     fs mount save data \"%s\" -> %s, journal working folder %s.work.%lu (%x)\n", STR(0), dir, dir, (unsigned long)GetCurrentProcessId(), r);
     RET(r);
@@ -822,19 +824,81 @@ static void fs_OpenFile(Ctx *c) {                     /* (FileHandle *out, const
     RET(0);
 }
 /* (OpenSmash-Ultimate #466, Denkishi) the game keeps its text language in its system save: the byte at 0x3C6098 of
- * save_data/system_data.bin (0x5b4af8 bytes, 13.0.4 and 13.0.5), written when the save is made and shown from then on
- * whatever language the game is given. Arena's launcher puts a prebuilt base save in place (BaseSave.cs), made on an
- * Italian Windows: its byte is 5 (it), so a new player's game stayed Italian. SSBU_SAVE_LANGUAGE (default 1): the save is
- * read with the byte of the language the game is given (nnmisc.c desired_language: SSBU_LANGUAGE, graphics.ini language,
- * else the Windows display language); the game writes it back at its next save. =0: the save's own language stays. */
+ * save_data/system_data.bin (0x5b4af8 bytes, 13.0.4 and 13.0.5), written when the game makes the save (from the language
+ * it is given then) and shown from then on whatever language it is given; it is never "empty" (0 ja .. 10 ko). Arena's
+ * launcher puts a prebuilt base save in place when there is none (BaseSave.cs, Assets\base_save.zip), made on an Italian
+ * Windows: its byte is 5 (it), so a new player's game was Italian. SSBU_SAVE_LANGUAGE:
+ *   1 (default) the save's language is kept. The base save's own 5 is not a language anyone chose: a save still holding it
+ *     (the base save's first milestone record, which the game never rewrites, and byte 5) gets the language the game is
+ *     given ONCE (sysave_settle, at the mount, written into the file); <userdata>\save-language.txt then marks that save
+ *     as settled (the launcher deletes it when it puts a new base save in place). A language chosen by hand (graphics.ini
+ *     language, i.e. the settings menu, or SSBU_LANGUAGE) is written into a save that holds another one: the player's choice.
+ *   2 every read of the save gets the language the game is given (0.2.68; the game writes it back at its next save).
+ *   0 the save's language stays, always.
+ * The value is the game's table (nnmisc.c nnmisc_save_language). Text only: no fight state reads it (the online frame
+ * checksums are the fighters' lines and the pads, rb_net.c), and two players' saves already differed in it (each game
+ * writes its own Windows language into a save it makes). */
 #define SYSAVE_SIZE 0x5B4AF8ull
 #define SYSAVE_LANG 0x3C6098ull
+#define SYSAVE_FIRST_MILESTONE 0x54FED8ull                  /* milestone record 0 (BaseSave.cs Milestones): the first start's */
+#define SYSAVE_BASE_FIRST 0x80040037BD3DA7EAull             /* base_save.zip's (2026-10-29 09:47:55, both versions of the zip) */
+#define SYSAVE_BASE_LANG 5                                  /* base_save.zip's language byte (it) */
 static HANDLE g_sysave[4];
-static int sysave_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_SAVE_LANGUAGE"); on = !(e && e[0] == '0'); } return on; }
+static int sysave_mode(void) {
+    static int mode = -1;
+    if (mode < 0) { const char *e = getenv("SSBU_SAVE_LANGUAGE"); mode = e && e[0] == '0' ? 0 : e && e[0] == '2' ? 2 : 1; }
+    return mode;
+}
+static int sysave_io(HANDLE h, uint64_t off, void *buf, DWORD n, int write) {
+    OVERLAPPED o = {0};
+    DWORD done = 0;
+    o.Offset = (DWORD)off; o.OffsetHigh = (DWORD)(off >> 32);
+    return (write ? WriteFile(h, buf, n, &done, &o) : ReadFile(h, buf, n, &done, &o)) && done == n;
+}
+/* (SSBU_SAVE_LANGUAGE=1) at the save's mount, after an interrupted commit is finished and before the game reads anything:
+ * the one change to the committed save outside a commit, one byte written in place (a sector is never half-written). */
+static void sysave_settle(const char *save) {
+    static volatile LONG once;
+    if (sysave_mode() != 1 || InterlockedExchange(&once, 1)) return;
+    char file[MAX_PATH], mark[MAX_PATH];
+    snprintf(file, sizeof file, "%s\\save_data\\system_data.bin", save);
+    snprintf(mark, sizeof mark, "%s\\save-language.txt", g_user_root);
+    HANDLE h = CreateFileA(file, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;                  /* no save yet: the game makes it with the language it is given */
+    LARGE_INTEGER sz;
+    uint32_t head[2] = {0, 0};
+    uint64_t first = 0;
+    uint8_t lang = 0xff;
+    if (!GetFileSizeEx(h, &sz) || (uint64_t)sz.QuadPart != SYSAVE_SIZE || !sysave_io(h, 0, head, 8, 0) || head[0] != SYSAVE_SIZE || head[1] != 0x1B ||
+        !sysave_io(h, SYSAVE_FIRST_MILESTONE, &first, 8, 0) || !sysave_io(h, SYSAVE_LANG, &lang, 1, 0)) {
+        CloseHandle(h);
+        printf("fs: the save's text language: a save of another layout, left as it is\n");
+        fflush(stdout);
+        return;
+    }
+    int nnmisc_save_language(const char **code), nnmisc_language_chosen(void);
+    const char *code = "";
+    int want = nnmisc_save_language(&code), chosen = nnmisc_language_chosen();
+    int base = first == SYSAVE_BASE_FIRST, settled = GetFileAttributesA(mark) != INVALID_FILE_ATTRIBUTES, to = -1;
+    const char *why = "the save's own: kept";
+    if (want >= 0 && chosen && lang != want) to = want, why = "the language chosen in the settings (graphics.ini language / SSBU_LANGUAGE)";
+    else if (want >= 0 && !chosen && base && !settled && lang == SYSAVE_BASE_LANG) to = want, why = "the base save's, never chosen: the game's language, once";
+    else if (base && !settled && lang == SYSAVE_BASE_LANG) why = "the base save's; no value for the game's language: kept";
+    int ok = 1;
+    if (to >= 0 && to != lang) { uint8_t v = (uint8_t)to; ok = sysave_io(h, SYSAVE_LANG, &v, 1, 1) && FlushFileBuffers(h); }
+    CloseHandle(h);
+    if (ok && base && !settled && (to >= 0 || lang != SYSAVE_BASE_LANG)) {      /* this base save is settled: never again */
+        FILE *f = fopen(mark, "wb");
+        if (f) { fprintf(f, "system save text language settled: %d (was %u)\r\nDeleted only with the save (the launcher does it when it puts its base save in place).\r\n", to >= 0 ? to : lang, lang); fclose(f); }
+    }
+    if (to >= 0 && to != lang) printf("fs: the save's text language: %u -> %d (%s), %s%s\n", lang, to, code, why, ok ? "" : ": NOT WRITTEN");
+    else printf("fs: the save's text language: %u, %s (SSBU_SAVE_LANGUAGE=2: always the game's; 0: never touched)\n", lang, to >= 0 ? "already the game's" : why);
+    fflush(stdout);
+}
 static void sysave_mark(HANDLE h, const char *guest, Mount *m, int write) {
     const char *leaf = guest;
     for (const char *s = guest; *s; s++) if (*s == '/' || *s == '\\' || *s == ':') leaf = s + 1;
-    if (write || !m || m->kind != MK_SAVE || _stricmp(leaf, "system_data.bin")) return;
+    if (write || !m || m->kind != MK_SAVE || _stricmp(leaf, "system_data.bin") || sysave_mode() != 2) return;
     fs_lock();
     for (int i = 0; i < 4; i++) if (!g_sysave[i]) { g_sysave[i] = h; break; }
     fs_unlock();
@@ -847,20 +911,20 @@ static int sysave_is(HANDLE h, int forget) {
     fs_unlock();
     return hit;
 }
-static void sysave_language(HANDLE h, int64_t offset, void *buf, uint64_t got) {
+static void sysave_language(HANDLE h, int64_t offset, void *buf, uint64_t got) {      /* SSBU_SAVE_LANGUAGE=2 (0.2.68) */
     if (offset < 0 || (uint64_t)offset > SYSAVE_LANG || SYSAVE_LANG - (uint64_t)offset >= got || !sysave_is(h, 0)) return;
     LARGE_INTEGER sz;
     if (!GetFileSizeEx(h, &sz) || (uint64_t)sz.QuadPart != SYSAVE_SIZE) return;
     int nnmisc_save_language(const char **code);
     const char *code = "";
-    int want = sysave_on() ? nnmisc_save_language(&code) : -2;
+    int want = nnmisc_save_language(&code);
     uint8_t *at = (uint8_t *)buf + (SYSAVE_LANG - (uint64_t)offset);
     static volatile LONG said;
     if (want < 0 || *at == (uint8_t)want) {
-        if (!InterlockedExchange(&said, 1)) { printf("fs: the save's text language: %u (%s)\n", *at, want == -2 ? "SSBU_SAVE_LANGUAGE=0: the save's stays" : want < 0 ? "no value for the game's language: the save's stays" : "the game's language"); fflush(stdout); }
+        if (!InterlockedExchange(&said, 1)) { printf("fs: the save's text language: %u (%s; SSBU_SAVE_LANGUAGE=2)\n", *at, want < 0 ? "no value for the game's language: the save's stays" : "the game's language"); fflush(stdout); }
         return;
     }
-    if (!InterlockedExchange(&said, 1)) { printf("fs: the save's text language: %u; read as %d, the game's language (%s); the game writes it at its next save (SSBU_SAVE_LANGUAGE=0: the save's)\n", *at, want, code); fflush(stdout); }
+    if (!InterlockedExchange(&said, 1)) { printf("fs: the save's text language: %u; read as %d, the game's language (%s); the game writes it at its next save (SSBU_SAVE_LANGUAGE=2)\n", *at, want, code); fflush(stdout); }
     *at = (uint8_t)want;
 }
 static void fs_CloseFile(Ctx *c) {

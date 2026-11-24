@@ -33,6 +33,10 @@ namespace Arena
                 string dir = Path.Combine(saves, @"save\save_data"), file = Path.Combine(dir, "system_data.bin");
                 if (!File.Exists(file))
                 {
+                    // (save language) the base save's language byte is the one of the PC it was made on (5, Italian): the
+                    // game sets it once to the player's language (runtime/nnfs.c sysave_settle), then marks the save as
+                    // settled in this file. A new base save is not settled yet.
+                    File.Delete(Path.Combine(saves, "save-language.txt"));
                     using (var z = typeof(BaseSave).Assembly.GetManifestResourceStream("Arena.base_save.zip"))
                     using (var zip = new ZipArchive(z))
                         foreach (var e in zip.Entries.Where(e => e.Name != ""))
