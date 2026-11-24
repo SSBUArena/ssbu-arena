@@ -1535,7 +1535,8 @@ static int g_vk_test;                              /* session 13, TEST ONLY: SSB
  * each submission), noted on every texture written; 0 = trace off, nothing noted */
 static long long g_lt_cur;
 void nvn_vk_lat_frame_job(void *arg) { g_lt_cur = *(const long long *)arg; }
-#define LT_TAG(t) do { if (g_lt_cur && (t)) (t)->lt_frame = g_lt_cur; } while (0)
+static LONG64 g_sg_pres;                           /* game pictures presented so far (vk_present2; SSBU_STALE_GUARD) */
+#define LT_TAG(t) do { if (t) { (t)->sg_wr = g_sg_pres + 1; if (g_lt_cur) (t)->lt_frame = g_lt_cur; } } while (0)
 static void lt_tag_targets(void) { if (g_lt_cur) for (int i = 0; i < R.ncol; i++) LT_TAG(R.col[i].tex); }
 void display_lat_present(long long pic, long long newest, int idx, int fight, int kept, long long pf, const long long *tags);      /* display.c (lat_trace.c) */
 static int pass_begin(void) {
@@ -4110,6 +4111,7 @@ static void ldn_ping_draw(uint32_t index) {
     }
 }
 static void vk_present2(void *arg, int progress);
+static LONG64 g_sg_said, sg_n, sg_used;            /* (SSBU_STALE_GUARD) the stale count last printed; stale pictures; the last picture shown again instead */
 /* Session 14: THE KEPT PRESENT. vk_present2 has blitted and submitted the frame; when display.c says the frame is to be shown
  * at the next tick, vkQueuePresentKHR is not called there: what it needs is kept here and the vsync thread posts
  * nvn_vk_present_flush_job at the tick (render thread, between two other jobs). An out-of-date swapchain found here is
@@ -4253,6 +4255,22 @@ static void vk_present2(void *arg, int progress) {
     Tex *t = j->win && j->index >= 0 && j->index < j->win->count ? j->win->tex[j->index] : NULL;
     VTex *vt = t && !t->dead ? t->vk : NULL;
     LONG64 frame = nvn_front_frame_next();
+    /* STALE PICTURES (found with SSBU_LAT_TRACE, 2026-11-24): the window texture about to be shown was not drawn since the last
+     * picture shown. In a rollback match the real pass after a rollback submits without its picture lists (the last re-run pass
+     * skips their kick), and the texture it presents still holds the picture of ~3 frames before: the screen jumped BACK at every
+     * rollback (bench: 272 of 1519 pictures). Counted always; SSBU_STALE_GUARD=1 shows the last picture again instead (a one-frame
+     * hold, as a late frame). Outside rollback matches it found none (offline fight, trace: 0 older pictures). */
+    static int sg_on = -1; static Tex *sg_prev;
+    if (!progress) {
+        if (sg_on < 0) { const char *e = getenv("SSBU_STALE_GUARD"); sg_on = e && atoi(e) > 0; }
+        LONG64 k = g_sg_pres + 1;
+        if (t && !t->dead && t->sg_wr && t->sg_wr < k && wintex_is(t)) {
+            sg_n++;
+            if (sg_on && sg_prev && sg_prev != t && !sg_prev->dead && sg_prev->vk && sg_prev->sg_wr) { t = sg_prev; vt = t->vk; sg_used++; }
+        }
+        if ((sg_n == 1 || sg_n % 500 == 0) && sg_n != g_sg_said) { g_sg_said = sg_n; printf("nvn_vk: stale pictures so far %lld (the window texture not drawn since the last picture shown), the last picture shown again instead %lld (SSBU_STALE_GUARD=%d)\n", (long long)sg_n, (long long)sg_used, sg_on); }
+        g_sg_pres = k; sg_prev = t;
+    }
     long long lt_pic = 0, lt_new = 0, lt_t[3] = {0, 0, 0};      /* SSBU_LAT_TRACE: the real frame of the picture shown, the newest one among the window's textures, the first three's */
     if (g_lt_cur && t) { lt_pic = t->lt_frame; for (int i = 0; i < j->win->count; i++) if (j->win->tex[i]) { if (j->win->tex[i]->lt_frame > lt_new) lt_new = j->win->tex[i]->lt_frame; if (i < 3) lt_t[i] = j->win->tex[i]->lt_frame; } }
     {   /* session 12, TEST ONLY: SSBU_VK_WD_TEST=<frame>[,<seconds>] holds the render thread at that frame (default 12 s), to see the watchdog's report */
@@ -4846,6 +4864,7 @@ static void frstat_report(void) {
 }
 static void vkd_shutdown(void) {
     wd_stop();
+    if (sg_n) printf("nvn_vk: stale pictures %lld (the window texture not drawn since the last picture shown: rollback), the last picture shown again instead %lld (SSBU_STALE_GUARD)%c", (long long)sg_n, (long long)sg_used, 10);
     if (!R.ring) return;
     {   LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
         double k = 1000.0 / (double)fq.QuadPart;
