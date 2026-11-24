@@ -2735,8 +2735,15 @@ static void ra_init(void) {
     g_mark = mark_bind(); if (!g_mark) g_mark = ls_bind();      /* R4: no marked DLL: the learned set (rb_learned.c) */
     int k = hook_install(GA(0x710354c720ull), ra_kick, NULL, &g_orig_kick) && hook_install(GA(0x7103549170ull), ra_kick2, NULL, &g_orig_kick2);
     int l = hook_install_name("_ZN7lua2cpp16L2CFighterCommon31sys_line_system_control_fighterEv", ra_line, NULL, &g_orig_line);
-    LOG("r1: RUN-AHEAD on (one frame): marks %s; save point: the return of the job-counter wait 710354c720 called at 710374c028 (preparation done, before the render kick): %s; frame line counter: %s; park %.1f ms\n",
-        g_mark > 0 ? "yes" : "NO (run-ahead will stay off)", k ? "installed" : "FAILED", l ? "installed or waiting" : "FAILED", g_ra_park_ms);
+    {   /* (amd-dark-fighters) ra_init also runs for the rollback ring alone (ra_wanted = rgs_wanted() || run-ahead): the line
+         * said "RUN-AHEAD on" in every Arena log although run-ahead was off, which misled a bug report. Same facts, honest
+         * title: run-ahead itself is asked for only by SSBU_RUNAHEAD or graphics.ini runahead = on. */
+        const char *e = getenv("SSBU_RUNAHEAD"); int gfx_runahead(void);
+        int asked = e ? (e[0] && e[0] != '0') : gfx_runahead();
+        LOG("r1: %s: marks %s; save point: the return of the job-counter wait 710354c720 called at 710374c028 (preparation done, before the render kick): %s; frame line counter: %s; park %.1f ms\n",
+            asked ? "RUN-AHEAD on (one frame)" : "snapshot machinery for rollback on (run-ahead itself OFF: graphics.ini runahead = off, no SSBU_RUNAHEAD)",
+            g_mark > 0 ? "yes" : asked ? "NO (run-ahead will stay off)" : "NO", k ? "installed" : "FAILED", l ? "installed or waiting" : "FAILED", g_ra_park_ms);
+    }
     if (rgs_wanted() && rbg_on()) {                       /* R3: re-run passes skip the preparation kick (1); see below for what they no longer skip */
         /* (Arena, 2026-10-27) defaults 1 / 0 instead of 49 / 123. With 49 / 123 about 1 short run in 10 (loop bench, bot 3
          * frames late, to frame 600) crashed in nu::GraphicsDevice::Update (f_7103929760, read of 0xffff...) or ended in the
