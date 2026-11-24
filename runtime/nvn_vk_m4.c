@@ -1920,9 +1920,10 @@ static void prewarm_start(void) {
     InitializeConditionVariable(&g_sh_cv); InitializeConditionVariable(&g_jq_cv);
     CreateDirectoryA(vkc_dir(), NULL); CreateDirectoryA(vkc_file("spv"), NULL); CreateDirectoryA(vkc_file("stage"), NULL); vkp_open();
     if (getenv("SSBU_VK_CACHE")) printf("nvn_vk: cache folder %s (SSBU_VK_CACHE)\n", vkc_dir());
-    {   HMODULE m = LoadLibraryA("ssbu_glslang.dll");
+    {   char why[768]; HMODULE m = vk_glslang_load(why, sizeof why);
         g_glsl_to_spirv = m ? (void *)GetProcAddress(m, "ssbu_glsl_to_spirv") : NULL; g_spirv_free = m ? (void *)GetProcAddress(m, "ssbu_spirv_free") : NULL;
-        if (!g_glsl_to_spirv || !g_spirv_free) vkd_fail("ssbu_glslang.dll cannot be loaded (build_glslang.bat makes it)");
+        if (!g_glsl_to_spirv || !g_spirv_free) vkd_fail("%s", why);
+        if (getenv("SSBU_GLSLANG_DIAG") && atoi(getenv("SSBU_GLSLANG_DIAG")) == 2) { printf("nvn_vk: ssbu_glslang.dll loaded\n"); fflush(stdout); }
     }
     {   /* the driver's pipeline cache, ours on disk: keyed by GPU and driver version (the driver checks its own header too) */
         VkPipelineCacheCreateInfo ci = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
@@ -3050,9 +3051,9 @@ int nvn_vk_prepare_shaders(const char *dir) {
     InitializeCriticalSection(&g_sh_lock); InitializeCriticalSection(&g_gpl_lock);
     InitializeConditionVariable(&g_sh_cv); InitializeConditionVariable(&g_jq_cv);
     CreateDirectoryA("../cache", NULL); CreateDirectoryA(vkc_dir(), NULL); CreateDirectoryA(vkc_file("spv"), NULL); CreateDirectoryA(vkc_file("stage"), NULL); vkp_open();
-    {   HMODULE m = LoadLibraryA("ssbu_glslang.dll");
+    {   char why[768]; HMODULE m = vk_glslang_load(why, sizeof why);
         g_glsl_to_spirv = m ? (void *)GetProcAddress(m, "ssbu_glsl_to_spirv") : NULL; g_spirv_free = m ? (void *)GetProcAddress(m, "ssbu_spirv_free") : NULL;
-        if (!g_glsl_to_spirv || !g_spirv_free) { printf("prepare-shaders: ssbu_glslang.dll cannot be loaded (build_glslang.bat makes it)\n"); return 2; }
+        if (!g_glsl_to_spirv || !g_spirv_free) { printf("prepare-shaders: %s\n", why); return 2; }
     }
     SYSTEM_INFO si;
     GetSystemInfo(&si);

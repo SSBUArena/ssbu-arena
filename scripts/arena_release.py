@@ -128,6 +128,21 @@ def main():
     run(['dotnet', 'build', PROJ, '-c', 'Release', '-v', 'q', '-nologo'])
     exe = os.path.join(DIST, 'SSBU-Arena.exe')
     shutil.copy2(os.path.join(PROJ, 'bin', 'Release', 'net48', 'SSBU Arena.exe'), exe)
+    # the launcher is the only file a player downloads: .NET Framework 4.8 (in Windows 10 / 11) and nothing beside it, so it
+    # may import only mscoree.dll, and its build may need no DLL of its own (one would not reach the player)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('make_release', os.path.join(REPO, 'scripts', 'make_release.py'))
+    mr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mr)
+    bad, seen = mr.audit_imports([exe])
+    say('imports of SSBU-Arena.exe: %s' % ' '.join(seen.get('SSBU-Arena.exe', [])))
+    if seen.get('SSBU-Arena.exe') and [d.lower() for d in seen['SSBU-Arena.exe']] != ['mscoree.dll']:
+        bad.append('SSBU-Arena.exe is not a plain .NET Framework exe (imports %s)' % seen['SSBU-Arena.exe'])
+    extra = [n for n in os.listdir(os.path.join(PROJ, 'bin', 'Release', 'net48')) if n.lower().endswith('.dll')]
+    if extra:
+        bad.append('the launcher build needs DLLs that are not shipped: %s' % ', '.join(extra))
+    if bad:
+        sys.exit('the launcher failed the import audit:\n  ' + '\n  '.join(bad))
     info = {'version': a.version, 'commit': commit, 'launcher': {'file': 'SSBU-Arena.exe', 'sha256': sha256(exe)},
             'runtime': {'file': pkg_name, 'sha256': pkg_sha, 'source_commit': base}}
     rel_json = os.path.join(DIST, 'arena-release.json')

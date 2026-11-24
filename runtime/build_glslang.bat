@@ -14,5 +14,13 @@ set "PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer;%PATH%"
 call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 exit /b 1
 if not exist obj_host mkdir obj_host
-cl /nologo /MD /O2 /W3 /LD /I "%GL%\include" vk_glslang_shim.c /Fo:obj_host\vk_glslang_shim.obj /Fe:ssbu_glslang.dll /link /LIBPATH:"%GL%\lib" glslang.lib glslang-default-resource-limits.lib SPIRV-Tools-opt.lib SPIRV-Tools.lib
+rem The C runtime the shim is built with must be the one of the libraries. The official release libraries are /MD: the DLL
+rem then needs the Visual C++ Redistributable (MSVCP140 / VCRUNTIME140*), which many players lack (Arena 0.2.64/0.2.65:
+rem "ssbu_glslang.dll cannot be loaded"). scripts\build_glslang_static.py builds them /MT (deps\glslang-mt): the DLL then
+rem imports only KERNEL32 and the Universal CRT of Windows 10/11. GLSLANG_CRT=MD / MT forces one (default: what the libraries are).
+set CRT=%GLSLANG_CRT%
+if "%CRT%"=="" ( findstr /m /c:"RuntimeLibrary=MT_StaticRelease" "%GL%\lib\glslang.lib" >nul 2>&1 && set "CRT=MT" )
+if "%CRT%"=="" set "CRT=MD"
+echo build_glslang: /%CRT% (%GL%)
+cl /nologo /%CRT% /O2 /W3 /LD /I "%GL%\include" vk_glslang_shim.c /Fo:obj_host\vk_glslang_shim.obj /Fe:ssbu_glslang.dll /link /LIBPATH:"%GL%\lib" glslang.lib glslang-default-resource-limits.lib SPIRV-Tools-opt.lib SPIRV-Tools.lib
 exit /b %errorlevel%

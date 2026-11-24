@@ -1070,8 +1070,32 @@ namespace Arena
             if (prepCancelled) { Status("Shader preparation stopped: it goes on from where it was next time", "warn"); return; }
             if (code == 0) { Status("Shaders prepared", "good"); if (prepThenPlay) Start(); return; }
             if (code == 3) { if (prepThenPlay) Start(); else Show("Shaders", "This graphics card prepares its shaders while you play (no stage libraries): nothing to do here.", null, ("OK", null, true)); return; }
-            Show("Shader preparation failed", "Exit code " + code + ". Last lines of build\\prepare.log:", Core.PrepareLogTail(8),
+            var tail = Core.PrepareLogTail(8);
+            string help = GlslangHelp(tail);
+            if (help != null) { Show("Shader preparation failed", help, tail, ("OK", null, true)); return; }
+            Show("Shader preparation failed", "Exit code " + code + ". Last lines of build\\prepare.log:", tail,
                  ("Play anyway", () => Start(), false), ("OK", null, true));
+        }
+
+        /// <summary>(0.2.66) ssbu_glslang.dll (the shader translator) could not be loaded: what to do, in plain words, from the
+        /// game's message (runtime/nvn_vk_draw.c vk_glslang_load); null for any other failure. 0.2.64 / 0.2.65 shipped a copy that
+        /// needed the Visual C++ Redistributable. SSBU_GLSLANG_HELP=0: the plain "exit code" message as before.</summary>
+        static string GlslangHelp(string[] tail)
+        {
+            if (Environment.GetEnvironmentVariable("SSBU_GLSLANG_HELP") == "0") return null;
+            string l = tail?.LastOrDefault(x => x.Contains("ssbu_glslang.dll cannot be loaded"));
+            if (l == null) return null;
+            string head = "The game could not load ssbu_glslang.dll, the part that translates the game's shaders for your graphics card. ";
+            if (l.IndexOf("MSVCP", StringComparison.OrdinalIgnoreCase) >= 0 || l.IndexOf("VCRUNTIME", StringComparison.OrdinalIgnoreCase) >= 0
+                || l.IndexOf("build_glslang.bat", StringComparison.OrdinalIgnoreCase) >= 0)
+                return head + "The copy of 0.2.64 / 0.2.65 needs the Microsoft Visual C++ Redistributable, which this PC does not have. Close and reopen "
+                     + "the launcher to update SSBU Arena (0.2.66 and later do not need it), or install \"Microsoft Visual C++ 2015-2022 "
+                     + "Redistributable (x64)\" from Microsoft's site, then try again.";
+            if (l.Contains("itself"))
+                return head + "The file is missing, maybe removed by an antivirus. Use \"Check and repair\" in Settings, then try again.";
+            if (l.Contains("antivirus"))
+                return head + "Windows or an antivirus blocks it. Allow the SSBU Arena folder in your antivirus, use \"Check and repair\" in Settings, then try again.";
+            return head + "Use \"Check and repair\" in Settings, then try again. If it still fails, send us the lines below.";
         }
 
         void PrepCancel_Click(object sender, RoutedEventArgs e)
@@ -1290,6 +1314,11 @@ namespace Arena
             HideTray();
             FromTray();
             SetState();
+            {   // (0.2.66) the game stopped because ssbu_glslang.dll did not load: what to do, in plain words
+                var tail = Core.LogTail(8);
+                string help = GlslangHelp(tail);
+                if (help != null) Show("The game could not start its graphics", help, tail, ("OK", null, true));
+            }
         }
     }
 }

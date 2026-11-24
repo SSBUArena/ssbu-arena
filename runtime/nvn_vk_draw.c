@@ -71,6 +71,75 @@ static void vkd_fail(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); printf("nvn_vk: FATAL: "); vprintf(fmt, ap); printf("\n"); va_end(ap); fflush(stdout); ExitProcess(6);
 }
 #define DBG_ASSERT(c, ...) do { if (D.debug && !(c)) vkd_fail(__VA_ARGS__); } while (0)
+/* (0.2.66, fix/glslang-static-crt) ssbu_glslang.dll and its two functions, or NULL with why in msg: the Windows error and,
+ * when a DLL it imports is missing (error 126), which one, with what to do in plain words. 0.2.64 / 0.2.65 built it with /MD:
+ * it imported MSVCP140 / VCRUNTIME140 / VCRUNTIME140_1 (the Visual C++ Redistributable) and stopped the shader preparation on
+ * PCs without it; built /MT now (scripts/build_glslang_static.py). SSBU_GLSLANG_DIAG=0: the old one-line message only. */
+#ifdef _WIN32
+static void vk_glslang_missing(char *out, size_t n) {
+    char path[MAX_PATH + 32];
+    DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
+    char *slash = len ? strrchr(path, '\\') : NULL;
+    out[0] = 0;
+    if (!slash) return;
+    strcpy(slash + 1, "ssbu_glslang.dll");
+    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) { snprintf(out, n, "ssbu_glslang.dll itself (not beside ssbu_native.exe)"); return; }
+    HMODULE h = LoadLibraryExA(path, NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE | LOAD_LIBRARY_AS_DATAFILE);      /* mapped as an image, no code run */
+    if (!h) return;
+    const unsigned char *base = (const unsigned char *)((ULONG_PTR)h & ~(ULONG_PTR)3);
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)base;
+    const IMAGE_NT_HEADERS64 *nt = (const IMAGE_NT_HEADERS64 *)(base + dos->e_lfanew);
+    if (dos->e_magic == IMAGE_DOS_SIGNATURE && nt->Signature == IMAGE_NT_SIGNATURE && nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+        const IMAGE_DATA_DIRECTORY *dd = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        const IMAGE_IMPORT_DESCRIPTOR *d = dd->VirtualAddress ? (const IMAGE_IMPORT_DESCRIPTOR *)(base + dd->VirtualAddress) : NULL;
+        size_t used = 0;
+        for (; d && d->Name; d++) {
+            const char *name = (const char *)(base + d->Name);
+            if (!_strnicmp(name, "api-ms-win-", 11) || !_strnicmp(name, "ext-ms-", 7) || GetModuleHandleA(name)) continue;
+            HMODULE t = LoadLibraryExA(name, NULL, LOAD_LIBRARY_AS_DATAFILE);           /* found on the search path? */
+            if (t) { FreeLibrary(t); continue; }
+            int k = snprintf(out + used, n - used, "%s%s", used ? ", " : "", name);
+            if (k < 0 || (size_t)k >= n - used) break;
+            used += (size_t)k;
+        }
+    }
+    FreeLibrary(h);
+}
+static HMODULE vk_glslang_load(char *msg, size_t n) {
+    HMODULE m = LoadLibraryA("ssbu_glslang.dll");
+    DWORD err = m ? 0 : GetLastError();
+    if (m && GetProcAddress(m, "ssbu_glsl_to_spirv") && GetProcAddress(m, "ssbu_spirv_free")) return m;
+    if (m) err = GetLastError();                                   /* 127: an old or foreign ssbu_glslang.dll */
+    const char *dg = getenv("SSBU_GLSLANG_DIAG");
+    if (dg && dg[0] == '0') { snprintf(msg, n, "ssbu_glslang.dll cannot be loaded (build_glslang.bat makes it)"); return NULL; }
+    char sys[200] = "", missing[400] = "";
+    if (!FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), sys, sizeof sys, NULL))
+        FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, 0, sys, sizeof sys, NULL);
+    for (size_t l = strlen(sys); l && (sys[l - 1] == '\r' || sys[l - 1] == '\n' || sys[l - 1] == ' ' || sys[l - 1] == '.'); ) sys[--l] = 0;
+    if (!m) vk_glslang_missing(missing, sizeof missing);
+    const char *hint;
+    char up[sizeof missing];
+    for (size_t i = 0; i < sizeof up; i++) up[i] = (char)(missing[i] >= 'a' && missing[i] <= 'z' ? missing[i] - 32 : missing[i]);
+    if (strstr(missing, "itself")) hint = "the file is missing (an antivirus may have removed it): use \"Check and repair\" in the launcher, or reinstall";
+    else if (strstr(up, "MSVCP") || strstr(up, "VCRUNTIME") || strstr(up, "CONCRT"))
+        hint = "this copy needs the Microsoft Visual C++ 2015-2022 Redistributable (x64): update SSBU Arena (0.2.66 and later do not need it) or install it from Microsoft";
+    else if (missing[0]) hint = "a Windows file it needs is missing: update Windows, then use \"Check and repair\" in the launcher";
+    else if (err == ERROR_ACCESS_DENIED || err == 225 /* ERROR_VIRUS_INFECTED */ || err == 1260 /* ERROR_ACCESS_DISABLED_BY_POLICY */)
+        hint = "Windows or an antivirus blocks the file: allow the SSBU Arena folder in the antivirus, then use \"Check and repair\" in the launcher";
+    else if (m) hint = "the file is from another version: use \"Check and repair\" in the launcher";
+    else hint = "use \"Check and repair\" in the launcher, or reinstall";
+    snprintf(msg, n, "ssbu_glslang.dll cannot be loaded: Windows error %lu (%s)%s%s - %s", (unsigned long)err, sys[0] ? sys : "no text",
+             missing[0] ? "; missing: " : "", missing, hint);
+    return NULL;
+}
+#else                                              /* Linux / macOS: the loader's own error text */
+static HMODULE vk_glslang_load(char *msg, size_t n) {
+    HMODULE m = LoadLibraryA("ssbu_glslang.dll");
+    if (m && GetProcAddress(m, "ssbu_glsl_to_spirv") && GetProcAddress(m, "ssbu_spirv_free")) return m;
+    snprintf(msg, n, "ssbu_glslang.dll cannot be loaded (build_glslang.bat makes it)");
+    return NULL;
+}
+#endif
 /* Session 11: the pipeline-library mode. SSBU_VK_GPL wins (0 = whole pipelines, the path before session 9; 1 = a library per
  * stage pair, a measurement mode; 2 = a library per stage + preparation + barrier); without it VK_GPL_DEFAULT. */
 #ifndef VK_GPL_DEFAULT
@@ -1247,9 +1316,9 @@ static VkShaderModule module_from_glsl(int stage, const char *glsl, const char *
     }
     if (!words) {
         if (!g_glsl_to_spirv) {
-            HMODULE m = LoadLibraryA("ssbu_glslang.dll");
+            char why[768]; HMODULE m = vk_glslang_load(why, sizeof why);
             g_glsl_to_spirv = m ? (void *)GetProcAddress(m, "ssbu_glsl_to_spirv") : NULL; g_spirv_free = m ? (void *)GetProcAddress(m, "ssbu_spirv_free") : NULL;
-            if (!g_glsl_to_spirv || !g_spirv_free) vkd_fail("ssbu_glslang.dll cannot be loaded (build_glslang.bat makes it)");
+            if (!g_glsl_to_spirv || !g_spirv_free) vkd_fail("%s", why);
         }
         if (!g_glsl_to_spirv(stage, glsl, &words, &count, log, sizeof log)) { printf("nvn_vk: %s: glslang rejected the translated text: %s\n", what, log); fflush(stdout); return NULL; }
         from_dll = 1;

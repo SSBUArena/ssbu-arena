@@ -252,6 +252,100 @@ def audit_exe_build(work, exe, llvm):
     return bad, imports
 
 
+# ---------------------------------------------------------------------------------------------- imports of the shipped binaries
+# Every DLL / EXE that reaches a player's PC may import only what every Windows 10 / 11 has, the package's own files and the
+# game DLL setup.py builds there. The Universal CRT (ucrtbase.dll and its api-ms-win-crt-* forwarders) is part of Windows 10+;
+# the Visual C++ Redistributable (MSVCP140, VCRUNTIME140, VCRUNTIME140_1, CONCRT140, ...) is NOT: a file that needs it does
+# not load on many PCs (Arena 0.2.64 / 0.2.65: ssbu_glslang.dll imported MSVCP140 / VCRUNTIME140*, the shader preparation
+# failed with "ssbu_glslang.dll cannot be loaded"). Lower case; api-ms-win-* (API sets) are resolved by Windows itself.
+SYSTEM_DLLS = {
+    'kernel32.dll', 'ntdll.dll', 'kernelbase.dll', 'user32.dll', 'gdi32.dll', 'advapi32.dll', 'shell32.dll', 'shlwapi.dll',
+    'ole32.dll', 'oleaut32.dll', 'comdlg32.dll', 'comctl32.dll', 'setupapi.dll', 'cfgmgr32.dll', 'winmm.dll', 'imm32.dll',
+    'version.dll', 'opengl32.dll', 'ws2_32.dll', 'iphlpapi.dll', 'bcrypt.dll', 'crypt32.dll', 'secur32.dll', 'dbghelp.dll',
+    'hid.dll', 'winusb.dll', 'dwmapi.dll', 'uxtheme.dll', 'dxgi.dll', 'd3d11.dll', 'powrprof.dll', 'psapi.dll', 'userenv.dll',
+    'mfplat.dll', 'mfreadwrite.dll', 'mf.dll', 'propsys.dll', 'gdiplus.dll', 'msimg32.dll', 'wininet.dll', 'winhttp.dll',
+    'ucrtbase.dll', 'msvcrt.dll', 'mscoree.dll', 'vulkan-1.dll',
+}
+# the Visual C++ Redistributable and other runtimes a clean Windows does not have: named in the audit message
+REDIST_DLL = re.compile(r'^(msvcp\d|vcruntime\d|concrt\d|vcomp\d|vccorlib\d|msvcr\d|mfc\d|ucrtbased|vcruntime.*d\.dll|msvcp.*d\.dll)', re.I)
+
+
+def pe_imports(path):
+    """(imported DLL names, delay-loaded DLL names) from the PE headers; no external tool."""
+    import struct
+    with open(path, 'rb') as f:
+        d = f.read()
+    if d[:2] != b'MZ':
+        raise ValueError('not a PE file')
+    pe = struct.unpack_from('<I', d, 0x3c)[0]
+    if d[pe:pe + 4] != b'PE\0\0':
+        raise ValueError('not a PE file')
+    nsec, optsz = struct.unpack_from('<H', d, pe + 6)[0], struct.unpack_from('<H', d, pe + 20)[0]
+    opt = pe + 24
+    pe32p = struct.unpack_from('<H', d, opt)[0] == 0x20b
+    base = struct.unpack_from('<Q', d, opt + 24)[0] if pe32p else struct.unpack_from('<I', d, opt + 28)[0]
+    dd = opt + (112 if pe32p else 96)
+    ndd = struct.unpack_from('<I', d, dd - 4)[0]
+    secs = []
+    for i in range(nsec):
+        vsz, va, rsz, raw = struct.unpack_from('<IIII', d, opt + optsz + 40 * i + 8)
+        secs.append((va, max(vsz, rsz), raw))
+
+    def off(rva):
+        for va, sz, raw in secs:
+            if va <= rva < va + sz:
+                return rva - va + raw
+        raise ValueError('%s: bad RVA %#x' % (os.path.basename(path), rva))
+
+    def cstr(o):
+        return d[o:d.index(b'\0', o)].decode('ascii', 'replace')
+
+    def table(index, size, name_at):
+        names = []
+        if ndd <= index:
+            return names
+        rva = struct.unpack_from('<I', d, dd + 8 * index)[0]
+        if not rva:
+            return names
+        o = off(rva)
+        while True:
+            desc = d[o:o + size]
+            if len(desc) < size or not any(desc):
+                break
+            name = struct.unpack_from('<I', desc, name_at)[0]
+            if index == 13 and not (struct.unpack_from('<I', desc, 0)[0] & 1):
+                name -= base                      # old-style delay descriptor: virtual addresses
+            names.append(cstr(off(name)))
+            o += size
+        return names
+    return table(1, 20, 12), table(13, 32, 4)
+
+
+def audit_imports(paths, own=(), extra_allowed=()):
+    """Problems (empty = fine) and {file: [imports]} for the DLLs / EXEs in paths: each may import only SYSTEM_DLLS,
+    api-ms-win-* API sets, the files of `own` (shipped beside it) and `extra_allowed` (e.g. the game DLL built on the PC)."""
+    ok = SYSTEM_DLLS | {n.lower() for n in own} | {n.lower() for n in extra_allowed}
+    bad, seen = [], {}
+    for p in paths:
+        name = os.path.basename(p)
+        try:
+            imp, delay = pe_imports(p)
+        except (ValueError, IndexError, OSError) as e:
+            bad.append('%s: imports not readable (%s)' % (name, e))
+            continue
+        seen[name] = imp + ['%s (delay)' % n for n in delay]
+        for dll in imp + delay:
+            low = dll.lower()
+            if low.startswith('api-ms-win-') or low in ok:
+                continue
+            if REDIST_DLL.match(low):
+                bad.append('%s imports %s: the Visual C++ Redistributable, which a clean Windows 10 / 11 does not have '
+                           '(build it with the static C runtime, /MT: scripts/build_glslang_static.py for ssbu_glslang.dll)' % (name, dll))
+            else:
+                bad.append('%s imports %s: not a DLL every Windows 10 / 11 has, nor one of the package (make_release.py SYSTEM_DLLS)' % (name, dll))
+    return bad, seen
+
+
 def audit_against(folder, work):
     """None of a dump build's tables (sdkdata.c blobs of 16 bytes or more, nro_registry.c build ids) occurs in the package."""
     needles = []
@@ -303,7 +397,10 @@ def main():
                                        ('vulkan', a.vulkan_headers, 'VULKAN_HEADERS', 'Vulkan-Headers', os.path.join('include', 'vulkan', 'vulkan.h')),
                                        ('glslang', a.glslang, 'GLSLANG_ROOT', 'glslang', os.path.join('lib', 'glslang.lib')),
                                        ('suyu', a.suyu, 'SUYU_ROOT', 'suyu', os.path.join('src', 'core', 'hle', 'service', 'mii', 'types', 'raw_data.cpp'))):
-        tools[key] = find([opt, os.environ.get(envv), os.path.join(deps, sub)], lambda d, p=probe: os.path.exists(os.path.join(d, p)))
+        cands = [opt, os.environ.get(envv), os.path.join(deps, sub)]
+        if key == 'glslang':        # the /MT libraries of scripts/build_glslang_static.py first: a DLL without the VC++ Redistributable
+            cands = [opt, os.path.join(deps, 'glslang-mt'), os.environ.get(envv), os.path.join(deps, sub)]
+        tools[key] = find(cands, lambda d, p=probe: os.path.exists(os.path.join(d, p)))
     imgui = find([a.imgui, os.environ.get('IMGUI_ROOT'), os.path.join(deps, 'imgui')],
                  lambda d: os.path.exists(os.path.join(d, 'imgui.h')) and os.path.exists(os.path.join(d, 'imgui.cpp')))
     if not imgui:
@@ -311,6 +408,7 @@ def main():
     missing = [k for k, v in tools.items() if not v] + ([] if llvm else ['llvm'])
     if missing:
         sys.exit('not found: %s (same options as scripts/setup.py)' % ', '.join(missing))
+    say('glslang libraries: %s' % tools['glslang'])
     clang = os.path.join(llvm, 'bin', 'clang.exe')
     clang_ver = subprocess.run([clang, '--version'], capture_output=True, text=True).stdout.splitlines()[0]
 
@@ -433,6 +531,12 @@ def main():
         bad += more
         say('audit: ' + summary if summary else 'audit: %s not understood' % SEED)
     more, imports = audit_exe_build(work, EXE, llvm)
+    bad += more
+    # every shipped DLL / EXE: only Windows' own DLLs, the package's files, the game DLL (no Visual C++ Redistributable)
+    bins = [os.path.join(pkg, n) for n in sorted(os.listdir(pkg)) if n.lower().endswith(('.dll', '.exe'))]
+    more, seen = audit_imports(bins, own=os.listdir(pkg), extra_allowed=['ssbu_game_r1.dll'])
+    for n, v in sorted(seen.items()):
+        say('imports of %s: %s' % (n, ' '.join(sorted(set(x.split(' ')[0].lower() for x in v)))))
     bad += more
     if a.against:
         more, n = audit_against(pkg, a.against)

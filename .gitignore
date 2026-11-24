@@ -68,6 +68,8 @@ build-macos/
 deps/
 # scripts/make_release.py: its scratch folder and the runtime package (a Release asset, never committed)
 build_release/
+# scripts/build_glslang_static.py: its sources and build tree
+build_glslang_mt/
 dist/
 
 # local configuration (build_location.txt: the install location chosen in the installer window, scripts/build_location.py)
