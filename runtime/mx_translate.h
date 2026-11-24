@@ -72,6 +72,10 @@ typedef struct {
      * conversion (round toward zero on NVIDIA; AMD's made stages black: OpenSmash #353 / #510). nvn_vk_m4.c sets it from
      * SSBU_VK_F16EXACT; the text with 0 is the one of 0.2.62 (MX_VK_VERSION 6). */
     int f16exact;
+    /* (amd-dark-frame) target 1 only: 1 = Maxwell's NaN rules written out (FMNMX returns the operand that is not NaN, .SAT
+     * of NaN is 0, .FMZ kept with .SAT, NaN tests by the bits: mx_isnan / mx_sat / mx_fmin / mx_fmax); 0 = the text as
+     * before. nvn_vk_m4.c sets it from SSBU_VK_NANEXACT (part of MX_VK_VERSION). */
+    int nanexact;
 } MxIn;
 
 typedef struct {

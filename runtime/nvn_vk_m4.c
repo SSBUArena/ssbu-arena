@@ -30,6 +30,8 @@ typedef struct VStage {
  * SSBU_VK_F16EXACT=0, whose caches are then those of 0.2.62. vk_f16_decide sets it before any stage is hashed. */
 #define MX_VK_VERSION_EXACT 7u
 #define MX_VK_VERSION_PACK 6u
+#define MX_VK_VERSION_EXACT_NAN 8u                 /* (amd-dark-frame) 7 + MxIn.nanexact */
+#define MX_VK_VERSION_PACK_NAN 9u                  /* 6 + MxIn.nanexact */
 static uint32_t g_mx_vk_version = MX_VK_VERSION_EXACT;
 #define MX_VK_VERSION g_mx_vk_version
 /* SSBU_VK_F16EXACT: 1 = mx_f2h on every GPU (the default, VK_F16EXACT_DEFAULT), 0 = packHalf2x16 as before, 2 = mx_f2h on
@@ -38,11 +40,27 @@ static uint32_t g_mx_vk_version = MX_VK_VERSION_EXACT;
 #define VK_F16EXACT_DEFAULT 1
 #endif
 static int g_vk_f16x = 1;
+/* (amd-dark-frame) SSBU_VK_NANEXACT: Maxwell's NaN rules written out in the shaders (MxIn.nanexact: FMNMX returns the
+ * operand that is not NaN, .SAT of NaN is 0, .FMZ kept with .SAT, NaN tests by the bits). 2 = the default: on every GPU
+ * but NVIDIA (whose min / max / clamp already behave so: its text and caches stay those of 0.2.70); 1 = every GPU; 0 = off.
+ * A game log of an RX 6750 XT (0.2.70) showed the whole picture going dark over a fight and staying black, the game's
+ * exposure fed by a NaN that GLSL's min / max / clamp leave undefined. The offline preparation (vendor 0) keeps it off
+ * unless SSBU_VK_NANEXACT=1: its records are the NVIDIA ones; an AMD run translates its own (whole pipelines). */
+#ifndef VK_NANEXACT_DEFAULT
+#define VK_NANEXACT_DEFAULT 2
+#endif
+static int g_vk_nanx = 0;
 static void vk_f16_decide(unsigned vendor) {
     const char *e = getenv("SSBU_VK_F16EXACT");
     int m = e && e[0] ? atoi(e) : VK_F16EXACT_DEFAULT;
     g_vk_f16x = m == 2 ? (vendor != 0x10de || vk_amd_forced()) : m != 0;
-    g_mx_vk_version = g_vk_f16x ? MX_VK_VERSION_EXACT : MX_VK_VERSION_PACK;
+    {   const char *n = getenv("SSBU_VK_NANEXACT");
+        int nm = n && n[0] ? atoi(n) : VK_NANEXACT_DEFAULT;
+        g_vk_nanx = nm == 1 || (nm == 2 && ((vendor && vendor != 0x10de) || vk_amd_forced()));
+        printf("nvn_vk: NaN rules of the Switch's GPU in the shaders (FMNMX, .SAT, .FMZ): %s (SSBU_VK_NANEXACT=%d%s; 2 = every GPU but NVIDIA, 1 = all, 0 = off)\n",
+               g_vk_nanx ? "ON" : "off", nm, n && n[0] ? "" : " default");
+    }
+    g_mx_vk_version = g_vk_f16x ? (g_vk_nanx ? MX_VK_VERSION_EXACT_NAN : MX_VK_VERSION_EXACT) : (g_vk_nanx ? MX_VK_VERSION_PACK_NAN : MX_VK_VERSION_PACK);
     printf("nvn_vk: float -> half conversions in the shaders: %s (SSBU_VK_F16EXACT=%d%s; shader version %u)\n", g_vk_f16x ? "exact, as the Switch's GPU (mx_f2h)" : "the driver's packHalf2x16, as in 0.2.62",
            m, e && e[0] ? "" : " default", (unsigned)g_mx_vk_version);
 }
@@ -297,7 +315,7 @@ static void vstage_build(VStage *v, const SSrc *src) {
         memset(&in, 0, sizeof in); memset(&out, 0, sizeof out);
         in.stage = s; in.code = src->code; in.code_len = src->code_len; in.cdata = src->cdata; in.cdata_size = src->cdata ? src->cdata_size : 0;
         in.int_attrs = v->key[0]; in.sint_attrs = v->key[1]; in.int_tex = v->key[2]; in.sint_tex = v->key[3]; in.force_out = v->fo;
-        in.target = 1; in.f16exact = g_vk_f16x; in.binding_base = 40u * (unsigned)s; in.ssbo_base = 40u * (unsigned)s + 20; in.tex_base = 40u * (unsigned)s; in.image_base = 40u * (unsigned)s + 32; in.wmask_binding = 40u * (unsigned)s + 38;
+        in.target = 1; in.f16exact = g_vk_f16x; in.nanexact = g_vk_nanx; in.binding_base = 40u * (unsigned)s; in.ssbo_base = 40u * (unsigned)s + 20; in.tex_base = 40u * (unsigned)s; in.image_base = 40u * (unsigned)s + 32; in.wmask_binding = 40u * (unsigned)s + 38;
         if (s == 5) {                              /* compute has a layout of its own (design, section 4): the bindings of stage 0 */
             in.binding_base = 0; in.ssbo_base = 20; in.tex_base = 0; in.image_base = 32; in.wmask_binding = 38; in.track_writes = 1;
             memcpy(in.local_size, src->local, sizeof in.local_size); in.smem_bytes = src->smem; in.lmem_bytes = src->lmem;

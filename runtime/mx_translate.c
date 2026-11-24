@@ -148,19 +148,27 @@ static const char *ICMPX(Mx *e, unsigned op, int sgn, const char *a, const char 
     }
     return "true";
 }
+/* (amd-dark-frame) MxIn.nanexact: Maxwell's NaN rules made explicit (FMNMX gives the operand that is not NaN, .SAT of NaN
+ * is 0, a NaN test by the bits). GLSL's min / max / clamp leave NaN undefined: NVIDIA's hardware happens to do what Maxwell
+ * does, AMD's compiler does not have to (and may take isnan() as false under its fast-math rules). */
+static int NX(const Mx *e) { return e->in->target == 1 && e->in->nanexact; }
+static const char *NANF(const Mx *e) { return NX(e) ? "mx_isnan" : "isnan"; }
+static const char *SATF(const Mx *e) { return NX(e) ? " f = mx_sat(f);" : " f = clamp(f, 0.0, 1.0);"; }
+static const char *CCF(const Mx *e) { return NX(e) ? " cz = f == 0.0 || mx_isnan(f); cs = f < 0.0 || mx_isnan(f); ccf = false; cov = false;" : " cz = f == 0.0 || isnan(f); cs = f < 0.0 || isnan(f); ccf = false; cov = false;"; }
 static const char *FCMP(Mx *e, unsigned op, const char *a, const char *b) {
     static const char *const o[8] = {"", "<", "==", "<=", ">", "!=", ">=", ""};
     unsigned base = op & 7;
     if (op == 0) return "false";
     if (op == 15) return "true";
-    if (op == 7) return S(e, "(!isnan(%s) && !isnan(%s))", a, b);
-    if (op == 8) return S(e, "(isnan(%s) || isnan(%s))", a, b);
+    const char *nn = NANF(e);
+    if (op == 7) return S(e, "(!%s(%s) && !%s(%s))", nn, a, nn, b);
+    if (op == 8) return S(e, "(%s(%s) || %s(%s))", nn, a, nn, b);
     if (op < 8) {
         if (op == 5) return S(e, "(%s < %s || %s > %s)", a, b, a, b);       /* ordered not-equal */
         return S(e, "(%s %s %s)", a, o[base], b);
     }
     if (op == 13) return S(e, "(%s != %s)", a, b);                           /* GLSL != is already unordered */
-    return S(e, "((%s %s %s) || isnan(%s) || isnan(%s))", a, o[base], b, a, b);
+    return S(e, "((%s %s %s) || %s(%s) || %s(%s))", a, o[base], b, nn, a, nn, b);
 }
 static const char *FLOW(Mx *e, unsigned t) {
     static const char *const f[32] = {
@@ -178,9 +186,9 @@ static void setcc_int(Mx *e, const char *res) { e->uses_cc = 1; emit(e, " cz = %
 /* float result with optional saturation and condition code */
 static void fres(Mx *e, uint64_t i, const char *expr, int sat, int cc) {
     emit(e, "float f = %s;", expr);
-    if (sat) emit(e, " f = clamp(f, 0.0, 1.0);");
+    if (sat) emit(e, "%s", SATF(e));
     emit(e, " %s = U(f);", DST);
-    if (cc) { e->uses_cc = 1; emit(e, " cz = f == 0.0 || isnan(f); cs = f < 0.0 || isnan(f); ccf = false; cov = false;"); }
+    if (cc) { e->uses_cc = 1; emit(e, "%s", CCF(e)); }
 }
 static const char *fmz_mul(Mx *e, const char *a, const char *b, int fmz) {
     if (!fmz) return S(e, "%s * %s", a, b);
@@ -597,8 +605,8 @@ static const char *HX(Mx *e, const char *r, unsigned sw, int absv, int neg) {
 }
 static void hres(Mx *e, uint64_t i, const char *expr, int sat, unsigned merge, int fmz_zero, const char *za, const char *zb, const char *zc) {
     emit(e, "vec2 h = %s;", expr);
-    if (fmz_zero && !sat) emit(e, " h = mix(h, %s, bvec2(%s.x == 0.0 || %s.x == 0.0, %s.y == 0.0 || %s.y == 0.0));", zc, za, zb, za, zb);
-    if (sat) emit(e, " h = clamp(h, 0.0, 1.0);");
+    if (fmz_zero && (!sat || NX(e))) emit(e, " h = mix(h, %s, bvec2(%s.x == 0.0 || %s.x == 0.0, %s.y == 0.0 || %s.y == 0.0));", zc, za, zb, za, zb);
+    if (sat) emit(e, "%s", NX(e) ? " h = mx_sat2(h);" : " h = clamp(h, 0.0, 1.0);");
     unsigned rd = MXB(i, 0, 8);
     emit(e, " %s = HM(%s, h, %uu);", D(e, rd), X(e, rd), merge);
 }
@@ -751,14 +759,14 @@ static void insn(Mx *e, unsigned pc, uint64_t i) {
         default: b = I32(e, i); c = X(e, MXB(i, 0, 8)); break;
         }
         const char *a = FN(e, A8, 0, is32 ? (int)MXB(i, 56, 1) : 0), *bb = FN(e, b, 0, is32 ? 0 : (int)MXB(i, 48, 1)), *cc = FN(e, c, 0, (int)(is32 ? MXB(i, 57, 1) : MXB(i, 49, 1)));
-        const char *expr = fmz && !sat ? S(e, "((%s == 0.0 || %s == 0.0) ? %s : fma(%s, %s, %s))", a, bb, cc, a, bb, cc) : S(e, "fma(%s, %s, %s)", a, bb, cc);
+        const char *expr = fmz && (!sat || NX(e)) ? S(e, "((%s == 0.0 || %s == 0.0) ? %s : fma(%s, %s, %s))", a, bb, cc, a, bb, cc) : S(e, "fma(%s, %s, %s)", a, bb, cc);
         fres(e, i, expr, sat, (int)(is32 ? MXB(i, 52, 1) : MXB(i, 47, 1)));
         break;
     }
     case MXOP_FMNMX_reg: case MXOP_FMNMX_cbuf: case MXOP_FMNMX_imm: {
         b = op == MXOP_FMNMX_reg ? R20 : op == MXOP_FMNMX_cbuf ? CB(e, i) : F20(e, i);
         const char *fa = FN(e, A8, MXB(i, 46, 1), MXB(i, 48, 1)), *fb = FN(e, b, MXB(i, 49, 1), MXB(i, 45, 1));
-        fres(e, i, S(e, "%s ? min(%s, %s) : max(%s, %s)", PR(e, MXB(i, 39, 3), (int)MXB(i, 42, 1)), fa, fb, fa, fb), 0, MXB(i, 47, 1));
+        fres(e, i, S(e, NX(e) ? "%s ? mx_fmin(%s, %s) : mx_fmax(%s, %s)" : "%s ? min(%s, %s) : max(%s, %s)", PR(e, MXB(i, 39, 3), (int)MXB(i, 42, 1)), fa, fb, fa, fb), 0, MXB(i, 47, 1));
         break;
     }
     case MXOP_FSET_reg: case MXOP_FSET_cbuf: case MXOP_FSET_imm: {
@@ -810,10 +818,10 @@ static void insn(Mx *e, unsigned pc, uint64_t i) {
         if (MXB(i, 45, 1)) src = S(e, "(-%s)", src);
         emit(e, "float f = %s;", src);
         if (ssz == dsz && rop >= 8) emit(e, " f = %s(f);", rnd[rop & 3]);
-        if (MXB(i, 50, 1)) emit(e, " f = clamp(f, 0.0, 1.0);");
+        if (MXB(i, 50, 1)) emit(e, "%s", SATF(e));
         if (dsz == 1 && PH(e)[0] == 'm') emit(e, MXB(i, 39, 2) ? " %s = mx_f2h(f, %uu);" : " %s = mx_h1(f);", DST, (unsigned)MXB(i, 39, 2));      /* (amd-fixes) the conversion's rounding mode, bits 39-40: RN RM RP RZ */
         else if (dsz == 1) emit(e, " %s = packHalf2x16(vec2(f, 0.0));", DST); else emit(e, " %s = U(f);", DST);
-        if (MXB(i, 47, 1)) { e->uses_cc = 1; emit(e, " cz = f == 0.0 || isnan(f); cs = f < 0.0 || isnan(f); ccf = false; cov = false;"); }
+        if (MXB(i, 47, 1)) { e->uses_cc = 1; emit(e, "%s", CCF(e)); }
         break;
     }
     case MXOP_F2I_reg: case MXOP_F2I_cbuf: {
@@ -1105,7 +1113,7 @@ static void insn(Mx *e, unsigned pc, uint64_t i) {
             if (eff == 2 || eff == 0) emit(e, " f *= gl_FragCoord.w;");      /* hardware IPA returns attribute / w; the shader multiplies by w */
         }
         if (mode == 1) emit(e, " f *= F(%s);", R20);
-        if (MXB(i, 51, 1)) emit(e, " f = clamp(f, 0.0, 1.0);");
+        if (MXB(i, 51, 1)) emit(e, "%s", SATF(e));
         emit(e, " %s = U(f);", DST);
         break;
     }
@@ -1494,6 +1502,12 @@ static const char *const k_prelude =
     "#define F(x) uintBitsToFloat(x)\n#define U(x) floatBitsToUint(x)\n"
     "bool cz = false, cs = false, ccf = false, cov = false;\n"
     "vec2 H(uint r, uint s) { vec2 v = unpackHalf2x16(r); return s == 0u ? v : s == 1u ? vec2(F(r)) : s == 2u ? v.xx : v.yy; }\n";
+static const char *const k_nanexact =      /* (amd-dark-frame) MxIn.nanexact */
+    "bool mx_isnan(float x) { return (U(x) & 0x7fffffffu) > 0x7f800000u; }\n"
+    "float mx_sat(float x) { return mx_isnan(x) ? 0.0 : clamp(x, 0.0, 1.0); }\n"
+    "vec2 mx_sat2(vec2 x) { return vec2(mx_sat(x.x), mx_sat(x.y)); }\n"
+    "float mx_fmin(float a, float b) { return mx_isnan(a) ? b : mx_isnan(b) ? a : min(a, b); }\n"
+    "float mx_fmax(float a, float b) { return mx_isnan(a) ? b : mx_isnan(b) ? a : max(a, b); }\n";
 static const char *const k_prelude_b =      /* (amd-fixes) the rest, after HM: mx_translate writes HM between the two parts */
     "uint mx_addc(uint a, uint b, uint ci) { uint c1, c2; uint r = uaddCarry(a, b, c1); r = uaddCarry(r, ci, c2); cz = r == 0u; cs = int(r) < 0; ccf = (c1 | c2) != 0u; cov = (((a ^ r) & (b ^ r)) >> 31) != 0u; return r; }\n"
     "uint mx_bfe(uint base, uint ctl, bool sgn) { uint off = ctl & 255u, cnt = (ctl >> 8) & 255u;\n"
@@ -1584,7 +1598,12 @@ int mx_translate(const MxIn *in, MxOut *out) {
         if (e->uses_layer_out || e->uses_vp_out) emit(&h, "#extension GL_ARB_shader_viewport_layer_array : require\n");
         emit(&h, "%s", k_prelude);
         if (vk && in->f16exact) emit(&h, "%s", k_f16exact);
+        if (vk && in->nanexact) emit(&h, "%s", k_nanexact);
         emit(&h, "uint HM(uint d, vec2 v, uint m) { uint p = %s(v); return m == 0u ? p : m == 1u ? U(v.x) : m == 2u ? ((d & 0xffff0000u) | (p & 0xffffu)) : ((d & 0xffffu) | (p & 0xffff0000u)); }\n", vk && in->f16exact ? "mx_ph2" : "packHalf2x16");
+        if (vk && in->nanexact) {                  /* (amd-dark-frame) mx_f2i's NaN test by the bits too */
+            const char *q = strstr(k_prelude_b, "isnan(f)");
+            if (q) emit(&h, "%.*smx_%s", (int)(q - k_prelude_b), k_prelude_b, q); else emit(&h, "%s", k_prelude_b);
+        } else
         emit(&h, "%s", k_prelude_b);
         if (vk && in->stage == MX_FRAGMENT && in->screen_scale && e->uses_fcs) emit(&h, "layout(push_constant) uniform MXPC { uvec2 mx_alpha; float mx_point_size; float mx_fcs; };\n");      /* track O */
         else

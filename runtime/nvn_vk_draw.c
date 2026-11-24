@@ -4843,8 +4843,8 @@ static void vkd_init(void) {
         e = getenv("SSBU_VK_CBMEM"); int cbmem = e ? atoi(e) : vk_amd_safe() ? 0 : cbkeep ? 1 : 0;
         e = getenv("SSBU_VK_BUFMEM"); int bufmem = e ? atoi(e) : vk_amd_safe() ? 0 : 1;
         int d24 = tex_vkfmt(0x35, &ex, &dec) == VK_FORMAT_D24_UNORM_S8_UINT;
-        printf("nvn_vk_amd: %s; in effect: SSBU_VK_GPL=%d SSBU_VK_EDS3=%d SSBU_VK_SNORM_EMU=%d SSBU_VK_DEPTHCOPY=%d SSBU_VK_CBKEEP=%d SSBU_VK_CBMEM=%d SSBU_VK_BUFMEM=%d SSBU_VK_F16EXACT=%d SSBU_VK_DBIAS_UNORM=%d (%s) | 24-bit depth: %s | VK_EXT_depth_bias_control: %s\n",
-               vk_as_amd() ? "AMD path" : "not the AMD path", vk_gpl_mode(), D.has_eds3, vfmt_snorm_emu(), depth_copy_on(), cbkeep, cbmem, bufmem, g_vk_f16x, D.has_dbc,
+        printf("nvn_vk_amd: %s; in effect: SSBU_VK_GPL=%d SSBU_VK_EDS3=%d SSBU_VK_SNORM_EMU=%d SSBU_VK_DEPTHCOPY=%d SSBU_VK_CBKEEP=%d SSBU_VK_CBMEM=%d SSBU_VK_BUFMEM=%d SSBU_VK_F16EXACT=%d SSBU_VK_NANEXACT=%d SSBU_VK_DBIAS_UNORM=%d (%s) | 24-bit depth: %s | VK_EXT_depth_bias_control: %s\n",
+               vk_as_amd() ? "AMD path" : "not the AMD path", vk_gpl_mode(), D.has_eds3, vfmt_snorm_emu(), depth_copy_on(), cbkeep, cbmem, bufmem, g_vk_f16x, g_vk_nanx, D.has_dbc,
                getenv("SSBU_VK_AMD_SAFE") ? "SSBU_VK_AMD_SAFE set" : "defaults", d24 ? "D24S8" : "drawn as D32S8 (no D24S8 on this GPU)", D.has_dbc ? "listed, in use" : g_has_dbc_ext ? "listed, not in use" : "not listed");
     }
     vkGetPhysicalDeviceMemoryProperties(V.gpu, &D.mp);
