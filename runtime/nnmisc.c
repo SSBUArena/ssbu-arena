@@ -533,6 +533,8 @@ static uint64_t desired_language(void) {
     const char *gfx_language(void);                   /* U1: graphics.ini language = auto | <code> (gfx_options.c; the settings menu writes it) */
     if (env && env[0]) snprintf(name, sizeof name, "%s", env);
     else if (gfx_language()[0]) snprintf(name, sizeof name, "%s", gfx_language());
+    else if (getenv("SSBU_TEST_WINDOWS_LANGUAGE") && getenv("SSBU_TEST_WINDOWS_LANGUAGE")[0])      /* tests: a Windows display language, without changing Windows */
+        snprintf(name, sizeof name, "%s", getenv("SSBU_TEST_WINDOWS_LANGUAGE"));
     else {
         /* the display language of the user interface, not the regional format */
         wchar_t list[512];
@@ -567,7 +569,7 @@ static uint64_t desired_language(void) {
 }
 static void oe_GetDesiredLanguage(Ctx *c) { RET(desired_language()); }   /* LanguageCode (8 chars) by value in x0 */
 /* (OpenSmash-Ultimate #466, Denkishi) the game keeps its text language in its system save (system_data.bin, nnfs.c
- * sysave_language): one byte written when the save is made, from the language the game was given then; from then on the
+ * sysave_settle / sysave_language): one byte written when the save is made, from the language the game was given then; from then on the
  * game shows its text in that language whatever GetDesiredLanguage says. The value is the language without its region,
  * from the game's own table (OpenSmash measured it on 13.0.5; Arena's 13.0.4 base save, made on an Italian Windows, holds
  * 5 = it at the same place). Returns the value of the language the game is given now (code: its name), -1 = none. */
@@ -581,6 +583,14 @@ int nnmisc_save_language(const char **code) {
     *code = name;
     for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) if (!strcmp(name, k[i].code)) return k[i].value;
     return -1;
+}
+/* 1 = the language the game is given was chosen by hand (SSBU_LANGUAGE, or graphics.ini language, which the settings menu
+ * writes), 0 = it is the Windows display language (language = auto). nnfs.c sysave_settle: only a choice by hand replaces
+ * the language a save already holds. */
+int nnmisc_language_chosen(void) {
+    const char *env = getenv("SSBU_LANGUAGE");
+    const char *gfx_language(void);
+    return (env && env[0]) || gfx_language()[0];
 }
 
 /* ---------------------------------------------------------------- nn::err
