@@ -450,6 +450,14 @@ static void sizing_keep_aspect(HWND h, WPARAM edge, RECT *r) {
         if (edge == WMSZ_TOPLEFT || edge == WMSZ_TOPRIGHT) r->top = r->bottom - ch - fh; else r->bottom = r->top + ch + fh;
     }
 }
+/* (OpenSmash #409, Inawordyes) borderless / fullscreen: WS_POPUP alone could not be minimised (its taskbar button and Win+Down did
+ * nothing). WS_MINIMIZEBOX | WS_SYSMENU let the shell minimise and restore it; a WS_POPUP window has no title bar, so nothing new is
+ * drawn. A minimised window's swapchain has a zero-sized surface: its presents are skipped and the game goes on (nvn_vk.c, nnmisc.c).
+ * SSBU_BORDERLESS_MIN=0: the old style (WS_POPUP only). */
+static DWORD borderless_style(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("SSBU_BORDERLESS_MIN"); on = !(e && e[0] == '0'); }
+    return WS_POPUP | (on ? WS_MINIMIZEBOX | WS_SYSMENU : 0);
+}
 static int g_full;                                    /* F11 state: 1 = borderless over the monitor */
 static volatile LONG g_topmost;                       /* U1: window = fullscreen (borderless and topmost) */
 static WINDOWPLACEMENT g_windowed;
@@ -461,7 +469,7 @@ static void toggle_fullscreen(HWND h) {
         if (!GetMonitorInfoA(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi)) return;
         g_windowed.length = sizeof g_windowed;
         g_have_windowed = GetWindowPlacement(h, &g_windowed);
-        SetWindowLongPtrA(h, GWL_STYLE, (LONG_PTR)(WS_POPUP | WS_VISIBLE));
+        SetWindowLongPtrA(h, GWL_STYLE, (LONG_PTR)(borderless_style() | WS_VISIBLE));
         SetWindowPos(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
                      SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
     } else {
@@ -596,7 +604,7 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     /* Track O: window mode and size from config\graphics.ini (gfx_options.c). borderless / fullscreen: a frameless window
      * over the primary monitor (fullscreen: also topmost). */
     const GfxOptions *go = gfx_options();
-    DWORD style = go->window_mode ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+    DWORD style = go->window_mode ? borderless_style() : WS_OVERLAPPEDWINDOW;
     g_full = go->window_mode != 0;
     int cw = go->width, ch = go->height, px = CW_USEDEFAULT, py = CW_USEDEFAULT;
     if (go->window_mode) {
