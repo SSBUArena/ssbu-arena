@@ -566,6 +566,22 @@ static uint64_t desired_language(void) {
     return v;
 }
 static void oe_GetDesiredLanguage(Ctx *c) { RET(desired_language()); }   /* LanguageCode (8 chars) by value in x0 */
+/* (OpenSmash-Ultimate #466, Denkishi) the game keeps its text language in its system save (system_data.bin, nnfs.c
+ * sysave_language): one byte written when the save is made, from the language the game was given then; from then on the
+ * game shows its text in that language whatever GetDesiredLanguage says. The value is the language without its region,
+ * from the game's own table (OpenSmash measured it on 13.0.5; Arena's 13.0.4 base save, made on an Italian Windows, holds
+ * 5 = it at the same place). Returns the value of the language the game is given now (code: its name), -1 = none. */
+int nnmisc_save_language(const char **code) {
+    static const struct { const char *code; int value; } k[] = {
+        {"ja", 0}, {"en-US", 1}, {"en-GB", 1}, {"fr", 2}, {"fr-CA", 2}, {"es", 3}, {"es-419", 3},
+        {"de", 4}, {"it", 5}, {"nl", 6}, {"ru", 7}, {"zh-Hans", 8}, {"zh-Hant", 9}, {"ko", 10}};
+    static char name[9];
+    uint64_t v = desired_language();
+    memcpy(name, &v, 8); name[8] = 0;
+    *code = name;
+    for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) if (!strcmp(name, k[i].code)) return k[i].value;
+    return -1;
+}
 
 /* ---------------------------------------------------------------- nn::err
  * [sdk] ErrorResultVariant { uint32_t state @0 (0 none, 1 Result, 2 ErrorCode); payload @4:
