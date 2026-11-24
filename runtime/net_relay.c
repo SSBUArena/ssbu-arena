@@ -1650,12 +1650,14 @@ static void send_join(void) {
 }
 
 /* ---------------------------------------------------------------- (0.2.68) the own side of the ping
- * SSBU_RB_PING_OWN_SIDE (default 1): the ping shown in an online rollback match (the overlay next to the delay frames and the
+ * SSBU_RB_PING_OWN_SIDE (default 2): the ping shown in an online rollback match (the overlay next to the delay frames and the
  * F2 numbers) is THIS game's round trip to the relay server, not the round trip between the two games. Every message of a
  * match goes through the lobby (relay only), so the round trip between the games is (about) the sum of both players' own
  * sides: 16 ms + 35 ms showed 51 to both players; now each one sees his own 16 or 35.
  *   1  this game's own side, next to its own player only (the other player's slot is not drawn)
- *   2  also the other player's own side next to him (the round trip his game reports to the lobby, "--" when unknown)
+ *   2  (default since 0.2.68's release) also the other player's own side next to him: the round trip his game reports in its
+ *      PING (+21), sent back in the lobby's PONG list "PR" (rb_lobby.c: the players of the room and the rollback / quick-match
+ *      opponent; tools/net/ssbu_lobby.py sends no list); "--" when unknown (never the round trip between the games)
  *   0  as 0.2.14..0.2.67: the round trip between the two games under both players
  * Measured with the lobby's existing PING / PONG (every second, the keepalive; the lobby echoes the 8-byte time as it is):
  * nothing new on the wire and nothing new on the server. The send time is kept here with the high-resolution clock (the
@@ -1665,7 +1667,7 @@ static void send_join(void) {
  * rb_net.c keep using the round trip between the two games (rb_net.c rbn_rtt_ms): only the number shown changes. */
 static int own_side_mode(void) {
     static int m = -1;
-    if (m < 0) { const char *e = getenv("SSBU_RB_PING_OWN_SIDE"); m = e && *e ? atoi(e) : 1; if (m < 0 || m > 2) m = 1; }
+    if (m < 0) { const char *e = getenv("SSBU_RB_PING_OWN_SIDE"); m = e && *e ? atoi(e) : 2; if (m < 0 || m > 2) m = 2; }
     return m;
 }
 static double qpc_us(void) {
