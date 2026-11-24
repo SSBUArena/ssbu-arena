@@ -25,6 +25,7 @@ enum { BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_STICK_L, BTN_STICK_R, BTN_L, BTN_R, B
 #define STYLE_FULLKEY 1u
 #define STYLE_GC 0x20u                                      /* NpadStyleTag_NpadGc = bit 5 (libnx hid.h) */
 #define STICK_MAX 32767
+#define KB_DIAG 23170                                       /* STICK_MAX / sqrt 2: a keyboard diagonal on the stick's circle (OpenSmash #539) */
 
 static volatile LONG64 g_sampling;
 /* Test aid: SSBU_PRESS=<key>,<first second>,<period seconds> holds that key for 0.15 s at each period,
@@ -643,6 +644,17 @@ static void fill_pad(uint64_t out, uint32_t id, int kind) {
         lx = (key_for(id, VK_RIGHT, 18) - key_for(id, VK_LEFT, 16)) * STICK_MAX;
         ly = (key_for(id, VK_UP, 17) - key_for(id, VK_DOWN, 19)) * STICK_MAX;
         if (sdl_on()) { rx = (key_for(id, 0, 22) - key_for(id, 0, 20)) * STICK_MAX; ry = (key_for(id, 0, 21) - key_for(id, 0, 23)) * STICK_MAX; }
+        /* (OpenSmash #539, Denkishi) two direction keys held: the stick on the circle's edge, 23170 = 32767 / sqrt 2 each way, as a
+         * real stick gives it, not the square's corner (32767, 32767), whose full x made down + forward a dash: no crawl, no crouch
+         * cancel. One key alone is still full. Local input only: an online match exchanges these final values (rb_rollback.c rbg_pad),
+         * so both games see the same stick. SSBU_KB_DIAG_CIRCLE=0: the old corner. */
+        static int diag = -1; if (diag < 0) { const char *e = getenv("SSBU_KB_DIAG_CIRCLE"); diag = !(e && e[0] == '0'); }
+        if (diag && lx && ly) { lx = lx < 0 ? -KB_DIAG : KB_DIAG; ly = ly < 0 ? -KB_DIAG : KB_DIAG; }
+        if (diag && rx && ry) { rx = rx < 0 ? -KB_DIAG : KB_DIAG; ry = ry < 0 ? -KB_DIAG : KB_DIAG; }
+        {   static int log_left = -1; static int last[8][2];       /* SSBU_KB_DIAG_LOG=1 (test): each change of the keyboard's left stick */
+            if (log_left < 0) log_left = getenv("SSBU_KB_DIAG_LOG") ? 200 : 0;
+            if (log_left && (lx != last[id][0] || ly != last[id][1])) { log_left--; last[id][0] = lx; last[id][1] = ly;
+                printf("hid: keyboard left stick (player %u): x %d y %d%s\n", id + 1, lx, ly, lx && ly ? (diag ? " (diagonal, on the circle)" : " (diagonal, the corner)") : ""); fflush(stdout); } }
     }
     int slot = g_source[id];
     if (sdl_on()) {
