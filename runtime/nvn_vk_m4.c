@@ -282,6 +282,19 @@ static VStage *vstage_new(uint64_t hb, int s, int code_len, const uint32_t *key,
     v->next = g_vstage[hb & 4095]; g_vstage[hb & 4095] = v;
     return v;
 }
+/* The translator's input of a stage variant (vstage_build; (amd-black) lumdiag's shader dumps translate the same text again). */
+static void mxin_fill(MxIn *in, const SSrc *src, const uint32_t *key, uint32_t fo) {
+    int s = src->stage;
+    memset(in, 0, sizeof *in);
+    in->stage = s; in->code = src->code; in->code_len = src->code_len; in->cdata = src->cdata; in->cdata_size = src->cdata ? src->cdata_size : 0;
+    in->int_attrs = key[0]; in->sint_attrs = key[1]; in->int_tex = key[2]; in->sint_tex = key[3]; in->force_out = fo;
+    in->target = 1; in->f16exact = g_vk_f16x; in->nanexact = g_vk_nanx; in->binding_base = 40u * (unsigned)s; in->ssbo_base = 40u * (unsigned)s + 20; in->tex_base = 40u * (unsigned)s; in->image_base = 40u * (unsigned)s + 32; in->wmask_binding = 40u * (unsigned)s + 38;
+    if (s == 5) {                                  /* compute has a layout of its own (design, section 4): the bindings of stage 0 */
+        in->binding_base = 0; in->ssbo_base = 20; in->tex_base = 0; in->image_base = 32; in->wmask_binding = 38; in->track_writes = 1;
+        memcpy(in->local_size, src->local, sizeof in->local_size); in->smem_bytes = src->smem; in->lmem_bytes = src->lmem;
+    }
+    if (s == 1 && RS_ON) in->screen_scale = 1;
+}
 /* Any thread, no lock: fills v (in the table, state 1) from its record on disk, else with the translator and glslang. */
 static int prep_nomod(const VStage *v) { return v->temp && !D.has_gpl && !g_offline && prep_nomod_on(); }
 static void vstage_build(VStage *v, const SSrc *src) {
@@ -312,16 +325,9 @@ static void vstage_build(VStage *v, const SSrc *src) {
         MxIn in;
         MxOut out;
         char what[64];
-        memset(&in, 0, sizeof in); memset(&out, 0, sizeof out);
-        in.stage = s; in.code = src->code; in.code_len = src->code_len; in.cdata = src->cdata; in.cdata_size = src->cdata ? src->cdata_size : 0;
-        in.int_attrs = v->key[0]; in.sint_attrs = v->key[1]; in.int_tex = v->key[2]; in.sint_tex = v->key[3]; in.force_out = v->fo;
-        in.target = 1; in.f16exact = g_vk_f16x; in.nanexact = g_vk_nanx; in.binding_base = 40u * (unsigned)s; in.ssbo_base = 40u * (unsigned)s + 20; in.tex_base = 40u * (unsigned)s; in.image_base = 40u * (unsigned)s + 32; in.wmask_binding = 40u * (unsigned)s + 38;
-        if (s == 5) {                              /* compute has a layout of its own (design, section 4): the bindings of stage 0 */
-            in.binding_base = 0; in.ssbo_base = 20; in.tex_base = 0; in.image_base = 32; in.wmask_binding = 38; in.track_writes = 1;
-            memcpy(in.local_size, src->local, sizeof in.local_size); in.smem_bytes = src->smem; in.lmem_bytes = src->lmem;
-        }
+        memset(&out, 0, sizeof out);
+        mxin_fill(&in, src, v->key, v->fo);
         snprintf(what, sizeof what, "program #%d %s stage", src->serial, s == 5 ? "compute" : s ? "fragment" : "vertex");
-        if (s == 1 && RS_ON) in.screen_scale = 1;
         if (!mx_translate(&in, &out)) { printf("nvn_vk: %s: machine code not translated: %s\n", what, out.why); fflush(stdout); }
         else {
             uint64_t spv_hash = 0;

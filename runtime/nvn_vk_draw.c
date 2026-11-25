@@ -411,7 +411,9 @@ static struct {
     LONG64 dispatches, cb_bytes, cb_syncs, cb_draws, cb_made, cb_waits, cb_wait_ticks, cb_guest_words, cb_conflict_words, readbacks;
 } R;
 
-static void pass_end(void) { if (R.in_pass) { vkCmdEndRendering(R.cmd); R.in_pass = 0; CKPT_OP("pass end (w, h)", 0, R.pass_w, R.pass_h, 0); } }
+static int g_ld_cap, g_ld_npe;                     /* (amd-black) nvn_vk_lumdiag.c: a capture frame is being recorded / entries of the open pass */
+static void ld_pass_done(void); static void ld_pass_begin(void); static void ld_draw(void); static void ld_tex_written(int kind, Tex *d, const View *v);
+static void pass_end(void) { if (R.in_pass) { vkCmdEndRendering(R.cmd); R.in_pass = 0; CKPT_OP("pass end (w, h)", 0, R.pass_w, R.pass_h, 0); if (g_ld_npe) ld_pass_done(); } }
 static LONG64 g_tm[12];                          /* ticks: 0 wait for a submission, 1 copy-back, 2 dispatch, 3 batch replay, 4 present, 5 pipelines, 6 modules, 7 copy-back wait at batch start, 8 draw preparation */
 static LONG64 tk(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 /* Session 5, SSBU_VK_GPUTIME=1: two timestamp queries per command buffer (written at its first and after its last command),
@@ -908,6 +910,13 @@ static void vt_put(Tex *t, int level, int layer, int w, int h, int d, const void
 static LONG64 g_ta_n, g_ta_bytes, g_ta_tk, g_ta_max_tk, g_late_n, g_late_tk, g_late_fight_n, g_late_fight_tk, g_up_fr_tk, g_up_fr_bytes;
 static int g_up_fr_n, g_ta_inside;
 static volatile LONG g_in_fight;                   /* nvn_vk_m4.c (included further down) */
+/* (amd-black) SSBU_VK_MSAA_CLEAR: a new MULTISAMPLE image is cleared to zero too (the single-sample ones always were: the last
+ * image memory left as the driver gives it). 2 = the default: every GPU but NVIDIA (and SSBU_VK_AMD_SAFE=2); 1 = all; 0 = off. */
+static int vk_msaa_clear(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_VK_MSAA_CLEAR"); int m = e && e[0] ? atoi(e) : 2; on = m == 1 || (m == 2 && (V.props.vendorID != 0x10de || vk_amd_forced())); }
+    return on;
+}
 static VTex *vt_get2(Tex *t, int sync) {
     VTex *vt = t->vk;
     LONG64 tu0 = 0, ub0 = R.upload_bytes;
@@ -960,7 +969,7 @@ static VTex *vt_get2(Tex *t, int sync) {
         if (can_color || vt->aspect != VK_IMAGE_ASPECT_COLOR_BIT) {      /* an image nothing was written to reads as zero (the OpenGL driver's behaviour, which the comparison saw) */
             VkImageSubresourceRange sr = {vt->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
             vt_layout(vt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            if (vt->samples == 1) {
+            if (vt->samples == 1 || vk_msaa_clear()) {      /* (amd-black) multisample images too: SSBU_VK_MSAA_CLEAR (default on every GPU but NVIDIA) */
                 CKPT_OP("clear of a new image (image, w, h, levels)", vt->img, vt->w, vt->h, vt->levels);
                 if (can_color) { VkClearColorValue z; memset(&z, 0, sizeof z); vkCmdClearColorImage(R.cmd, vt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &z, 1, &sr); }
                 else { VkClearDepthStencilValue z = {0.0f, 0}; vkCmdClearDepthStencilImage(R.cmd, vt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &z, 1, &sr); }
@@ -1599,6 +1608,7 @@ static int pass_begin(void) {
         }
     }
     if (!w) return 0;
+    if (g_ld_cap) ld_pass_begin();                 /* (amd-black) lumdiag: the small targets of this pass */
     { Tex *c0 = R.ncol ? R.col[0].tex : NULL; fl_pass(w, h, c0 ? (int)c0->b.format : 0, c0 && wintex_is(c0), R.ncol, ri.pDepthAttachment != NULL); }      /* session 13: the flash detector's pass list */
     {   /* session 9, SSBU_VK_UILOG=<n>: every pass begun in the n-th battle frame ("nvn_vk_ui:" lines): its targets, whether the
          * colour target is a texture of the window, and the draws of the frame so far (the next line's number minus this one = its draws) */
@@ -2839,6 +2849,7 @@ static void compute_pipe_make(VStage *v) {         /* any thread */
         InterlockedIncrement64(&R.pipelines);
     }
 }
+static void ld_dispatch(const Prog *p, VStage *v, const BufRef *bufs);      /* (amd-black) nvn_vk_lumdiag.c */
 static void compute_dispatch_run(Prog *p, Stage *st, VStage *v, uint32_t gx, uint32_t gy, uint32_t gz) {
     static BufRef bufs[40];
     int nbuf = 0;
@@ -2920,6 +2931,7 @@ static void compute_dispatch_run(Prog *p, Stage *st, VStage *v, uint32_t gx, uin
         d->wm_off = wm_off; d->written = v->ssbo_w; memcpy(d->cb, wcb, sizeof wcb);
     }
     memcpy(g_last_wcb, wcb, sizeof wcb);
+    if (g_ld_cap) ld_dispatch(p, v, bufs);        /* (amd-black) lumdiag: the small storage buffers it wrote */
 }
 /* Everything of a draw up to the draw call. topo: NVN primitive. Returns 0 when the draw cannot be done (counted as skipped). */
 static uint64_t g_dt_voff[16]; static VkBuffer g_dt_vb[16]; int nvn_front_draw_tag(void);      /* round 17, test (SSBU_DRAWTAG): see dt_vk */
@@ -2986,7 +2998,7 @@ static int draw_prepare(unsigned prim) {
     if (vs) { uint32_t need = fs ? fs->in_attr & ~(vs->out_attr & ~vs->fo) : 0; if (need != vs->fo) vs = vstage_get(R.prog[0], 0, key0, need); }
     if (g_skip_flag) { g_skip_flag = 0; if (!vs || (!depth_only && !fs)) return 0; }      /* shader_wait = skip: the draw is left out (counted in vstage_get) */
     if (!vs || (!depth_only && !fs)) { nvn_vk_missing("a draw whose vertex or fragment stage could not be translated or compiled (the log names the stage)"); return 0; }
-    if (D.has_ckpt) { g_dvs = vs; g_dfs = fs; }    /* PR #32: for the device loss report's draw markers */
+    if (D.has_ckpt || g_ld_cap) { g_dvs = vs; g_dfs = fs; }    /* PR #32: for the device loss report's draw markers; (amd-black) lumdiag's capture frames */
 
     /* 1. textures (may upload, change layouts, end the pass) */
     g_ndtex = 0;
@@ -3707,6 +3719,7 @@ static void exec(const Cmd *m, int depth) {
         { LONG64 t0 = tk(); int ok = draw_prepare((unsigned)a[0]); g_tm[8] += tk() - t0; { int dtag = nvn_front_draw_tag(); if (dtag) dt_vk(dtag, nvn_front_draw_tag_next(), ok, m, 0, NULL); } if (!ok) { R.frame_skipped++; nvn_front_count(1, 1); break; } }
         if (D.has_ckpt) ckpt_mark(0, (unsigned)a[0], (uint32_t)a[2], (uint32_t)a[4], (uint32_t)a[1], 0, 0);
         vkCmdDraw(R.cmd, (uint32_t)a[2], (uint32_t)a[4], (uint32_t)a[1], (uint32_t)a[3]);
+        if (g_ld_npe) ld_draw();
         lt_tag_targets();
         R.frame_draws++; g_cmd_draws++; nvn_front_count(0, 1);
         break;
@@ -3728,6 +3741,7 @@ static void exec(const Cmd *m, int depth) {
         vkCmdBindIndexBuffer(R.cmd, ib.buf, ib.off, t == 0 ? VK_INDEX_TYPE_UINT8_EXT : t == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
         if (D.has_ckpt) ckpt_mark(1, (unsigned)a[0], (uint32_t)count, (uint32_t)a[6], 0, (int32_t)a[4], t);
         vkCmdDrawIndexed(R.cmd, (uint32_t)count, (uint32_t)a[6], 0, (int32_t)a[4], (uint32_t)a[5]);
+        if (g_ld_npe) ld_draw();
         lt_tag_targets();
         R.frame_draws++; g_cmd_draws++; nvn_front_count(0, 1);
         break;
@@ -3741,6 +3755,7 @@ static void exec(const Cmd *m, int depth) {
         memcpy(&v, blob, sizeof v); memcpy(r, blob + 24, 24);
         CB_WHY(CBW_TEX, a[3], 0); cb_sync();
         if (g_cb_nkept) cb_kept_all(3);
+        if (g_ld_cap) ld_tex_written(3, t, &v);   /* (amd-black) lumdiag: a small texture read by the CPU */
         read_region(t, &v, r, P(a[3]), (int64_t)a[5], (int64_t)a[6]);     /* PR #14 (xtlg511): the strides of its own command buffer */
         R.gen++;                                  /* guest memory changed: ranges are streamed again */
         break;
@@ -3754,6 +3769,7 @@ static void exec(const Cmd *m, int depth) {
         if (a[6] & 4) { dr[0] += dr[3]; dr[3] = -dr[3]; }
         if (a[6] & 8) { dr[1] += dr[4]; dr[4] = -dr[4]; }
         blit_tex(s, &sv, sr, d, &dv, dr, (int)(a[6] & 1));
+        if (g_ld_cap) ld_tex_written(2, d, &dv);
         break;
     }
     case OP_DOWNSAMPLE: {
@@ -3761,6 +3777,7 @@ static void exec(const Cmd *m, int depth) {
         if (!s || !d || s->dead || d->dead) break;
         int sr[6] = {0, 0, 0, s->b.width, s->b.height, 1}, dr[6] = {0, 0, 0, d->b.width, d->b.height, 1};
         blit_tex(s, NULL, sr, d, NULL, dr, 0);
+        if (g_ld_cap) ld_tex_written(2, d, NULL);
         break;
     }
     case OP_CLEARTEX: {                            /* a0 texture, a4 channel mask, a5 0 float / 1 int / 2 uint, a6 whole level; blob: view, region, colour (as nvn_gl.c) */
@@ -4188,6 +4205,7 @@ static void present_flush(void) {                       /* the OLDEST kept prese
 }
 void nvn_vk_present_flush_job(void *arg) { (void)arg; if (!V.alive) return; present_flush(); while (g_pqn && display_present_due()) present_flush(); }
 #include "nvn_vk_menu.c"                          /* U1: the settings menu over the picture (menu.cpp builds it) */
+#include "nvn_vk_lumdiag.c"                       /* (amd-black) the black-picture diagnosis (ld_lum, ld_frame_end, ld_* hooks) */
 #include "nvn_vk_flash.c"                         /* session 13: the white-flash detector (fl_pass, fl_capture, fl_shutdown) */
 /* nvn_vk_m4.c m4_barrier, render thread, g_sh_lock NOT held: the held loading screen once more, with the bar at `frac` */
 static void present_progress(float frac) { if (!g_ovl.bar_arg) return; g_ovl.frac = frac; g_ovl.thick = 8; vk_present2(g_ovl.bar_arg, 1); g_ovl.thick = 0; }
@@ -4357,6 +4375,7 @@ static void vk_present2(void *arg, int progress) {
     if (g_skip_fr_n) { g_skip_frames++; printf("nvn_vk_skipf: frame %lld (%s): %lld draws left out (shader_wait = skip)\n", (long long)frame, g_in_fight ? "fight" : "no fight", (long long)g_skip_fr_n); g_skip_fr_n = 0; }
     if (shot == -2) { shot = getenv("SSBU_SHOT") ? atoi(getenv("SSBU_SHOT")) : -1; every = getenv("SSBU_SHOT_EVERY") ? atoi(getenv("SSBU_SHOT_EVERY")) : 0; shot_from = getenv("SSBU_SHOT_FROM") ? atoi(getenv("SSBU_SHOT_FROM")) : 0; }
     pass_end();
+    if (g_ld.state || g_ld.pending) ld_frame_end();      /* (amd-black) lumdiag: frames of a capture, its report */
     { int step = nvn_front_take_step_shot(); if (step && vt) { char path[300]; const char *dir = getenv("SSBU_SHOT_DIR"); snprintf(path, sizeof path, "%s%sstep_%03d.bmp", dir ? dir : "", dir ? "/" : "", step - 1); save_bmp_vk(path, vt); } }
     nvn_front_draw_tag_clear();
     if (j->shot_fight && vt) { char path[300]; const char *dir = getenv("SSBU_SHOT_DIR"); snprintf(path, sizeof path, "%s%sfight_%05d.bmp", dir ? dir : "", dir ? "/" : "", j->shot_fight); save_bmp_vk(path, vt); printf("shot: fight frame %d saved at presented frame %lld (Vulkan)\n", j->shot_fight, (long long)frame); }      /* session 13, SSBU_SHOT_FIGHT */
@@ -4846,6 +4865,8 @@ static void vkd_init(void) {
         printf("nvn_vk_amd: %s; in effect: SSBU_VK_GPL=%d SSBU_VK_EDS3=%d SSBU_VK_SNORM_EMU=%d SSBU_VK_DEPTHCOPY=%d SSBU_VK_CBKEEP=%d SSBU_VK_CBMEM=%d SSBU_VK_BUFMEM=%d SSBU_VK_F16EXACT=%d SSBU_VK_NANEXACT=%d SSBU_VK_DBIAS_UNORM=%d (%s) | 24-bit depth: %s | VK_EXT_depth_bias_control: %s\n",
                vk_as_amd() ? "AMD path" : "not the AMD path", vk_gpl_mode(), D.has_eds3, vfmt_snorm_emu(), depth_copy_on(), cbkeep, cbmem, bufmem, g_vk_f16x, g_vk_nanx, D.has_dbc,
                getenv("SSBU_VK_AMD_SAFE") ? "SSBU_VK_AMD_SAFE set" : "defaults", d24 ? "D24S8" : "drawn as D32S8 (no D24S8 on this GPU)", D.has_dbc ? "listed, in use" : g_has_dbc_ext ? "listed, not in use" : "not listed");
+        printf("nvn_vk: new multisample images cleared to zero: %s (SSBU_VK_MSAA_CLEAR; 2 = the default, every GPU but NVIDIA, 1 = all, 0 = off)\n", vk_msaa_clear() ? "yes" : "no");
+        ld_start_line();
     }
     vkGetPhysicalDeviceMemoryProperties(V.gpu, &D.mp);
     for (int i = 0; i < NSLOT; i++) {
@@ -4960,6 +4981,7 @@ static void vkd_shutdown(void) {
     for (int i = 0; i < 8; i++) for (int k = 0; k < 2; k++) if (g_sem[i][k]) { vkDestroySemaphore(V.device, g_sem[i][k], NULL); g_sem[i][k] = NULL; }
     for (int i = 0; i < 16; i++) if (g_sem_img[i]) { vkDestroySemaphore(V.device, g_sem_img[i], NULL); g_sem_img[i] = NULL; }
     fl_shutdown();
+    ld_shutdown();
     if (g_ovl.made) { vkDestroyImage(V.device, g_ovl.img, NULL); g_ovl.made = 0; }      /* the progress bar's image; its memory goes with the blocks */
     for (int i = 0; i < 256; i++) if (g_cb[i].buf) { vkDestroyBuffer(V.device, g_cb[i].buf, NULL); g_cb[i].buf = NULL; g_cb[i].state = 0; }
     g_cb_live = g_cb_pending = g_ncdisp = 0;
