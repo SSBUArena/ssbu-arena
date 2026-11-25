@@ -835,6 +835,7 @@ static volatile LONG g_rq_head, g_rq_tail; static SRWLOCK g_rq_lock = SRWLOCK_IN
 static HANDLE g_rq_ev;                                   /* (phase 3) set for every queued message: the pacing wait wakes at once */
 HANDLE rbn_rx_event(void) { if (!g_rq_ev) { HANDLE e = CreateEventW(NULL, FALSE, FALSE, NULL); if (InterlockedCompareExchangePointer((PVOID *)&g_rq_ev, e, NULL)) CloseHandle(e); } return g_rq_ev; }
 static volatile LONG64 g_rx_pkts, g_rx_bad, g_rx_drop, g_tx_pkts, g_tx_fail, g_rx_last_ms, g_rx_oldmatch;
+static volatile LONG64 g_rx_pads_ms;                    /* (SSBU_ONLINE_PEER_GONE_S) the last PADS message of this match from the other game */
 static volatile LONG g_rtt_us = -1, g_rtt_min_us = -1;
 static volatile LONG g_rtt_hist[5], g_rtt_hist_n;      /* (0.2.47) the last 5 round trips, for the ping shown (rbn_rtt_ms) */
 static void rtt_hist_add(long rtt) { LONG k = InterlockedIncrement(&g_rtt_hist_n) - 1; InterlockedExchange(&g_rtt_hist[k % 5], rtt); }
@@ -865,6 +866,7 @@ void rbn_rx(const uint8_t *p, int n) {
         if (!g_started || p[n - 2] != pads_tag()) { InterlockedIncrement64(&g_rx_oldmatch); return; }      /* (between matches: the other game sends them again) */
         InterlockedExchange(&g_peer_mode, p[n - 1]);    /* (before it is queued: rbn_drain sees it with the message that starts the match) */
         n -= 2;
+        InterlockedExchange64(&g_rx_pads_ms, (LONG64)GetTickCount64());      /* (SSBU_ONLINE_PEER_GONE_S) the other game's pads of this match */
     }
     InterlockedIncrement64(&g_rx_pkts); InterlockedExchange64(&g_rx_last_ms, (LONG64)GetTickCount64());
     if (p[0] == RB_MSG_PING) {                          /* answered at once on this thread (the round trip excludes the frame wait) */
@@ -1169,6 +1171,13 @@ void rbn_drain(long long cur) {
 int rbn_take_mismatch(void) { int m = rb_input_take_mismatch(); if (m) g_stat_mis++; return m; }
 void rbn_put_mismatch(int m) { rb_input_put_mismatch(m); if (m) g_stat_mis--; }      /* (R3 pub1) r1_ring_load refused: the wrong guess stays pending */
 long long rbn_confirmed(void) { return rb_input_remote_latest(g_remote); }
+/* (25/11, SSBU_ONLINE_PEER_GONE_S, rb_rollback.c) ms since the other game's last PADS message of this match; -1 = not counted (no match
+ * on, the loop test, or no pads from it yet: a match it never started is not "gone") */
+long long rbn_peer_pads_silent_ms(void) {
+    if (g_loop || !g_started || !g_peer_started) return -1;
+    LONG64 last = g_rx_pads_ms;
+    return last ? (long long)(GetTickCount64() - (ULONGLONG)last) : -1;
+}
 int rbn_peer_gone(void) {
     if (g_loop || !g_started) return 0;
     LONG64 last = g_rx_last_ms;
@@ -1311,7 +1320,7 @@ double rbn_offset_ms(void) { return rb_ts_offset() / 1000.0; }
  * received messages not drained yet); the round trip, the pings and the transport stay. */
 void rbn_match_reset(void) {
     if (g_started) InterlockedExchange(&g_clk_match, 0);      /* (only a rollback match's end: a room's waiting-stage fight ends AFTER the room match's agreement, run r8_lvab2) */
-    g_started = 0; g_peer_started = 0; g_f0 = 0; InterlockedExchange(&g_peer_mode, -1); g_peer_ack = 0; g_sent_newest = 0;
+    g_started = 0; g_peer_started = 0; g_f0 = 0; InterlockedExchange64(&g_rx_pads_ms, 0); InterlockedExchange(&g_peer_mode, -1); g_peer_ack = 0; g_sent_newest = 0;
     g_stat_pred = g_stat_padget = g_stat_mis = 0; g_ts_n = 0; g_ts_extra = 0; g_ts_left = 0;
     g_hacc = 0xcbf29ce484222325ull; g_hlines = 0; g_lacc_n = 0;
     memset(g_hash, 0, sizeof g_hash); memset(g_hframe, 0, sizeof g_hframe); g_hfinal_upto = 0;

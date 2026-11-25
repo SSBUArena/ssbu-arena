@@ -537,14 +537,17 @@ static void movie_preroll_diag(Ctx *c) {
 }
 /* (OpenSmash phase, from Rsoto95 ec9e39e) the game's network threads (NetSystem, Pia) waking from a sleep in a rollback match go on only
  * once the frame now on is final (rb_rollback.c rbg_net_thread_may_run), at most 100 ms: their work after a capture was undone by a load
- * while the packets they had taken were not given back. SSBU_RB_NET_GATE=0: off. */
+ * while the packets they had taken were not given back. SSBU_RB_NET_GATE=0: off.
+ * (25/11) SSBU_RB_NET_GATE_NEX=1 (option, default 0): NEX's transport threads ("TransportBufferThread(recv)" / "(send)") too. Not
+ * needed with SSBU_ONLINE_NEX_REPLAY=1 (nnldn.c gives a NEX stream's bytes back after a load); a test of the other way. */
 long long g_net_gate_n, g_net_gate_us, g_net_gate_to;
 static Obj *obj_peek(uint64_t key);
 static void net_thread_gate(void) {
     static int on = -1; if (on < 0) { const char *e = getenv("SSBU_RB_NET_GATE"); on = !(e && e[0] == '0'); }
     static __declspec(thread) int is = -1;
     if (!on) return;
-    if (is < 0) { Obj *o = t_thread ? obj_peek(t_thread) : NULL; const char *n = o && o->name ? (const char *)(uintptr_t)o->name : NULL; if (!n) return; is = strstr(n, "NetSystem") || strstr(n, "Pia"); }
+    if (is < 0) { Obj *o = t_thread ? obj_peek(t_thread) : NULL; const char *n = o && o->name ? (const char *)(uintptr_t)o->name : NULL; if (!n) return; is = strstr(n, "NetSystem") || strstr(n, "Pia");
+        if (!is) { const char *e = getenv("SSBU_RB_NET_GATE_NEX"); is = e && e[0] == '1' && strstr(n, "TransportBuffer"); } }
     if (!is) return;
     int rbg_net_thread_may_run(void);
     if (rbg_net_thread_may_run()) return;

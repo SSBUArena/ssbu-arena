@@ -88,38 +88,30 @@ static volatile LONG g_oe_last_winner = -1;            /* (phase 2) the winner s
 static volatile LONG g_oe_last_side = -1; static volatile LONG g_oe_last_mid;
 static uint64_t g_oe_chara[2];                         /* the two players' ui_chara as the match block holds them (record + 0) */
 static volatile LONG64 g_oe_last_chara;                /* (0.2.58) this game's fighter in the last fight it reported (the verdict's fighter) */
+static int oe_tie_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_TIE_RESULT", 1); return v; }
+static volatile LONG g_oe_tie_pend;                    /* 1 = a tie is waiting for its timer */
+typedef struct { uint32_t fin_f, fin_ck, ag_f, ag_ck; int desyncs; uint64_t chara[2], stage; } OeInfo;      /* rb_net.c's part of a RESULT */
+static struct { uint32_t mid; int side, s0, s1; long long frames; OeInfo inf; } g_oe_tie;
+static HANDLE g_oe_tie_timer;
 void online_elo_sample(long long real_frames) {        /* rb_rollback.c, once per tick of a rollback match (main thread) */
     if (!online_elo_result_on() || !rbn_online_rb() || (real_frames % 10)) return;
+    if (g_oe_tie_pend && g_oe_tie.mid == rbn_match_id() && InterlockedCompareExchange(&g_oe_tie_pend, 0, 1) == 1) {      /* (SSBU_ONLINE_TIE_RESULT) another fight of the tied match: its end decides */
+        printf("[elo] match %08x: another fight of the match after the tie (the sudden death): its end decides\n", g_oe_tie.mid); fflush(stdout); }
     for (int i = 0; i < 2; i++) { uint64_t r = oe_info(i); uint32_t v; if (r && oe_read(r + 0xd8, &v, 4) && v < 100) { g_oe_stocks[i] = (int)v; g_oe_seen = 1; } }
     /* the fighters: the match block's records (0x71052c41b0 + 0x580 + 0x260 i, + 0 the ui_chara; debug_mode.c MI_PLAYER - 8): in the game's
      * own Online mode the handshake carries only player 1's choice, the match block has both (the game's own set-up) */
     for (int i = 0; i < 2; i++) { uint64_t ch = 0; if (oe_read(GA(0x71052c41b0ULL) + 0x580 + 0x260ull * (uint64_t)i, &ch, 8) && (ch >> 56) == 0xc1) g_oe_chara[i] = ch; }
 }
-void online_elo_fight_end(long long real_frames) {     /* rb_rollback.c rbg_fight_off, before the session forgets the match */
-    { void online_mastery_fake_end(void); online_mastery_fake_end(); }      /* (22/11, TEST: SSBU_MASTERY_FAKE only) online_mastery.c */
-    if (!online_elo_result_on() || !online_rb_on() || !rbn_online_rb()) { g_oe_seen = 0; return; }
-    {   int last[2] = {-1, -1};                         /* one more read: the very end */
-        for (int i = 0; i < 2; i++) { uint64_t r = oe_info(i); uint32_t v; if (r && oe_read(r + 0xd8, &v, 4) && v < 100) last[i] = (int)v; }
-        if (last[0] >= 0 && last[1] >= 0) { g_oe_stocks[0] = last[0]; g_oe_stocks[1] = last[1]; g_oe_seen = 1; } }
-    uint32_t mid = rbn_match_id(); int side = rbn_local_player() & 1;
-    if (!mid) { g_oe_seen = 0; return; }
-    int s0 = g_oe_stocks[0], s1 = g_oe_stocks[1], winner = 0xFF, end = 4;
-    if (g_oe_seen && s0 >= 0 && s1 >= 0) {
-        if (s0 == 0 && s1 > 0) { winner = 1; end = 1; }
-        else if (s1 == 0 && s0 > 0) { winner = 0; end = 1; }
-        else if (s0 > 0 && s1 > 0 && real_frames >= OE_TIME_FRAMES - 120) {
-            if (s0 != s1) { winner = s0 > s1 ? 0 : 1; end = 2; }
-            else if (g_oe_tie_mid != mid) {             /* a tie at the time limit: the sudden death (same match) decides */
-                g_oe_tie_mid = mid; g_oe_seen = 0; g_oe_stocks[0] = g_oe_stocks[1] = -1;
-                printf("[elo] match %08x: a tie at the time limit (%d stocks each): waiting for the sudden death\n", mid, s0); fflush(stdout);
-                return;
-            }
-        }
-    }
-    if (g_oe_tie_mid && g_oe_tie_mid != mid) g_oe_tie_mid = 0;
-    uint32_t fin_f = 0, fin_ck = 0, ag_f = 0, ag_ck = 0; int desyncs = 0; uint64_t chara[2] = {0, 0}, stage = 0;
-    rbn_result_info(&fin_f, &fin_ck, &ag_f, &ag_ck, &desyncs, chara, &stage);
-    for (int i = 0; i < 2; i++) if (g_oe_chara[i]) chara[i] = g_oe_chara[i];      /* (what this game's match block holds: both players) */
+/* the RESULT body (61 bytes after the cookie, rb_ranked.c) sent to the lobby (net_relay.c repeats it every second until a verdict) */
+static OeInfo oe_info_now(void) {                     /* (while the session still holds the match: before rb_rollback.c's rbn_match_reset) */
+    OeInfo f; memset(&f, 0, sizeof f);
+    rbn_result_info(&f.fin_f, &f.fin_ck, &f.ag_f, &f.ag_ck, &f.desyncs, f.chara, &f.stage);
+    for (int i = 0; i < 2; i++) if (g_oe_chara[i]) f.chara[i] = g_oe_chara[i];      /* (what this game's match block holds: both players) */
+    return f;
+}
+static void oe_send(uint32_t mid, int side, int winner, int end, int s0, int s1, long long real_frames, const OeInfo *inf) {
+    uint32_t fin_f = inf->fin_f, fin_ck = inf->fin_ck, ag_f = inf->ag_f, ag_ck = inf->ag_ck; int desyncs = inf->desyncs;
+    uint64_t chara[2] = {inf->chara[0], inf->chara[1]}, stage = inf->stage;
     uint8_t b[61], *q = b; uint64_t gid = OE_TAG | mid;
     *q++ = 1;
     for (int k = 7; k >= 0; k--) *q++ = (uint8_t)(gid >> (8 * k));
@@ -138,6 +130,76 @@ void online_elo_fight_end(long long real_frames) {     /* rb_rollback.c rbg_figh
            mid, real_frames, s0, s1, winner == 0 ? "player 1" : winner == 1 ? "player 2" : "none", end, side + 1, fin_f, ag_f, desyncs);
     fflush(stdout);
     net_ranked_result(b, gid);
+}
+/* (25/11) SSBU_ONLINE_TIE_RESULT (default 1; 0 = as 0.2.73): a tie at the time limit waited for "the sudden death that follows" and sent
+ * nothing, but the game's own Online mode plays no sudden death here (field log: "waiting for the sudden death", then the next match):
+ * the lobby never got a result and voided the match. Now the tie is kept and, unless another fight of the same match runs within
+ * SSBU_ONLINE_TIE_WAIT_S seconds (default 10: online_elo_sample of that fight takes it back, its own end decides as before), it is
+ * sent as it is: winner none (0xFF), end 2 (time-out), the lobby treats it as a draw by its rules. The damage % is NOT used to break
+ * the tie: the fighter information record has no field with it (its hit_point accessor 0x71020c9d60 asks a virtual method of the
+ * fighter, game code this file does not call), so there is no plain read both games are sure to make alike. */
+static void CALLBACK oe_tie_fire(void *u, BOOLEAN fired) {
+    (void)u; (void)fired;
+    if (InterlockedCompareExchange(&g_oe_tie_pend, 0, 1) != 1) return;      /* taken back by another fight of the match */
+    printf("[elo] match %08x: no other fight of the match after the tie at the time limit: the tie is the result (SSBU_ONLINE_TIE_RESULT)\n", g_oe_tie.mid); fflush(stdout);
+    oe_send(g_oe_tie.mid, g_oe_tie.side, 0xFF, 2, g_oe_tie.s0, g_oe_tie.s1, g_oe_tie.frames, &g_oe_tie.inf);      /* (the checksums as at the fight's end) */
+}
+/* (25/11, rb_rollback.c SSBU_ONLINE_PEER_GONE_S) the other game sent no pads for that long: RESULT end 3 now ("the other game went
+ * silent", this game the winner), and the other player's fighter is left one stock (rb_rollback.c walks it off the stage). The fight's
+ * own end (online_elo_fight_end) sends the same claim again. */
+static uint32_t g_oe_gone_mid;
+int online_elo_peer_gone(long long real_frames) {
+    if (!online_elo_result_on() || !online_rb_on() || !rbn_online_rb()) return 0;
+    uint32_t mid = rbn_match_id(); int side = rbn_local_player() & 1, other = 1 - side;
+    if (!mid) return 0;
+    int st[2] = {g_oe_stocks[0], g_oe_stocks[1]};
+    for (int i = 0; i < 2; i++) { uint64_t r = oe_info(i); uint32_t v; if (r && oe_read(r + 0xd8, &v, 4) && v < 100) st[i] = (int)v; }
+    {   uint64_t r = oe_info(other); uint32_t v;      /* one stock left for the silent game's fighter: its walk off the stage ends the fight */
+        if (r && oe_read(r + 0xd8, &v, 4) && v > 1 && v < 100) { void r1_wrote(uint64_t, uint64_t); r1_wrote(r + 0xd8, 4); wr32(r + 0xd8, 1); } }
+    g_oe_gone_mid = mid;
+    OeInfo inf = oe_info_now();
+    oe_send(mid, side, side, 3, st[0], st[1], real_frames, &inf);
+    return 1;
+}
+void online_elo_fight_end(long long real_frames) {     /* rb_rollback.c rbg_fight_off, before the session forgets the match */
+    { void online_mastery_fake_end(void); online_mastery_fake_end(); }      /* (22/11, TEST: SSBU_MASTERY_FAKE only) online_mastery.c */
+    if (!online_elo_result_on() || !online_rb_on() || !rbn_online_rb()) { g_oe_seen = 0; return; }
+    {   int last[2] = {-1, -1};                         /* one more read: the very end */
+        for (int i = 0; i < 2; i++) { uint64_t r = oe_info(i); uint32_t v; if (r && oe_read(r + 0xd8, &v, 4) && v < 100) last[i] = (int)v; }
+        if (last[0] >= 0 && last[1] >= 0) { g_oe_stocks[0] = last[0]; g_oe_stocks[1] = last[1]; g_oe_seen = 1; } }
+    uint32_t mid = rbn_match_id(); int side = rbn_local_player() & 1;
+    if (!mid) { g_oe_seen = 0; return; }
+    int s0 = g_oe_stocks[0], s1 = g_oe_stocks[1], winner = 0xFF, end = 4;
+    if (g_oe_gone_mid && g_oe_gone_mid == mid) {      /* (SSBU_ONLINE_PEER_GONE_S) the other game went silent: the same claim again */
+        g_oe_gone_mid = 0;
+        OeInfo inf = oe_info_now();
+        oe_send(mid, side, side, 3, s0, s1, real_frames, &inf);
+        g_oe_seen = 0; g_oe_stocks[0] = g_oe_stocks[1] = -1; g_oe_chara[0] = g_oe_chara[1] = 0;
+        return;
+    }
+    g_oe_gone_mid = 0;
+    if (g_oe_seen && s0 >= 0 && s1 >= 0) {
+        if (s0 == 0 && s1 > 0) { winner = 1; end = 1; }
+        else if (s1 == 0 && s0 > 0) { winner = 0; end = 1; }
+        else if (s0 > 0 && s1 > 0 && real_frames >= OE_TIME_FRAMES - 120) {
+            if (s0 != s1) { winner = s0 > s1 ? 0 : 1; end = 2; }
+            else if (g_oe_tie_mid != mid) {             /* a tie at the time limit: the sudden death (same match) decides */
+                g_oe_tie_mid = mid; g_oe_seen = 0; g_oe_stocks[0] = g_oe_stocks[1] = -1;
+                printf("[elo] match %08x: a tie at the time limit (%d stocks each): waiting for the sudden death\n", mid, s0); fflush(stdout);
+                if (oe_tie_on()) {                      /* (SSBU_ONLINE_TIE_RESULT) ... for SSBU_ONLINE_TIE_WAIT_S at most */
+                    const char *e = getenv("SSBU_ONLINE_TIE_WAIT_S"); int ws = e && *e ? atoi(e) : 10; if (ws < 1) ws = 1;
+                    g_oe_tie.mid = mid; g_oe_tie.side = side; g_oe_tie.s0 = s0; g_oe_tie.s1 = s1; g_oe_tie.frames = real_frames; g_oe_tie.inf = oe_info_now();
+                    InterlockedExchange(&g_oe_tie_pend, 1);
+                    if (g_oe_tie_timer) { DeleteTimerQueueTimer(NULL, g_oe_tie_timer, NULL); g_oe_tie_timer = NULL; }      /* (an older one: fired already, or finds nothing pending) */
+                    if (!CreateTimerQueueTimer(&g_oe_tie_timer, NULL, oe_tie_fire, NULL, (DWORD)ws * 1000, 0, WT_EXECUTEONLYONCE)) { g_oe_tie_timer = NULL; oe_tie_fire(NULL, TRUE); }
+                    else { printf("[elo] match %08x: the tie goes to the lobby as the result if no other fight of the match runs within %d s (SSBU_ONLINE_TIE_RESULT)\n", mid, ws); fflush(stdout); }
+                }
+                return;
+            }
+        }
+    }
+    if (g_oe_tie_mid && g_oe_tie_mid != mid) g_oe_tie_mid = 0;
+    { OeInfo inf = oe_info_now(); oe_send(mid, side, winner, end, s0, s1, real_frames, &inf); }
     g_oe_seen = 0; g_oe_stocks[0] = g_oe_stocks[1] = -1; g_oe_chara[0] = g_oe_chara[1] = 0;
 }
 

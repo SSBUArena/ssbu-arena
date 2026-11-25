@@ -63,6 +63,7 @@ namespace Arena
                 ("launcher_crash.log", 128 << 10), ("launcher_update.log", 128 << 10), ("bootstrap.log", 64 << 10),
                 (@"logs\installer.log", 256 << 10), ("update_last.log", 128 << 10), ("prepare.log", 64 << 10),
                 (@"logs\arena_menu.log", 32 << 10), ("game.log", 320 << 10),
+                (@"work\ssbu_native_lumdiag.txt", 96 << 10),      // (amd-black) the black-picture diagnosis' lines (runtime/nvn_vk_lumdiag.c), not cut with game.log's middle
             };
             var list = new List<Item>();
             void Add(string path, string name, int max)

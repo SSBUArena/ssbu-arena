@@ -574,6 +574,28 @@ static void rbg_squad_settle(long long i) {
     double w = now_ms() - t0;
     if (tries > 1) { g_sq_n_waits++; g_sq_w_sum += w; if (g_sq_n_waits <= 40 || !ok) LOG("r1: SQUAD: frame %lld (phase %d): waited %.1f ms for the game's threads (%s) before the next frame (%s; %lld waits, %.0f ms in all)\n", i, g_ra_phase, w, g_ra_busy ? g_ra_busy : "?", ok ? "quiet" : "LIMIT: not quiet", g_sq_n_waits, g_sq_w_sum); }
 }
+/* (25/11) SSBU_ONLINE_PEER_GONE_S (default 15 s; 0 = as 0.2.73): a RANKED match of the game's own Online mode (nnonline.c SSBU_ONLINE_RB,
+ * rb_net.c rbn_online_rb) whose other game sent no PADS for that long. Before, this game went on alone on guesses (rbn_peer_gone, 5 s)
+ * up to the 7-minute time limit. Now: the RESULT "the other game went silent" (end 3, this game the winner: online_elo.c
+ * online_elo_peer_gone) goes to the lobby at once, and the fight is ended the game's own way: the other player's fighter (driven by
+ * this game from now on) is left one stock and walks off the stage (left, then right every 12 s in case of a wall), so the game ends
+ * the fight as after a last stock lost (GAME!, the results, the game's own Online flow after it). Until the fight's end this game
+ * keeps sending its own PADS every frame (the lobby's silence rule: the silent one loses when the other kept sending them); a wrong
+ * guess found after that (the other game back) is not rolled back any more: this match is decided. */
+static int g_rbg_pg; static double g_rbg_pg_t0;
+static int rbg_take_mm(void) { int m = rbn_take_mismatch(); return g_rbg_pg ? 0 : m; }
+static int rbg_peer_gone_s(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_ONLINE_PEER_GONE_S"); v = e && *e ? atoi(e) : 15; if (v < 0) v = 0; } return v; }
+static void rbg_peer_gone_check(long long i) {
+    if (g_rbg_pg || g_rbg_in_match != 1 || !rbg_peer_gone_s()) return;
+    int online_rb_on(void); long long rbn_peer_pads_silent_ms(void);
+    if (!rbn_online_rb() || !online_rb_on()) return;
+    long long ms = rbn_peer_pads_silent_ms();
+    if (ms < (long long)rbg_peer_gone_s() * 1000) return;
+    g_rbg_pg = 1; g_rbg_pg_t0 = now_ms();
+    LOG("r1: RB NET: no pads from the other game for %.1f s at frame %lld (real frames %lld): the match is over for it (SSBU_ONLINE_PEER_GONE_S %d): RESULT \"the other game went silent\", its fighter leaves the stage\n",
+        ms / 1000.0, i, g_rbg_real, rbg_peer_gone_s());
+    { int online_elo_peer_gone(long long real_frames); online_elo_peer_gone(g_rbg_real); }
+}
 /* at the safe point (H2) of every pass while the fight runs (r1_ring.c rgs_step) */
 static void rbg_step_body(Ctx *c) {
     long long i = g_rgs_next;
@@ -721,12 +743,12 @@ static void rbg_step_body(Ctx *c) {
     } else if (g_rbg_noring) {                          /* (hs13) a real pass ended, no ring: nothing to capture, nothing ran on a guess */
         g_rgs_next = i + 1; g_rbg_real++;
         rbn_drain(i);
-        int m = rbn_take_mismatch();
+        int m = rbg_take_mm();
         if (m > 0 && m <= i) { g_rbg_miss++; if (g_rbg_miss <= 10) LOG("r1: RB NET: wrong guess at frame %d WITHOUT the ring (frame %lld): cannot be rolled back (desync)\n", m, i); }
     } else {                                            /* a real pass ended */
         g_rgs_next = i + 1; g_rbg_real++;
         rbn_drain(i);
-        int m = rbg_bench_sched(i, rbg_sched(i, rbn_take_mismatch()));
+        int m = rbg_bench_sched(i, rbg_sched(i, rbg_take_mm()));
         if (m > 0 && m <= i) {
             /* captured anyway, with the threads kept held for the load that follows (R2 round 2: load hold 3.5 -> 0.2 ms);
              * SSBU_RB_NET_KEEP=0: no capture, the load holds the threads itself */
@@ -810,12 +832,14 @@ static void rbg_step_body(Ctx *c) {
     int stalled = 0; double ts = 0;
     for (;;) {
         rbn_drain(i);
-        int m = rbn_take_mismatch();
+        int m = rbg_take_mm();
         if (m > 0 && m <= i) { if (g_rbg_noring) { g_rbg_miss++; if (g_rbg_miss <= 10) LOG("r1: RB NET: wrong guess at frame %d WITHOUT the ring: cannot be rolled back (desync)\n", m); }
                                else { if (stalled) { g_rbg_stall_ms += now_ms() - ts; } if (rbg_rollback(c, i, m)) return; } }
         /* (hs14) the ring short of pool memory (its last capture given up): no frame on a guess until a capture succeeds */
         if (g_rgs_next - rbn_confirmed() <= (g_rbg_noring || g_rg_short || g_sq_lock ? 0 : rbn_ahead())) break;
         if (!g_rbg_noring && g_rg_short && g_rgs_next - rbn_confirmed() <= rbn_ahead() && !stalled) g_rbg_short_waits++;
+        rbg_peer_gone_check(i);                         /* (SSBU_ONLINE_PEER_GONE_S) also while waiting here (its pings may go on without pads) */
+        if (g_rbg_pg) break;                            /* (SSBU_ONLINE_PEER_GONE_S) decided: no wait for the other game any more */
         if (rbn_peer_gone()) { if (!g_rbg_gone++) LOG("r1: RB NET: no message from the other player for 5 s at frame %lld: going on alone (guesses)\n", i); break; }
         if (!stalled) { stalled = 1; ts = now_ms(); g_rbg_stalls++; r1_ring_let_go(); }
         {   /* while waiting: our newest pads again every 50 ms (a lost datagram must not leave both games waiting), a line every 2 s */
@@ -828,6 +852,7 @@ static void rbg_step_body(Ctx *c) {
     }
     if (stalled) g_rbg_stall_ms += now_ms() - ts;
     r1_ring_let_go();
+    rbg_peer_gone_check(i);                             /* (SSBU_ONLINE_PEER_GONE_S) a ranked match whose other game went silent */
     rbn_finalize(g_rbg_pend > 0 && g_rbg_pend - 1 < i ? g_rbg_pend - 1 : i);      /* (R3 pub1) a refused load: its frames are not final yet */
     {   void online_elo_sample(long long real_frames); online_elo_sample(g_rbg_real); }      /* (0.2.53) the fighters' stocks, read only: the ranked result */
     {   void room_mastery_sample(long long real_frames); room_mastery_sample(g_rbg_real); }      /* (0.2.58) the same, a room's match: its mastery RESULT (room_mastery.c) */
@@ -862,7 +887,7 @@ static void rbg_step_body(Ctx *c) {
                 if (t >= g_rbg_next - 0.3 - (g_rbg_gc_want == i ? rbg_gc_lead() - 0.3 : 0.0) - (g_rbg_defcap == i ? g_rbg_dc_lead : 0.0)) break;
                 if (g_rbg_wpad_at > 0 && t >= g_rbg_wpad_at && g_rbg_wpad_frame == i + 1) { rbn_drain(i + 1); g_rbg_wpad_at = -1; }
                 rbn_drain(i);
-                int m = rbn_take_mismatch();
+                int m = rbg_take_mm();
                 double wake = g_rbg_next - 0.3 - (g_rbg_gc_want == i ? rbg_gc_lead() - 0.3 : 0.0) - (g_rbg_defcap == i ? g_rbg_dc_lead : 0.0);
                 if (g_rbg_wpad_at > 0 && g_rbg_wpad_frame == i + 1 && g_rbg_wpad_at < wake) wake = g_rbg_wpad_at;
                 if (m > 0 && m <= i) {
@@ -904,7 +929,7 @@ static void rbg_step_body(Ctx *c) {
         else if (g_rbg_golate > 0 && rbn_loop()) { static unsigned gs = 12345; gs = gs * 1103515245u + 12345u; if ((int)((gs >> 16) % 100) < g_rbg_golate) rbn_drain(i + 1); }
         if (g_rbg_gocheck && rb_feat(32, 1)) {
             rbn_drain(i);
-            int m = rbn_take_mismatch();
+            int m = rbg_take_mm();
             if (m > 0 && m <= i) {
                 double pk = g_ra_park_ms; g_ra_park_ms = 0.5; int held = ra_hold_quiet(1.0); g_ra_park_ms = pk;
                 if (!held) { g_rbg_n_gobusy++; rbn_put_mismatch(m); }      /* a thread still running: at the next safe point, as before */
@@ -1009,6 +1034,10 @@ static void rbg_pad(int id, uint64_t *b, int *lx, int *ly, int *rx, int *ry) {
     }
     RbPad p = rbn_pad(id, f);
     *b = p.buttons; *lx = p.lx; *ly = p.ly; *rx = p.rx; *ry = p.ry;
+    if (g_rbg_pg && id == 1 - (rbn_local_player() & 1)) {      /* (SSBU_ONLINE_PEER_GONE_S) the silent game's fighter walks off the stage */
+        long long t = (long long)(now_ms() - g_rbg_pg_t0) / 12000;
+        *b = 0; *lx = t & 1 ? 32767 : -32767; *ly = *rx = *ry = 0;
+    }
 }
 static void rbg_report(void);
 /* (hs12) r1_ring.c rgs_step, every safe point while no fight is on: the end of a match (once): its report, the ring
@@ -1040,6 +1069,8 @@ static void rbg_fight_off(void) {
     g_rbg_t_pre = g_rbg_t_load = g_rbg_t_rerun = g_rbg_t_recap = g_rbg_t_pass0 = 0; g_rbg_n_rerun = g_rbg_n_recap = 0;
     g_rbg_wd_before = g_ra_wd_fired;
     g_rbg_pend = 0; g_rbg_gorb = 0; g_rbg_n_gorb = g_rbg_n_gobusy = 0;
+    if (g_rbg_pg) LOG("r1: RB NET: the match whose other game went silent ended %.1f s after that (SSBU_ONLINE_PEER_GONE_S)\n", (now_ms() - g_rbg_pg_t0) / 1000.0);
+    g_rbg_pg = 0;
     rbn_match_reset();
 }
 static int cmp_f(const void *a, const void *b) { float x = *(const float *)a, y = *(const float *)b; return x < y ? -1 : x > y; }

@@ -78,6 +78,7 @@ static void fl_analyse(FlFrame *f, const uint8_t *px) {
         f->lum[i] = (unsigned char)l; sum += l; if (mn >= 225) white++;
     }
     f->mean = sum / (FL_W * FL_H); f->white = white;
+    ld_lum(f->fight, f->draws, f->mean, f->frame);          /* (amd-black) nvn_vk_lumdiag.c: a fight frame's brightness */
     if (f->fight) {      /* (amd-dark-fighters, log only) a slow brightness timeline of the fight: every 300 fight frames (5 s) the
                           * picture's mean, its dark and near-white cells of 144; a picture slowly darkening and back shows here */
         static LONG64 nf; int dark = 0;
