@@ -95,6 +95,7 @@ typedef struct {
     size_t pages, xpages;
     long long posted;                                   /* (Arena) the submissions main had posted at this capture (nvn_gl.c) */
     long acq_next;                                      /* (rb-8ms 13/11, C1) win_acquire's host counter at this capture (nvn_gl.c) */
+    uint32_t nex_tag;                                   /* (SSBU_ONLINE_NEX_REPLAY) this capture's number for nnldn.c's NEX stream log */
 } RgSlot;
 /* (hs13) g_rg_nomem: 1 = the ring's base could not be made for lack of memory (nothing kept: tried again at the next match),
  * 2 = the ring broke on the way (its own allocations or a rebase failed: off for the rest of the process). rb_rollback.c then
@@ -458,6 +459,7 @@ static void rg_meta_capture_tt(RgSlot *s, Ctx *c) {       /* threads still held:
     s->ctx = *c;
     { long long nvn_r1_posted(void); s->posted = nvn_r1_posted(); }
     { long nvn_win_acq_next(void); s->acq_next = nvn_win_acq_next(); }
+    { uint32_t nnldn_ring_capture(uint32_t oldest_tag); s->nex_tag = nnldn_ring_capture(g_rg_count > 0 && rg_slot(0) != s ? rg_slot(0)->nex_tag : 0); }      /* (SSBU_ONLINE_NEX_REPLAY) */
     s->nth = g_nth; s->ninfo = g_ninfo;
     memcpy(s->th, g_th, (size_t)g_nth * sizeof *g_th);
     for (int i = 0; i < s->nth; i++) { s->th[i].held = 0; s->th[i].cok = 0; }
@@ -548,6 +550,7 @@ double r1_ring_last_ms(int load) { return g_rg_last[load ? 1 : 0]; }
 void r1_ring_release(void) {                              /* every slot dropped: the newest values stay (g_rg_idx), the logs' old values go back to the pool */
     for (int i = 0; i < g_rg_count; i++) rg_slot_drop(rg_slot(i), 1);
     g_rg_count = 0; g_rg_head = 0;
+    { void nnldn_ring_reset(void); nnldn_ring_reset(); }      /* (SSBU_ONLINE_NEX_REPLAY) no load can come: the NEX stream log is dropped */
 }
 /* (R3 hs16, test) the metadata parts of captures / loads, ms (printed with SSBU_RB_HOLD_PROF) */
 static double g_mp[9], g_mp_b[2]; static long long g_mp_n[2];
@@ -1995,6 +1998,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
      * camera jumped at every rollback). Now the counter goes back with the state: each frame gets the index it got the first time. */
     { static int ws = -1; if (ws < 0) { const char *e = getenv("SSBU_RB_WINSLOT"); ws = !(e && e[0] == '0'); }
       if (ws) { void nvn_win_acq_set(long v); nvn_win_acq_set(g->acq_next); } }
+    { void nnldn_ring_load(uint32_t tag); nnldn_ring_load(g->nex_tag); }      /* (SSBU_ONLINE_NEX_REPLAY) the NEX stream's bytes read after that capture: back in its queue (nnldn.c) */
     fontll_rb_load((int)(g - g_rg));                      /* (crash phase) the font engines' settings of that frame */
     double t3 = now_ms();
     {   int os_r1_wake_waits_from(uint64_t lr);      /* (Arena: the 6700K hang) the task workers' idle wait: woken again (os_threads.c) */

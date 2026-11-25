@@ -704,6 +704,8 @@ typedef struct {
     Dgram *head, *tail;
     uint32_t count, bytes;
     intptr_t hs; int hs_on;               /* (online-mm, SSBU_ONLINE_NEX=1 only) a stream to the game server: nnonline.c's host TCP connection */
+    Dgram *lg_head, *lg_tail;             /* (SSBU_ONLINE_NEX_REPLAY) a NEX stream's bytes given to the game in a rollback match, oldest first (src = capture tag) */
+    uint32_t lg_bytes;
 } VSock;
 #define VS_MAX 128
 /* nnonline.c (online-mm, SSBU_ONLINE_NEX=1 only): NEX's streams to the game server; every other stream is still refused */
@@ -769,6 +771,107 @@ static void drop_queue(VSock *s) {
     s->tail = NULL;
     s->count = s->bytes = 0;
 }
+
+/* ------------------------------------------------------------------ (SSBU_ONLINE_NEX_REPLAY) a NEX stream across the rollback ring's loads
+ * (25/11, ranked matches of the game's own Online mode voided: the game's TCP connection to the game server (:60001) closed 4-90 s into
+ * the fight, never with a PRUDP DISCONNECT) NEX's receive thread "TransportBufferThread(recv)" (SleepThread -> Poll 100 ms -> recv)
+ * takes the stream's bytes out of this file's queue (do_recv) at any time of the fight. A ring load (r1_ring.c r1_ring_load_i) puts
+ * the game's memory, that thread's stack and registers back to a capture: NEX's WebSocket / PRUDP Lite state is again the one from
+ * before the bytes it took after that capture, but the bytes themselves were gone from the queue: the stream lost a piece, NEX's
+ * parser read the next frame from the middle of one (or waited for packets the server had already seen acknowledged) and the game
+ * closed the connection. Since 0.2.65 (SSBU_RB_SOCKWAIT, a thread in Poll can be held) nearly every load can do that.
+ * Now, while the ring is on (from its base to r1_ring_release), every byte of a NEX stream that do_recv gives the game (MSG_PEEK
+ * excepted: it takes nothing) is kept in the socket's log, tagged with the newest capture before it (nnldn_ring_capture: a number
+ * per capture, kept in the ring's slot). A load of the capture tagged K (nnldn_ring_load) puts every kept byte tagged >= K back at the
+ * head of the queue, in order (applied by the next socket call under vs_lock: the load itself takes no lock, the game's threads are
+ * held then), so the game reads the same stream again. The log keeps only what a load can still need (tags of the oldest capture in
+ * the ring and newer; at most NX_LOG_MAX bytes per socket). What the game SENDS again after a load (the same PRUDP packets / ACKs) is
+ * harmless: rb_nex drops a reliable DATA it has already taken (seq before its next one; it still acknowledges it) and ignores ACKs and
+ * pings it does not need. SSBU_ONLINE_NEX_REPLAY=0: as 0.2.73 (nothing kept, nothing given back). */
+#define NX_LOG_MAX (4u << 20)
+static int nx_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_ONLINE_NEX_REPLAY"); v = !(e && e[0] == '0'); } return v; }
+static volatile LONG g_nx_active;                  /* the ring has a base (a rollback match): bytes are logged */
+static volatile LONG g_nx_id;                      /* the newest capture's number (1, 2, ...); 0 = none yet */
+static volatile LONG g_nx_cur;                     /* the tag of a byte given now: the capture the game's state comes from */
+static volatile LONG g_nx_oldest;                  /* the oldest capture still in the ring: older tags are never needed */
+static volatile LONG g_nx_pend;                    /* a load not applied yet: give back every byte tagged >= it (0 = none) */
+static volatile LONG g_nx_reset;                   /* the ring was emptied: logs dropped at the next socket call */
+static volatile LONG g_nx_prune;                   /* a capture was made: the logs' old part dropped at the next socket call */
+static long long g_nx_loads, g_nx_back_bytes, g_nx_back_loads, g_nx_capped;
+static void nx_drop_log(VSock *s) {
+    while (s->lg_head) { Dgram *d = s->lg_head; s->lg_head = d->next; free(d); }
+    s->lg_tail = NULL; s->lg_bytes = 0;
+}
+static void nx_apply(void) {                       /* (vs_lock held) a pending reset / load / prune */
+    if (g_nx_reset) { InterlockedExchange(&g_nx_reset, 0); for (int i = 0; i < VS_MAX; i++) nx_drop_log(&vs[i]); }
+    LONG k = InterlockedExchange(&g_nx_pend, 0);
+    InterlockedExchange(&g_nx_prune, 0);
+    for (int i = 0; i < VS_MAX; i++) {
+        VSock *s = &vs[i];
+        if (!s->lg_head) continue;
+        if (k > 0) {                                /* the suffix tagged >= k (tags never decrease along the log) back at the head, in order */
+            Dgram **pp = &s->lg_head, *keep_tail = NULL;
+            while (*pp && (LONG)(*pp)->src < k) { keep_tail = *pp; pp = &(*pp)->next; }
+            Dgram *back = *pp;
+            if (back) {
+                *pp = NULL; s->lg_tail = keep_tail;
+                uint32_t nb = 0, nc = 0; Dgram *last = back;
+                for (Dgram *d = back; d; d = d->next) { d->src = s->peer_ip; d->sport = s->peer_port; nb += d->len; nc++; last = d; }
+                s->lg_bytes -= nb;
+                if (s->open && s->hs_on && !s->shut_rd) {
+                    last->next = s->head; s->head = back; if (!s->tail) s->tail = last;
+                    s->count += nc; s->bytes += nb;
+                    g_nx_back_bytes += nb; g_nx_back_loads++;
+                    if (g_nx_back_loads <= 20 || g_nx_back_loads % 200 == 0 || LOGL(2))
+                        printf("[online] NEX stream %d: %u bytes the game had read after capture %ld given back after a ring load (%lld loads with bytes back, %lld bytes in all; SSBU_ONLINE_NEX_REPLAY)\n", i, nb, (long)k, g_nx_back_loads, g_nx_back_bytes);
+                } else while (back) { Dgram *d = back; back = d->next; free(d); }
+            }
+        }
+        LONG old = g_nx_oldest;                     /* what no load can reach any more */
+        while (s->lg_head && (LONG)s->lg_head->src < old) { Dgram *d = s->lg_head; s->lg_head = d->next; s->lg_bytes -= d->len; free(d); }
+        if (!s->lg_head) s->lg_tail = NULL;
+    }
+}
+static void nx_log(VSock *s, int fd, const uint8_t *data, uint32_t n) {     /* (vs_lock held) n bytes of a NEX stream given to the game */
+    if (!g_nx_active || !n) return;
+    Dgram *d = malloc(sizeof *d + n);
+    if (!d) return;
+    d->next = NULL; d->src = (uint32_t)g_nx_cur; d->sport = 0; d->len = n;
+    memcpy(d->data, data, n);
+    if (s->lg_tail) s->lg_tail->next = d; else s->lg_head = d;
+    s->lg_tail = d; s->lg_bytes += n;
+    while (s->lg_bytes > NX_LOG_MAX && s->lg_head && s->lg_head != d) {      /* (a bound: a load further back than this gets the stream cut, as before) */
+        Dgram *o = s->lg_head; s->lg_head = o->next; s->lg_bytes -= o->len; free(o);
+        if (g_nx_capped++ < 5) printf("[online] NEX stream %d: its replay log is over %u KB: the oldest bytes dropped (SSBU_ONLINE_NEX_REPLAY)\n", fd, NX_LOG_MAX >> 10);
+    }
+}
+/* r1_ring.c rg_meta_capture (every guest thread held): a capture's number, kept in its slot; oldest_tag = the oldest slot's number
+ * (0 when this capture is the ring's base) */
+uint32_t nnldn_ring_capture(uint32_t oldest_tag) {
+    if (!nx_on()) return 0;
+    LONG id = InterlockedIncrement(&g_nx_id);
+    InterlockedExchange(&g_nx_oldest, oldest_tag ? (LONG)oldest_tag : id);
+    InterlockedExchange(&g_nx_cur, id);
+    InterlockedExchange(&g_nx_active, 1);
+    InterlockedExchange(&g_nx_prune, 1);
+    return (uint32_t)id;
+}
+/* r1_ring.c r1_ring_load_i, once the load is made (every guest thread held): the game's state is capture `tag`'s again */
+void nnldn_ring_load(uint32_t tag) {
+    if (!nx_on() || !tag || !g_nx_active) return;
+    g_nx_loads++;
+    for (;;) { LONG p = g_nx_pend; if (p && p <= (LONG)tag) break; if (InterlockedCompareExchange(&g_nx_pend, (LONG)tag, p) == p) break; }
+    InterlockedExchange(&g_nx_cur, (LONG)tag);      /* what the game reads from now on comes after that capture */
+    WakeAllConditionVariable(&vs_cv);               /* (a thread waiting in Poll / recv sees the bytes once it runs again) */
+}
+/* r1_ring.c r1_ring_release (the match is over, the ring emptied): nothing logged until the next base */
+void nnldn_ring_reset(void) {
+    if (!nx_on()) return;
+    InterlockedExchange(&g_nx_active, 0); InterlockedExchange(&g_nx_pend, 0); InterlockedExchange(&g_nx_reset, 1);
+    if (g_nx_loads) printf("[online] NEX stream replay (SSBU_ONLINE_NEX_REPLAY): %lld ring loads in this match; so far %lld loads gave bytes back (%lld bytes)\n", g_nx_loads, g_nx_back_loads, g_nx_back_bytes);
+    g_nx_loads = 0;
+}
+#define NX_APPLY() do { if (g_nx_pend || g_nx_reset || g_nx_prune) nx_apply(); } while (0)
 
 void nnldn_deliver(uint32_t src, uint16_t sport, uint32_t dst, uint16_t dport, const void *data, uint32_t len) {
     if (dport == VNET_LDN_PORT) { if (sport == VNET_LDN_PORT) ldn_receive(src, data, len); return; }
@@ -952,6 +1055,7 @@ static void do_recv(Ctx *c, int fd, uint64_t buf, uint64_t len, int flags, uint6
     uint64_t deadline = s && s->rcvtimeo ? ms_now() + s->rcvtimeo : ~0ull;
     int err = 0;
     for (;;) {
+        if (nx_on()) NX_APPLY();                   /* (SSBU_ONLINE_NEX_REPLAY) a ring load's bytes back first */
         s = vsock(fd);
         if (!s) { err = E_BADF; break; }
         if (s->head) break;
@@ -966,6 +1070,7 @@ static void do_recv(Ctx *c, int fd, uint64_t buf, uint64_t len, int flags, uint6
     {   static int mk = -1; if (mk < 0) { const char *e = getenv("SSBU_NET_RECVMARK"); mk = !(e && e[0] == '0'); }      /* (OpenSmash phase) marked for the rollback ring */
         if (mk && n) { void r1_wrote(uint64_t, uint64_t); r1_wrote(buf, n); } }
     memcpy(PTR(buf), d->data, n);
+    if (!(flags & 2) && s->type == 1 && s->hs_on && nx_on()) nx_log(s, fd, d->data, n);      /* (SSBU_ONLINE_NEX_REPLAY) */
     if (!(flags & 2) && s->type == 1 && n < d->len) {           /* (online-mm) a stream: the rest of the chunk stays for the next read */
         memmove(d->data, d->data + n, d->len - n);
         d->len -= n; s->bytes -= n;
@@ -996,6 +1101,7 @@ static void so_poll(Ctx *c) {             /* (pollfd {int fd; short events, reve
     }
     AcquireSRWLockExclusive(&vs_lock);
     for (;;) {
+        if (nx_on()) NX_APPLY();                   /* (SSBU_ONLINE_NEX_REPLAY) a ring load's bytes back first */
         ready = 0;
         for (uint64_t i = 0; i < nfds; i++) {
             uint64_t p = fds + 8 * i;
@@ -1097,7 +1203,7 @@ static void so_close(Ctx *c) {
     AcquireSRWLockExclusive(&vs_lock);
     VSock *s = vsock(fd);
     intptr_t h = s && s->hs_on ? s->hs : -1;
-    if (s) { drop_queue(s); memset(s, 0, sizeof *s); }
+    if (s) { drop_queue(s); nx_drop_log(s); memset(s, 0, sizeof *s); }
     ReleaseSRWLockExclusive(&vs_lock);
     if (h >= 0) online_stream_close(h);            /* (online-mm) a NEX stream's host connection */
     WakeAllConditionVariable(&vs_cv);
