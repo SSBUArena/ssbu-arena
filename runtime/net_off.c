@@ -19,6 +19,7 @@ void net_send(uint32_t src, uint16_t sport, uint32_t dst, uint16_t dport, const 
     (void)src; (void)sport; (void)dst; (void)dport; (void)data; (void)len;
 }
 int net_room_refusal(uint32_t host, char *why, size_t n) { (void)host; (void)why; (void)n; return 0; }
+int net_room_full(uint32_t host, int *players, int *most, int *cause) { (void)host; (void)players; (void)most; (void)cause; return 0; }
 /* the settings menu (menu.cpp: the Online pages, the stats overlay): what the online code answers when it is off */
 const char *net_room_code(void) { return ""; }
 const char *net_region_text(void) { return ""; }

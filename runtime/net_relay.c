@@ -997,6 +997,7 @@ static void rooms_info(const uint8_t *p, int n) {   /* (client thread) ROOM_INFO
     r->host = g32(p + 4);
     r->players = p[8]; r->most = p[9];
     r->open = p[10] & 1; r->mine = (p[10] & 2) != 0;
+    r->closed = p[10] & 0x10 ? 1 : p[10] & 0x20 ? 2 : 0;      /* (room full) an SSBU Arena lobby of 25/11+: full / in a match */
     int known = (p[10] & 4) != 0, other_code = (p[10] & 8) != 0;      /* (online-mm) bit 8: the SSBU Arena lobby says the room's game code differs */
     for (int k = 0; k < NAME_LEN; k++) r->name[k] = p[11 + k] && p[11 + k] < 0x20 ? '?' : (char)p[11 + k];
     memcpy(r->build, p + 11 + NAME_LEN, BUILD_LEN);
@@ -1062,6 +1063,20 @@ int net_lobby_ticket(char *out, size_t n) { configure(); if (!g_ticket[0] || !n)
 int net_lobby_real(uint32_t *ip, uint16_t *port) {
     if (g_cfg <= 0 || g_lobby.sin_family != AF_INET || !g_lobby.sin_addr.s_addr) return 0;
     *ip = ntohl(g_lobby.sin_addr.s_addr); *port = ntohs(g_lobby.sin_port); return 1;
+}
+/* (room full) nnldn.c join(): 1 = the room list (at most 10 s old) says the room of host takes no new player: full (its players
+ * reach the limit the lobby gives) or, *cause 2, its players are in a match. 0 = not known (not listed, an older lobby, an old list) */
+int net_room_full(uint32_t host, int *players, int *most, int *cause) {
+    int r = 0;
+    if (g_cfg <= 0) return 0;
+    AcquireSRWLockShared(&g_rooms_lock);
+    if (g_rooms_at && ms_now() - g_rooms_at < 10000)
+        for (int i = 0; i < g_nroom_list && !r; i++)
+            if (g_room_list[i].host == host && !g_room_list[i].mine && (g_room_list[i].closed || (g_room_list[i].most > 0 && g_room_list[i].players >= g_room_list[i].most))) {
+                r = 1; *players = g_room_list[i].players; *most = g_room_list[i].most; *cause = g_room_list[i].closed == 2 ? 2 : 1;
+            }
+    ReleaseSRWLockShared(&g_rooms_lock);
+    return r;
 }
 /* nnldn.c join(): 1 = this game must not join the room of host (another build): why says the cause, the popup shows it */
 int net_room_refusal(uint32_t host, char *why, size_t n) {

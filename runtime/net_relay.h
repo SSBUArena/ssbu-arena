@@ -43,6 +43,8 @@ const char *net_lan_code(void);         /* HOST mode: the code for players on th
 const char *net_upnp_result(void);      /* HOST mode: what UPnP did, one line ("" until tried) */
 /* O1: nnldn.c join(): 1 = the room of host is of another build (version or mod set): why = the cause; the popup is shown */
 int net_room_refusal(uint32_t host, char *why, size_t n);
+/* (room full) 1 = the lobby's room list of the last 10 s says the room of host is full (or in a match: *cause 2) */
+int net_room_full(uint32_t host, int *players, int *most, int *cause);
 /* O2: nnldn.c scan(): the matched host's address while this game is matched to join its room (0: none) */
 uint32_t net_match_host(void);
 

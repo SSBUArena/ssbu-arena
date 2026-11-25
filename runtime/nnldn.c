@@ -96,7 +96,59 @@ static struct {
     uint32_t list_asked, list_filling, list_done;
     int ba;                               /* (Battle Arena) station: the room maker said its room is a Battle Arena room */
     int list_next;
+    uint8_t full[4];                      /* (room full) station: the last REJECT's body when it said "full" (2, players, limit, cause) */
+    uint8_t full_session[16];             /* ... the room it was about, and when (a Connect again right after is answered at once) */
+    uint64_t full_at;
 } L = {SRWLOCK_INIT, CONDITION_VARIABLE_INIT};
+
+/* (room full, 25/11) a room takes no new player when it is full or its two players are in a rollback match. Seen on 24/11: a
+ * third player joined a room during its rollback match; with three nodes nnldn_other_ip() has no single other player, the
+ * rollback messages went to the newcomer and the match lagged. The lobby (arena-server rb_lobby.c room_full) answers such a
+ * JOIN itself with an LDN REJECT whose body is 2 (full), players, limit, cause (1 full, 2 in a match); the host's own game
+ * does the same here when the lobby is older. The player who cannot join is told "The room is full" (Italian when the game's
+ * language is Italian) and its game gets the "no answer" result of before (R_LDN_NONET).
+ *   SSBU_ROOM_FULL=0            off: exactly 0.2.72 (no limit of our own, no message, nothing declared)
+ *   SSBU_ROOM_MAX_PLAYERS=<n>   the most players a room made here takes, 2..8 (default 2: a rollback room is a 1-on-1 room;
+ *                               0 or 8 = the game's own 8). Declared to the lobby in byte 3 of the ADVERTISE header (an older
+ *                               lobby or game ignores it). */
+static int room_full_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_ROOM_FULL"); v = !(e && e[0] == '0'); } return v; }
+static int room_max(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("SSBU_ROOM_MAX_PLAYERS");
+        int n = e && e[0] ? atoi(e) : 2;
+        v = n <= 0 || n >= 8 ? 8 : n < 2 ? 2 : n;
+        if (!room_full_on()) v = 8;
+        if (LOGL(1) && room_full_on()) printf("[online] ldn: a room made here takes %d players at most (SSBU_ROOM_MAX_PLAYERS)\n", v);
+    }
+    return v;
+}
+static int room_it(void) {               /* the game's text is Italian (SSBU_LANGUAGE, the settings' language, else Windows') */
+    const char *gfx_language(void);
+    const char *e = getenv("SSBU_LANGUAGE");
+    if (e && e[0]) return !_strnicmp(e, "it", 2);
+    if (gfx_language()[0]) return !_strnicmp(gfx_language(), "it", 2);
+    e = getenv("SSBU_TEST_WINDOWS_LANGUAGE");
+    if (e && e[0]) return !_strnicmp(e, "it", 2);
+    return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_ITALIAN;
+}
+/* the player is told (at most once in 5 s: the game asks again right after a refusal) */
+static void room_full_say(const char *host, int players, int most, int cause) {
+    static uint64_t said;
+    uint64_t t = GetTickCount64();
+    if (LOGL(1)) printf("[online] ldn: cannot join %.32s's room: %s (%d of %d players)\n", host, cause == 2 ? "its players are in a match" : "full", players, most);
+    if (said && t - said < 5000) return;
+    said = t;
+    void menu_popup(const char *title, const char *text);
+    char text[256];
+    int it = room_it();
+    if (cause == 2) snprintf(text, sizeof text, it ? "I giocatori di questa stanza stanno giocando una partita. Riprova tra poco o scegli un'altra stanza."
+                                                   : "The players of this room are in a match. Try again in a moment or pick another room.");
+    else if (players > 0 && most > 0) snprintf(text, sizeof text, it ? "Questa stanza ha gi\xc3\xa0 %d giocatori su %d. Scegli un'altra stanza o creane una."
+                                                                       : "This room already has %d of %d players. Pick another room or create one.", players, most);
+    else snprintf(text, sizeof text, it ? "Scegli un'altra stanza o creane una." : "Pick another room or create one.");
+    menu_popup(it ? "La stanza \xc3\xa8 piena" : "The room is full", text);
+}
 
 static uint32_t u32at(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
@@ -112,6 +164,7 @@ static void ldn_msg(uint32_t to, int type, const void *body, uint32_t len) {
     if (len > sizeof b - 4) return;
     b[0] = 'L'; b[1] = (uint8_t)type; b[2] = b[3] = 0;
     {   int rbn_ba_mode(void); if ((type == M_ADVERTISE || type == M_ACCEPT) && L.state == LS_AP_CREATED && rbn_ba_mode() == 1) b[2] = 1; }      /* (Battle Arena) the room maker is in Battle Arena: its room plays Squad Strike (an older game ignores the byte) */
+    if ((type == M_ADVERTISE || type == M_ACCEPT) && L.state == LS_AP_CREATED && room_max() < 8) b[3] = (uint8_t)room_max();     /* (room full) the room's limit, for the lobby */
     memcpy(b + 4, body, len);
     net_send(net_my_ip(), VNET_LDN_PORT, to, VNET_LDN_PORT, b, 4 + len);
 }
@@ -188,7 +241,9 @@ static void ldn_receive(uint32_t from, const uint8_t *p, uint32_t n) {
     case M_JOIN: {                        /* session[16], user name[32], version s16 */
         if (len < 50 || L.state != LS_AP_CREATED || memcmp(m, L.net + NI_SESSION, 16)) break;
         int node = node_index(from);
-        if (node < 0 && L.net[NI_POLICY] != 1 && L.net[NI_NODE_COUNT] < L.net[NI_NODE_MAX])
+        int most = L.net[NI_NODE_MAX] < room_max() ? L.net[NI_NODE_MAX] : room_max();
+        int rbn_started(void), playing = room_full_on() && rbn_started();      /* (room full) not while this room's rollback match runs */
+        if (node < 0 && L.net[NI_POLICY] != 1 && L.net[NI_NODE_COUNT] < most && !playing)
             for (int i = 1; i < 8 && node < 0; i++)
                 if (!L.net[NODE(i) + 0xb]) {
                     uint8_t *nd = L.net + NODE(i);
@@ -204,7 +259,13 @@ static void ldn_receive(uint32_t from, const uint8_t *p, uint32_t n) {
                     if (LOGL(1)) printf("[online] ldn: %.32s joined the room as node %d\n", (const char *)nd + 0xc, i);
                     mark = "ldn:station-joined";
                 }
-        if (node < 0) { uint8_t why = 1; ldn_msg(from, M_REJECT, &why, 1); break; }
+        if (node < 0) {
+            uint8_t why[4] = {1, L.net[NI_NODE_COUNT], (uint8_t)most, (uint8_t)(playing ? 2 : 1)};
+            if (room_full_on() && L.net[NI_POLICY] != 1 && (playing || L.net[NI_NODE_COUNT] >= most)) why[0] = 2;      /* (room full) */
+            if (LOGL(1)) printf("[online] ldn: %.32s cannot join this room (%s)\n", (const char *)m + 16, why[0] == 2 ? (playing ? "in a match" : "full") : "refused");
+            ldn_msg(from, M_REJECT, why, why[0] == 2 ? 4 : 1);
+            break;
+        }
         L.heard[node] = t;
         ldn_msg(from, M_ACCEPT, L.net, NI_SIZE);
         advertise();
@@ -219,7 +280,15 @@ static void ldn_receive(uint32_t from, const uint8_t *p, uint32_t n) {
         WakeAllConditionVariable(&L.cv);
         break;
     case M_REJECT:
-        if (L.state == LS_STA && !L.answer && from == L.join_host) { L.answer = -1; WakeAllConditionVariable(&L.cv); }
+        if (L.state == LS_STA && !L.answer && from == L.join_host) {
+            L.answer = -1;
+            if (room_full_on() && len >= 1 && m[0] == 2) {      /* (room full) the room (or the lobby for it) says it is full */
+                L.answer = -2;
+                memset(L.full, 0, sizeof L.full);
+                memcpy(L.full, m, len < 4 ? len : 4);
+            }
+            WakeAllConditionVariable(&L.cv);
+        }
         break;
     case M_KEEP: {
         int node = L.state == LS_AP_CREATED && len >= 16 && !memcmp(m, L.net + NI_SESSION, 16) ? node_index(from) : -1;
@@ -452,6 +521,20 @@ static void join(Ctx *c, const uint8_t *session, uint64_t user, uint16_t version
         RET(host ? R_LDN_STATE : R_LDN_NONET);
         return;
     }
+    if (room_full_on()) {                 /* (room full) known full: the lobby's room list, or a refusal of the last 5 s */
+        int players = 0, most = 0, cause = 0;
+        char hname[33] = "";
+        for (int i = 0; i < SEEN_MAX && !hname[0]; i++)
+            if (L.seen[i].at && !memcmp(L.seen[i].info + NI_SESSION, session, 16)) memcpy(hname, L.seen[i].info + NODE(0) + 0xc, 32);
+        if (L.full_at && ms_now() - L.full_at < 5000 && !memcmp(L.full_session, session, 16)) { players = L.full[1]; most = L.full[2]; cause = L.full[3] == 2 ? 2 : 1; }
+        else if (net_room_full(host, &players, &most, &cause)) cause = cause == 2 ? 2 : 1;
+        if (cause) {
+            ReleaseSRWLockExclusive(&L.lock);
+            room_full_say(hname[0] ? hname : "this", players, most, cause);
+            RET(R_LDN_NONET);
+            return;
+        }
+    }
     uint8_t ask[52] = {0};
     memcpy(ask, session, 16);
     memcpy(ask + 16, PTR(user), 32);
@@ -464,12 +547,21 @@ static void join(Ctx *c, const uint8_t *session, uint64_t user, uint16_t version
         uint64_t until = ms_now() + 1000, now;
         while (!L.answer && (now = ms_now()) < until) SleepConditionVariableSRW(&L.cv, &L.lock, (DWORD)(until - now), 0);
     }
-    int ok = L.answer == 1;
+    int ok = L.answer == 1, full = L.answer == -2;
     if (ok) { L.host_heard = ms_now(); L.reason = DR_NONE; set_state(LS_STA_CONNECTED); }
-    if (LOGL(1)) printf("[online] ldn: joining %.32s's room: %s\n", (const char *)L.net + NODE(0) + 0xc, ok ? "joined" : L.answer ? "refused" : "no answer");
+    if (LOGL(1)) printf("[online] ldn: joining %.32s's room: %s\n", (const char *)L.net + NODE(0) + 0xc, ok ? "joined" : full ? "refused: the room is full" : L.answer ? "refused" : "no answer");
+    char hname[33] = "";
+    int fp = L.full[1], fm = L.full[2], fc = L.full[3] == 2 ? 2 : 1;
+    if (full) {
+        L.full_at = ms_now();
+        memcpy(L.full_session, session, 16);
+        for (int i = 0; i < SEEN_MAX && !hname[0]; i++)
+            if (L.seen[i].at && !memcmp(L.seen[i].info + NI_SESSION, session, 16)) memcpy(hname, L.seen[i].info + NODE(0) + 0xc, 32);
+    }
     L.answer = 0;
     L.join_host = 0;
     ReleaseSRWLockExclusive(&L.lock);
+    if (full) { room_full_say(hname[0] ? hname : "this", fp, fm, fc); input_mark("ldn:room-full"); }
     if (ok) input_mark("ldn:connected");
     RET(ok ? 0 : R_LDN_NONET);
 }

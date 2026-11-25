@@ -27,6 +27,7 @@ typedef struct {
     uint32_t host;                          /* the host's virtual address */
     char name[33], build[41], version[24];  /* host name, build id, game version taken from it */
     int players, most, open, mine, joinable, mods_known, nmods;
+    int closed;                             /* (room full, 25/11) the lobby says: 1 full, 2 its players are in a match, 0 no / an older lobby */
     char mods[256];                         /* the room's mods, comma separated ("" = none) */
     char why[256];                          /* joinable == 0: the cause */
 } NetRoom;
