@@ -40,6 +40,8 @@ namespace Arena
         void StartSetup(bool download)
         {
             setupDownload = download;
+            LauncherCrash.Where = download ? "setup stage 1: download and tools" : "setup stage 1: tools and game file scan";
+            SetupReportBox.Visibility = Visibility.Collapsed;
             SetupOverlay.Visibility = Visibility.Visible;
             SetupStageOn(1);
             SetupIntro.Text = "SSBU Arena runs your own copy of Super Smash Bros. Ultimate (13.0.2, 13.0.4 or 13.0.5) natively on this PC. " +
@@ -74,6 +76,9 @@ namespace Arena
                     SetupBusyDetail.Foreground = Res("Bad");
                     SetupBusyDetail.Text = t.Exception.GetBaseException().Message;
                     SetupBusyButtons.Visibility = Visibility.Visible;
+                    Updater.Log("setup: stage 1 stopped: " + t.Exception.GetBaseException().Message);
+                    SetupErrorReport(setupDownload ? "setup download/tools" : "setup tools/scan", t.Exception.GetBaseException().GetType().Name + ": " + t.Exception.GetBaseException().Message,
+                                     Path.Combine(Installer.Root, @"build\bootstrap.log"));      // (0.2.73)
                     return;
                 }
                 setupPy = t.Result.Item1;
@@ -104,6 +109,7 @@ namespace Arena
         // ---------------------------------------------------------------- stage 2: the game files
         void ShowSetupFiles(bool fill)
         {
+            LauncherCrash.Where = "setup stage 2: game files";
             SetupStageOn(2);
             SetupIntro.Text = "These are the files found on this PC: check them, change any with File or Folder. " +
                               "A dump already decrypted on your Switch (a folder with exefs and romfs, e.g. from nxdumptool) needs no prod.keys and no update.";
@@ -234,7 +240,12 @@ namespace Arena
             SetupPc.ItemsSource = new[] { CheckRow(true, "Checking this PC...", "busy") };
             Task.Run(() => Installer.Precheck(setupPy, c)).ContinueWith(t =>
             {
-                if (t.IsFaulted) { SetupPc.ItemsSource = new[] { CheckRow(false, "The PC check did not run: " + t.Exception.GetBaseException().Message, "warn") }; return; }
+                if (t.IsFaulted)
+                {
+                    SetupPc.ItemsSource = new[] { CheckRow(false, "The PC check did not run: " + t.Exception.GetBaseException().Message, "warn") };
+                    SetupErrorReport("setup PC check (precheck.py)", t.Exception.GetBaseException().GetType().Name + ": " + t.Exception.GetBaseException().Message, null);      // (0.2.73)
+                    return;
+                }
                 var rows = new List<UIElement>();
                 foreach (var p in t.Result)
                 {
@@ -273,6 +284,7 @@ namespace Arena
             Task.Run(() => Installer.Scan(setupPy)).ContinueWith(t =>
             {
                 if (!t.IsFaulted) found = t.Result;
+                else SetupErrorReport("setup game file scan (find_inputs.py)", t.Exception.GetBaseException().GetType().Name + ": " + t.Exception.GetBaseException().Message, null);      // (0.2.73)
                 ShowSetupFiles(!t.IsFaulted);
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
@@ -307,6 +319,7 @@ namespace Arena
         {
             if (setupRunning) return;
             if (setupOk) { RestartLauncher(); return; }
+            LauncherCrash.Where = "setup: INSTALL pressed";
             if (SetupFiles.Visibility == Visibility.Visible)
             {
                 if (!CheckSetupFields()) return;
@@ -324,6 +337,8 @@ namespace Arena
         void RunSetup()
         {
             SetupStageOn(3);
+            LauncherCrash.Where = "setup stage 3: install.py";
+            SetupReportBox.Visibility = Visibility.Collapsed;
             SetupIntro.Text = "The setup unpacks your game, takes the prebuilt SSBU Arena runtime and builds the rest on this PC. " +
                               "You can stop it: it goes on from where it was.";
             SetupFiles.Visibility = Visibility.Collapsed; SetupRun.Visibility = Visibility.Visible;
@@ -484,6 +499,15 @@ namespace Arena
             }
             SetupGoText.Text = "RESUME";
             SetupBack.Visibility = Visibility.Visible;
+            LauncherCrash.Where = "setup stage 3: stopped";
+            // (0.2.73) an install that stopped with an error (not the player's Stop, not a dry run): reported on its own
+            if (!ok && !setupStopped)
+            {
+                string err = SetupError.Visibility == Visibility.Visible ? SetupError.Text : why ?? "install.py ended with code " + code;
+                string log = null;
+                try { log = choice != null ? Installer.LogPath(choice) : null; } catch { }
+                SetupErrorReport("install.py (code " + code + ")", err, log);
+            }
         }
 
         void SetupStop_Click(object sender, RoutedEventArgs e)

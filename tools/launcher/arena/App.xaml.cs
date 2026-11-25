@@ -13,6 +13,7 @@ namespace Arena
         /// <summary>(0.2.12) the update window first (UpdateWindow.cs); it opens the launcher</summary>
         void OnStartup(object sender, StartupEventArgs e)
         {
+            LauncherCrash.Install(this);      // (0.2.73) an error nobody caught: written, sent, shown (LauncherCrash.cs)
             if (!OnlyLauncher(e.Args)) { Shutdown(); return; }
             new UpdateWindow().Show();
         }

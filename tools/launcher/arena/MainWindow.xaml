@@ -897,6 +897,7 @@
               <RadioButton x:Name="SecDlc" Style="{StaticResource SideTab}" Content="DLC" Checked="Section_Checked"/>
               <RadioButton x:Name="SecFiles" Style="{StaticResource SideTab}" Content="Game files" Checked="Section_Checked"/>
               <RadioButton x:Name="SecLauncher" Style="{StaticResource SideTab}" Content="Launcher" Checked="Section_Checked"/>
+              <RadioButton x:Name="SecHelp" Style="{StaticResource SideTab}" Content="Help" Checked="Section_Checked"/>
             </StackPanel>
           </DockPanel>
         </Border>
@@ -1103,7 +1104,7 @@
                   <CheckBox x:Name="CrashBox" Style="{StaticResource Switch}" Margin="0,16,0,0" Checked="Field_Changed" Unchecked="Field_Changed">
                     <StackPanel>
                       <TextBlock Text="Send crash reports" FontSize="16"/>
-                      <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="When the game crashes and you are signed in, its log goes to the Arena server to help fix it: your account, game version, graphics card and Windows version. Your user and PC names, folders and addresses are removed first."/>
+                      <TextBlock Style="{StaticResource Small}" Margin="0,3,0,0" TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" Text="When the game crashes and you are signed in, its log goes to the Arena server to help fix it: your account, game version, graphics card and Windows version. When the launcher itself or the setup stops with an error, its logs go too, also when you are not signed in. Your user and PC names, folders and addresses are removed first."/>
                     </StackPanel>
                   </CheckBox>
                   <TextBlock Text="INPUT DELAY" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
@@ -1396,6 +1397,29 @@
                 </ComboBox>
               </StackPanel>
 
+              <!-- (0.2.73) help: the logs to the staff (LogReport.cs, MainWindow.Logs.cs); the button is hidden with SSBU_ARENA_SEND_LOGS=0 -->
+              <StackPanel x:Name="BoxHelp" Visibility="Collapsed">
+                <TextBlock Text="HELP" Style="{StaticResource SectionTitle}"/>
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,24" TextWrapping="Wrap" MaxWidth="760" HorizontalAlignment="Left"
+                           Text="Something does not work? Send your logs to the SSBU Arena staff, then tell them the report code on Discord: they see what went wrong without asking you for files."/>
+                <StackPanel x:Name="HelpSendBox">
+                  <TextBlock Text="SEND LOGS" Style="{StaticResource FieldLabel}"/>
+                  <TextBlock Style="{StaticResource Small}" FontSize="15" Margin="0,0,0,14" TextWrapping="Wrap" MaxWidth="760" HorizontalAlignment="Left"
+                             Text="The launcher's, the setup's and the game's logs, also when the game is not installed yet. You see the list first and can write what happened. Your Windows user and PC names, folders, e-mail and internet addresses and any pass or key are removed; no saves and no settings are sent."/>
+                  <WrapPanel>
+                    <Button Style="{StaticResource Primary}" Height="46" Margin="0,0,10,10" Click="SendLogs_Click">
+                      <TextBlock Text="Send logs" FontSize="16" FontWeight="SemiBold" Margin="24,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                    </Button>
+                    <Button Style="{StaticResource Outline}" Height="46" Margin="0,0,10,10" Click="OpenLogsFolder_Click" FontSize="16">Open the logs folder</Button>
+                  </WrapPanel>
+                </StackPanel>
+                <TextBlock Text="COMMUNITY" Style="{StaticResource FieldLabel}" Margin="0,18,0,6"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Community_Click" FontSize="16">Discord</Button>
+                  <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Started_Click" FontSize="16">Getting started</Button>
+                </WrapPanel>
+              </StackPanel>
+
               <!-- saves -->
               <StackPanel x:Name="BoxSaves" Visibility="Collapsed">
                 <TextBlock Text="SAVES" Style="{StaticResource SectionTitle}"/>
@@ -1437,6 +1461,7 @@
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="PrepareNow_Click" FontSize="16">Prepare shaders now</Button>
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="DeleteShaders_Click" FontSize="16">Delete the shaders</Button>
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="OpenLog_Click" FontSize="16">Open game log</Button>
+                  <Button x:Name="FilesSendLogs" Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="SendLogs_Click" FontSize="16">Send logs</Button>
                   <Button Style="{StaticResource Outline}" Height="42" Margin="0,0,10,10" Click="Reinstall_Click" FontSize="16">Run the setup again</Button>
                 </WrapPanel>
                 <TextBlock Text="CHECK AND REPAIR" Style="{StaticResource FieldLabel}" Margin="0,24,0,6"/>
@@ -1553,6 +1578,10 @@
           <ScrollViewer x:Name="SetupScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False" PreviewMouseWheel="WheelToOuter">
           <StackPanel>
           <TextBlock x:Name="SetupIntro" Style="{StaticResource Small}" FontSize="16" Margin="0,12,0,26" TextWrapping="Wrap"/>
+          <!-- (0.2.73) a setup error was reported on its own (LogReport.AutoSend): its code and the log -->
+          <Border x:Name="SetupReportBox" Background="#1A2634" BorderBrush="#2C3B4E" BorderThickness="1" CornerRadius="6" Padding="16,10" Margin="0,-12,0,22" Visibility="Collapsed">
+            <TextBlock x:Name="SetupReportNote" FontSize="15" TextWrapping="Wrap" Foreground="{StaticResource Text}"/>
+          </Border>
 
           <!-- stage 1 (and the download before it): one bar and what happens -->
           <StackPanel x:Name="SetupBusy">
@@ -1565,6 +1594,7 @@
             <TextBlock x:Name="SetupBusyDetail" Style="{StaticResource Small}" FontSize="16" Margin="0,14,0,0" TextWrapping="Wrap"/>
             <TextBlock x:Name="SetupBusyLog" FontFamily="Consolas" FontSize="14" Foreground="{StaticResource Dim}" Margin="0,8,0,0" TextTrimming="CharacterEllipsis"/>
             <StackPanel x:Name="SetupBusyButtons" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,26,0,0" Visibility="Collapsed">
+              <Button x:Name="SetupBusySendLogs" Style="{StaticResource Outline}" Height="48" MinWidth="130" FontSize="16" Margin="0,0,12,0" Click="SendLogs_Click">Send logs</Button>
               <Button Style="{StaticResource Primary}" Height="48" Click="SetupRetry_Click">
                 <TextBlock Text="TRY AGAIN" FontFamily="{StaticResource Display}" FontWeight="ExtraBold" FontStyle="Italic" FontSize="22" Margin="26,0"
                            Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
@@ -1660,9 +1690,13 @@
 
           <!-- the buttons of stages 2 and 3 -->
           <Grid x:Name="SetupFooter" Grid.Row="2" Margin="0,30,0,0" Visibility="Collapsed">
-            <Button x:Name="SetupLogButton" Style="{StaticResource Link}" HorizontalAlignment="Left" VerticalAlignment="Center" FontSize="15" Click="SetupOpenLog_Click">Open the log</Button>
-            <Button x:Name="SetupExisting" Style="{StaticResource Link}" HorizontalAlignment="Left" VerticalAlignment="Center" FontSize="15" Click="SetupExisting_Click"
-                    ToolTip="A folder where SSBU Arena was already built: it has work\ssbu_native.exe and state.json (or a build folder with them inside)">Already built? Use that install folder</Button>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
+              <Button x:Name="SetupLogButton" Style="{StaticResource Link}" VerticalAlignment="Center" FontSize="15" Click="SetupOpenLog_Click">Open the log</Button>
+              <Button x:Name="SetupExisting" Style="{StaticResource Link}" VerticalAlignment="Center" FontSize="15" Click="SetupExisting_Click"
+                      ToolTip="A folder where SSBU Arena was already built: it has work\ssbu_native.exe and state.json (or a build folder with them inside)">Already built? Use that install folder</Button>
+              <Button x:Name="SetupSendLogs" Style="{StaticResource Link}" VerticalAlignment="Center" FontSize="15" Margin="28,0,0,0" Click="SendLogs_Click"
+                      ToolTip="Your logs to the SSBU Arena staff (you see the list first): then tell them the report code">Send logs</Button>
+            </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
               <Button x:Name="SetupBack" Style="{StaticResource Outline}" Height="52" MinWidth="130" FontSize="16" Margin="0,0,12,0" Click="SetupBack_Click">Change files</Button>
               <Button x:Name="SetupTools" Style="{StaticResource Outline}" Height="52" MinWidth="130" FontSize="16" Margin="0,0,12,0" Click="SetupBuildTools_Click" Visibility="Collapsed">Install Build Tools</Button>
@@ -1687,6 +1721,7 @@
             <StackPanel>
               <TextBlock x:Name="DialogText" Style="{StaticResource Small}" FontSize="16" Foreground="#C9D3DD" Margin="0,10,0,0"/>
               <ItemsControl x:Name="DialogList" Margin="0,12,0,0"/>
+              <ContentControl x:Name="DialogExtra" Margin="0,14,0,0" Focusable="False"/>
             </StackPanel>
           </ScrollViewer>
           <StackPanel x:Name="DialogButtons" Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,26,0,0"/>

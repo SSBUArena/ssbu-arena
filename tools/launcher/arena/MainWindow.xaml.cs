@@ -27,6 +27,7 @@ namespace Arena
         public MainWindow()
         {
             InitializeComponent();
+            SendLogsSwitch();      // (0.2.73) SSBU_ARENA_SEND_LOGS=0 hides the Send logs buttons (MainWindow.Logs.cs)
             VersionText.Text = "v" + Updater.Current.ToString(3); HomeNewsVersion.Text = Updater.Current.ToString(3);      // (0.2.11) the release in use, in the status bar after the online state
             // (0.2.18) opens at the design size (DesignW x DesignH under the title bar: the page is not scaled, its text is sharp) when
             // the screen has room, else at 88 % of the work area in the same shape
@@ -592,7 +593,7 @@ namespace Arena
         void Section_Checked(object sender, RoutedEventArgs e)
         {
             if (BoxPlayer == null) return;
-            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecBench, BoxBench }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles }, { SecLauncher, BoxLauncher } };
+            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecBench, BoxBench }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles }, { SecLauncher, BoxLauncher }, { SecHelp, BoxHelp } };
             foreach (var kv in map) kv.Value.Visibility = kv.Key == sender ? Visibility.Visible : Visibility.Collapsed;
             if (sender == SecPads && PageSettings.Visibility == Visibility.Visible) PadLiveStart(); else PadLiveStop();
             if (sender == SecBench) BenchShow();      // (0.2.58) MainWindow.Bench.cs
@@ -627,9 +628,11 @@ namespace Arena
                 // (shared game data) setup:shared = the one-time OpenSmash question over it, as a first setup shows it (when OpenSmash is found)
                 if (parts.Length > 1 && parts[1] == "shared") { var cand = SharedData.Candidate(); if (cand != null) SharedAsk(cand, yes => { CheckSetupFields(); }); }
             }
+            else if (parts[0] == "sendlogs") AskSendLogs();      // (0.2.73) the Send logs window (screenshots)
+            else if (parts[0] == "error") ShowLauncherError("Object reference not set to an instance of an object.", LauncherCrash.LogPath, null);      // (0.2.73) the error window as it looks (screenshots: nothing sent)
             else if (parts[0] == "settings")
             {
-                var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "benchmark", SecBench }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles }, { "launcher", SecLauncher } };
+                var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "benchmark", SecBench }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles }, { "launcher", SecLauncher }, { "help", SecHelp } };
                 OpenSettings(parts.Length > 1 && secs.ContainsKey(parts[1]) ? secs[parts[1]] : SecPlayer);
             }
         }
@@ -673,6 +676,7 @@ namespace Arena
             DialogTitle.Text = title.ToUpperInvariant();
             DialogText.Text = text ?? "";
             DialogText.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
+            DialogExtra.Content = null;
             DialogList.ItemsSource = list?.Select(l => new TextBlock { Text = l, FontFamily = new FontFamily("Consolas"), FontSize = 13, Foreground = Res("Muted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 2) }).ToList();
             DialogButtons.Children.Clear();
             foreach (var b in buttons)
