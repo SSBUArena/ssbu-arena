@@ -773,7 +773,7 @@ static void fo_forget(void *f);                          /* (0.2.50) below */
 static void fib_reap_delete(void) {                      /* threads running again */
     for (int i = 0; i < g_fr_npick; i++) {
         void *f = g_fr_pick[i]; uint64_t lo = *(uint64_t *)((uint8_t *)f + 0x20), hi = *(uint64_t *)((uint8_t *)f + 0x10);
-        { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)lo, (size_t)(hi - lo), 2); } fo_forget(f); DeleteFiber(f); hs_unexclude(lo, hi); g_fr_deleted++;
+        { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)lo, (size_t)(hi - lo), 2); } fo_forget(f); DeleteFiber(f); { extern volatile LONG64 g_fib_host_deleted; InterlockedIncrement64(&g_fib_host_deleted); } hs_unexclude(lo, hi); g_fr_deleted++;
     }
     g_fr_npick = 0;
 }
@@ -790,7 +790,19 @@ static void fib_reap_delete(void) {                      /* threads running agai
  * has no host fiber any more (o->fiber NULL), so no fiber is handed over twice. The ring's own reaper is unchanged. */
 static void **g_fo_q; static int g_fo_n, g_fo_cap; static SRWLOCK g_fo_lock = SRWLOCK_INIT; static long long g_fo_queued, g_fo_deleted, g_fo_waits;
 static int fo_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_FIB_REAP_OUT"); on = !(e && e[0] == '0'); } return on; }
-static int fo_out(void) { return fo_on() && g_rg_count == 0 && !g_rg_kept && !g_rg_keep && !g_fr_npick && g_ra_phase == 0; }
+/* (0.2.72, field crash 24/11 417eae60, v0.2.69: 11 308 host fibers, 21.7 GB private, error 1455, then a NULL malloc in the pack
+ * thread) "ring states kept" (g_rg_count != 0) is NOT "a rollback session": the room's waiting-stage fight makes the ring's base
+ * (rb_rollback.c, SSBU_RB_PREWARM, 0.2.11) and only the end of a ROLLBACK match emptied it. A player who then plays rooms with the
+ * game's own netcode (no rollback) and local fights kept that base for good: fo_out() stayed 0 for the rest of the run, nothing
+ * was handed over ("handed over 12" all session), every fiber the game initialised again in fights (~16 a second there) kept its
+ * 1 MB of commit. Two fixes: rb_rollback.c empties the ring right after the waiting stage's full save (SSBU_RB_PREWARM_DROP), and
+ * here (SSBU_FIB_REAP_IDLE, default 1; =0: g_rg_count == 0 only, as 0.2.50) the ring's states do not stop the deleter while no
+ * rollback match runs (online rollback mode on, no match of it in progress: no ring load can come, rbg_no_loads); fib_reap_out
+ * then also keeps any host fiber a kept ring state still lists (as the ring's own reaper does). Inside a rollback match: as before. */
+static int rbg_no_loads(void);                            /* rb_rollback.c */
+static int fo_idle_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_FIB_REAP_IDLE"); on = !(e && e[0] == '0'); } return on; }
+static int fo_ring_idle(void) { return g_rg_count == 0 || (fo_idle_on() && rbg_on() && rbg_no_loads() && !g_lb_active); }      /* (no lazy-base pass running, as the ring's reaper) */
+static int fo_out(void) { return fo_on() && fo_ring_idle() && !g_rg_kept && !g_rg_keep && !g_fr_npick && g_ra_phase == 0; }
 static int r1_fiber_out(void) { return fo_out(); }
 static void r1_fiber_dead(void *f) {
     if (!f) return;
@@ -828,6 +840,17 @@ static void fib_reap_out(void) {                          /* main thread, every 
         LOG("r1: FIBREAP OUT (SSBU_FIB_REAP_OUT): host fibers handed over %lld, deleted %lld, waits (a thread ran it) %lld, queued now %d; registry %d; private memory %.0f MB; pointers to fibers the ring's reaper took, forgotten %lld; stale fibers refused %lld\n",
             g_fo_queued, g_fo_deleted, g_fo_waits, g_fo_n, g_fr_n, pm.priv / 1048576.0, g_fo_fin_forgot, g_fo_stale);
     }
+    {   /* (0.2.72, SSBU_FIB_LOG=0: no line) about once a minute: the host fibers alive (made - deleted, every path), the fiber inits that
+         * replaced a host fiber without handing it over (kept for the ring's reaper: inside rollback matches only), and why the deleter
+         * waits if it does. A leak shows as "live" growing in fights while "deleted" stays still. */
+        static int lg = -1; static long long nfl; if (lg < 0) { const char *e = getenv("SSBU_FIB_LOG"); lg = !(e && e[0] == '0'); }
+        if (lg && ++nfl % 3600 == 1) {
+            extern volatile LONG64 g_fib_host_made, g_fib_host_deleted; extern long long g_fib_made[4];
+            LOG("r1: HOST FIBERS: live %lld (made %lld, deleted %lld); fiber inits %lld, of them replacing a host fiber not handed over %lld; deleter outside rollback %s (ring states %d%s, threads kept %d, pick pending %d, run-ahead phase %d)\n",
+                (long long)(g_fib_host_made - g_fib_host_deleted), (long long)g_fib_host_made, (long long)g_fib_host_deleted, g_fib_made[0], g_fib_made[1],
+                !fo_on() ? "OFF" : fo_out() ? "on" : "WAITING", g_rg_count, g_rg_count && fo_ring_idle() ? ", no rollback match: not in the way" : "", g_rg_kept, g_fr_npick, g_ra_phase);
+        }
+    }
     if (!g_fo_n || !fo_out()) return;
     static uint64_t cur[513]; int nc = 0; Ctx *tc; const char *nm; HANDLE h;
     /* every guest thread's TEB FiberData (the fiber it runs now). The threads are NOT held here: one can end at any moment (a room's
@@ -850,6 +873,7 @@ static void fib_reap_out(void) {                          /* main thread, every 
         void *f = g_fo_q[j]; int used = 0;
         for (int k = 0; !used && k < nc; k++) if ((void *)(uintptr_t)cur[k] == f) used = 1;
         for (int i = 0; !used && i < g_nfib; i++) if (g_fib[i].fiber == f || (void *)(uintptr_t)g_fib[i].obj[0] == f) used = 1;
+        for (int k = 0; !used && g_rg_ready && k < g_rg_count; k++) { RgSlot *s = rg_slot(k); if (s->fib) for (int i = 0; i < s->nfib; i++) if (s->fib[i].fiber == f || (void *)(uintptr_t)s->fib[i].obj[0] == f) { used = 1; break; } }      /* (0.2.72) a kept ring state lists it */
         if (used) { g_fo_waits++; j++; continue; }       /* a thread runs it now: the next frame end */
         del[nd++] = f; g_fo_q[j] = g_fo_q[--g_fo_n];
     }
@@ -864,7 +888,7 @@ static void fib_reap_out(void) {                          /* main thread, every 
         for (int j = 0; j < g_fr_n; j++) if (g_fr_f[j] == f) { g_fr_f[j] = g_fr_f[g_fr_n - 1]; g_fr_t[j] = g_fr_t[g_fr_n - 1]; g_fr_n--; mine = 1; break; }
         ReleaseSRWLockExclusive(&g_fr_lock);
         (void)mine;      /* (not in the registry: born before the ring's first setup made the registry; the ring's reaper never sees it) */
-        { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)lo, (size_t)(hi - lo), 2); } DeleteFiber(f); hs_unexclude(lo, hi); g_fo_deleted++; g_fr_deleted++;
+        { void r1_mem_note(void *p, size_t n, int kind); r1_mem_note((void *)(uintptr_t)lo, (size_t)(hi - lo), 2); } DeleteFiber(f); { extern volatile LONG64 g_fib_host_deleted; InterlockedIncrement64(&g_fib_host_deleted); } hs_unexclude(lo, hi); g_fo_deleted++; g_fr_deleted++;
     }
 }
 static void rg_loader_print(void (*pr)(const char *fmt, ...));      /* (below) */

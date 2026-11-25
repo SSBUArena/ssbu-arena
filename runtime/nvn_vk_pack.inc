@@ -78,6 +78,10 @@ static int vkp_new_cmp(const void *a, const void *b) {
     if (x->kind != y->kind) return x->kind < y->kind ? -1 : 1;
     return x->h < y->h ? -1 : x->h > y->h ? 1 : 0;
 }
+/* (0.2.72, field crash 24/11 417eae60: malloc of the index (1.8 MB) returned NULL with the commit exhausted by a host fiber leak and was
+ * written: access violation at 0) every allocation of the pack's build checked: none, the work is skipped with a line (the small files
+ * stay, the pack is made at a later start). SSBU_VK_PACK_OOMCHECK=0: not checked, as before. */
+static int vkp_oomcheck(void) { static int on = -1; if (on < 0) { const char *e = getenv("SSBU_VK_PACK_OOMCHECK"); on = !(e && e[0] == '0'); } return on; }
 static void vkp_list(const char *sub, VkpNew **list, uint32_t *n, uint32_t *cap) {
     char pat[300];
     WIN32_FIND_DATAA fd;
@@ -93,7 +97,11 @@ static void vkp_list(const char *sub, VkpNew **list, uint32_t *n, uint32_t *cap)
         if (sscanf(fd.cFileName, "%llx.%3s", &hash, ext) == 2 && !strcmp(ext, "spv") && !strcmp(sub, "spv")) kind = 0x100;
         else if (sscanf(fd.cFileName, "%d_%llx.%3s", &s, &hash, ext) == 3 && !strcmp(sub, "stage") && (!strcmp(ext, "st") || !strcmp(ext, "var"))) kind = (ext[0] == 's' ? 0x200u : 0x300u) | (uint32_t)s;
         else continue;
-        if (*n == *cap) { *cap = *cap ? *cap * 2 : 65536; *list = realloc(*list, *cap * sizeof **list); }
+        if (*n == *cap) {
+            uint32_t nc = *cap ? *cap * 2 : 65536; VkpNew *nl = realloc(*list, nc * sizeof **list);
+            if (!nl && vkp_oomcheck()) { printf("nvn_vk_pack: no memory for the list of %u small files: listed so far, the rest left out\n", *n); fflush(stdout); break; }
+            *list = nl; *cap = nc;
+        }
         VkpNew *e = &(*list)[(*n)++];
         e->h = hash; e->kind = kind; e->size = fd.nFileSizeLow;
         snprintf(e->name, sizeof e->name, "%s", fd.cFileName);
@@ -138,6 +146,12 @@ static DWORD WINAPI vkp_build_thread(LPVOID a) {
     uint64_t pos = 16 + (uint64_t)n * sizeof(VkpEntry);
     enum { BUF = 4 << 20 };
     uint8_t *buf = malloc(BUF);
+    if (!buf && vkp_oomcheck()) {
+        CloseHandle(out); DeleteFileA(tmp); free(l);
+        printf("nvn_vk_pack: no memory for the copy buffer (%u MB): not made now, the small files stay\n", (unsigned)(BUF >> 20)); fflush(stdout);
+        if (one) { ReleaseMutex(one); CloseHandle(one); }
+        return 0;
+    }
     LARGE_INTEGER at; at.QuadPart = (LONGLONG)pos;
     SetFilePointerEx(out, at, NULL, FILE_BEGIN);
     uint32_t have = 0, kept = 0;
@@ -162,6 +176,8 @@ static DWORD WINAPI vkp_build_thread(LPVOID a) {
     if (!bad) {
         VkpEntry *ix = malloc(n * sizeof *ix);
         uint32_t k = 0;
+        if (!ix && vkp_oomcheck()) { bad = 1; printf("nvn_vk_pack: no memory for the index of %u records (%.1f MB): not made now (the small files stay)\n", n, (double)n * sizeof *ix / 1048576.0); fflush(stdout); }
+        else {
         for (uint32_t i = 0; i < n; i++) if (l[i].off != (uint64_t)-1) { ix[k].h = l[i].h; ix[k].kind = l[i].kind; ix[k].size = l[i].size; ix[k].off = l[i].off; k++; }
         uint32_t head[2] = {0x314B5053, k};
         at.QuadPart = 0;
@@ -169,6 +185,7 @@ static DWORD WINAPI vkp_build_thread(LPVOID a) {
         /* (the entries take room for all that were listed; the ones left out only leave a gap: the offsets are absolute) */
         if (!WriteFile(out, head, 8, &w, NULL) || !WriteFile(out, &pos, 8, &w, NULL) || !WriteFile(out, ix, k * (DWORD)sizeof *ix, &w, NULL) || w != k * sizeof *ix) bad = 1;
         free(ix);
+        }
     }
     SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);      /* (the last part at normal priority: at background priority, during a fight, it did not end in minutes) */
     FlushFileBuffers(out);

@@ -932,12 +932,16 @@ void (*g_r1_fiber_born)(void *fiber);                 /* r1_state.c (R3 hs13): a
  * each, ~37 a second in fights. SSBU_FIB_REAP_OUT=0: as before. Both null without R1. */
 int (*g_r1_fiber_out)(void);
 void (*g_r1_fiber_dead)(void *fiber);
+/* (0.2.72, field crash 24/11 417eae60: commit exhausted, 11 308 host fibers) every host fiber made for a guest fiber and every one
+ * deleted, counted (any thread, any path): r1_ring.c fib_reap_out says live = made - deleted once a minute (SSBU_FIB_LOG) */
+volatile LONG64 g_fib_host_made, g_fib_host_deleted;
 static void CALLBACK fiber_main(void *arg);
 static int g_fib_lazy = -1; static volatile LONG g_fib_fail_said;
 static void *fib_make(Obj *o) {                        /* (field crash) a host fiber for o, tried again while the system refuses it */
     void *f = NULL;
     for (int t = 0; t < 400 && !f; t++) {
         f = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o);
+        if (f) InterlockedIncrement64(&g_fib_host_made);
         if (!f) { if (InterlockedIncrement(&g_fib_fail_said) <= 10) { printf("nn::os: a host fiber could not be made (error %lu, try %d)\n", (unsigned long)GetLastError(), t + 1); fflush(stdout); }
                   if (g_fib_lazy == 0) break; Sleep(5); }
     }
@@ -985,6 +989,7 @@ static void fib_init(Ctx *c) {                        /* (FiberType*, fn, arg, s
         if (ff > 0 && g_fib_made[0] % ff == 0) { o->fiber = NULL; fib_note(o); RET(0); return; } }
     if (g_fib_lazy < 0) { const char *e = getenv("SSBU_FIB_LAZY"); g_fib_lazy = !(e && e[0] == '0'); }
     o->fiber = g_fib_lazy ? fib_make(o) : CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o);
+    if (o->fiber && !g_fib_lazy) InterlockedIncrement64(&g_fib_host_made);      /* (fib_make counts its own) */
     fib_note(o);
     if (g_r1_fiber_born) g_r1_fiber_born(o->fiber);
     if (g_r1_keep_fibers) { o->fctx = NULL; o->fls = NULL; o->fls_fiber = NULL; o->run_tid = 0; }      /* (R2) a new host fiber: no context, no block yet */
@@ -1031,7 +1036,7 @@ void os_r1_fiber_put(uint64_t key, const uint64_t v[6]) { Obj *o = obj_peek(key)
 /* R1 restore: give a guest fiber back the host fiber it had at the save (kept alive by g_r1_keep_fibers), or a fresh one */
 void os_r1_fiber_set(uint64_t key, void *fiber, Ctx *fctx, int fresh) {
     Obj *o = obj_peek(key); if (!o) return;
-    if (fresh) { g_fib_made[2]++; if (o->fiber) g_fib_made[3]++; o->fiber = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o); o->fctx = NULL; if (g_r1_fiber_born) g_r1_fiber_born(o->fiber); }
+    if (fresh) { g_fib_made[2]++; if (o->fiber) g_fib_made[3]++; o->fiber = CreateFiberEx(1 << 20, (SIZE_T)256 << 20, 0, fiber_main, o); o->fctx = NULL; if (o->fiber) InterlockedIncrement64(&g_fib_host_made); if (g_r1_fiber_born) g_r1_fiber_born(o->fiber); }
     else { o->fiber = fiber; o->fctx = fctx; }
     fib_note(o);
 }
@@ -1041,7 +1046,7 @@ int g_r1_keep_fibers;                                  /* R1 (r1_state.c, SSBU_R
 long long g_fib_fin_n;                                 /* (stability phase) fibers finalized with the ring on (left out of the list) */
 static void fib_finalize(Ctx *c) {
     Obj *o = obj(A0);
-    if (o->fiber && !g_r1_keep_fibers) { DeleteFiber(o->fiber); o->fiber = NULL; InterlockedIncrement(&g_fib_gen); }
+    if (o->fiber && !g_r1_keep_fibers) { DeleteFiber(o->fiber); InterlockedIncrement64(&g_fib_host_deleted); o->fiber = NULL; InterlockedIncrement(&g_fib_gen); }
     else if (o->fiber && g_r1_fiber_out && g_r1_fiber_out() && o->fiber != GetCurrentFiber()) {      /* (0.2.50) outside a rollback session: as without R1, deleted by r1 (frame end) */
         void *f = o->fiber; o->fin = 1; o->fiber = NULL; InterlockedIncrement(&g_fib_gen); g_r1_fiber_dead(f);
     }

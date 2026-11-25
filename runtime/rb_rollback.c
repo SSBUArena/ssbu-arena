@@ -43,6 +43,9 @@ static int g_rbg_in_match, g_rbg_rebase; static double g_rbg_quit_t0;
 static long long g_rbg_ff_first = -1; static int g_rbg_basefix = -1;
 static int g_rbg = -1;
 static int rbg_on(void) { if (g_rbg < 0) g_rbg = rbn_on() > 0; return g_rbg; }
+/* (0.2.72) r1_ring.c fo_ring_idle: no rollback match runs, so no ring load can come (loads happen only with g_rbg_in_match 1: rbg_rollback,
+ * the test reload); a waiting-stage / room fight with the game's own netcode (3), a match not agreed (2) or no fight (0) */
+static int rbg_no_loads(void) { return g_rbg_in_match != 1; }
 static long long g_rbg_rb, g_rbg_k[RG_MAXSLOT + 2], g_rbg_rerun, g_rbg_miss, g_rbg_stalls, g_rbg_capfail, g_rbg_capskip, g_rbg_lastlocal, g_rbg_real, g_rbg_gone;
 static double g_rbg_stall_ms, g_rbg_load_ms, g_rbg_tick0, g_rbg_next, g_rbg_last_go;
 static volatile LONG g_rbg_last_k, g_rbg_max_k;
@@ -595,7 +598,14 @@ static void rbg_step_body(Ctx *c) {
             if (pw && !g_rg_ready && !g_rg_nomem && !g_rbg_rebase && !rbn_local_fight()) {      /* (0.2.11: a local fight against friends or CPUs is not a room: nothing to prepare) */
                 double t0 = now_ms();
                 r1_ring_capture(0, c);
-                if (g_rg_ready) { g_rbg_rebase = 1; LOG("r1: RB NET: the ring's first full save made at the room's waiting stage (%.1f ms): the match's base will be a rebase\n", now_ms() - t0); }
+                if (g_rg_ready) { g_rbg_rebase = 1; LOG("r1: RB NET: the ring's first full save made at the room's waiting stage (%.1f ms): the match's base will be a rebase\n", now_ms() - t0);
+                    /* (0.2.72, field crash 24/11 417eae60) that base state is never loaded (the match's base is a rebase, which empties the
+                     * ring first), but kept in the ring it stopped the out-of-session fiber deleter (r1_ring.c fo_out: g_rg_count != 0) for
+                     * the rest of the run when no rollback match followed (rooms on the game's own netcode, local fights): ~1 GB of commit a
+                     * minute in fights. The ring emptied now, as at the end of a rollback match (the newest values, the shadow and the marks
+                     * stay: the rebase works as from the second match on). SSBU_RB_PREWARM_DROP=0: kept, as before. */
+                    static int pd = -1; if (pd < 0) { const char *e = getenv("SSBU_RB_PREWARM_DROP"); pd = !(e && e[0] == '0'); }
+                    if (pd) { r1_ring_let_go(); r1_ring_release(); LOG("r1: RB NET: the waiting stage's base state dropped from the ring (SSBU_RB_PREWARM_DROP): the ring is ready, empty until the match's rebase\n"); } }
                 else LOG("r1: RB NET: the ring's first full save at the waiting stage was not made (%s): it will be made at the match\n", g_rg_nomem ? "not enough memory" : "not now");
                 if (g_rbg_wdfix) g_ra_wd_pause = 1;
             }
