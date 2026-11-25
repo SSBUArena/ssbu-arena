@@ -336,9 +336,13 @@ namespace Arena
             setupOk = setupStopped = false;
             setupRunning = true;
             setupStart = DateTime.Now;
-            Updater.Log("setup: install.py " + Installer.Arguments(choice).Replace(choice.Keys ?? "\u0001", "<prod.keys>"));
             try
             {
+                // (0.2.73) inside the try: with OpenSmash's shared game files the prod.keys field may be empty, and Replace("") threw
+                // ArgumentException out of the Install click, which closed the launcher before logs\installer.log was made
+                // (Arguments' Path.GetFullPath can throw too, on a location with characters Windows does not take)
+                string args = Installer.Arguments(choice);
+                Updater.Log("setup: install.py " + (string.IsNullOrEmpty(choice.Keys) ? args : args.Replace(choice.Keys, "<prod.keys>")));
                 setupProc = Installer.Install(setupPy, choice, l => Dispatcher.BeginInvoke(new Action(() => SetupLine(l))),
                                               c => Dispatcher.BeginInvoke(new Action(() => SetupEnded(c))));
             }
