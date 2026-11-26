@@ -1737,6 +1737,7 @@ static void rg_trap_report(void) {
     LOG("r1: RING load trap (SSBU_RB_LDTRAP=%d): %lld loads armed, %lld pages (%.1f per load), protect failures %lld, duplicates %lld, other faults in the windows %lld (last %llx); first access:%s\n", g_tr_on, g_tr_loads / (g_tr_on > 0 ? g_tr_on : 1), g_tr_armed,
         g_tr_loads >= g_tr_on ? (double)g_tr_armed / (double)(g_tr_loads / g_tr_on) : 0.0, g_tr_vpfail, g_tr_dup, (long long)g_tr_unk, (unsigned long long)g_tr_unk_a, b);
 }
+static void dcstale_after_load(void);                   /* (0.2.77, TEST ONLY) r1_state.c */
 int r1_ring_load(long long frame, Ctx *c) {         /* (SSBU_PMCMARK: the load as its own part) */
     if (!g_pmk_on) return r1_ring_load_i(frame, c);
     pmk_mark(5); int r = r1_ring_load_i(frame, c); pmk_note(); return r;
@@ -2023,6 +2024,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
         if (pl > 0) { double te = now_ms() + pl / 1000.0; while (now_ms() < te) YieldProcessor(); } }
     g_rg_loads++; g_rg_ln_last = frame;                 /* (round 10) the line marks from now on are relative to this frame */
     if (g_th_mismatch || g_fib_diff) LOG("r1: RING load of frame %lld (k %d): %d threads not at their wait, %d fibers not restored\n", frame, k, g_th_mismatch, g_fib_diff);
+    dcstale_after_load();                                 /* (0.2.77, TEST ONLY) SSBU_RB_TEST_DCSTALE (r1_state.c) */
     {   /* (round 9, diagnosis) SSBU_RB_SLOWLOAD=<ms> (default 10, 0 = off): a load longer than that logs where its time went (1-2 loads of
          * 25-35 ms in about a third of the loop runs, with every timed part small: rb8ms r9_hp_1_3, r9_st_1_3, r8_st10 BF / PS2) */
         static double sl = -1; if (sl < 0) { const char *e = getenv("SSBU_RB_SLOWLOAD"); sl = e ? atof(e) : 10.0; }

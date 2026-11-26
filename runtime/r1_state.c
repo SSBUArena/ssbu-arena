@@ -47,6 +47,9 @@ void r1_on_decommit(void *p, size_t n) { (void)p; (void)n; }
 void r1_dc_begin(void) {}
 void r1_dc_end(void) {}
 void r1_on_commit(void *p, size_t n) { (void)p; (void)n; }
+int r1_dc_defer(void *p, size_t n) { (void)p; (void)n; return 0; }
+void r1_dc_defer_real(void *p, size_t n) { (void)p; (void)n; }
+void r1_dc_defer_commit(void *p, size_t n) { (void)p; (void)n; }
 int rbg_net_thread_may_run(void) { return 1; }
 int rbg_pad_synced(int id) { (void)id; return 0; }
 void r1_mem_note(void *p, size_t n, int kind) { (void)p; (void)n; (void)kind; }
@@ -3059,7 +3062,7 @@ static void dch_print(uint64_t addr) {
     int tot = g_dch_n < 512 ? (int)g_dch_n : 512, totr = g_dch_rn < 512 ? (int)g_dch_rn : 512, shown = 0; ULONGLONG now = GetTickCount64();
     for (int j = 0; j < tot + totr && shown < 12; j++) { int i = j < tot ? (int)((g_dch_n - 1 - j) & 511) : 512 + (int)((g_dch_rn - 1 - (j - tot)) & 511);
         if (addr >= g_dch[i].a && addr < g_dch[i].a + g_dch[i].n) { shown++; const char *guest_thread_name_of(DWORD tid); const char *nm = guest_thread_name_of(g_dch[i].tid);
-            LOG("r1: CRASH address history: %s %llx + %llx at net frame %lld by %s, %.1f s ago\n", g_dch[i].dc == 2 ? "RELEASED" : g_dch[i].dc ? "DECOMMITTED" : "committed", (unsigned long long)g_dch[i].a, (unsigned long long)g_dch[i].n,
+            LOG("r1: CRASH address history: %s %llx + %llx at net frame %lld by %s, %.1f s ago\n", g_dch[i].dc == 3 ? "given back, KEPT COMMITTED (SSBU_RB_DCDEFER)" : g_dch[i].dc == 2 ? "RELEASED" : g_dch[i].dc ? "DECOMMITTED" : "committed", (unsigned long long)g_dch[i].a, (unsigned long long)g_dch[i].n,
                 g_dch[i].f, nm ? nm : "a host thread", (now - g_dch[i].ms) / 1000.0); } }
     if (!shown) LOG("r1: CRASH address history: none of the last %d game commits / decommits covers it\n", tot);
 }
@@ -3085,6 +3088,110 @@ void r1_on_commit(void *p, size_t n) {
     ls_range((uint64_t)(uintptr_t)p, n, 2);              /* R4: new pages of a fight read-only (their first write faults) */
     uint8_t *a = (uint8_t *)p;
     if (g_blk1 && n && a >= g_win1 && a < g_win1 + g_wn1) blk1_add((size_t)(a - g_win1) >> 12, ((size_t)(a - g_win1) + n + PG - 1) >> 12);      /* round 5: the sweep covers it */
+}
+/* (0.2.77, field crashes ssbu_game_r1.dll +17696a81 / +15ef645e of 0.2.74, 26/11) DECOMMITS KEPT BACK DURING A ROLLBACK MATCH.
+ * The game's allocator (jemalloc) gives pages back with nn::os::FreeMemoryPages from whatever thread frees (here: nus3::audio
+ * update). In both crashes the sound thread decommitted a range the main thread used right after (a fiber's guest stack; a job's
+ * data), at the net frame of a ring load / once per re-run of the same frames: the decommit came from a thread whose view of the
+ * heap was not the restored one (cause not proven: see HANDOFF_RB_LOAD_THREADS), and the page fault killed the game.
+ * Now, while a rollback match runs (rb_rollback.c g_rbg_in_match 1 with the ring), a FreeMemoryPages of window 1 leaves the pages
+ * COMMITTED and their bytes as they are (nothing written: the ring sees no change); a page map notes them (bit 0: given back now,
+ * bit 1: given back at least once in this match). When the game commits such pages again (AllocateMemoryPages) they are cleared
+ * first, as a fresh commit gives zero pages (also after a load that brought back a frame from before an earlier clear: bit 1).
+ * At the match's end the pages still given back are decommitted for real (=2: kept committed until the game takes them again).
+ * Outside a rollback match, outside window 1, or with the run list full: decommitted as before. SSBU_RB_DCDEFER=0: off (as 0.2.76). */
+void r1_wrote(uint64_t a, uint64_t n);
+static uint8_t *g_dfr; static uint32_t (*g_dfr_run)[2]; static size_t g_dfr_nrun, g_dfr_cap; static SRWLOCK g_dfr_lock = SRWLOCK_INIT; static int g_dfr_on = -1;
+static long long g_dfr_calls, g_dfr_pg, g_dfr_zero, g_dfr_zcalls, g_dfr_flushpg, g_dfr_full, g_dfr_now, g_dfr_peak;
+static int dfr_mode(void) { if (g_dfr_on < 0) { const char *e = getenv("SSBU_RB_DCDEFER"); g_dfr_on = e && *e ? atoi(e) : 1; } return g_dfr_on; }
+static int dfr_pages(void *p, size_t n, size_t *i0, size_t *i1) {         /* the pages of window 1 the range covers (whole pages only) */
+    uint8_t *a = (uint8_t *)p;
+    if (!g_win1 || !n || a < g_win1 || a >= g_win1 + g_wn1 || ((uintptr_t)a & (PG - 1)) || (n & (PG - 1)) || n > (size_t)(g_win1 + g_wn1 - a)) return 0;
+    *i0 = (size_t)(a - g_win1) >> 12; *i1 = *i0 + (n >> 12); return 1;
+}
+int r1_dc_defer(void *p, size_t n) {                     /* nnsdk.c os_FreeMemoryPages: 1 = kept committed (nothing else to do) */
+    if (dfr_mode() <= 0 || g_rbg_in_match != 1 || g_rbg_noring) return 0;
+    size_t i0, i1; if (!dfr_pages(p, n, &i0, &i1)) return 0;
+    AcquireSRWLockExclusive(&g_dfr_lock);
+    int ok = g_rbg_in_match == 1;
+    if (ok && !g_dfr) { g_dfr = calloc(g_wn1 >> 12, 1); ok = g_dfr != NULL; }
+    if (ok && g_dfr_nrun >= g_dfr_cap) {
+        size_t nc = g_dfr_cap ? g_dfr_cap * 2 : 4096; void *q = nc <= (1u << 22) ? realloc(g_dfr_run, nc * sizeof *g_dfr_run) : NULL;
+        if (q) { g_dfr_run = q; g_dfr_cap = nc; } else ok = 0;
+    }
+    if (ok) {
+        for (size_t i = i0; i < i1; i++) { if (!(g_dfr[i] & 1)) g_dfr_now++; g_dfr[i] |= 3; }
+        g_dfr_run[g_dfr_nrun][0] = (uint32_t)i0; g_dfr_run[g_dfr_nrun][1] = (uint32_t)(i1 - i0); g_dfr_nrun++;
+        g_dfr_calls++; g_dfr_pg += (long long)(i1 - i0); if (g_dfr_now > g_dfr_peak) g_dfr_peak = g_dfr_now;
+        dch_note(p, n, 3);
+    } else g_dfr_full++;
+    ReleaseSRWLockExclusive(&g_dfr_lock);
+    return ok;
+}
+void r1_dc_defer_real(void *p, size_t n) {               /* nnsdk.c: a decommit made for real (not kept): its pages are not "given back, committed" any more */
+    size_t i0, i1; if (!g_dfr || !dfr_pages(p, n, &i0, &i1)) return;
+    AcquireSRWLockExclusive(&g_dfr_lock);
+    for (size_t i = i0; i < i1; i++) if (g_dfr[i] & 1) { g_dfr[i] &= ~1; g_dfr_now--; }
+    ReleaseSRWLockExclusive(&g_dfr_lock);
+}
+void r1_dc_defer_commit(void *p, size_t n) {             /* nnsdk.c os_AllocateMemoryPages, after VirtualAlloc: pages given back in this match cleared (a fresh commit) */
+    if (!g_dfr || !n) return;
+    uint8_t *a = (uint8_t *)p;
+    if (!g_win1 || a + n <= g_win1 || a >= g_win1 + g_wn1) return;
+    if (a < g_win1) { n -= (size_t)(g_win1 - a); a = g_win1; }
+    if (n > (size_t)(g_win1 + g_wn1 - a)) n = (size_t)(g_win1 + g_wn1 - a);
+    size_t i0 = (size_t)(a - g_win1) >> 12, i1 = ((size_t)(a - g_win1) + n + PG - 1) >> 12;
+    AcquireSRWLockExclusive(&g_dfr_lock);
+    for (size_t i = i0; i < i1; ) {
+        if (!(g_dfr[i] & 2)) { i++; continue; }
+        size_t j = i; while (j < i1 && (g_dfr[j] & 2)) { if (g_dfr[j] & 1) g_dfr_now--; g_dfr[j] = 2; j++; }
+        uint8_t *z = g_win1 + (i << 12); size_t len = (j - i) << 12;
+        r1_wrote((uint64_t)(uintptr_t)z, len);            /* marked (the ring takes the old bytes first), then cleared */
+        memset(z, 0, len); g_dfr_zero += (long long)(j - i); g_dfr_zcalls++;
+        i = j;
+    }
+    ReleaseSRWLockExclusive(&g_dfr_lock);
+}
+static void dfr_flush(void) {                            /* rb_rollback.c rbg_fight_off: the end of a rollback match */
+    if (!g_dfr) return;
+    AcquireSRWLockExclusive(&g_dfr_lock);
+    long long fl = 0;
+    for (size_t r = 0; r < g_dfr_nrun; r++) {
+        size_t i0 = g_dfr_run[r][0], i1 = i0 + g_dfr_run[r][1];
+        for (size_t i = i0; i < i1; ) {
+            if (!(g_dfr[i] & 1) || dfr_mode() == 2) { g_dfr[i] = (g_dfr[i] & 1) ? 2 : 0; i++; continue; }      /* (=2: still given back: cleared when the game takes it again) */
+            size_t j = i; while (j < i1 && (g_dfr[j] & 1)) { g_dfr[j] = 0; j++; }
+            uint8_t *a = g_win1 + (i << 12); size_t len = (j - i) << 12;
+            r1_dc_begin(); r1_on_decommit(a, len);
+            cxxrt_mem_changed((uint64_t)(uintptr_t)a, len); VirtualFree(a, len, MEM_DECOMMIT); cxxrt_mem_changed((uint64_t)(uintptr_t)a, len);
+            r1_dc_end(); fl += (long long)(j - i);
+            i = j;
+        }
+    }
+    g_dfr_nrun = 0; g_dfr_flushpg += fl; g_dfr_now = 0;
+    ReleaseSRWLockExclusive(&g_dfr_lock);
+    LOG("r1: RB NET report: decommits kept committed in the match (SSBU_RB_DCDEFER=%d) %lld (%.1f MB), at most %.1f MB at once; pages cleared when taken again %lld (%lld calls); decommitted at the end %.1f MB; not kept (list full) %lld\n",
+        dfr_mode(), g_dfr_calls, g_dfr_pg * 4096.0 / 1048576.0, g_dfr_peak * 4096.0 / 1048576.0, g_dfr_zero, g_dfr_zcalls, fl * 4096.0 / 1048576.0, g_dfr_full);
+}
+/* (0.2.77, TEST ONLY) SSBU_RB_TEST_DCSTALE=<n>: after every n-th ring load, the newest range of window 1 the game committed (64 KB or
+ * more, 1 MB at most, committed now) is given back through the same path as nnsdk.c's FreeMemoryPages, as the field's sound thread
+ * did: a stale decommit of memory in use again. SSBU_RB_DCDEFER=0: decommitted (the game crashes when it touches it); default: kept. */
+static long long g_dcst_n, g_dcst_done;
+static void dcstale_after_load(void) {
+    static int every = -1; if (every < 0) { const char *e = getenv("SSBU_RB_TEST_DCSTALE"); every = e ? atoi(e) : 0; }
+    if (every <= 0 || ++g_dcst_n % every) return;
+    int tot = g_dch_n < 512 ? (int)g_dch_n : 512;
+    for (int j = 0; j < tot; j++) { int i = (int)((g_dch_n - 1 - j) & 511);
+        if (g_dch[i].dc != 0 || g_dch[i].n < 0x10000 || g_dch[i].n > 0x100000) continue;
+        uint8_t *a = (uint8_t *)(uintptr_t)g_dch[i].a; size_t n = (size_t)g_dch[i].n, i0, i1;
+        if (!dfr_pages(a, n, &i0, &i1)) continue;
+        MEMORY_BASIC_INFORMATION mi; if (!VirtualQuery(a, &mi, sizeof mi) || mi.State != MEM_COMMIT || (uint8_t *)mi.BaseAddress + mi.RegionSize < a + n) continue;
+        g_dcst_done++;
+        int kept = r1_dc_defer(a, n);
+        if (!kept) { r1_dc_begin(); r1_on_decommit(a, n); cxxrt_mem_changed((uint64_t)(uintptr_t)a, n); VirtualFree(a, n, MEM_DECOMMIT); cxxrt_mem_changed((uint64_t)(uintptr_t)a, n); r1_dc_end(); }
+        LOG("r1: TEST_DCSTALE (%lld): range %p + %zx (committed %.1f s ago) given back after the load: %s\n", g_dcst_done, (void *)a, n, (GetTickCount64() - g_dch[i].ms) / 1000.0, kept ? "kept committed (SSBU_RB_DCDEFER)" : "DECOMMITTED");
+        return;
+    }
 }
 static void prot_open(uint64_t a, uint64_t n);
 void r1_read_retry_note(void) { InterlockedIncrement64(&g_read_retry); }      /* (R4) nnfs.c read_at: a read repeated after ERROR_NOACCESS */
