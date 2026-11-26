@@ -989,11 +989,21 @@ static void fs_ReadFile(Ctx *c) {                     /* (handle, offset, buffer
         return;
     }
     uint64_t got = read_at((HANDLE)A0, (int64_t)A1, (void *)(uintptr_t)A2, A3);
+    DWORD read_err = got != A3 ? GetLastError() : 0;
     if (got) sysave_language((HANDLE)A0, (int64_t)A1, (void *)(uintptr_t)A2, got);
     if (InterlockedIncrement(&g_read_log) <= 60)
         trace_printf("     fs read offset %llx size %llx -> %llx bytes  from=%llx\n", (unsigned long long)A1,
                      (unsigned long long)A3, (unsigned long long)got, (unsigned long long)c->x[30] - 4);
     if (got != A3 && getenv("SSBU_FSLOG")) printf("fslog: ReadFile SHORT handle %llx offset %llx size %llx got %llx from=%llx\n", (unsigned long long)A0, (unsigned long long)A1, (unsigned long long)A3, (unsigned long long)got, (unsigned long long)c->x[30] - 4);   /* D2 debug */
+    if (got != A3) {      /* (0.2.76) this overload must read the whole size: a short read is an error the game may not report (data.arc's
+                           * tables: boot.c arc_tables_ok); the first 20 go to game.log. SSBU_FS_SHORT_LOG=0: off */
+        static volatile LONG n_short; static int off = -1;
+        DWORD err = read_err;
+        if (off < 0) { const char *e = getenv("SSBU_FS_SHORT_LOG"); off = e && e[0] == '0'; }
+        if (!off && InterlockedIncrement(&n_short) <= 20)
+            printf("nn::fs: ReadFile of %llu bytes at offset %#llx gave %llu bytes (last Windows error %lu, called from %llx): the game gets an error\n",
+                   (unsigned long long)A3, (unsigned long long)A1, (unsigned long long)got, err, (unsigned long long)c->x[30] - 4);
+    }
     RET(got == A3 ? 0 : RESULT_OUT_OF_RANGE);            /* this overload must read exactly `size` bytes */
 }
 static void fs_ReadFileCount(Ctx *c) {                /* (size_t *outRead, handle, offset, buffer, size) */
