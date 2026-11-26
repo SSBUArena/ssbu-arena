@@ -693,20 +693,45 @@ static int g_r1_ctr = -1;
  * REFUSED like a load with a thread still running (r1_ring.c pub1: every thread goes on, the rollback is tried again at the next tick).
  * The current fiber list and the live stacks taken here are used again by the restore (no second walk). */
 static int g_fib_pre;                                     /* 1: g_cur / the live stacks were taken by fibers_precheck for this load */
+/* (0.2.77, field crash ssbu_game_r1.dll +1792cd97 of 0.2.74: TaskWorker1's job fiber 71037dbcb0, "running at the last save", calls an
+ * allocator through a dead object, after tens of "capture skipped: TaskWorker1 ... in SwitchToFiber" and refused loads)
+ * SSBU_RB_FIBRUN (default 1, 0 = as 0.2.76): a task worker is held for a load when the kernel says it is blocked; its thread shows
+ * SwitchToFiber whatever job fiber it runs, so the job fibers decide. The check above let two kinds of RUNNING fibers through:
+ *  - a fiber running now (blocked at a wait inside a job) that was not running at the save: not in the saved list (made since) or
+ *    never run then. The load changes the memory under its job and fibers_restore_all even gives a never-run fiber a fresh host fiber
+ *    while the worker sits on the old one: when its wait ends the job goes on with the discarded timeline's registers and host stack;
+ *  - a fiber running at the save and now "at the same place" (same import, return address, sp) but with other callee-saved registers
+ *    (x19..x30 cannot change while one call stays blocked): it ran since, finished that job and waits at the same place in ANOTHER
+ *    job. Restoring x19..x31 gave the guest the old job back, but the host wait it sits in (its event, its host frames) is the new
+ *    job's: it wakes when the new job's event is signalled and runs the old job on.
+ * Such a load is refused like one with a fiber that cannot be put back (r1_ring.c: every thread goes on, the rollback is tried again
+ * at the next tick; after 3 refusals in a row it is loaded anyway, as before). */
+static int g_fibrun = -1; static long long g_fibrun_new, g_fibrun_never, g_fibrun_regs;
+static int fibrun_on(void) { if (g_fibrun < 0) { const char *e = getenv("SSBU_RB_FIBRUN"); g_fibrun = !(e && e[0] == '0'); } return g_fibrun; }
 static int fibers_precheck(const Fib *fs, int n) {
     g_ncur = 0; int mode_was = g_fib_mode; g_fib_mode = 1; os_r1_fibers(fib_cb); g_fib_mode = mode_was;
     if (g_fib_live_on < 0) { const char *e = getenv("SSBU_R1_LIVESTK"); g_fib_live_on = !(e && e[0] == '0'); }
     live_rsps(); g_fib_pre = 1;
-    int bad = 0;
+    int bad = 0, fr = fibrun_on();
     for (int i = 0; i < n; i++) {
         const Fib *f = &fs[i];
-        if (!f->c) continue;                                  /* never ran then: a fresh start, always possible */
+        if (!f->c) continue;                                  /* never ran then: a fresh start, always possible (FIBRUN: unless running now, below) */
         int j; for (j = 0; j < g_ncur; j++) if (g_cur[j].key == f->key) break;
         void *cf = j < g_ncur ? g_cur[j].fiber : NULL; Ctx *cc = j < g_ncur ? g_cur[j].c : NULL;
         int running_now = j < g_ncur && g_cur[j].tid != 0;
         if (f->susp && !running_now) { if (g_fib_live_on && live_on_stack(f->blk)) bad++; continue; }
-        if (!f->susp && cf == f->fiber && cc == f->c && cc->in_import == f->imp && cc->import_from == f->from && cc->x[31] == f->sp) continue;
+        if (!f->susp && cf == f->fiber && cc == f->c && cc->in_import == f->imp && cc->import_from == f->from && cc->x[31] == f->sp) {
+            if (fr && running_now && g_cur[j].tid != GetCurrentThreadId() && memcmp(&cc->x[19], &f->regs.x[19], 12 * sizeof cc->x[0])) { bad++; if (g_fibrun_regs++ < 10) LOG("r1: FIBRUN: fiber %llx (fn %llx) at the same wait as at the save but with other registers (it ran since): the load is refused\n", (unsigned long long)f->key, (unsigned long long)cc->fn); }      /* (FIBRUN) ran since: another job at the same wait */
+            continue;
+        }
         bad++;
+    }
+    if (fr) for (int j = 0; j < g_ncur; j++) {                /* (FIBRUN) running now, not running then */
+        if (!g_cur[j].tid || g_cur[j].tid == GetCurrentThreadId()) continue;      /* (main's own fiber: its context comes back whole with the load) */
+        int i; for (i = 0; i < n; i++) if (fs[i].key == g_cur[j].key) break;
+        if (i == n || !fs[i].c) { bad++; long long k = i == n ? g_fibrun_new++ : g_fibrun_never++;
+            if (k < 10) LOG("r1: FIBRUN: fiber %llx (fn %llx, at %s @%llx) runs now and was %s at the save: the load is refused\n", (unsigned long long)g_cur[j].key, g_cur[j].c ? (unsigned long long)g_cur[j].c->fn : 0ull,
+                g_cur[j].c && g_cur[j].c->in_import ? g_cur[j].c->in_import : "guest code", g_cur[j].c ? (unsigned long long)g_cur[j].c->import_from : 0ull, i == n ? "not in the list (made since)" : "never run"); }
     }
     return bad;
 }
