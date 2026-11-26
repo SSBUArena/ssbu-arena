@@ -52,6 +52,9 @@ namespace Arena
             try { Add(Core.Build); } catch { }
             try { if (Core.Repo != null) Add(Path.Combine(Core.Repo, "build")); } catch { }
             Add(ExeDir);
+            // (fix/install-launcher-errors) a launcher not installed yet: build\bootstrap.log is in the sources' build folder beside the exe
+            // (the reports of "exit code -196608" came without it)
+            try { Add(Path.Combine(Installer.Root, "build")); } catch { }
             return d;
         }
 
@@ -61,7 +64,7 @@ namespace Arena
             var names = new (string rel, int max)[]
             {
                 ("launcher_crash.log", 128 << 10), ("launcher_update.log", 128 << 10), ("bootstrap.log", 64 << 10),
-                (@"logs\installer.log", 256 << 10), ("update_last.log", 128 << 10), ("prepare.log", 64 << 10),
+                (@"logs\installer.log", 256 << 10), ("update_last.log", 128 << 10), ("update_sources.log", 32 << 10), ("prepare.log", 64 << 10),
                 (@"logs\arena_menu.log", 32 << 10), ("game.log", 320 << 10),
                 (@"work\ssbu_native_lumdiag.txt", 96 << 10),      // (amd-black) the black-picture diagnosis' lines (runtime/nvn_vk_lumdiag.c), not cut with game.log's middle
             };

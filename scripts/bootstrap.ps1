@@ -158,6 +158,8 @@ try {
         Start-Fallback
     }
 } catch {
+    # the launcher (Installer.cs PrepareTools, -NoLaunch) reads its reason from the last line of build\bootstrap.log
+    Write-Host "The installer could not start: $($_.Exception.Message)"
     Say "The installer could not start: $($_.Exception.Message)" 'OK' 'Error' | Out-Null
     exit 1
 }

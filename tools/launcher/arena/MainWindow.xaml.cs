@@ -793,6 +793,7 @@ namespace Arena
             LoginButtonText.Text = "OPEN AGAIN";
             Task.Run(() => Account.SignInWithBrowser(cts.Token)).ContinueWith(t =>
             {
+                var error = t.Exception;                          // (fix/install-launcher-errors) always observed: a cancelled wait is no crash
                 if (cts.IsCancellationRequested) return;          // a newer attempt took over
                 browserLogin = null;
                 LoginWaiting.Visibility = Visibility.Collapsed;
@@ -869,6 +870,7 @@ namespace Arena
                 if (!Updater.Installed)
                 {
                     if (release == null) Show("SSBU Arena", "The first install downloads SSBU Arena from GitHub: " + (Updater.LastCheckError ?? "no release found.") + " Check the internet connection and start the launcher again.", null, ("OK", null, true));
+                    else if (Environment.GetCommandLineArgs().Contains("--install")) StartSetup(true);      // (fix/install-launcher-errors) moved to a folder of its own: the install goes on
                     else Show("Install SSBU Arena", "SSBU Arena " + release.Version + " is installed in this folder:\n" + System.IO.Path.GetDirectoryName(Updater.ExePath) +
                               "\n\nThe setup then asks for your own game files (about 25 GB of space).", null, ("Install", () => StartSetup(true), true), ("Not now", null, false));
                     return;

@@ -39,6 +39,15 @@ namespace Arena
         /// <summary>the setup screen; download: the release's sources first (the launcher was downloaded alone)</summary>
         void StartSetup(bool download)
         {
+            // (fix/install-launcher-errors) the setup without SSBU Arena's files beside the exe (Settings > Run the setup again after
+            // "Not now", Retry, an antivirus that removed them): they are downloaded first, never PowerShell on a missing script
+            // (exit code -196608 on 8 PCs with 0.2.73 / 0.2.74)
+            if (!download && !Updater.Installed && !Installer.SourcesThere) { Updater.Log("setup: SSBU Arena's files are not in " + Installer.Root + ": downloaded first"); download = true; }
+            if (download && !Updater.Installed)
+            {
+                string bad = InstallFolder.Problem(Installer.Root);
+                if (bad != null) { OfferOwnFolder(bad); return; }
+            }
             setupDownload = download;
             LauncherCrash.Where = download ? "setup stage 1: download and tools" : "setup stage 1: tools and game file scan";
             SetupReportBox.Visibility = Visibility.Collapsed;
@@ -54,11 +63,14 @@ namespace Arena
             SetupBusyLog.Text = "";
             SetBar(SetupBusyDone, SetupBusyLeft, 0.05);
             Action<string> say = s => Dispatcher.BeginInvoke(new Action(() => SetupBusyLog.Text = s));
+            var rel = release;
             Task.Run(() =>
             {
                 if (download)
                 {
-                    Updater.FirstInstall(release, s => Dispatcher.BeginInvoke(new Action(() => SetupBusyDetail.Text = s)));
+                    if (rel == null) rel = Updater.Latest() ?? throw new InvalidOperationException("No SSBU Arena release was found on GitHub: check the internet connection, then press Retry.");
+                    Dispatcher.BeginInvoke(new Action(() => { release = release ?? rel; }));
+                    Updater.FirstInstall(rel, s => Dispatcher.BeginInvoke(new Action(() => SetupBusyDetail.Text = s)));
                     Dispatcher.Invoke(() =>
                     {
                         SetupBusyTitle.Text = "PREPARING THE TOOLS"; SetBar(SetupBusyDone, SetupBusyLeft, 0.35);
@@ -66,19 +78,33 @@ namespace Arena
                     });
                 }
                 string py = Installer.PrepareTools(say);
+                // (fix/install-launcher-errors) an install whose game was never built still has the sources it was first unpacked with
+                // (0.2.49's install.py did not know --shared-data): brought to the release before the scan
+                if (!download && rel != null && !Updater.DevCopy && Updater.GameOutdated(rel) && !File.Exists(Core.Exe))
+                {
+                    Dispatcher.Invoke(() => { SetupBusyTitle.Text = "UPDATING SSBU ARENA"; SetupBusyDetail.Text = "SSBU Arena's files to " + rel.Version + " before the setup..."; });
+                    int uc = Installer.UpdateSources(py, say);
+                    Updater.Log("setup: the sources brought to " + rel.Version + " first (scripts\\update.py ended with " + uc + ")");
+                }
                 Dispatcher.Invoke(() => { SetupBusyTitle.Text = "LOOKING FOR YOUR GAME FILES"; SetBar(SetupBusyDone, SetupBusyLeft, 0.8); SetupBusyDetail.Text = "Emulator folders, Downloads, Desktop and the other usual places: only names and headers are read."; });
                 return Tuple.Create(py, Installer.Scan(py));
             }).ContinueWith(t =>
             {
                 if (t.IsFaulted)
                 {
+                    var b = t.Exception.GetBaseException();
+                    // (fix/install-launcher-errors) Windows' file errors with what to do (a file in use, access denied, a full disk)
+                    string msg = b is IOException && !(b is FileNotFoundException) || b is UnauthorizedAccessException || b is System.ComponentModel.Win32Exception ||
+                                 Expected.IsNetwork(b) ? SetupErrors.Explain(b, Installer.Root) : b.Message;
                     SetupBusyTitle.Text = "THE SETUP STOPPED";
                     SetupBusyDetail.Foreground = Res("Bad");
-                    SetupBusyDetail.Text = t.Exception.GetBaseException().Message;
+                    SetupBusyDetail.Text = msg;
                     SetupBusyButtons.Visibility = Visibility.Visible;
-                    Updater.Log("setup: stage 1 stopped: " + t.Exception.GetBaseException().Message);
-                    SetupErrorReport(setupDownload ? "setup download/tools" : "setup tools/scan", t.Exception.GetBaseException().GetType().Name + ": " + t.Exception.GetBaseException().Message,
-                                     Path.Combine(Installer.Root, @"build\bootstrap.log"));      // (0.2.73)
+                    Updater.Log("setup: stage 1 stopped: " + msg);
+                    // (no internet is no setup error to report: the player's network)
+                    if (!Expected.IsNetwork(b) || Expected.ReportAll)
+                        SetupErrorReport(setupDownload ? "setup download/tools" : "setup tools/scan", b.GetType().Name + ": " + msg,
+                                         Path.Combine(Installer.Root, @"build\bootstrap.log"));      // (0.2.73)
                     return;
                 }
                 setupPy = t.Result.Item1;
@@ -89,7 +115,39 @@ namespace Arena
 
         void SetupRetry_Click(object sender, RoutedEventArgs e)
         {
-            StartSetup(setupDownload && !File.Exists(Path.Combine(Installer.Root, @"scripts\install.py")));
+            StartSetup(!Updater.Installed && !Installer.SourcesThere);
+        }
+
+        /// <summary>(fix/install-launcher-errors) the exe is where SSBU Arena cannot be unpacked (C:\, OpenSmash's folder, a temporary
+        /// folder, one not writable: InstallFolder.Problem): it copies itself into a folder of its own and goes on from there</summary>
+        void OfferOwnFolder(string why)
+        {
+            SetupOverlay.Visibility = Visibility.Collapsed;
+            string dest = InstallFolder.Suggest(Installer.Root);
+            Updater.Log("setup: not here: " + why + "; a folder of its own: " + (dest ?? "none found"));
+            if (dest == null)
+            {
+                Show("A folder of its own", "SSBU Arena cannot be installed here: " + why + ".\n\nPut SSBU-Arena.exe in a new empty folder (for example " +
+                     "Documents\\SSBU Arena) and start it from there.", null, ("OK", null, true));
+                return;
+            }
+            Show("A folder of its own", "SSBU Arena cannot be installed here: " + why + ".\n\nIt can copy itself to\n" + dest +
+                 "\nand install there (about 25 GB with the game). Start it from that folder from now on; the copy here is not needed.", null,
+                 ("Move and install", () => MoveAndInstall(dest), true), ("Cancel", null, false));
+        }
+
+        void MoveAndInstall(string dest)
+        {
+            try
+            {
+                string exe = Path.Combine(dest, Path.GetFileName(Updater.ExePath));
+                FileRetry.Do(() => File.Copy(Updater.ExePath, exe, true));
+                Updater.Log("setup: copied to " + exe + ", the install goes on there");
+                Process.Start(new ProcessStartInfo(exe, "--moved --install") { UseShellExecute = false, WorkingDirectory = dest });
+                try { Process.Start("explorer.exe", "\"" + dest + "\""); } catch { }
+                Application.Current.Shutdown();
+            }
+            catch (Exception ex) { Show("A folder of its own", SetupErrors.Explain(ex, dest), null, ("OK", null, true)); }
         }
 
         void SetupStageOn(int n)
@@ -192,6 +250,8 @@ namespace Arena
             if (!dump)
             {
                 if (upd == "") { FieldState(SetupUpdateMark, SetupUpdateText, "bad", "Needed: your game's update 13.0.2, 13.0.4 or 13.0.5 (.nsp / .nsz)."); ok = false; }
+                // (fix/install-launcher-errors) the base game chosen as its own update: install.py stopped after unpacking it ("not an update")
+                else if (string.Equals(upd, game, StringComparison.OrdinalIgnoreCase)) { FieldState(SetupUpdateMark, SetupUpdateText, "bad", "This is the base game, not its update: choose the update 13.0.2, 13.0.4 or 13.0.5 (a separate .nsp / .nsz, usually with [v1966080] or similar in its name)."); ok = false; }
                 else if (File.Exists(upd) || Directory.Exists(upd))
                     FieldState(SetupUpdateMark, SetupUpdateText, "ok", string.Equals(upd, found?.Update, StringComparison.OrdinalIgnoreCase) && found?.Build != null ? "Update " + found.Build + " (found on this PC)." : "Your update.");
                 else { FieldState(SetupUpdateMark, SetupUpdateText, "bad", "Not found."); ok = false; }
@@ -336,6 +396,14 @@ namespace Arena
 
         void RunSetup()
         {
+            // (fix/install-launcher-errors) the files went away since stage 1 (a browser's temporary folder emptied, an antivirus):
+            // stage 1 again (download / tools) instead of "The system cannot find the file specified" at every Resume
+            if (!Updater.DevCopy && (!Installer.SourcesThere || string.IsNullOrEmpty(setupPy) || !File.Exists(setupPy)))
+            {
+                Updater.Log("setup: " + (!Installer.SourcesThere ? "SSBU Arena's files" : "the setup's Python") + " missing at INSTALL: stage 1 again");
+                StartSetup(!Updater.Installed && !Installer.SourcesThere);
+                return;
+            }
             SetupStageOn(3);
             LauncherCrash.Where = "setup stage 3: install.py";
             SetupReportBox.Visibility = Visibility.Collapsed;

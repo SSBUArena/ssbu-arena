@@ -122,6 +122,8 @@ namespace Arena
             {
                 // (sa) all names at once, LookupMs at most: a name that does not resolve (yet) never holds the others back
                 var look = Table.Select(r => Task.Run(() => Dns.GetHostAddresses(r.Host))).ToArray();
+                // (fix/install-launcher-errors) a look-up that fails after the wait below (no internet: "host unknown") is observed
+                foreach (var l in look) l.ContinueWith(x => { var _ = x.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
                 try { Task.WaitAll(look, LookupMs); } catch (AggregateException) { }
                 for (int i = 0; i < n; i++)
                 {

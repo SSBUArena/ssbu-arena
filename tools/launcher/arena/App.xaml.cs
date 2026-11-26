@@ -14,6 +14,10 @@ namespace Arena
         void OnStartup(object sender, StartupEventArgs e)
         {
             LauncherCrash.Install(this);      // (0.2.73) an error nobody caught: written, sent, shown (LauncherCrash.cs)
+            // (fix/install-launcher-errors) "Path" and "PATH" both in the environment (some launchers and shells): one, before any
+            // process is started (ProcessStartInfo.EnvironmentVariables threw "Item has already been added" in the setup)
+            var merged = ProcessEnv.MergeDuplicates();
+            if (merged.Count > 0) try { Updater.Log("environment: " + string.Join(", ", merged) + " merged into one"); } catch { }
             if (!OnlyLauncher(e.Args)) { Shutdown(); return; }
             new UpdateWindow().Show();
         }
@@ -27,7 +31,7 @@ namespace Arena
             if (args.Contains("--replay") || args.Contains("--page")) return true;
             only = new Mutex(false, @"Local\SSBUArena.Launcher");
             bool mine;
-            try { mine = only.WaitOne(args.Contains("--updated") ? 20000 : 0); }
+            try { mine = only.WaitOne(args.Contains("--updated") || args.Contains("--moved") ? 20000 : 0); }      // (--moved: MainWindow.Setup.cs MoveAndInstall)
             catch (AbandonedMutexException) { mine = true; }
             var show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\SSBUArena.Launcher.Show");
             if (!mine)

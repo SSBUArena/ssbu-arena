@@ -43,7 +43,16 @@ namespace Arena
         static Updater() { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12; }
 
         public static Version Current => Assembly.GetExecutingAssembly().GetName().Version;
-        public static string ExePath => Process.GetCurrentProcess().MainModule.FileName;
+        /// <summary>this exe. (fix/install-launcher-errors) Process.MainModule opens the process for reading its modules, which some
+        /// security programs refuse ("Win32Exception: Access is denied" at the start, 0.2.74): the assembly's own path then</summary>
+        public static string ExePath => exePath ?? (exePath = FindExePath());
+        static string exePath;
+        static string FindExePath()
+        {
+            try { return Process.GetCurrentProcess().MainModule.FileName; } catch { }
+            try { string a = Assembly.GetEntryAssembly()?.Location; if (!string.IsNullOrEmpty(a)) return a; } catch { }
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, AppDomain.CurrentDomain.FriendlyName);
+        }
         public static bool Off => Mode == "off";
         /// <summary>a developer's git checkout: nothing is changed there unless SSBU_ARENA_UPDATE=force</summary>
         public static bool DevCopy => Core.Repo != null && Directory.Exists(Path.Combine(Core.Repo, ".git")) && Mode != "force";
@@ -266,7 +275,7 @@ namespace Arena
                 RedirectStandardOutput = true, RedirectStandardError = true,
                 StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
             };
-            psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+            ProcessEnv.Set(psi, "PYTHONIOENCODING", "utf-8");
             var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
             string log = Path.Combine(Core.Repo, @"build\update_last.log");
             Directory.CreateDirectory(Path.GetDirectoryName(log));
@@ -292,6 +301,11 @@ namespace Arena
         public static void FirstInstall(Release r, Action<string> say)
         {
             string root = Path.GetDirectoryName(ExePath);
+            // (fix/install-launcher-errors) never into C:\, OpenSmash's folder, a temporary folder or one Windows does not let us write
+            // (the setup screen offers a folder of its own first: MainWindow.Setup.cs StartSetup)
+            string bad = InstallFolder.Problem(root);
+            if (bad != null) throw new InvalidOperationException("SSBU Arena cannot be installed here: " + bad + ". Put SSBU-Arena.exe in a folder of its own " +
+                                                                 "(for example Documents\\SSBU Arena) and start it from there.");
             say("Downloading SSBU Arena " + r.Version + "...");
             byte[] zip = Get("https://codeload.github.com/" + GitHubRepo + "/zip/" + r.Commit, null, 600000);
             say("Unpacking...");
@@ -307,9 +321,20 @@ namespace Arena
                     if (rel == "" || rel.EndsWith("/")) continue;
                     if (rel.Split('/').Any(p => p == ".." || p == "") || rel.Contains(":")) throw new InvalidDataException("unsafe path in the download: " + e.FullName);
                     string dst = Path.Combine(root, rel.Replace('/', '\\'));
-                    Directory.CreateDirectory(Path.GetDirectoryName(dst));
-                    e.ExtractToFile(dst, true);
-                    files[rel] = Sha256(File.ReadAllBytes(dst));
+                    try
+                    {
+                        // (fix/install-launcher-errors) a file in use (an antivirus scanning the new file, an indexer) is tried again
+                        FileRetry.Do(() =>
+                        {
+                            Directory.CreateDirectory(Path.GetDirectoryName(dst));
+                            e.ExtractToFile(dst, true);
+                            files[rel] = Sha256(File.ReadAllBytes(dst));
+                        });
+                    }
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                    {
+                        throw new IOException("Unpacking " + rel + ": " + SetupErrors.Explain(ex, root), ex.HResult);      // (no inner: the setup shows GetBaseException's message)
+                    }
                 }
             }
             // scripts/update.py's manifest (same format): the next update knows the commit and which files are the repository's

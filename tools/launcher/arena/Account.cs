@@ -74,6 +74,7 @@ namespace Arena
         {
             var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
             listener.Start();
+            System.Threading.Tasks.Task<System.Net.Sockets.TcpClient> accept = null;
             try
             {
                 int port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -84,7 +85,7 @@ namespace Arena
                 DateTime until = DateTime.UtcNow.AddMinutes(10);
                 while (true)
                 {
-                    var accept = listener.AcceptTcpClientAsync();
+                    accept = listener.AcceptTcpClientAsync();
                     while (!accept.Wait(250))
                     {
                         cancel.ThrowIfCancellationRequested();
@@ -108,7 +109,13 @@ namespace Arena
                     }
                 }
             }
-            finally { listener.Stop(); }
+            finally
+            {
+                listener.Stop();
+                // (fix/install-launcher-errors) the accept still waiting ends with ObjectDisposedException once the listener stops (a
+                // cancelled or timed-out sign-in): observed here, it was a "launcher crash" report every time (0.2.73 / 0.2.74)
+                accept?.ContinueWith(t => { var _ = t.Exception; }, System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
+            }
         }
 
         static void Reply(Stream s, string text)
@@ -220,7 +227,7 @@ namespace Arena
                 try { using (var sr = new StreamReader(hr.GetResponseStream(), Encoding.UTF8)) text = sr.ReadToEnd(); } catch { }
                 throw new ArenaHttpException((int)hr.StatusCode, text);
             }
-            catch (WebException e) { throw new Exception("Cannot reach the Arena server: " + e.Message); }
+            catch (WebException e) { throw new ServerUnreachableException("Cannot reach the Arena server: " + e.Message, e); }
         }
 
         // the refresh token, for this Windows user only (DPAPI)

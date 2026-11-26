@@ -8,6 +8,7 @@
 """
 import concurrent.futures
 import os
+import re
 import subprocess
 import sys
 import time
@@ -278,6 +279,32 @@ def nocrt_fltused(libdir):
     return obj
 
 
+# (fix/install-launcher-errors) the linker's words for an object file that is not one (cut short by a stopped compile, emptied by
+# an antivirus or a crash): "lld-link: error: obj_r1/c_0473.obj: unknown file type" (4 reports of 0.2.73 / 0.2.74). Its date is
+# newer than its source, so every Resume linked it again and stopped the same way.
+DAMAGED_RE = re.compile(r'(?:lld-link|ld\.lld|LINK)\s*:\s*(?:error|fatal error)[^:]*:\s*(.+?\.(?:obj|o)):\s*(?:unknown file type|file is too small|'
+                        r'invalid or corrupt|not a COFF|truncated|bad file|invalid data)'
+                        r'|^\s*(\S.*?\.obj)\s*:\s*fatal error LNK11(?:07|36)', re.I | re.M)      # (MSVC link.exe: path first)
+
+
+def drop_damaged_objects(output, cwd=None):
+    """The objects the linker called damaged (DAMAGED_RE) are removed, so the compile step makes them again; prints
+    "N damaged object file(s) removed" (install.py runs the build once more when it sees it). Returns how many."""
+    n = 0
+    for m in DAMAGED_RE.finditer(output or ''):
+        p = (m.group(1) or m.group(2)).strip().strip('"')
+        p = p if os.path.isabs(p) else os.path.join(cwd or os.getcwd(), p)
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+                n += 1
+        except OSError:
+            pass
+    if n:
+        print('%d damaged object file(s) removed (cut short or emptied: a stopped compile, an antivirus): they are compiled again' % n, flush=True)
+    return n
+
+
 def link_dll(objs, dll, rsp, implib=True, fltused=False):
     """Objects -> DLL: with clang's default linker (MSVC link.exe and the static C runtime) or, under RECOMP_NOCRT, with
     lld-link alone against the import libraries of nocrt\\ (ucrtbase.dll, ntdll.dll). fltused: add the _fltused object
@@ -364,7 +391,8 @@ def build_game_dll():
     if r.returncode == 0:
         print('linked %s: %.0f MB in %.0fs%s' % (dll, os.path.getsize(dll) / 1048576.0, time.time() - t0, ' (lld-link, no C runtime)' if NOCRT else ''))
     else:
-        print('could not link %s (is a game exe still running and holding it open?)' % GAME_DLL)
+        if not drop_damaged_objects(r.stdout + r.stderr):
+            print('could not link %s (is a game exe still running and holding it open?)' % GAME_DLL)
     return r.returncode
 
 

@@ -80,15 +80,34 @@ namespace Arena
                 RedirectStandardOutput = true, RedirectStandardError = true,
                 StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
             };
-            psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+            ProcessEnv.Set(psi, "PYTHONIOENCODING", "utf-8");      // (fix/install-launcher-errors) "Path" and "PATH" both in the environment threw here
             return psi;
+        }
+
+        /// <summary>the log file of a hidden process, written while another program may read it. (fix/install-launcher-errors) A log
+        /// still held open (by an earlier run of this launcher that did not start, an editor, an antivirus) is tried again for
+        /// a few seconds, then written beside it as name-2.log, name-3.log instead of stopping the setup.</summary>
+        internal static StreamWriter OpenLog(string log)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(log));
+            string dir = Path.GetDirectoryName(log), name = Path.GetFileNameWithoutExtension(log), ext = Path.GetExtension(log);
+            for (int n = 1; ; n++)
+            {
+                string f = n == 1 ? log : Path.Combine(dir, name + "-" + n + ext);
+                try
+                {
+                    FileStream fs = null;
+                    FileRetry.Do(() => fs = new FileStream(f, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete), n == 1 ? 6 : 1, 500);
+                    return new StreamWriter(fs, new UTF8Encoding(true)) { AutoFlush = true };
+                }
+                catch (IOException e) when (SetupErrors.InUse(e) && n < 4) { }
+            }
         }
 
         /// <summary>a hidden process; every line to line() and to the log file; exited(code) at the end</summary>
         static Process Start(ProcessStartInfo psi, string log, Action<string> line, Action<int> exited)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(log));
-            var w = new StreamWriter(log, false, Encoding.UTF8) { AutoFlush = true };
+            var w = OpenLog(log);
             var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
             DataReceivedEventHandler on = (s, e) =>
             {
@@ -99,10 +118,33 @@ namespace Arena
             p.OutputDataReceived += on;
             p.ErrorDataReceived += on;
             p.Exited += (s, e) => { p.WaitForExit(); lock (w) w.Dispose(); exited?.Invoke(p.ExitCode); };
-            p.Start();
+            try { p.Start(); }
+            catch (Exception ex)
+            {
+                // (fix/install-launcher-errors) the log was left open when the process could not start, and every Resume after that
+                // failed on "the file is used by another process" (this launcher itself)
+                lock (w) { try { w.WriteLine("could not start " + psi.FileName + ": " + ex.Message); } catch { } w.Dispose(); }
+                throw;
+            }
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
             return p;
+        }
+
+        /// <summary>the release's sources are beside the exe (FirstInstall unpacked them): the scripts the setup runs</summary>
+        public static bool SourcesThere =>
+            File.Exists(Path.Combine(Root, @"scripts\bootstrap.ps1")) && File.Exists(Path.Combine(Root, @"scripts\install.py")) && File.Exists(Path.Combine(Root, @"scripts\find_inputs.py"));
+
+        /// <summary>what a Windows PowerShell exit code says (its console host's own codes), or null</summary>
+        public static string PowerShellCode(int code)
+        {
+            switch (unchecked((uint)code))
+            {
+                case 0xFFFD0000: return @"PowerShell could not open scripts\bootstrap.ps1: the file is missing or blocked (an antivirus may have removed it)";
+                case 0xFFFF0000: return "Windows PowerShell could not start on this PC (it is blocked or damaged)";
+                case 0xFFFE0000: return "PowerShell was stopped";
+                default: return null;
+            }
         }
 
         /// <summary>step 1: the private Python (bootstrap.ps1 -NoLaunch: download, SHA-256 check, pip packages); nothing
@@ -110,16 +152,48 @@ namespace Arena
         public static string PrepareTools(Action<string> line)
         {
             if (Python != null && File.Exists(Path.Combine(Root, @"deps\python\python.exe"))) return Python;
-            var psi = Hidden("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + Path.Combine(Root, @"scripts\bootstrap.ps1") + "\" -NoLaunch");
+            string script = Path.Combine(Root, @"scripts\bootstrap.ps1");
+            // (fix/install-launcher-errors) 0.2.73 / 0.2.74: "exit code -196608" on 8 PCs = PowerShell's "the -File argument does not
+            // exist": the setup was opened (Settings > Run the setup again, Retry) where SSBU Arena's files were never downloaded
+            // (the first "Install" answered "Not now") or an antivirus removed them. StartSetup downloads them first now.
+            if (!File.Exists(script))
+                throw new FileNotFoundException("SSBU Arena's setup files are not in " + Root + @" (scripts\bootstrap.ps1 is missing): an antivirus may have " +
+                                                "removed it. Allow SSBU Arena's folder in the antivirus, then press Retry" +
+                                                (Updater.Installed ? " (or download SSBU-Arena.exe again into a new folder)." : ": the files are downloaded again."), script);
+            var psi = Hidden("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File " + Q(script) + " -NoLaunch");
             psi.StandardOutputEncoding = psi.StandardErrorEncoding = null;          // Windows PowerShell writes the console code page
             int code = -1;
             var done = new System.Threading.ManualResetEvent(false);
-            Start(psi, Path.Combine(Root, @"build\bootstrap.log"), line, c => { code = c; done.Set(); });
+            string last = null;
+            Start(psi, Path.Combine(Root, @"build\bootstrap.log"), l => { if (!string.IsNullOrWhiteSpace(l)) last = l.Trim(); line?.Invoke(l); }, c => { code = c; done.Set(); });
             done.WaitOne();
             string py = Python;
             if (code != 0 || py == null)
-                throw new InvalidOperationException("The tools could not be prepared (exit code " + code + "). See build\\bootstrap.log.");
+            {
+                string why = PowerShellCode(code) ?? (last != null ? @"the last line of build\bootstrap.log: " + last : null);
+                throw new InvalidOperationException("The tools could not be prepared (exit code " + code + (why != null ? ": " + why : "") + @"). See build\bootstrap.log." +
+                                                    (code == unchecked((int)0xFFFD0000) && !Updater.Installed ? " Press Retry: the setup files are downloaded again." : ""));
+            }
             return py;
+        }
+
+        /// <summary>(fix/install-launcher-errors) an install whose game was never built keeps the sources it was first unpacked with
+        /// (the launcher's update runs only on a built game): 0.2.74's setup passed --shared-data to a 0.2.49 install.py
+        /// ("unrecognized arguments", code 2). scripts\update.py brings the sources to the latest release first. Blocks;
+        /// returns its exit code (the setup goes on either way).</summary>
+        public static int UpdateSources(string py, Action<string> line)
+        {
+            int code = -1;
+            var done = new System.Threading.ManualResetEvent(false);
+            Start(Hidden(py, @"-u scripts\update.py"), Path.Combine(Root, @"build\update_sources.log"), line, c => { code = c; done.Set(); });
+            return done.WaitOne(TimeSpan.FromMinutes(10)) ? code : -1;
+        }
+
+        /// <summary>install.py of these sources knows the option (an older one stops on an unknown option)</summary>
+        public static bool InstallKnows(string option)
+        {
+            try { return File.ReadAllText(Path.Combine(Root, @"scripts\install.py")).Contains("'" + option + "'"); }
+            catch { return true; }
         }
 
         static string RunJson(string py, string args, int timeoutMs)
@@ -204,7 +278,7 @@ namespace Arena
             if (!string.IsNullOrEmpty(c.Location) && !string.Equals(Path.GetFullPath(c.Location).TrimEnd('\\'), DefaultLocation, StringComparison.OrdinalIgnoreCase))
                 a.Append(" --build-dir " + Q(c.Location.TrimEnd('\\')));
             if (c.Jobs > 0) a.Append(" --jobs " + c.Jobs);
-            if (!string.IsNullOrEmpty(c.Shared)) a.Append(" --shared-data " + Q(c.Shared.TrimEnd('\\')));
+            if (!string.IsNullOrEmpty(c.Shared) && InstallKnows("--shared-data")) a.Append(" --shared-data " + Q(c.Shared.TrimEnd('\\')));
             if (c.Dry || Environment.GetEnvironmentVariable("SSBU_ARENA_SETUP_DRY") == "1") a.Append(" --dry-run");
             return a.ToString();
         }
@@ -213,6 +287,13 @@ namespace Arena
         public static Process Install(string py, SetupChoice c, Action<string> line, Action<int> exited)
         {
             string log = Path.Combine(string.IsNullOrEmpty(c.Location) ? DefaultLocation : c.Location, @"logs\installer.log");
+            // (fix/install-launcher-errors) "The system cannot find the file specified" (code -1): the Python or the scripts went away
+            // (a browser's temporary folder emptied, an antivirus): said as such
+            if (string.IsNullOrEmpty(py) || !File.Exists(py))
+                throw new FileNotFoundException("The setup's Python is missing (" + (py ?? @"deps\python") + "): an antivirus may have removed it, or the folder was moved or emptied. " +
+                                                "Press Resume: the tools are prepared again.", py);
+            if (!File.Exists(Path.Combine(Root, @"scripts\install.py")))
+                throw new FileNotFoundException("SSBU Arena's setup files are not in " + Root + @" (scripts\install.py is missing). Press Resume: they are downloaded again.");
             return Start(Hidden(py, Arguments(c)), log, line, exited);
         }
 

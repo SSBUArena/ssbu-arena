@@ -110,6 +110,7 @@ namespace Arena
                 return OnlineCountOf(rows, id, DateTime.UtcNow);
             }).ContinueWith(t =>
             {
+                if (t.IsFaulted) Updater.Log("online count not read: " + LogReport.FirstLine(t.Exception.GetBaseException().Message));      // (fix/install-launcher-errors) observed: no internet is no crash
                 if (at != (Regions.Override != null ? Regions.ByHost(Regions.Override) : Regions.Pick)) return;      // the region changed meanwhile: its own read is on the way
                 int n = t.Status == TaskStatus.RanToCompletion ? t.Result : -1;
                 OnlineCountBox.Visibility = n > 0 ? Visibility.Visible : Visibility.Collapsed;      // (0.2.49) nobody online: no count

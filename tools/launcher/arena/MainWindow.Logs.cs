@@ -103,6 +103,13 @@ namespace Arena
             DialogExtra.Content = launcherErrorSent;
         }
 
+        /// <summary>(fix/install-launcher-errors) the Arena server or GitHub did not answer (LauncherCrash: an expected error, not a
+        /// crash): a status line, no error window, no report</summary>
+        public void NetworkWarning(string message)
+        {
+            try { Status("No connection to the Arena server: check the internet connection (" + message + ")", "warn"); } catch { }
+        }
+
         /// <summary>the automatic report of the error window is done</summary>
         public void LauncherErrorSent(LogReport.Result r)
         {

@@ -575,6 +575,8 @@ def step_inputs(cx):
         if not base and not a.base:
             base, why_b = best.get('base'), 'best match found on this PC (plain package preferred)'
         upd, why_u = choose('update', a.update, r['updates'], 'update')
+        if upd and a.update and not a.dry_run:
+            check_given_update(upd, base, r)
         if not upd and not a.update:
             ups = [u for u in r['updates'] if u['build']]
             near = [u for u in ups if base and os.path.dirname(u['path']) == os.path.dirname(base)]
@@ -615,11 +617,44 @@ def step_inputs(cx):
                 a.firmware = a.firmware or cx.firmware
                 return step_inputs(cx)
         shared_why = getattr(cx, 'shared_why', None)
-        raise Stop(('the game files of OpenSmash Ultimate cannot be shared (%s), so SSBU Arena needs a copy of its own; ' % shared_why
-                    if shared_why else '') + 'missing: ' + '; '.join(cx.blockers), 'Give them with --base / --update / --keys, or put the game files in Downloads / Documents and your '
-                   'prod.keys in %USERPROFILE%\\.switch, then start again.')
+        # (fix/install-launcher-errors) the blockers already say "missing: ..." (0.2.74 wrote "missing: missing: the update")
+        what = '; '.join(b if b.startswith('missing: ') else 'missing: ' + b for b in cx.blockers)
+        if a.no_gui:
+            hint = ('Choose them on the setup page (File or Folder next to each), then press Install again. The update 13.0.2, 13.0.4 or '
+                    '13.0.5 is its own .nsp / .nsz file, not the base game.')
+            if shared_why:
+                hint += (" OpenSmash Ultimate's game files can be used instead of a copy once OpenSmash's own installer has checked "
+                         'them all (repair its game files in OpenSmash, then Install again here).')
+        else:
+            hint = ('Give them with --base / --update / --keys, or put the game files in Downloads / Documents and your '
+                    'prod.keys in %USERPROFILE%\\.switch, then start again.')
+        raise Stop(("OpenSmash Ultimate's game files cannot be used (%s), so SSBU Arena needs a copy of its own; " % shared_why
+                    if shared_why else '') + what, hint)
     _record_inputs(cx)
     return 'done', '; '.join(notes) if notes else 'nothing found'
+
+
+def check_given_update(upd, base, r):
+    """(fix/install-launcher-errors) the update the player chose: the base game itself, or an update of a version this port does
+    not run (13.0.3: "main is not a build this port knows" after ~20 minutes of unpacking, 2 reports of 0.2.74) -> Stop now"""
+    same = base and os.path.normcase(os.path.abspath(upd)) == os.path.normcase(os.path.abspath(base))
+    import find_inputs
+    hit = next((u for u in r['updates'] + r['base'] if os.path.normcase(os.path.abspath(u['path'])) == os.path.normcase(os.path.abspath(upd))), None)
+    if hit is None:
+        try:
+            hit = find_inputs.classify_game_file(upd)
+        except Exception:      # (only names and headers are read: a file it cannot read is left to the unpack step)
+            hit = None
+    if same or (hit and hit.get('kind') == 'base'):
+        raise Stop('the file chosen as the update is the base game itself (%s)' % os.path.basename(upd),
+                   'Choose the update 13.0.2, 13.0.4 or 13.0.5: a separate .nsp / .nsz file (its name usually has [v1835008], '
+                   '[v1966080] or [v2031616], or 13.0.x), then press Install again.')
+    name = os.path.basename(upd)
+    other = re.search(r'(?<![\d.])(13\.0\.[0136-9]|1[0-2]\.\d\.\d|[1-9]\.\d\.\d)(?![\d.])', name)
+    if hit and hit.get('kind') == 'update' and not hit.get('build') and (hit.get('version') is not None or other):
+        ver = other.group(1) if other else 'v%s' % hit.get('version')
+        raise Stop('the update you chose is version %s (%s): SSBU Arena runs only the updates 13.0.2, 13.0.4 and 13.0.5' % (ver, name),
+                   'Choose your game\'s update 13.0.2 (v1835008), 13.0.4 (v1966080) or 13.0.5 (v2031616), then press Install again.')
 
 
 def _record_inputs(cx):
@@ -851,6 +886,58 @@ def probe_failure(stdout):
     return ''
 
 
+# (fix/install-launcher-errors) Windows' own refusals in a failed step's output, said with what to do (0.2.74's reports: Smart
+# App Control's "WinError 4551" came as "the tools check stopped: ~~~~^^^^", the last line of a Python traceback)
+ENV_ERRORS = [
+    (re.compile(r'WinError 4551|WinError 1260|Application Control policy|Control de aplicaciones|blocked by group policy', re.I),
+     'Windows blocked a program the setup made or downloaded (Smart App Control or an Application Control policy: %s)',
+     "SSBU Arena's game and its build tools are made on your PC and are not signed, so Smart App Control blocks them. Turn it off "
+     '(Windows Security > App & browser control > Smart App Control settings > Off), then press Resume. On a work or school PC '
+     'ask its administrator.'),
+    (re.compile(r'WinError 225\]|contains a virus|potentially unwanted software', re.I),
+     'an antivirus blocked a file of the setup (%s)',
+     "Allow SSBU Arena's folder in your antivirus (Windows Security > Virus & threat protection > Manage settings > Exclusions), "
+     'then press Resume.'),
+    (re.compile(r'WinError 112\]|WinError 39\]|No space left on device|not enough space on the disk', re.I),
+     'the drive is full (%s)',
+     'Free some space on that drive (SSBU Arena needs about 25 GB in all), then press Resume: finished steps are skipped.'),
+    (re.compile(r'WinError 32\]|being used by another process', re.I),
+     'a file is used by another program (%s)',
+     'Close the game, OpenSmash Ultimate and any program that may have the file open (an antivirus scan ends by itself), then '
+     'press Resume.'),
+    (re.compile(r'WinError 5\]|PermissionError: \[|Access is denied', re.I),
+     'Windows refused access to a file (%s)',
+     "Close the game and other programs, allow SSBU Arena's folder in your antivirus (Windows Security > Ransomware protection > "
+     'Controlled folder access may block it), then press Resume.'),
+]
+
+
+def error_line(text):
+    """The line of a failed step's output that says what happened: an exception's own line ("OSError: [WinError 4551] ..."),
+    else the last line that is not a traceback's marker (~~~^^^), a "File ..." line or empty."""
+    lines = [l.strip() for l in (text or '').splitlines()]
+    for l in reversed(lines):
+        if re.match(r'^[A-Za-z_][\w.]*(Error|Exception|Exit)\b.*:', l) or re.match(r'^(OSError|PermissionError|FileNotFoundError)\b', l):
+            return l
+    for l in reversed(lines):
+        if l and not re.match(r'^[~^\s]+$', l) and not l.startswith('File "') and not l.startswith('Traceback'):
+            return l
+    return ''
+
+
+def explain(text):
+    """-> (msg, hint) when the output shows one of Windows' refusals (ENV_ERRORS), else None"""
+    for rx, msg, hint in ENV_ERRORS:
+        m = rx.search(text or '')
+        if m:
+            line = next((l.strip() for l in text.splitlines() if rx.search(l)), m.group(0))
+            return msg % line[:240], hint
+    return None
+
+
+DAMAGED_MARK = 'damaged object file(s) removed'      # tools/lifter/build.py drop_damaged_objects
+
+
 def probe_runtime(dump, runtime, extra):
     """setup.py --only deps with the package (it unpacks and checks it in <build>\\runtime) -> (exit code, failure message)."""
     probe = [sys.executable, os.path.join(HERE, 'setup.py'), '--only', 'deps', '--build', BUILD, '--dump', dump, '--runtime', runtime] + extra
@@ -898,7 +985,10 @@ def tools_args(dump, runtime=None, extra=(), why=''):
             return ['--runtime', runtime] + llvm + llvm19_args()
         if 'runtime package refused' not in fail:
             # a problem that has nothing to do with the package (the dump, a Python package): say it now, not "MSVC"
-            raise Stop('the tools check stopped: %s' % fail[:400], 'Fix the point above, then press Resume (see the logs in %s).'
+            env = explain(fail)
+            if env:
+                raise Stop('the tools check stopped: ' + env[0], env[1])
+            raise Stop('the tools check stopped: %s' % (error_line(fail) or fail)[:400], 'Fix the point above, then press Resume (see the logs in %s).'
                        % os.path.join(BUILD, 'logs'))
         why = fail.split('runtime package refused:', 1)[1].strip()
         say('   the prebuilt runtime cannot be used: %s' % why[:600])
@@ -1147,12 +1237,36 @@ def step_build(cx, P):
             return (s, c[0], c[1], False)
         e = est(s)
         return (s, min(time.time() - P.t0.get(s, time.time()), 0.95 * e), e)      # seconds: never past the estimate
-    rc, tail = stream(cmd, on_line=on_line, hb=hb, prefix='   ')
+    seen = {'damaged': False, 'failed': ''}
+
+    def watch(line):
+        if DAMAGED_MARK in line:
+            seen['damaged'] = True
+        m = re.match(r'\s*FAILED at step (\w+): (.*)', line)
+        if m:
+            seen['failed'] = 'step %s: %s' % (m.group(1), m.group(2).strip())
+        on_line(line)
+    rc, tail = stream(cmd, on_line=watch, hb=hb, prefix='   ')
+    if rc and seen['damaged'] and os.environ.get('SSBU_BUILD_RETRY', '1') not in ('', '0'):
+        # (fix/install-launcher-errors) object files a stopped compile or an antivirus left damaged ("lld-link: unknown file type",
+        # 4 reports of 0.2.73 / 0.2.74): the linker's step removed them; once more, the compilers make them again
+        say('   damaged object files were removed: the build goes on once more (only they are compiled again)')
+        if cur['id']:
+            P.end(cur['id'], 'fail', 'damaged object files: compiled again')
+            cur['id'] = None
+        seen.update(damaged=False, failed='')
+        rc, tail = stream(cmd, on_line=watch, hb=hb, prefix='   ')
     if rc:
         if cur['id']:
             P.end(cur['id'], 'fail', 'see build\\logs')
-        raise Stop('the build stopped (code %d): %s' % (rc, next((l for l in reversed(tail) if l.strip()), '')[:300]),
-                   'See build\\logs, then start the installer again: it goes on from there.')
+        text = '\n'.join(tail)
+        env = explain(text)
+        if env:
+            raise Stop('the build stopped (code %d): %s' % (rc, env[0]), env[1])
+        # the step's own "FAILED at step convert: ..." line says why, not setup.py's last line ("fix the problem and run ... again")
+        why = seen['failed'] or error_line(text)
+        raise Stop('the build stopped (code %d) at %s' % (rc, why[:400]) if seen['failed'] else 'the build stopped (code %d): %s' % (rc, why[:300]),
+                   'See build\\logs, then press Resume (or start the installer again): it goes on from there.')
     if cur['id']:
         P.end(cur['id'], 'done')
 

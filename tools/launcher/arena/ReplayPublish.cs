@@ -50,7 +50,7 @@ namespace Arena
                 try { msg = Json.Deserialize<Dictionary<string, object>>(text)["error"] as string; } catch { }
                 throw new Exception(msg ?? ("the Arena server answered " + (int)hr.StatusCode));
             }
-            catch (WebException e) { throw new Exception("Cannot reach the Arena server: " + e.Message); }
+            catch (WebException e) { throw new ServerUnreachableException("Cannot reach the Arena server: " + e.Message, e); }
         }
 
         /// <summary>the PC's list: file name -> its public copy</summary>

@@ -183,7 +183,8 @@ def build_one(name, nro, base, jobs, relift, flags_local):
         r = subprocess.run([build_opt.CLANG, '-shared', '@' + rsp, '-o', dll], capture_output=True, text=True)
         if r.returncode:
             print((r.stdout + r.stderr)[-4000:])
-            print('could not link %s (is a game exe still running and holding it open?)' % dll)
+            if not build_opt.build.drop_damaged_objects(r.stdout + r.stderr):
+                print('could not link %s (is a game exe still running and holding it open?)' % dll)
             return None
         for ext in ('.lib', '.exp'):
             p = dll[:-4] + ext

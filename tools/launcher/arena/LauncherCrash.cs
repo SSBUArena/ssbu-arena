@@ -7,10 +7,12 @@
 //  - a task nobody waited for (TaskScheduler.UnobservedTaskException, the process goes on): written and sent, no window.
 // Never a loop: one error window at a time, a handler that fails inside itself only gives up, and after 20 errors on the window's
 // thread in one run the launcher closes instead (an error in every frame would otherwise never stop). SSBU_ARENA_THROW_TEST=ui |
-// thread | task throws one 6 s after the start (a test).
+// thread | task throws one 6 s after the start (a test); =cancel | network | disposed throws an expected one in a task (SetupErrors.cs
+// Expected: written, never reported).
 using System;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -45,8 +47,7 @@ namespace Arena
             {
                 if (Interlocked.Exchange(ref fatal, 1) == 1) return;
                 var ex = e.ExceptionObject as Exception ?? new Exception(Convert.ToString(e.ExceptionObject));
-                Write(ex, "background thread" + (e.IsTerminating ? ", the launcher closes" : ""));
-                try
+                Write(ex, "background thread" + (e.IsTerminating ? ", the launcher closes" : ""));                try
                 {
                     var r = LogReport.AutoSendNow("launcher_crash", Describe(ex), 8000);
                     MessageBox.Show("SSBU Arena's launcher had an error and has to close.\n\n" + LogReport.FirstLine(ex.Message) + "\n\n" +
@@ -71,10 +72,13 @@ namespace Arena
                     t.Stop();
                     if (test == "thread") new Thread(() => throw new InvalidOperationException("SSBU_ARENA_THROW_TEST: an error on a background thread")) { IsBackground = true }.Start();
                     else if (test == "task") { Task.Run(new Action(() => throw new InvalidOperationException("SSBU_ARENA_THROW_TEST: an error in a task nobody waits for"))); }
+                    else if (test == "cancel") { Task.Run(new Action(() => throw new OperationCanceledException("SSBU_ARENA_THROW_TEST: a cancelled task"))); }
+                    else if (test == "network") { Task.Run(new Action(() => throw new ServerUnreachableException("Cannot reach the Arena server: SSBU_ARENA_THROW_TEST", new WebException("test", WebExceptionStatus.NameResolutionFailure)))); }
+                    else if (test == "disposed") { Task.Run(new Action(() => throw new ObjectDisposedException("System.Net.Sockets.Socket"))); }
                     else throw new InvalidOperationException("SSBU_ARENA_THROW_TEST: an error on the window's thread");
                 };
                 t.Start();
-                if (test == "task") { var g = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(8) }; g.Tick += (s, e) => { g.Stop(); GC.Collect(); GC.WaitForPendingFinalizers(); }; g.Start(); }
+                if (test == "task" || test == "cancel" || test == "network" || test == "disposed") { var g = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(8) }; g.Tick += (s, e) => { g.Stop(); GC.Collect(); GC.WaitForPendingFinalizers(); }; g.Start(); }
             }
         }
 
@@ -90,6 +94,17 @@ namespace Arena
             if (ex == null || Interlocked.Exchange(ref inside, 1) == 1) return;          // an error inside this handler: given up
             try
             {
+                // (fix/install-launcher-errors) a cancelled sign-in, its closed listener, no internet: written, no report, no
+                // error window (0.2.74: 13 of its 16 "launcher crashes" were these); on the window's thread a network one is a
+                // status line instead. SSBU_ARENA_REPORT_ALL=1 reports them as before.
+                string expected = Expected.Kind(ex, !window);
+                if (expected != null)
+                {
+                    Write(ex, thread + ", " + expected + ": not a crash, not reported");
+                    if (window && expected == "network")
+                        try { Application.Current?.Windows.OfType<MainWindow>().FirstOrDefault(w => w.IsLoaded)?.NetworkWarning(LogReport.FirstLine(ex.GetBaseException().Message)); } catch { }
+                    return;
+                }
                 Write(ex, thread);
                 string what = Describe(ex);
                 MainWindow main = null;

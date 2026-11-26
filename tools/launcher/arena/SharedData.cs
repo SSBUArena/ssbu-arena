@@ -154,6 +154,14 @@ namespace Arena
             string mod = Path.Combine(dir, @"dump\modules");
             if (!File.Exists(Path.Combine(mod, "romfs_vanilla.cfg")) && !File.Exists(Path.Combine(mod, "romfs.cfg"))) { WhyNot = "its game data is not set up"; return null; }
             if (File.Exists(Path.Combine(mod, "romfs.crypt"))) { WhyNot = "its game data is read from the encrypted game file (OpenSmash's \"save disk space\"): only a decrypted copy can be shared"; return null; }
+            // (fix/install-launcher-errors) blocks OpenSmash's installer could not confirm: install.py refuses that game data
+            // (shared_gamedata.py), so it is not offered either (0.2.74 asked, then the install stopped: 4 reports). Read here, without Python.
+            if (Unverified(dir))
+            {
+                WhyNot = @"OpenSmash could not confirm some blocks of its game data (dump\modules\romfs.unverified.txt)";
+                Updater.Log("shared data: OpenSmash Ultimate in " + dir + " not offered: " + WhyNot);
+                return null;
+            }
             if (Strict)
             {
                 string why = Check(dir);
@@ -165,10 +173,24 @@ namespace Arena
         /// <summary>shared_gamedata.py check (about a second the first time; the answer kept while OpenSmash's game data files keep
         /// their dates): null when its game data can be shared, else why not. No Python yet (a first install): null, the installer
         /// makes the same check before it links anything.</summary>
+        /// <summary>dump\modules\romfs.unverified.txt lists blocks (a line that starts with a digit: shared_gamedata.py _check)</summary>
+        public static bool Unverified(string dir)
+        {
+            try
+            {
+                string f = Path.Combine(dir, @"dump\modules\romfs.unverified.txt");
+                return File.Exists(f) && File.ReadLines(f).Any(l => l.Length > 0 && char.IsDigit(l[0]));
+            }
+            catch { return false; }
+        }
+
         static string Check(string dir)
         {
             string py = Installer.Python;
-            if (py == null || Core.Repo == null || !File.Exists(Path.Combine(Core.Repo, @"scripts\shared_gamedata.py"))) return null;
+            // (fix/install-launcher-errors) Installer.Root: during the first install Core.Repo is still null (it is read at the start),
+            // so the check never ran and every OpenSmash install was offered, also those install.py then refuses
+            string repo = Installer.Root;
+            if (py == null || repo == null || !File.Exists(Path.Combine(repo, @"scripts\shared_gamedata.py"))) return null;
             string key = dir;
             try
             {
@@ -182,8 +204,8 @@ namespace Arena
             lock (typeof(SharedData)) if (key == checkedKey) return checkedWhy;
             string why = null;
             var psi = new ProcessStartInfo(py, "-u scripts\\shared_gamedata.py check " + Installer.Q(dir))
-            { WorkingDirectory = Core.Repo, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8 };
-            psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+            { WorkingDirectory = repo, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8 };
+            ProcessEnv.Set(psi, "PYTHONIOENCODING", "utf-8");
             try
             {
                 using (var p = Process.Start(psi))
@@ -210,7 +232,7 @@ namespace Arena
             if (py == null || Core.Repo == null) return Tuple.Create(false, "the setup's Python is missing (run the setup again)");
             var psi = new ProcessStartInfo(py, "-u scripts\\shared_gamedata.py relink " + Installer.Q(Core.Build) + (folder != null ? " " + Installer.Q(folder) : ""))
             { WorkingDirectory = Core.Repo, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8 };
-            psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+            ProcessEnv.Set(psi, "PYTHONIOENCODING", "utf-8");
             try
             {
                 using (var p = Process.Start(psi))

@@ -248,7 +248,8 @@ def link_module(e, gen, obj, bindir, sources, compiled, times):
         r = build.link_dll(objs, dll, os.path.join(obj, 'link.rsp'), implib=False, fltused=True)
         if r.returncode:
             print((r.stdout + r.stderr)[-4000:])
-            print('could not link %s (is a game exe still running and holding it open?)' % dll)
+            if not build.drop_damaged_objects(r.stdout + r.stderr):
+                print('could not link %s (is a game exe still running and holding it open?)' % dll)
             return 1
         linked = True
         for ext in ('.lib', '.exp') if LIB_EXT == '.dll' else ():      # nothing links against a module DLL

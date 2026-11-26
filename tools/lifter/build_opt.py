@@ -516,7 +516,7 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
     for inl in ((True, False) if inline else (False,)):
         steps = [[CLANG, '-c'] + PIPE_FE + extra + ([INLINE_FLAG] if inl else []) + base_flags + [src, '-o', bc],
                  [os.path.join(LLVM19, 'opt.exe'), '-passes=' + PIPE_PASSES, bc, '-o', bc2],
-                 [os.path.join(LLVM19, 'llc.exe'), '-filetype=obj'] + PIPE_LLC + [bc2, '-o', obj]]
+                 [os.path.join(LLVM19, 'llc.exe'), '-filetype=obj'] + PIPE_LLC + [bc2, '-o', obj + '.part']]      # (renamed at the end)
         ll, ll2 = obj[:-4] + '.a.ll', obj[:-4] + '.b.ll'
         if PIPE_SCOPE and inline:       # (rollback 8 ms) ctxscope.py: textual IR, the alias information, then the passes that use it
             steps[1] = [os.path.join(LLVM19, 'opt.exe'), '-S', '-passes=' + PIPE_PASSES, bc, '-o', ll]
@@ -535,7 +535,12 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
             total += secs
             if code != 0:
                 break
-        for f in (bc, bc2, ll, ll2):
+        # (fix/install-launcher-errors) llc writes its object in place: one stopped half-way (Stop, a time limit's taskkill) stayed as
+        # a short .obj newer than its source, which the next run kept and the linker refused ("unknown file type"). Written as
+        # .obj.part, the object is the .obj only once llc ended well.
+        if code == 0 and os.path.exists(obj + '.part'):
+            os.replace(obj + '.part', obj)
+        for f in (bc, bc2, ll, ll2, obj + '.part'):
             if os.path.exists(f):
                 os.remove(f)
         if code == 0:
