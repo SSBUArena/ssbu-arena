@@ -433,6 +433,60 @@ static void romfs_fail(const char *msg) {
     else MessageBoxA(NULL, msg, "SSBU native", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     exit(2);
 }
+/* (0.2.76) data.arc's own file tables. The game reads them once at start (13.0.4 0x7103751c00 .. in the file-system set-up
+ * 0x710374f360: open, the 0x38-byte header with its magic, then the compressed file-system table and the search table, both
+ * in the last ~23 MB of the 16.4 GB file). When the open, the header or a table read fails it does NOT stop: it leaves the
+ * archive's tables empty and goes on, and the first lookup of a directory in the start-up (0x7103742d1c on 13.0.4,
+ * 0x71037432cc on 13.0.5) reads address 0xc: "HOST EXCEPTION ... reading address 0xc, last guest function entered
+ * f_710392acb0 (13.0.5 f_710392b260), call stack f_7103741990 < f_71002c5620" before the first frame (a player's 13.0.5
+ * dump, 2026-11-25/26, every start; the same crash with the same registers on 13.0.4 with a data.arc cut after 64 MB).
+ * A data.arc whose end is missing or damaged (a copy or an extraction that did not finish, a full disk) is the case: check
+ * the header and the two table headers here (three small reads) and say so. SSBU_ARC_CHECK=0 skips the check. */
+static int arc_tables_ok(const char *path, char *why, size_t whyn) {
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) { snprintf(why, whyn, "it cannot be opened (Windows error %lu)", GetLastError()); return 0; }
+    LARGE_INTEGER sz; uint64_t size = 0, hdr[7] = {0};
+    if (GetFileSizeEx(h, &sz)) size = (uint64_t)sz.QuadPart;
+    int ok = 0;
+    OVERLAPPED ov; DWORD got = 0;
+    memset(&ov, 0, sizeof ov);
+    if (!ReadFile(h, hdr, sizeof hdr, &got, &ov) || got != sizeof hdr) {
+        snprintf(why, whyn, "its header cannot be read (%llu bytes in the file)", (unsigned long long)size);
+        goto out;
+    }
+    if (hdr[0] != 0xABCDEF9876543210ull) {
+        snprintf(why, whyn, "it does not start like Smash Ultimate's data.arc (first bytes %016llx, %llu bytes in the file)", (unsigned long long)hdr[0], (unsigned long long)size);
+        goto out;
+    }
+    for (int t = 0; t < 2; t++) {                         /* header +0x20: file-system table, +0x28: search table */
+        uint64_t off = hdr[4 + t];
+        uint32_t th[4] = {0}, magic = 0;                  /* {data start 0x10, decompressed size, compressed size, section size} */
+        const char *name = t ? "search table" : "file table";
+        if (off < 0x38 || off + 0x14 > size) {
+            snprintf(why, whyn, "it is %llu bytes long, but its %s starts at byte %llu: the end of the file is missing", (unsigned long long)size, name, (unsigned long long)off);
+            goto out;
+        }
+        memset(&ov, 0, sizeof ov); ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
+        if (!ReadFile(h, th, sizeof th, &got, &ov) || got != sizeof th) {
+            snprintf(why, whyn, "its %s at byte %llu cannot be read (Windows error %lu, %lu of 16 bytes)", name, (unsigned long long)off, GetLastError(), got);
+            goto out;
+        }
+        if (th[0] == 0x10) {                              /* compressed: a zstd frame follows the 16-byte header */
+            memset(&ov, 0, sizeof ov); ov.Offset = (DWORD)(off + 0x10); ov.OffsetHigh = (DWORD)((off + 0x10) >> 32);
+            if (!ReadFile(h, &magic, 4, &got, &ov) || got != 4) magic = 0;
+        }
+        if (th[0] != 0x10 || !th[1] || !th[2] || off + 0x10 + th[2] > size || magic != 0xFD2FB528u) {
+            snprintf(why, whyn, "its %s at byte %llu is damaged (header %08x %08x %08x %08x, first word %08x; %llu bytes in the file)", name, (unsigned long long)off,
+                     th[0], th[1], th[2], th[3], magic, (unsigned long long)size);
+            goto out;
+        }
+    }
+    ok = 1;
+    snprintf(why, whyn, "%llu bytes, file table at %llu, search table at %llu", (unsigned long long)size, (unsigned long long)hdr[4], (unsigned long long)hdr[5]);
+out:
+    CloseHandle(h);
+    return ok;
+}
 /* The game cannot run without data.arc: say so instead of crashing later inside the game. Modes that run without game data
  * (the self-tests, all of which exit) skip it. */
 static void check_romfs(void) {
@@ -466,6 +520,19 @@ static void check_romfs(void) {
                      g_state_romfs_lossy ? " (some characters of its name do not exist in this Windows code page)" : "", dir, how);
         else snprintf(msg, sizeof msg, "data.arc was not found (%s).\n\n%s", probe, how);
     } else {
+        size_t pl = strlen(probe);
+        const char *ac = getenv("SSBU_ARC_CHECK");
+        if (pl >= 9 && !_stricmp(probe + pl - 9, "\\data.arc") && !(ac && ac[0] == '0')) {      /* a plain data.arc (not data.arcp / data.arcl) */
+            char why[400];
+            if (!arc_tables_ok(probe, why, sizeof why)) {
+                printf("romfs: data.arc check: FAILED: %s (%s)\n", why, probe);
+                snprintf(msg, sizeof msg, "The game data file %s is incomplete or damaged: %s.\n\nThe game cannot read its list of files "
+                         "and would close at start. Copy or extract data.arc again from your game dump (the RomFS with the update "
+                         "applied), then start again. (SSBU_ARC_CHECK=0 skips this check.)", probe, why);
+                romfs_fail(msg);
+            }
+            printf("romfs: data.arc check: ok (%s)\n", why);
+        }
         /* .nrr\*.nrr beside data.arc: the lists of the script modules nn::ro may load (the game registers them at start). A
          * RomFS without them runs to the menus, then every module is refused and the game waits for ever on the loading
          * screen before a fight. */
