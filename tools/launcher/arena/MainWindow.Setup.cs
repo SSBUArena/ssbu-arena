@@ -42,7 +42,7 @@ namespace Arena
             // (fix/install-launcher-errors) the setup without SSBU Arena's files beside the exe (Settings > Run the setup again after
             // "Not now", Retry, an antivirus that removed them): they are downloaded first, never PowerShell on a missing script
             // (exit code -196608 on 8 PCs with 0.2.73 / 0.2.74)
-            if (!download && !Updater.Installed && !Installer.SourcesThere) { Updater.Log("setup: SSBU Arena's files are not in " + Installer.Root + ": downloaded first"); download = true; }
+            if (!download && NeedSources) { Updater.Log("setup: SSBU Arena's files are not in " + Installer.Root + (Updater.Installed ? " (" + MissingSources() + " missing)" : "") + ": downloaded first"); download = true; }
             if (download && !Updater.Installed)
             {
                 string bad = InstallFolder.Problem(Installer.Root);
@@ -70,7 +70,7 @@ namespace Arena
                 {
                     if (rel == null) rel = Updater.Latest() ?? throw new InvalidOperationException("No SSBU Arena release was found on GitHub: check the internet connection, then press Retry.");
                     Dispatcher.BeginInvoke(new Action(() => { release = release ?? rel; }));
-                    Updater.FirstInstall(rel, s => Dispatcher.BeginInvoke(new Action(() => SetupBusyDetail.Text = s)));
+                    Updater.FirstInstall(rel, s => Dispatcher.BeginInvoke(new Action(() => SetupBusyDetail.Text = s)), Installer.Root);
                     Dispatcher.Invoke(() =>
                     {
                         SetupBusyTitle.Text = "PREPARING THE TOOLS"; SetBar(SetupBusyDone, SetupBusyLeft, 0.35);
@@ -115,8 +115,17 @@ namespace Arena
 
         void SetupRetry_Click(object sender, RoutedEventArgs e)
         {
-            StartSetup(!Updater.Installed && !Installer.SourcesThere);
+            StartSetup(NeedSources);
         }
+
+        /// <summary>(fix/launcher-0277) SSBU_ARENA_SOURCES_REPAIR=0: as 0.2.76, only a folder without SSBU Arena (no scripts\setup.py)
+        /// gets the release's files downloaded. Otherwise also an install whose setup files are missing (scripts\bootstrap.ps1,
+        /// install.py, find_inputs.py: Installer.SourcesThere; an antivirus removed them, an unpacking that stopped half-way): there
+        /// Retry repeated "bootstrap.ps1 is missing" for ever (0.2.75). A developer's git checkout is never changed.</summary>
+        static bool SourcesRepair => Environment.GetEnvironmentVariable("SSBU_ARENA_SOURCES_REPAIR") != "0";
+        static bool NeedSources => !Installer.SourcesThere && (!Updater.Installed || SourcesRepair && !Updater.DevCopy);
+        static string MissingSources() =>
+            string.Join(", ", new[] { @"scripts\bootstrap.ps1", @"scripts\install.py", @"scripts\find_inputs.py" }.Where(f => !File.Exists(Path.Combine(Installer.Root, f))));
 
         /// <summary>(fix/install-launcher-errors) the exe is where SSBU Arena cannot be unpacked (C:\, OpenSmash's folder, a temporary
         /// folder, one not writable: InstallFolder.Problem): it copies itself into a folder of its own and goes on from there</summary>
@@ -401,7 +410,7 @@ namespace Arena
             if (!Updater.DevCopy && (!Installer.SourcesThere || string.IsNullOrEmpty(setupPy) || !File.Exists(setupPy)))
             {
                 Updater.Log("setup: " + (!Installer.SourcesThere ? "SSBU Arena's files" : "the setup's Python") + " missing at INSTALL: stage 1 again");
-                StartSetup(!Updater.Installed && !Installer.SourcesThere);
+                StartSetup(NeedSources);
                 return;
             }
             SetupStageOn(3);
