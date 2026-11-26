@@ -17,7 +17,10 @@ Checks before anything is used (any failure: nothing is made, the normal install
     - the folder is an OpenSmash install (tools\\install_windowsmash.ps1, dump\\modules) and its game data is the vanilla
       cfg (romfs_vanilla.cfg, never a mods map) in the layered form, not encrypted in place (no romfs.crypt)
     - every file the map names lies inside that OpenSmash folder (nothing else on the PC is read)
-    - the update's blocks were all confirmed by OpenSmash's installer (romfs.unverified.txt absent or empty)
+    - (SSBU_SHARED_UNVERIFIED=refuse, or SSBU_SHARED_STRICT=0) the update's blocks were all confirmed by OpenSmash's installer
+      (romfs.unverified.txt absent or empty). By default that file alone is no reason to refuse: OpenSmash's installer goes on
+      with it ("the install goes on": a merged base, what most players have), and the data.arc checks below say whether the bytes
+      Arena reads are right; with it, make() reads all of data.arc once (--full) whatever SSBU_SHARED_VERIFY says
     - main in its exefs is a game build Arena handles (scripts/setup.py GAME_BUILDS: OpenSmash is 13.0.5)
     - data.arc read through the map is whole (its header and file-system table) and has the size of that build's data.arc
     - (SSBU_SHARED_STRICT, default on) the cfg is one of the two forms Arena knows (layered with an SSBUROM1 map, or plain:
@@ -78,6 +81,25 @@ ARC_SAMPLE_SHA256 = {'13.0.4': '4b8a47ae3e7bd590e5de9c99a0d1513eedf73ca765f66248
 
 def strict():
     return os.environ.get('SSBU_SHARED_STRICT', '1').strip() != '0'
+
+
+# (fix/launcher-0277) SSBU_SHARED_UNVERIFIED: 'check' (default) or 'refuse' (as 0.2.76). OpenSmash writes
+# dump\modules\romfs.unverified.txt when some 16 KB blocks of its updated RomFS could not be confirmed against the update's hashes,
+# and goes on (tools/update.py: a warning, not an error); the blocks may be padding or files other than data.arc. 0.2.76 refused
+# any such install (4 reports, 3 players, who then had no game data of their own). Now the marker is logged and the data.arc checks
+# decide: when strict, the fingerprint (header + file table + samples) in check() and the SHA-256 of every byte in make(), forced
+# on with the marker. Without strict (SSBU_SHARED_STRICT=0) nothing else proves the data: refused as before.
+def unverified_refused():
+    return os.environ.get('SSBU_SHARED_UNVERIFIED', 'check').strip().lower() == 'refuse' or not strict()
+
+
+def unverified_blocks(root):
+    """the blocks romfs.unverified.txt lists (lines that start with a digit, as OpenSmash's runtime counts them), 0 without it"""
+    unv = os.path.join(root, 'dump', 'modules', 'romfs.unverified.txt')
+    if not os.path.isfile(unv):
+        return 0
+    with open(unv, encoding='utf-8', errors='replace') as f:
+        return sum(1 for l in f if l[:1].isdigit())
 
 
 class NotUsable(Exception):
@@ -336,10 +358,12 @@ def _check(root):
     if not is_opensmash(root):
         raise NotUsable('%s is not an OpenSmash Ultimate install (no tools\\install_windowsmash.ps1 / dump\\modules)' % root)
     unv = os.path.join(root, 'dump', 'modules', 'romfs.unverified.txt')
-    if os.path.isfile(unv):
-        with open(unv, encoding='utf-8', errors='replace') as f:
-            if any(l[:1].isdigit() for l in f):
-                raise NotUsable('OpenSmash could not confirm some blocks of its game data (%s): not shared' % unv)
+    unconfirmed = unverified_blocks(root)
+    if unconfirmed and unverified_refused():
+        raise NotUsable('OpenSmash could not confirm some blocks of its game data (%s): not shared' % unv)
+    if unconfirmed:
+        print('note: OpenSmash could not confirm %d blocks of 16 KB of its game data (%s); not refused for that: data.arc is '
+              'checked instead' % (unconfirmed, unv), file=sys.stderr)
     exefs = os.path.join(root, 'dump', 'exefs')
     for n in ('main', 'main.npdm', 'rtld', 'sdk', 'subsdk0'):
         if not os.path.isfile(os.path.join(exefs, n)):
@@ -372,7 +396,7 @@ def _check(root):
                 'other_files': [p for p, _, _ in files if p.lower() != '/data.arc' and not p.lower().startswith('/.nrr/')],
                 'fonts': sorted(n for n in os.listdir(fonts) if n.lower().endswith('.bfttf')) if os.path.isdir(fonts) else [],
                 'source_bytes': sum(os.path.getsize(p) for p in img.paths), 'form': 'plain' if img.plain else 'layered',
-                'checks': CHECKS_VERSION if content else 1}
+                'checks': CHECKS_VERSION if content else 1, 'unverified_blocks': unconfirmed}
     finally:
         img.close()
 
@@ -395,6 +419,10 @@ def decode_bfttf(data):
 def make(root, out, full=False, say=print):
     """Writes the linked dump in `out` (a folder of Arena's own). Returns shared_from.json's content."""
     info = check(root)
+    if info.get('unverified_blocks') and not full:
+        # (fix/launcher-0277) OpenSmash left blocks unconfirmed: the link only after every byte of data.arc has the build's SHA-256
+        say('   OpenSmash could not confirm %d blocks of its game data: all of data.arc is checked' % info['unverified_blocks'])
+        full = True
     part = out + '.part'
     if os.path.isdir(part):
         shutil.rmtree(part)

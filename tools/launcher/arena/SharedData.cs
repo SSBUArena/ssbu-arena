@@ -156,12 +156,16 @@ namespace Arena
             if (File.Exists(Path.Combine(mod, "romfs.crypt"))) { WhyNot = "its game data is read from the encrypted game file (OpenSmash's \"save disk space\"): only a decrypted copy can be shared"; return null; }
             // (fix/install-launcher-errors) blocks OpenSmash's installer could not confirm: install.py refuses that game data
             // (shared_gamedata.py), so it is not offered either (0.2.74 asked, then the install stopped: 4 reports). Read here, without Python.
-            if (Unverified(dir))
+            // (fix/launcher-0277) only with SSBU_SHARED_UNVERIFIED=refuse (0.2.76) or SSBU_SHARED_STRICT=0: OpenSmash itself goes on
+            // with such data (a warning), and shared_gamedata.py's data.arc checks decide instead (Check below; every byte before the link)
+            bool unverified = Unverified(dir);
+            if (unverified && UnverifiedRefused)
             {
                 WhyNot = @"OpenSmash could not confirm some blocks of its game data (dump\modules\romfs.unverified.txt)";
                 Updater.Log("shared data: OpenSmash Ultimate in " + dir + " not offered: " + WhyNot);
                 return null;
             }
+            if (unverified) Updater.Log("shared data: OpenSmash Ultimate in " + dir + @" lists blocks its installer could not confirm (dump\modules\romfs.unverified.txt): not refused for that, its data.arc is checked");
             if (Strict)
             {
                 string why = Check(dir);
@@ -173,6 +177,10 @@ namespace Arena
         /// <summary>shared_gamedata.py check (about a second the first time; the answer kept while OpenSmash's game data files keep
         /// their dates): null when its game data can be shared, else why not. No Python yet (a first install): null, the installer
         /// makes the same check before it links anything.</summary>
+        /// <summary>(fix/launcher-0277) scripts/shared_gamedata.py unverified_refused: SSBU_SHARED_UNVERIFIED=refuse, or not strict</summary>
+        public static bool UnverifiedRefused =>
+            !Strict || string.Equals((Environment.GetEnvironmentVariable("SSBU_SHARED_UNVERIFIED") ?? "").Trim(), "refuse", StringComparison.OrdinalIgnoreCase);
+
         /// <summary>dump\modules\romfs.unverified.txt lists blocks (a line that starts with a digit: shared_gamedata.py _check)</summary>
         public static bool Unverified(string dir)
         {
@@ -239,7 +247,10 @@ namespace Arena
                 {
                     var err = p.StandardError.ReadToEndAsync();
                     string o = p.StandardOutput.ReadToEnd();
-                    if (!p.WaitForExit(120000)) { try { p.Kill(); } catch { } return Tuple.Create(false, "the link took too long"); }
+                    // (fix/launcher-0277) blocks OpenSmash could not confirm: make() reads all of data.arc (17 GB) before it links
+                    string from = folder ?? LinkedFrom();
+                    int wait = from != null && !UnverifiedRefused && Unverified(from) ? 900000 : 120000;
+                    if (!p.WaitForExit(wait)) { try { p.Kill(); } catch { } return Tuple.Create(false, "the link took too long"); }
                     string line = o.Split('\n').Select(l => l.Trim()).LastOrDefault(l => l.StartsWith("{"));
                     Updater.Log("shared data relink (" + p.ExitCode + "): " + (line ?? o.Trim() + err.Result.Trim()));
                     var j = line == null ? null : new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(line);
