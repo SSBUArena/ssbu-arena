@@ -33,6 +33,8 @@ namespace Arena
     public sealed class Release
     {
         public string Tag, Version, Commit, LauncherUrl, LauncherSha, Page;
+        /// <summary>(test, SSBU_ARENA_RELEASE only) the sources as a local zip (sources.zip in that folder, codeload's layout); null = GitHub</summary>
+        public string SourcesUrl;
     }
 
     public static class Updater
@@ -98,8 +100,10 @@ namespace Arena
             {
                 var t = js.Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(local, "arena-release.json")));
                 var tl = t["launcher"] as Dictionary<string, object>;
+                string src = Path.Combine(local, "sources.zip");       // (test) an unpublished commit's sources (git archive --prefix=<top>/)
                 return new Release { Tag = "v" + t["version"], Version = t["version"] as string, Commit = t["commit"] as string, Page = local,
-                                     LauncherUrl = new Uri(Path.Combine(local, (string)tl["file"])).AbsoluteUri, LauncherSha = (string)tl["sha256"] };
+                                     LauncherUrl = new Uri(Path.Combine(local, (string)tl["file"])).AbsoluteUri, LauncherSha = (string)tl["sha256"],
+                                     SourcesUrl = File.Exists(src) ? new Uri(Path.GetFullPath(src)).AbsoluteUri : null };
             }
             string apiWhy;
             try { return LatestFromApi(js); }
@@ -307,7 +311,7 @@ namespace Arena
             if (bad != null) throw new InvalidOperationException("SSBU Arena cannot be installed here: " + bad + ". Put SSBU-Arena.exe in a folder of its own " +
                                                                  "(for example Documents\\SSBU Arena) and start it from there.");
             say("Downloading SSBU Arena " + r.Version + "...");
-            byte[] zip = Get("https://codeload.github.com/" + GitHubRepo + "/zip/" + r.Commit, null, 600000);
+            byte[] zip = Get(r.SourcesUrl ?? "https://codeload.github.com/" + GitHubRepo + "/zip/" + r.Commit, null, 600000);
             say("Unpacking...");
             var files = new SortedDictionary<string, string>(StringComparer.Ordinal);
             string top = null;
