@@ -159,7 +159,8 @@ namespace Arena
             if (!File.Exists(script))
                 throw new FileNotFoundException("SSBU Arena's setup files are not in " + Root + @" (scripts\bootstrap.ps1 is missing): an antivirus may have " +
                                                 "removed it. Allow SSBU Arena's folder in the antivirus, then press Retry" +
-                                                (Updater.Installed ? " (or download SSBU-Arena.exe again into a new folder)." : ": the files are downloaded again."), script);
+                                                // (fix/launcher-0277) Retry downloads them again in an install too (MainWindow.Setup.cs NeedSources)
+                                                (Updater.Installed && (Updater.DevCopy || Environment.GetEnvironmentVariable("SSBU_ARENA_SOURCES_REPAIR") == "0") ? " (or download SSBU-Arena.exe again into a new folder)." : ": the files are downloaded again."), script);
             var psi = Hidden("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File " + Q(script) + " -NoLaunch");
             psi.StandardOutputEncoding = psi.StandardErrorEncoding = null;          // Windows PowerShell writes the console code page
             int code = -1;

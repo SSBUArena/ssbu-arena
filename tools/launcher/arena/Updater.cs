@@ -301,10 +301,24 @@ namespace Arena
             catch { return new List<string>(); }
         }
 
-        /// <summary>first start of the downloaded launcher: the release's sources beside the exe (the setup screen goes on)</summary>
-        public static void FirstInstall(Release r, Action<string> say)
+        /// <summary>(fix/launcher-0277) SSBU_ARENA_UNPACK_ATTRIBS=0: as 0.2.76, a file already there is overwritten with its
+        /// attributes as they are. Otherwise a hidden, read-only or system file (HideScripts marks Install SSBU.bat and the other
+        /// scripts hidden after the first install) gets normal attributes first: Windows refuses to overwrite a hidden or read-only
+        /// file ("Access to the path ... is denied", 2 reports, one on 0.2.75). HideScripts hides the scripts again at the end.</summary>
+        public static bool UnpackAttribs => Environment.GetEnvironmentVariable("SSBU_ARENA_UNPACK_ATTRIBS") != "0";
+        const FileAttributes Blocking = FileAttributes.Hidden | FileAttributes.ReadOnly | FileAttributes.System;
+
+        /// <summary>the file is there with an attribute that makes Windows refuse to overwrite it (hidden, read-only, system)</summary>
+        public static bool Blocked(string f)
         {
-            string root = Path.GetDirectoryName(ExePath);
+            try { return File.Exists(f) && (File.GetAttributes(f) & Blocking) != 0; } catch { return false; }
+        }
+
+        /// <summary>first start of the downloaded launcher: the release's sources beside the exe (the setup screen goes on).
+        /// root: (fix/launcher-0277) the folder to unpack into (an install whose setup files are missing: Installer.Root); null = beside the exe</summary>
+        public static void FirstInstall(Release r, Action<string> say, string root = null)
+        {
+            root = root ?? Path.GetDirectoryName(ExePath);
             // (fix/install-launcher-errors) never into C:\, OpenSmash's folder, a temporary folder or one Windows does not let us write
             // (the setup screen offers a folder of its own first: MainWindow.Setup.cs StartSetup)
             string bad = InstallFolder.Problem(root);
@@ -315,6 +329,7 @@ namespace Arena
             say("Unpacking...");
             var files = new SortedDictionary<string, string>(StringComparer.Ordinal);
             string top = null;
+            int unhidden = 0;
             using (var z = new ZipArchive(new MemoryStream(zip)))
             {
                 foreach (var e in z.Entries)
@@ -331,16 +346,21 @@ namespace Arena
                         FileRetry.Do(() =>
                         {
                             Directory.CreateDirectory(Path.GetDirectoryName(dst));
+                            if (UnpackAttribs && Blocked(dst)) { File.SetAttributes(dst, FileAttributes.Normal); unhidden++; }
                             e.ExtractToFile(dst, true);
                             files[rel] = Sha256(File.ReadAllBytes(dst));
                         });
                     }
                     catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
                     {
-                        throw new IOException("Unpacking " + rel + ": " + SetupErrors.Explain(ex, root), ex.HResult);      // (no inner: the setup shows GetBaseException's message)
+                        // (fix/launcher-0277) a file of an earlier install that could not be replaced: not "Windows does not let SSBU
+                        // Arena write there" (the folder can be written: the files before it were)
+                        string msg = ex is UnauthorizedAccessException && Blocked(dst) ? SetupErrors.ExplainBlockedFile(ex, dst) : SetupErrors.Explain(ex, root);
+                        throw new IOException("Unpacking " + rel + ": " + msg, ex.HResult);      // (no inner: the setup shows GetBaseException's message)
                     }
                 }
             }
+            if (unhidden > 0) Log("first install: " + unhidden + " file(s) of an earlier install were hidden or read-only: made normal, then replaced");
             // scripts/update.py's manifest (same format): the next update knows the commit and which files are the repository's
             var manifest = new Dictionary<string, object>
             {

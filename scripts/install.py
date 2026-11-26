@@ -463,7 +463,13 @@ def step_shared(cx):
         # (fix/shared-install) strict: the install reads all of data.arc once through the new link (1-3 minutes) and links only
         # when it is the build's own byte for byte (ARC_SHA256); SSBU_SHARED_VERIFY=quick: the fingerprint check alone
         verify = os.environ.get('SSBU_SHARED_VERIFY', 'full' if sg.strict() else '')
-        rec = sg.make(root, out, full=verify == 'full', say=say)
+        try:
+            rec = sg.make(root, out, full=verify == 'full', say=say)
+        except sg.NotUsable as e:
+            # (fix/launcher-0277) the whole read proved the data wrong (more likely now that OpenSmash's unconfirmed blocks are not
+            # refused at once): not shared, the normal dump steps go on, as for any other refusal (0.2.76: a traceback)
+            cx.shared_why = '%s: %s' % (root, e)
+            return 'shared game data not used: %s' % cx.shared_why
     cx.dump = out
     try:                                 # a build made from another game version: built again from the conversion on
         with open(os.path.join(BUILD, 'state.json'), encoding='utf-8') as f:

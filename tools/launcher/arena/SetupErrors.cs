@@ -174,6 +174,18 @@ namespace Arena
         public static bool InUse(Exception e) => e is IOException && ((e.HResult & 0xFFFF) == 32 || (e.HResult & 0xFFFF) == 33);       // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
         public static bool DiskFull(Exception e) => e is IOException && ((e.HResult & 0xFFFF) == 112 || (e.HResult & 0xFFFF) == 39);    // ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL
 
+        /// <summary>(fix/launcher-0277) access denied on a file already there that is hidden, read-only or system (a file of an
+        /// earlier install: Updater.Blocked), when the launcher could not make it normal (SSBU_ARENA_UNPACK_ATTRIBS=0, or Windows
+        /// refused that too): the folder itself is fine</summary>
+        public static string ExplainBlockedFile(Exception ex, string file)
+        {
+            var e = ex?.GetBaseException() ?? ex;
+            string attrs = "";
+            try { attrs = (File.GetAttributes(file) & (FileAttributes.Hidden | FileAttributes.ReadOnly | FileAttributes.System)).ToString().ToLowerInvariant(); } catch { }
+            return (e?.Message ?? "") + " The file is there from an earlier install and is marked " + attrs + ", so Windows does not let it be replaced " +
+                   "(the folder itself is fine). Delete " + file + " (or clear its Hidden / Read-only boxes in its Properties), then press Retry.";
+        }
+
         /// <summary>the message for the player: what happened, and what to do (English, like the rest of the launcher)</summary>
         public static string Explain(Exception ex, string folder = null)
         {

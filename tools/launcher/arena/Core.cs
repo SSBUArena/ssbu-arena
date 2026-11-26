@@ -718,6 +718,8 @@ namespace Arena
         }
 
         static readonly object menuLock = new object();
+        static string menuFailedWhy;            // (fix/launcher-0277) the last failure's reason and time (EnsureArenaMenu's cap)
+        static DateTime menuFailedAt;
         /// <summary>(0.2.50) the Arena menu (and the competitive set-up it needs) made here when it is missing or incomplete, from
         /// this install's dump (tools/ui/prepare_menu_classic.py, a few seconds; build\logs\arena_menu.log). The setup did the same,
         /// but failed for every install outside the repository's build folder until 0.2.50, and the launcher only checked the folder.
@@ -731,10 +733,23 @@ namespace Arena
                 if (!Directory.Exists(CompDir)) { MakeCompetitive(); HasCompetitive = Directory.Exists(CompDir); Competitive = LightArc || HasCompetitive; }
                 string before = ArenaMenuOffReason();
                 if (before == null) return true;
+                // (fix/launcher-0277) SSBU_ARENA_MENU_RETRY_CAP=0: as 0.2.76, tried (and logged) at every file check. Otherwise not in a
+                // folder without SSBU Arena (nothing to make it with: 54 "FAILED" lines in 9 minutes, 0.2.74, a folder with a game exe
+                // and no install), and a failure is not tried (nor logged) again for 60 s while its reason stays the same (Check again
+                // pressed fast, every file check)
+                bool cap = Environment.GetEnvironmentVariable("SSBU_ARENA_MENU_RETRY_CAP") != "0";
+                if (cap && before == menuFailedWhy && (DateTime.UtcNow - menuFailedAt).TotalSeconds < 60) return false;
+                if (cap && Repo == null)
+                {
+                    Updater.Log("arena menu: not complete (" + before + "); no SSBU Arena install here, not made");
+                    menuFailedWhy = before; menuFailedAt = DateTime.UtcNow;
+                    return false;
+                }
                 menuVersionTried = true;
                 bool ok = Competitive && MakeArenaMenu();
                 string after = ArenaMenuOffReason();
                 Updater.Log("arena menu: was " + before + "; made again here: " + (after == null ? "OK" : "FAILED (" + after + "), see " + Path.Combine(Build, @"logs\arena_menu.log")));
+                if (after != null) { menuFailedWhy = after; menuFailedAt = DateTime.UtcNow; } else menuFailedWhy = null;
                 return ok && after == null;
             }
         }
