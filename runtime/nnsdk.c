@@ -135,10 +135,12 @@ static void os_AllocateMemoryPages(Ctx *c) {
     QueryPerformanceCounter(&t0);
     uint64_t n = A1;
     int ok = VirtualAlloc(P(0), (SIZE_T)A1, MEM_COMMIT, PAGE_READWRITE) != NULL;
+    { void r1_dc_defer_commit(void *, size_t); if (ok) r1_dc_defer_commit(P(0), (size_t)A1); }      /* (0.2.77, SSBU_RB_DCDEFER) pages given back and kept committed: zeroed, as a fresh commit */
     { void r1_on_commit(void *, size_t); r1_on_commit(P(0), (size_t)A1); }      /* R1 (r1_state.c): nothing without SSBU_R1_MARK */
     mp_note(0, n, t0);
     RET(ok ? 0 : 0x1015);
 }
+int r1_dc_defer(void *p, size_t n);                      /* r1_state.c (0.2.77, SSBU_RB_DCDEFER): 1 = kept committed during a rollback match */
 static void os_FreeMemoryPages(Ctx *c) {
     LARGE_INTEGER t0;
     if (g_mp_keep < 0) mp_init();
@@ -153,8 +155,11 @@ static void os_FreeMemoryPages(Ctx *c) {
             if (mi.State == MEM_COMMIT && (mi.Protect & PAGE_READWRITE)) memset(p, 0, (size_t)(re - p));
             p = re;
         }
-    } else { void r1_on_decommit(void *, size_t); void r1_dc_begin(void); void r1_dc_end(void);
-             r1_dc_begin();                                   /* (crash phase) not while the rollback ring copies pages (r1_state.c) */
+    } else if (r1_dc_defer(P(0), (size_t)A1)) {
+        /* (0.2.77) a rollback match: kept committed (r1_state.c SSBU_RB_DCDEFER), decommitted at the match's end */
+    } else { void r1_on_decommit(void *, size_t); void r1_dc_begin(void); void r1_dc_end(void); void r1_dc_defer_real(void *, size_t);
+             r1_dc_defer_real(P(0), (size_t)A1);
+             r1_dc_begin();                                  /* (crash phase) not while the rollback ring copies pages (r1_state.c) */
              r1_on_decommit(P(0), (size_t)A1);      /* R1 (r1_state.c): marks the pages (nothing without SSBU_R1_MARK) */
              cxxrt_mem_changed(A0, A1); VirtualFree(P(0), (SIZE_T)A1, MEM_DECOMMIT); cxxrt_mem_changed(A0, A1);
              r1_dc_end(); }      // PR #2 (jfb112697): report the decommitted range, before and after

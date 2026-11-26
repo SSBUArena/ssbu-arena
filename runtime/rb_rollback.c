@@ -1042,6 +1042,7 @@ static void rbg_pad(int id, uint64_t *b, int *lx, int *ly, int *rx, int *ry) {
 static void rbg_report(void);
 /* (hs12) r1_ring.c rgs_step, every safe point while no fight is on: the end of a match (once): its report, the ring
  * emptied, the session reset for the next match (whose first safe point makes the ring's base again: r1_ring_rebase) */
+static void dfr_flush(void);                            /* (0.2.77) r1_state.c SSBU_RB_DCDEFER */
 static void rbg_fight_off(void) {
     if (!g_rbg_in_match) return;
     if (g_rbg_in_match == 1) { void online_elo_fight_end(long long real_frames); online_elo_fight_end(g_rbg_real); }      /* (0.2.53) the ranked RESULT, before the session forgets the match */
@@ -1062,7 +1063,8 @@ static void rbg_fight_off(void) {
     LOG("r1: RB NET report: holds that waited for the font job %lld, count reset %lld; H1 waits for it %lld (%.3f ms each)\n", g_fontwait_n, g_fontwait_reset, g_fontwait_h1, g_fontwait_h1 ? g_fontwait_h1_ms / (double)g_fontwait_h1 : 0.0);
     if (g_fd_on > 0) LOG("r1: FONTDIAG: font job runs %lld, in progress at loads %lld, at the idle collector %lld, at other safe points %lld; list broken %lld times\n", g_fd_runs, g_fd_atload, g_fd_atgc, g_fd_atcap, g_fd_bad);
     g_rbg_gc_L = 0; g_rbg_gc_frame = -1;
-    g_rbg_in_match = 0; g_rbg_ff_first = -1;
+    { int was = g_rbg_in_match; g_rbg_in_match = 0; g_rbg_ff_first = -1;
+      if (was == 1) dfr_flush(); }      /* (0.2.77, SSBU_RB_DCDEFER, r1_state.c) the pages the game gave back in the match: decommitted now */
     g_rbg_rb = 0; memset(g_rbg_k, 0, sizeof g_rbg_k); g_rbg_rerun = g_rbg_miss = g_rbg_stalls = g_rbg_capfail = g_rbg_capskip = g_rbg_capskip_real = g_rbg_lastlocal = g_rbg_real = g_rbg_gone = 0;
     g_rbg_stall_ms = g_rbg_load_ms = g_rbg_tick0 = g_rbg_next = g_rbg_last_go = 0;
     g_rbg_last_k = 0; g_rbg_max_k = 0; g_rbg_short_waits = 0; g_rg_short = 0; g_rg_need = -1; g_rbg_nw = g_rbg_ng = g_rbg_tick_k = 0; g_rbg_nol = 0; g_rbg_ol_have = 0; g_rbg_ol_part = 0; g_rbg_ol_pk = 0; g_rbg_rb_unheld = 0; g_rbg_recap_first = 0;
@@ -1103,7 +1105,7 @@ static void rbg_report(void) {
     LOG("r1: RB NET report: ring memory (hs14, fix %s): captures given up %lld, old states freed early %lld, captures skipped to keep the oldest needed state %lld\n",
         g_rg_poolfix ? "on" : "OFF", g_rg_short_n, g_rg_freed_slots, g_rg_skip_full);
     LOG("r1: RB NET report: task-worker watchdog releases %lld (since the process start), rollbacks with the workers not held %lld (watchdog paused at H2: %s)\n", g_ra_wd_fired, g_rbg_rb_unheld, g_rbg_wdfix ? "yes" : "NO");
-    LOG("r1: RB NET report: loads that took the sound thread at another wait after 5 ms %lld; threads not at their wait after 500 ms %d (last load); loads refused, a thread still running (pub1) or a fiber not restorable %lld (fibers, SSBU_RB_FIBREFUSE: %lld; loaded anyway after 3 refusals: %lld)\n", g_th_audio_other, g_th_mismatch, g_rg_refused, g_rg_fibrefused, g_rg_fibforced);
+    LOG("r1: RB NET report: loads that took the sound thread at another wait after 5 ms %lld; threads not at their wait after 500 ms %d (last load); loads refused, a thread still running (pub1) or a fiber not restorable %lld (fibers, SSBU_RB_FIBREFUSE: %lld; loaded anyway after 3 refusals: %lld); of them SSBU_RB_FIBRUN: running now but not then %lld + never run then %lld, ran since and back at the same wait %lld\n", g_th_audio_other, g_th_mismatch, g_rg_refused, g_rg_fibrefused, g_rg_fibforced, g_fibrun_new, g_fibrun_never, g_fibrun_regs);
     LOG("r1: RB NET report: fiber host stacks in use at a load (not copied back) %lld, seen %lld; fibers found running by their thread (TEB) at a capture %lld; catch table at loads: entries dropped %lld, live entries put back %lld, loads changed %lld (hs13)\n", g_fib_live_skip, g_fib_live_seen, g_fib_teb_running, g_rgc_dropped, g_rgc_kept, g_rgc_loads_changed);
     { void nnunwind_catch_stats(long long *, long long *, long long *, long long *, long long *); long long l, d, cr, fu, mp; nnunwind_catch_stats(&l, &d, &cr, &fu, &mp);
       LOG("r1: RB NET report: catch table (hs15): %lld live records, %lld removed slots, %lld puts found no free slot in their window, %lld table full, longest probe %lld; dead records dropped at loads %lld (host fiber stacks known %zu)\n", l, d, cr, fu, mp, g_rgc_dead, g_nbf); }
