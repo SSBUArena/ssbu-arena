@@ -117,6 +117,16 @@ namespace Arena
         // (0.2.78) Settings > Controls (MainWindow.Controls.cs): the game's own controls of the name tags in the save. SSBU_ARENA_CONTROLS_V2=0:
         // the page is hidden (the Controllers page keeps the pad buttons, as 0.2.77) and no name tag is given to the game
         public static bool ControlsV2 => Environment.GetEnvironmentVariable("SSBU_ARENA_CONTROLS_V2") != "0";
+        // (0.2.78, v3) one Controls section: the controllers, then "click an action, press a button" (MainWindow.ControlsV3.cs); the
+        // Controllers tab's content and the name-tag editor in its Advanced part. SSBU_ARENA_CONTROLS_V3=0: the two tabs of v2
+        public static bool ControlsV3 => ControlsV2 && Environment.GetEnvironmentVariable("SSBU_ARENA_CONTROLS_V3") != "0";
+        /// <summary>(0.2.78) controllers.ini [type ...] sources added after a button's first one (map.X = north, rightstick): the Controls
+        /// page's stick presses; kept as they are by the button list</summary>
+        public static Dictionary<string, List<string>> ButtonExtras = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        /// <summary>(0.2.78) controllers.ini [keyboard] keys, SwBtn.Ini order</summary>
+        public static string[] KeyboardKeys = SwBtn.KeyDefaults.ToArray();
+        /// <summary>(0.2.78) [general] gamecube_style = pro: GameCube controllers play as Pro Controllers</summary>
+        public static bool GcAsPro;
         // (0.2.78) launcher.ini my_name_tag = <entry>:<name hash, hex> ("" = none): the name tag player 1 plays with without picking it
         // on the character select (the game gets its entry as SSBU_ARENA_MY_TAG, runtime/my_tag.c). The hash (NameTags.cs) ties the
         // setting to the tag's name: a tag deleted or renamed in the game since is not taken (the ini is ASCII: no name in it)
@@ -224,9 +234,19 @@ namespace Arena
 
             LoadGfx(false);
             Buttons = new Dictionary<string, string>(DefaultButtons);
+            ButtonExtras = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
             foreach (var kv in ReadIniSection(PadIni, "type xbox"))
-                if (kv.Key.StartsWith("map.") && DefaultButtons.ContainsKey(kv.Key.Substring(4).ToUpperInvariant()) && PadSources.Any(x => x.Item1 == kv.Value.Trim().ToLowerInvariant()))
-                    Buttons[kv.Key.Substring(4).ToUpperInvariant()] = kv.Value.Trim().ToLowerInvariant();
+            {
+                // (0.2.78) "map.X = north, rightstick": the first source is the button list's, the others were added by the Controls page (a stick press)
+                if (!kv.Key.StartsWith("map.") || !DefaultButtons.ContainsKey(kv.Key.Substring(4).ToUpperInvariant())) continue;
+                PhysMap.Parse(kv.Value, out string first, out var extras);
+                if (!PadSources.Any(x => x.Item1 == first)) continue;
+                Buttons[kv.Key.Substring(4).ToUpperInvariant()] = first;
+                extras = extras.Where(x => x != first && PadSources.Any(s => s.Item1 == x)).ToList();
+                if (extras.Count > 0) ButtonExtras[kv.Key.Substring(4).ToUpperInvariant()] = extras;
+            }
+            KeyboardKeys = KeyNames.FromIni(ReadIniSection(PadIni, "keyboard"));      // (0.2.78)
+            GcAsPro = string.Equals((ReadIniSection(PadIni, "general").TryGetValue("gamecube_style", out var gcs) ? gcs : "").Trim(), "pro", StringComparison.OrdinalIgnoreCase);
             var P = ReadIni(PadIni);
             { var gen = ReadIniSection(PadIni, "general"); if (gen.TryGetValue("deadzone", out var dz) && double.TryParse(dz, NumberStyles.Float, CultureInfo.InvariantCulture, out var dzv)) DeadZone = Math.Max(0, Math.Min(0.4, dzv));
               double D(string k, double def, double lo, double hi) => gen.TryGetValue(k, out var v) && double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? Math.Max(lo, Math.Min(hi, d)) : def;
@@ -374,8 +394,16 @@ namespace Arena
             gfxSeen = gfx;
             SetIniValues(PadIni, "players", new Dictionary<string, string> { { "player1", Player1 }, { "player2", Player2 } });
             SetIniValues(PadIni, "keyboard", new Dictionary<string, string> { { "player", new[] { "auto", "1", "2", "none" }[Math.Max(0, Math.Min(3, Keyboard))] } });
-            var map = Buttons.ToDictionary(kv => "map." + kv.Key, kv => kv.Value);
+            var map = Buttons.ToDictionary(kv => "map." + kv.Key, kv => PhysMap.Format(kv.Value, ButtonExtras.TryGetValue(kv.Key, out var ex) ? ex : null));      // (0.2.78) and the stick presses added
             foreach (var t in PadTypes) SetIniValues(PadIni, "type " + t, map);
+        }
+
+        /// <summary>(0.2.78) the keyboard's keys ([keyboard] A .. RSTICK_DOWN): written only when the Controls page changed one</summary>
+        public static void SaveKeyboardKeys()
+        {
+            var d = new Dictionary<string, string>();
+            for (int i = 0; i < KeyboardKeys.Length; i++) d[SwBtn.Ini[i]] = KeyboardKeys[i];
+            SetIniValues(PadIni, "keyboard", d);
         }
 
         /// <summary>(0.2.8) build\characters\competitive (6 stages, no items, no Final Smash meter) made from the dump's

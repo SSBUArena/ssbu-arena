@@ -25,6 +25,7 @@ namespace Arena
         void ControlsInit()
         {
             if (!Core.ControlsV2) { SecControls.Visibility = Visibility.Collapsed; return; }
+            if (Core.ControlsV3) SecPads.Visibility = Visibility.Collapsed;      // (v3) one Controls tab: the Controllers tab's content moves into it
             // one more side tab: 13 with the Benchmark one, a little shorter again (InitBench: 12 at 38), so Help stays above "Back to home"
             if (SecControls.Parent is Panel side)
             {
@@ -36,9 +37,10 @@ namespace Arena
             PadButtonsTitle.Visibility = Visibility.Collapsed;
             PadButtonsHelp.Visibility = Visibility.Collapsed;
             PadButtonsBlock.Margin = new Thickness(0, 4, 0, 0);
+            if (Core.ControlsV3) ControlsV3Init();      // (MainWindow.ControlsV3.cs)
         }
 
-        bool CtlGameOpen() => game != null || Core.GameRunning();
+        bool CtlGameOpen() => game != null || Core.GameRunning() || Environment.GetEnvironmentVariable("SSBU_ARENA_FAKE_GAME_RUNNING") == "1";      // (test aid: the read-only page)
 
         /// <summary>reads the save again and fills the page (FillSettings: the launcher's start, the game's end)</summary>
         void ControlsFill()
@@ -48,6 +50,7 @@ namespace Arena
             try { ctlSave = NameTagFile.Read(Core.Saves); }
             catch (Exception e) { ctlSave = null; problem = e is SaveFileError ? e.Message : "The save could not be read: " + e.Message; }
             var tags = ctlSave?.Named() ?? new List<NameTag>();
+            if (Core.ControlsV3 && ctlSlot < 0) ctlSlot = CtlBind.FindMyTag(ctlSave, Core.MyNameTag);      // (v3) the editor opens on the player's own
             if (!tags.Any(t => t.Slot == ctlSlot)) ctlSlot = tags.Count > 0 ? tags[0].Slot : -1;
             bool open = CtlGameOpen();
             CtlNotice.Visibility = problem != null || open ? Visibility.Visible : Visibility.Collapsed;
@@ -69,6 +72,7 @@ namespace Arena
             ControlsFillTag();
             FillMyTag(tags);
             PadAdvRefresh();
+            C3Fill();      // (v3) the page from this read of the save
         }
 
         /// <summary>the shown name tag's controls for the shown controller kind</summary>
@@ -284,6 +288,7 @@ namespace Arena
             if (v == Core.MyNameTag) return;
             Core.MyNameTag = v;
             if (SaveQuiet()) Status(v == "" ? "No name tag of your own: the game's controls unless you pick one" : "My name tag: " + MyTagBox.SelectedItem + " (from the next start of the game)", "good");
+            C3Fill();      // (v3) the actions shown are this name tag's
         }
 
         /// <summary>the warning of the pad buttons box: shown when a button is swapped</summary>
@@ -293,6 +298,7 @@ namespace Arena
             bool swapped = Core.DefaultButtons.Any(kv => !Core.Buttons.TryGetValue(kv.Key, out var v) || v != kv.Value);
             PadAdvWarn.Visibility = swapped ? Visibility.Visible : Visibility.Collapsed;
             if (BoxControls.Visibility == Visibility.Visible && ctlKind == "pro" && !ctlFilling) ControlsFillTag();      // the PC button hints
+            if (C3Shown && !loading && !ctlFilling && c3Cap == null && c3Plan == null) C3Fill();      // (v3) the buttons' names
         }
     }
 }

@@ -12,7 +12,7 @@ using System.Web.Script.Serialization;
 
 namespace Arena.Tests
 {
-    static class Program
+    static partial class Program
     {
         static int failed, passed;
         static readonly string Tmp = Path.Combine(Path.GetTempPath(), "arena_nametag_tests_" + Process.GetCurrentProcess().Id);
@@ -48,6 +48,9 @@ namespace Arena.Tests
                 Basics();
                 Edits();
                 Files();
+                Bindings();      // (Controls v3) BindingTests.cs
+                Capture();
+                Placement();
                 Parity();
             }
             catch (Exception e) { failed++; Console.WriteLine("FAIL: exception " + e); }

@@ -31,6 +31,8 @@ namespace Arena
         public static readonly Dictionary<string, string> Action = new Dictionary<string, string> {
             { "A", "Attack" }, { "B", "Special" }, { "X", "Jump" }, { "Y", "Jump" }, { "L", "Grab" }, { "R", "Grab" }, { "ZL", "Shield" }, { "ZR", "Shield" },
             { "PLUS", "Pause" }, { "MINUS", "" }, { "STICK_L", "" }, { "STICK_R", "" } };
+        /// <summary>(0.2.78, Controls v3) what each game button does for this drawing: the player's own controls when the page knows them</summary>
+        public Dictionary<string, string> Acts = Action;
 
         const double DW = 640, DH = 350;                  // the drawing's own units; scaled to the room the page gives (width and height)
         protected override Size MeasureOverride(Size a)
@@ -63,7 +65,7 @@ namespace Arena
         string ActionOf(string src)
         {
             var list = new List<string>();
-            foreach (var kv in Map) if (kv.Value == src && Action.TryGetValue(kv.Key, out var a) && a != "" && !list.Contains(a)) list.Add(a);
+            foreach (var kv in Map) if (kv.Value == src && Acts.TryGetValue(kv.Key, out var a) && a != "" && !list.Contains(a)) list.Add(a);
             return string.Join(" / ", list);
         }
 

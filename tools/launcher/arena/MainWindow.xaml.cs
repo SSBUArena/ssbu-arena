@@ -452,6 +452,7 @@ namespace Arena
         void BtnReset_Click(object sender, RoutedEventArgs e)
         {
             Core.Buttons = new Dictionary<string, string>(Core.DefaultButtons);
+            Core.ButtonExtras.Clear();      // (0.2.78) and the stick presses the Controls page added
             FillButtons();
             SaveQuiet();
             PadAdvRefresh();
@@ -580,7 +581,7 @@ namespace Arena
         {
             foreach (var p in new UIElement[] { PageHome, PageReplays, PageLeaderboard, PageCommunity, PageChanges, PageSettings }) p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
             if (page != PageSettings) { SaveQuiet(); PadLiveStop(); }
-            else if (SecPads.IsChecked == true) PadLiveStart();
+            else if (PadPageShown()) PadLiveStart();
         }
 
         void Tab_Checked(object sender, RoutedEventArgs e)
@@ -596,9 +597,10 @@ namespace Arena
         void Section_Checked(object sender, RoutedEventArgs e)
         {
             if (BoxPlayer == null) return;
-            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecBench, BoxBench }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecControls, BoxControls }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles }, { SecLauncher, BoxLauncher }, { SecHelp, BoxHelp } };
+            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecBench, BoxBench }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecControls, Core.ControlsV3 ? BoxControls3 : BoxControls }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles }, { SecLauncher, BoxLauncher }, { SecHelp, BoxHelp } };
             foreach (var kv in map) kv.Value.Visibility = kv.Key == sender ? Visibility.Visible : Visibility.Collapsed;
-            if (sender == SecPads && PageSettings.Visibility == Visibility.Visible) PadLiveStart(); else PadLiveStop();
+            if (Core.ControlsV3) BoxControls.Visibility = Visibility.Collapsed;      // (v3: BoxControls3 is the Controls tab's box)
+            if (PadPageShown()) PadLiveStart(); else PadLiveStop();
             if (sender == SecBench) BenchShow();      // (0.2.58) MainWindow.Bench.cs
             if (sender == SecControls) ControlsFill();      // (0.2.78) the save as it is now
         }
@@ -637,6 +639,7 @@ namespace Arena
             else if (parts[0] == "settings")
             {
                 var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "benchmark", SecBench }, { "controllers", SecPads }, { "controls", SecControls }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles }, { "launcher", SecLauncher }, { "help", SecHelp } };
+                if (Core.ControlsV3) secs["controllers"] = SecControls;      // (v3) one Controls tab
                 OpenSettings(parts.Length > 1 && secs.ContainsKey(parts[1]) ? secs[parts[1]] : SecPlayer);
             }
         }
@@ -645,7 +648,7 @@ namespace Arena
         void Gear_Click(object sender, RoutedEventArgs e) { OpenSettings(SecPlayer); }
         void Configure_Click(object sender, RoutedEventArgs e) { OpenSettings(SecOnline); }
         void Profile_Click(object sender, RoutedEventArgs e) { OpenSettings(SecPlayer); }
-        void Controller_Click(object sender, RoutedEventArgs e) { OpenSettings(SecPads); FindPads(); }
+        void Controller_Click(object sender, RoutedEventArgs e) { OpenSettings(Core.ControlsV3 ? SecControls : SecPads); FindPads(); }
         void Files_Click(object sender, RoutedEventArgs e) { OpenSettings(SecFiles); }
         void Community_Click(object sender, RoutedEventArgs e) { Core.Open(Core.CommunityDiscord); }      // (0.2.51) the home card: the OpenSmash-Ultimate Discord
         void Changes_Click(object sender, RoutedEventArgs e) { TabChanges.IsChecked = true; }      // (0.2.34) the home page's What's new card
