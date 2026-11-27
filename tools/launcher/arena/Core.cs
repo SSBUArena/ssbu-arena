@@ -154,9 +154,32 @@ namespace Arena
             return "13.0.4";
         }
 
+        /// <summary>(fix/setup-0278) why the settings folder (Cfg) could not be made, or null. SSBU_ARENA_CFG_GUARD=0: as 0.2.77,
+        /// Load throws (a launcher in Downloads crashed at its start: a file named "config" was there, IOException in Core.Load).
+        /// Otherwise the launcher starts: before the install (the exe's own folder, Build = the exe's) nothing needs it (the
+        /// setup unpacks into a folder of its own, InstallFolder.Problem, and the install's settings are in build\config);
+        /// in an install the start says what to rename (MainWindow.CheckUpdates) and Save says the same.</summary>
+        public static string CfgProblem;
+        static bool CfgGuard => Environment.GetEnvironmentVariable("SSBU_ARENA_CFG_GUARD") != "0";
+
+        static void MakeCfg()
+        {
+            CfgProblem = null;
+            if (!CfgGuard) { Directory.CreateDirectory(Cfg); return; }
+            try { Directory.CreateDirectory(Cfg); }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is NotSupportedException)
+            {
+                CfgProblem = File.Exists(Cfg)
+                    ? "A file named \"config\" (without an extension) is in " + Build + ", where SSBU Arena keeps its settings folder of the same name. " +
+                      "Rename that file or move it away, then start SSBU Arena again."
+                    : "SSBU Arena's settings folder " + Cfg + " cannot be made (" + e.Message + "). Check that the folder can be written " +
+                      "(an antivirus' Controlled folder access may block it), then start SSBU Arena again.";
+            }
+        }
+
         public static void Load()
         {
-            Directory.CreateDirectory(Cfg);
+            MakeCfg();
             if (Portable) RomFS = Path.GetFullPath(Path.Combine(Build, @"..\dump\romfs"));
             else
             {
@@ -339,6 +362,9 @@ namespace Arena
 
         public static void Save()
         {
+            // (fix/setup-0278) no settings folder (CfgProblem): before the install nothing is lost (build\config is the install's);
+            // in an install the reason, not "Could not find a part of the path"
+            if (CfgProblem != null) { if (Repo == null) return; throw new IOException(CfgProblem); }
             string n = Nickname.Trim();
             // the console account id the game uses (nnfs.c): from the Arena account when signed in (the same on every PC)
             if (Online && HasOnline && Account.SignedIn) File.WriteAllText(Path.Combine(Cfg, "account.txt"), UidFromName("arena:" + Account.Me.Id) + "\r\n", Encoding.ASCII);

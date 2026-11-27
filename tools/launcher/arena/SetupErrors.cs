@@ -103,9 +103,66 @@ namespace Arena
                     if (Under(full, sys)) return "the launcher is in " + sys + " (only administrators can write there)";
                 if (IsOtherInstall(full))
                     return "the launcher is inside OpenSmash Ultimate's folder (SSBU Arena's files would overwrite OpenSmash's)";
+                string shell = ShellFolder(full);
+                if (shell != null)
+                    return "the launcher is right in your " + shell + " folder, not in a folder of its own (SSBU Arena puts its folders, " +
+                           "config, scripts, build and others, beside the exe, among your own files)";
                 if (!Writable(full)) return "Windows does not let SSBU Arena write in " + full;
             }
             catch (Exception e) { return "the folder cannot be used (" + e.Message + ")"; }
+            return null;
+        }
+
+        /// <summary>(fix/setup-0278) SSBU_ARENA_SHELL_FOLDER=0: as 0.2.77, the downloaded exe unpacks SSBU Arena wherever it is. Otherwise
+        /// the user's own folders themselves (Downloads, Desktop, Documents, the user folder, OneDrive, Music / Pictures / Videos,
+        /// C:\Users) are refused as the folder SSBU Arena is unpacked into: the setup offers "&lt;that folder&gt;\SSBU Arena" instead
+        /// (OfferOwnFolder, InstallFolder.Suggest). A launcher in Downloads crashed at its start on a file named "config" there
+        /// (0.2.77, Core.Load), and an install right in Downloads mixed its build folder with the player's files. Only the folder
+        /// itself: Downloads\SSBU Arena and the like are fine. An install already made in such a folder is not moved.</summary>
+        static bool ShellCheck => Environment.GetEnvironmentVariable("SSBU_ARENA_SHELL_FOLDER") != "0";
+
+        [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern int SHGetKnownFolderPath([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStruct)] Guid id,
+                                               uint flags, IntPtr token, out IntPtr path);
+
+        static string KnownFolder(string guid)
+        {
+            try
+            {
+                if (SHGetKnownFolderPath(new Guid(guid), 0, IntPtr.Zero, out IntPtr p) != 0) return null;
+                try { return System.Runtime.InteropServices.Marshal.PtrToStringUni(p); }
+                finally { System.Runtime.InteropServices.Marshal.FreeCoTaskMem(p); }
+            }
+            catch { return null; }
+        }
+
+        /// <summary>the name of the user's folder this is ("Downloads", "Desktop"...), or null (any other folder, or the check off)</summary>
+        public static string ShellFolder(string dir)
+        {
+            if (!ShellCheck || string.IsNullOrEmpty(dir)) return null;
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var named = new List<Tuple<string, string>>
+            {
+                Tuple.Create("Downloads", KnownFolder("374DE290-123F-4565-9164-39C4925E467B")),
+                Tuple.Create("Downloads", string.IsNullOrEmpty(home) ? null : Path.Combine(home, "Downloads")),
+                Tuple.Create("Desktop", Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)),
+                Tuple.Create("Desktop", Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory)),
+                Tuple.Create("Desktop", string.IsNullOrEmpty(home) ? null : Path.Combine(home, "Desktop")),
+                Tuple.Create("Documents", Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)),
+                Tuple.Create("Documents", Environment.GetFolderPath(Environment.SpecialFolder.CommonDocuments)),
+                Tuple.Create("Documents", string.IsNullOrEmpty(home) ? null : Path.Combine(home, "Documents")),
+                Tuple.Create("Music", Environment.GetFolderPath(Environment.SpecialFolder.MyMusic)),
+                Tuple.Create("Pictures", Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)),
+                Tuple.Create("Videos", Environment.GetFolderPath(Environment.SpecialFolder.MyVideos)),
+                Tuple.Create("user", home),
+                Tuple.Create("Users", string.IsNullOrEmpty(home) ? null : Path.GetDirectoryName(home.TrimEnd('\\'))),
+                Tuple.Create("OneDrive", Environment.GetEnvironmentVariable("OneDrive")),
+                Tuple.Create("OneDrive", Environment.GetEnvironmentVariable("OneDriveConsumer")),
+                Tuple.Create("OneDrive", Environment.GetEnvironmentVariable("OneDriveCommercial")),
+            };
+            string me = Norm(dir);
+            foreach (var n in named)
+                if (!string.IsNullOrEmpty(n.Item2) && string.Equals(Norm(n.Item2), me, StringComparison.OrdinalIgnoreCase)) return n.Item1;
             return null;
         }
 

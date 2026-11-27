@@ -371,5 +371,55 @@ namespace Arena
             File.WriteAllText(Path.Combine(root, @"build\update_manifest.json"), new JavaScriptSerializer().Serialize(manifest));
             HideScripts(root);
         }
+
+        /// <summary>(fix/setup-0278) the files of the install's own release that are missing (Installer.MissingTree: an antivirus or a
+        /// cleaner removed them, runtime\game_data.h stopped a precheck), put back from the sources of the commit its manifest names
+        /// (GitHub's zip of that commit; SSBU_ARENA_RELEASE's sources.zip when that release is the same commit). Only the missing
+        /// files are written, each checked against the manifest's SHA-256 (a file that does not match is not written); nothing else
+        /// is changed, the manifest neither. Returns how many were put back.</summary>
+        public static int RepairSources(Release r, List<string> missing, Action<string> say, string root)
+        {
+            var m = Installer.Manifest();
+            var files = Installer.ManifestFiles();
+            string commit = m != null && m.TryGetValue("commit", out var c) ? c as string : null;
+            if (files == null || string.IsNullOrEmpty(commit) || !System.Text.RegularExpressions.Regex.IsMatch(commit, "^[0-9a-f]{7,40}$"))
+                throw new InvalidOperationException(@"SSBU Arena's files are incomplete and build\update_manifest.json does not say which release they are: download SSBU-Arena.exe again into a new folder.");
+            var want = new HashSet<string>(missing, StringComparer.Ordinal);
+            say("Downloading SSBU Arena's files (" + missing.Count + " missing)...");
+            Log("sources repair: " + missing.Count + " file(s) missing (" + string.Join(", ", missing.Take(6)) + (missing.Count > 6 ? ", ..." : "") + "): commit " + commit);
+            string url = r != null && r.SourcesUrl != null && string.Equals(r.Commit, commit, StringComparison.OrdinalIgnoreCase)
+                ? r.SourcesUrl : "https://codeload.github.com/" + GitHubRepo + "/zip/" + commit;
+            byte[] zip = Get(url, null, 600000);
+            int put = 0;
+            var bad = new List<string>();
+            using (var z = new ZipArchive(new MemoryStream(zip)))
+            {
+                foreach (var e in z.Entries)
+                {
+                    int cut = e.FullName.IndexOf('/');
+                    string rel = cut < 0 ? "" : e.FullName.Substring(cut + 1);
+                    if (rel == "" || rel.EndsWith("/") || !want.Contains(rel)) continue;
+                    if (rel.Split('/').Any(p => p == ".." || p == "") || rel.Contains(":")) continue;
+                    byte[] data;
+                    using (var s = e.Open()) using (var ms = new MemoryStream()) { s.CopyTo(ms); data = ms.ToArray(); }
+                    if (files.TryGetValue(rel, out var h) && h is string hs && !string.Equals(Sha256(data), hs, StringComparison.OrdinalIgnoreCase)) { bad.Add(rel); continue; }
+                    string dst = Path.Combine(root, rel.Replace('/', '\\'));
+                    try
+                    {
+                        FileRetry.Do(() => { Directory.CreateDirectory(Path.GetDirectoryName(dst)); File.WriteAllBytes(dst, data); });
+                    }
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                    {
+                        throw new IOException("Putting back " + rel + ": " + SetupErrors.Explain(ex, root), ex.HResult);
+                    }
+                    put++;
+                    want.Remove(rel);
+                }
+            }
+            Log("sources repair: " + put + " put back" + (bad.Count > 0 ? ", " + bad.Count + " not matching the manifest (not written): " + string.Join(", ", bad.Take(6)) : "") +
+                (want.Count > bad.Count ? ", " + (want.Count - bad.Count) + " not in the download" : ""));
+            if (put > 0) HideScripts(root);
+            return put;
+        }
     }
 }

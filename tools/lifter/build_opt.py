@@ -244,13 +244,185 @@ def out_of_memory(code, out):
 OOM = 'out of memory'                    # run_limited's output when the memory limit stopped the compiler
 
 
+# (fix/setup-0278) SSBU_BUILD_TOOL_GONE=0 (scripts/setup.py passes it on): as 0.2.77, a compiler that cannot be started raises
+# out of the compile queue (FileNotFoundError after 16-19 minutes of a player's build: opt.exe / llc.exe / clang.exe went
+# missing during the build, most likely taken by an antivirus, and the whole build_opt.py stopped with a traceback). Otherwise
+# that unit fails with a clear line, and when it is LLVM 19's opt.exe or llc.exe the remaining optimised units are compiled with
+# clang 9 -O1 (compile_pipeline's own fallback: slower code, the same results), said once.
+TOOL_GONE_ON = os.environ.get('SSBU_BUILD_TOOL_GONE', '1') not in ('', '0')
+TOOL_GONE_CODE = 9009                    # (cmd.exe's "not recognised" code: a compiler that could not be started)
+_llvm19_gone = [None]                    # the reason LLVM 19 cannot be used any more in this run, or None
+_tool_gone_lock = threading.Lock()
+
+
+def tool_gone(cmd, e):
+    """the output line for a compiler that could not be started; LLVM 19's: the rest of the run goes the clang 9 way"""
+    exe = cmd[0]
+    msg = ('could not start %s (%s): the file is missing or blocked; an antivirus may have removed it (allow SSBU Arena\'s folder '
+           'in it)' % (exe, e))
+    if LLVM19 and os.path.normcase(os.path.dirname(os.path.abspath(exe))) == os.path.normcase(os.path.abspath(LLVM19)):
+        with _tool_gone_lock:
+            if _llvm19_gone[0] is None:
+                _llvm19_gone[0] = msg
+                print('LLVM 19 %s; the remaining optimised units are compiled with clang 9 -O1 (slower, the same game)' % msg, flush=True)
+    return msg
+
+
+# (fix/setup-0278) unstable memory or CPU. Reports: a module unit failed on "c->X[19] = (uint64_t)(0ULL | c->x[0Y);" where the
+# lifter writes "c->x[19] = (uint64_t)(0ULL | c->x[0]);" (bit 5 of 'x' and bit 2 of ']' flipped in the generated C), at every
+# Resume, on a PC whose Python also crashed with an access violation in the compile step. The generated code compiles on
+# every good PC, so a unit with errors IN THE GENERATED C (gen_* folders, the *_tu units) is compiled once more (its parts
+# prepared again by tu_prepare): if it then compiles, or a part comes out different, the PC made two different results
+# from one input. If it fails the same way, at the end of the compile the lifter makes those files again (only files
+# whose content changed are written): one that comes out different is the same sign. Then the build stops with
+# UNSTABLE_MARK (install.py: "memory or CPU unstable", what to do). At most UNSTABLE_MAX units are tried again (more: a real
+# problem of the code or of the headers, as before). SSBU_BUILD_UNSTABLE=0 (setup.py passes it on): as 0.2.77.
+UNSTABLE_ON = os.environ.get('SSBU_BUILD_UNSTABLE', '1') not in ('', '0')
+UNSTABLE_MARK = 'UNSTABLE MEMORY OR CPU'
+UNSTABLE_MAX = 8
+_SRC_ERR = re.compile(r'^\s*(.+?\.c):\d+:\d+: error: ', re.M)
+_unstable = []                           # what showed it
+_suspect = {}                            # generated file -> sha1 when it failed twice the same way
+_unstable_lock = threading.Lock()
+_retried = [0]
+
+
+def _sha1_file(p):
+    try:
+        with open(p, 'rb') as f:
+            return hashlib.sha1(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def gen_errors(out):
+    """the generated C files clang's errors are in (gen_* folders, the *_tu unit folders), full paths; [] for errors elsewhere"""
+    files = []
+    for m in _SRC_ERR.finditer(out or ''):
+        p = os.path.normpath(m.group(1).strip().replace('/', os.sep))
+        parts = os.path.normcase(p).split(os.sep)
+        if not any(x.startswith('gen_') or x.endswith('_tu') for x in parts[:-1]):
+            continue
+        full = p if os.path.isabs(p) else os.path.join(HERE, p)
+        if full not in files:
+            files.append(full)
+    return files
+
+
+def unit_retry(label, run):
+    """run() -> (code, out, secs, note), the compile of one unit; once more when it failed on the generated code (above)"""
+    code, out, secs, note = run()
+    if code == 0 or not UNSTABLE_ON:
+        return code, out, secs, note
+    files = gen_errors(out)
+    if not files:
+        return code, out, secs, note
+    with _unstable_lock:
+        if _retried[0] >= UNSTABLE_MAX:
+            return code, out, secs, note
+        _retried[0] += 1
+    before = {f: _sha1_file(f) for f in files}
+    print('  %s: errors in the generated code (%s): compiled once more' % (label, ', '.join(os.path.basename(f) for f in files[:3])), flush=True)
+    code2, out2, secs2, note2 = run()
+    changed = [f for f in files if _sha1_file(f) != before[f]]
+    why = None
+    if changed:
+        why = '%s: %s came out different when it was prepared again' % (label, ', '.join(os.path.basename(f) for f in changed[:3]))
+    elif code2 == 0:
+        why = '%s: the same generated code failed to compile, then compiled' % label
+    with _unstable_lock:
+        if why:
+            _unstable.append(why)
+        elif code2 != 0:
+            for f in gen_errors(out2) or files:
+                _suspect.setdefault(f, _sha1_file(f))
+    if why:
+        print('  %s: %s' % (UNSTABLE_MARK, why), flush=True)
+    return code2, out2, secs + secs2, note2
+
+
+def _gen_source(f):
+    """('main', file in build.GEN) / ('nro', (module, file in its gen folder)) / None for a generated file or a unit part"""
+    d, n = os.path.split(f)
+    m = re.match(r'^(c_[0-9a-f]+)(?:_b)?\.c$', n)
+    if os.path.normcase(os.path.abspath(d)) == os.path.normcase(os.path.abspath(build.GEN)):
+        return 'main', f
+    if m and os.path.basename(d).endswith('_tu') and os.path.isfile(os.path.join(build.GEN, m.group(1) + '.c')) and \
+            os.path.normcase(os.path.basename(d)) == os.path.normcase(os.path.basename(build.OBJ) + '_tu'):
+        return 'main', os.path.join(build.GEN, m.group(1) + '.c')
+    up = os.path.basename(os.path.dirname(d))
+    if up.startswith('gen_nro'):
+        return 'nro', (os.path.basename(d), f)
+    return None
+
+
+def relift_check(which, jobs):
+    """the generated files that failed twice the same way (_suspect) made again by the lifter ('main' or 'nro'); one that comes
+    out different -> _unstable"""
+    with _unstable_lock:
+        todo = {}                        # generated file -> (module or None, its sha1 when it failed)
+        for f in list(_suspect):
+            g = _gen_source(f)
+            if not g or g[0] != which:
+                continue
+            mod, src = (None, g[1]) if which == 'main' else g[1]
+            if src not in todo:
+                todo[src] = (mod, _suspect[f] if src == f else _sha1_file(src))
+            del _suspect[f]
+    if not todo:
+        return
+    t0 = time.time()
+    if which == 'main':
+        print('the generated files that failed twice (%s) are made again by the lifter, to compare' % ', '.join(os.path.basename(f) for f in list(todo)[:4]), flush=True)
+        r = subprocess.run([sys.executable, os.path.join(HERE, 'recomp_eh.py'), build.GEN, str(max(1, jobs))], cwd=HERE, capture_output=True, text=True)
+        if r.returncode:
+            print('  the lifter could not run again (%d): %s' % (r.returncode, (r.stdout + r.stderr).strip()[-300:]), flush=True)
+            return
+    else:
+        mods = sorted(set(v[0] for v in todo.values()))
+        print('the generated files of %s that failed twice are made again by the lifter, to compare' % ', '.join(mods), flush=True)
+        by = {e['name']: e for e in build_nro.load_map()}
+        for mname in mods:
+            e = by.get(mname)
+            if e and build_nro.lift_subprocess(e, build_nro.module_dirs(e)[0], jobs) is None:
+                print('  %s: the lifter could not run again' % mname, flush=True)
+                return
+    old = {f: v[1] for f, v in todo.items()}
+    diff = [f for f, h in old.items() if h is not None and _sha1_file(f) != h]
+    print('  lifted again in %.0fs: %d of %d different' % (time.time() - t0, len(diff), len(old)), flush=True)
+    if diff:
+        with _unstable_lock:
+            _unstable.append('%s came out different when the lifter made it again from the same game file' % ', '.join(
+                os.path.join(os.path.basename(os.path.dirname(f)), os.path.basename(f)) for f in diff[:3]))
+
+
+def unstable_end(rc, which, jobs):
+    """(SSBU_BUILD_UNSTABLE) at the end of a compile: the re-lift check, then the mark (the build's last line) and exit 1 when
+    the PC gave two different results for one input"""
+    if not UNSTABLE_ON:
+        return rc
+    if rc:
+        relift_check(which, jobs)
+    with _unstable_lock:
+        seen = list(_unstable)
+    if seen:
+        print('%s: %s. The build cannot be trusted on this PC as it is now.' % (UNSTABLE_MARK, '; '.join(seen[:2])[:400]), flush=True)
+        return rc or 1
+    return rc
+
+
 def run_limited(cmd, limit, mem=0):
     """Run a compiler with a time limit (and on Linux an address-space limit: mem, else MEM_LIMIT). Returns (exit code,
     output, seconds); the exit code is None when a limit stopped it, the output then OOM for memory and '' for time."""
     t = time.time()
     if MEM_LIMIT:
         cmd = ['prlimit', '--as=%d' % (mem or MEM_LIMIT), '--'] + cmd      # util-linux; inherited by clang's -cc1 child
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=(os.name != 'nt'))
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=(os.name != 'nt'))
+    except OSError as e:
+        if not TOOL_GONE_ON:
+            raise
+        return TOOL_GONE_CODE, tool_gone(cmd, e), time.time() - t
     try:
         out, _ = p.communicate(timeout=limit)
         out = out.decode('latin-1')[-2000:]
@@ -513,6 +685,9 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
     extra = EXTRA if extra is None else extra
     bc, bc2 = obj[:-4] + '.fe.bc', obj[:-4] + '.opt.bc'
     total, note = 0.0, ''
+    if _llvm19_gone[0]:                  # (fix/setup-0278, SSBU_BUILD_TOOL_GONE) opt.exe / llc.exe gone during this run: clang 9 -O1
+        code, out, secs, note2 = compile_file(src, obj, base_flags, time_limit, extra)
+        return code, out, secs, 'LLVM 19 missing, clang 9 -O1' + ('; ' + note2 if note2 else '')
     for inl in ((True, False) if inline else (False,)):
         steps = [[CLANG, '-c'] + PIPE_FE + extra + ([INLINE_FLAG] if inl else []) + base_flags + [src, '-o', bc],
                  [os.path.join(LLVM19, 'opt.exe'), '-passes=' + PIPE_PASSES, bc, '-o', bc2],
@@ -546,6 +721,8 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
         if code == 0:
             return 0, out, total, note
         note = 'helpers not inlined (the inlined compile failed)' if inl else note
+        if _llvm19_gone[0]:              # (no second try without the helpers: the same tool is missing)
+            break
     code, out, secs, note2 = compile_file(src, obj, base_flags, time_limit, extra)
     return code, out, total + secs, 'reduced pipeline failed, clang 9 -O1' + ('; ' + note2 if note2 else '')
 
@@ -729,14 +906,14 @@ def compile_one_main(name):
         key = hint_key(src, split_signature())
         opt_compile = ((lambda part, o: compile_pipeline(part, o, base, INLINE)) if PIPE == 'llvm19' else
                        (lambda part, o: compile_file_inline(part, o, base, key=key)))
-        code, out, secs, note = compile_split(src, obj, base, opt_compile, cold, OWN_DECLS, key, defer=MAIN_UNITY > 1)
+        code, out, secs, note = unit_retry(name, lambda: compile_split(src, obj, base, opt_compile, cold, OWN_DECLS, key, defer=MAIN_UNITY > 1))
         if code == 0 and PIPE == 'llvm19':
             # the reduced pipeline's time (compile_pipeline keeps no hint of its own): the next build starts the slowest first
             hint_save(build.OBJ, name[:-2] + '.obj', key, secs, 1)
         if MAIN_UNITY > 1:
             cold_ready(name)
     else:
-        code, out, secs, note = compile_file_inline(src, obj, base)
+        code, out, secs, note = unit_retry(name, lambda: compile_file_inline(src, obj, base))
     # (the -O0 unit alone is not worth a line: most files have one with the coverage list)
     if (note and not note.startswith('-O0 unit')) or secs > 60:
         line = '%-12s %6.0fs  %s' % (name, secs, note)
@@ -780,7 +957,10 @@ def cold_unit(unit, grp, base, run=None):
     tu_prepare._write_if_changed(bunit, build_nro.unity_text(parts))
     if os.path.exists(bobj) and os.path.getmtime(bobj) >= max([os.path.getmtime(p) for p in parts] + [newest, os.path.getmtime(bunit)]):
         return False, False, 0.0
-    code, out, secs = (run or (lambda fn, *a: fn(*a)))(compile_big, bunit, bobj, base)
+    def once():
+        c, o, s = (run or (lambda fn, *a: fn(*a)))(compile_big, bunit, bobj, base)
+        return c, o, s, ''
+    code, out, secs, _ = unit_retry(unit + '_b', once)       # (fix/setup-0278, SSBU_BUILD_UNSTABLE)
     if code != 0:
         if os.path.exists(bobj):
             os.remove(bobj)
@@ -1012,7 +1192,11 @@ def cmd_main(jobs):
         print('-O0 units: %d files, %.0fs of compiler time; functions over %d statements: %d (%d statements); never executed '
               'in competitive play: %d (%d statements)' % (s['files'][0], s['files'][2], SPLIT_LINES, s.get('long', [0, 0])[0],
                                                           s.get('long', [0, 0])[1], s.get('cold', [0, 0])[0], s.get('cold', [0, 0])[1]), flush=True)
+    rc = unstable_end(rc, 'main', jobs)            # (fix/setup-0278, SSBU_BUILD_UNSTABLE) no link on a PC that gave two results
     if rc:
+        if UNSTABLE_ON and _unstable and nro_thread:
+            nro_join()                             # the modules' lines would push the mark out of the log's tail setup.py shows
+            unstable_end(rc, 'main', jobs)
         return rc
     with open(stamp, 'w') as f:
         f.write(want + chr(10))
@@ -1021,7 +1205,7 @@ def cmd_main(jobs):
     rc = build.build_game_dll()
     print('main: compile + link %.0fs' % (time.time() - t0))
     nro_join()
-    return rc
+    return unstable_end(rc, 'main', jobs)          # (the modules' queue may have seen it)
 
 
 # ---- modules: build_nro.run_clang replaced --------------------------------------------------------------------
@@ -1158,12 +1342,15 @@ def run_clang_nro(job):
                     return int(name[2:], 16) not in hot
                 except ValueError:
                     return False
+        # (fix/setup-0278, SSBU_BUILD_UNSTABLE) unit_retry: once more on errors in the generated code
+        tag = os.path.basename(os.path.dirname(srcs[0])) + '/' + label
         if len(srcs) > 1:
-            code, out, secs, note = compile_unity(srcs, obj, base, opt_compile, cold_fn, _nro_split_stats)
+            code, out, secs, note = unit_retry(tag, lambda: compile_unity(srcs, obj, base, opt_compile, cold_fn, _nro_split_stats))
         else:
-            code, out, secs, note = compile_split(src, obj, base, opt_compile, cold_fn, False, agg=_nro_split_stats)
+            code, out, secs, note = unit_retry(tag, lambda: compile_split(src, obj, base, opt_compile, cold_fn, False, agg=_nro_split_stats))
     else:
-        code, out, secs, note = compile_pipeline(src, obj, base, False) if PIPE == 'llvm19' and os.path.basename(src).startswith('c_') else compile_file(src, obj, base)
+        code, out, secs, note = unit_retry(os.path.basename(os.path.dirname(srcs[0])) + '/' + label,
+                                           lambda: compile_pipeline(src, obj, base, False) if PIPE == 'llvm19' and os.path.basename(src).startswith('c_') else compile_file(src, obj, base))
     if note.startswith('-O0 unit') and secs <= 60:          # (most module files have one with the coverage list)
         note = ''
     if note or secs > 60:
@@ -1195,7 +1382,7 @@ def cmd_nro(jobs, names, retry=True):
               'never executed in competitive play: %d (%d statements)' % (s['files'][0], s['files'][2], SPLIT_LINES, s.get('long', [0, 0])[0],
                                                                           s.get('long', [0, 0])[1], s.get('cold', [0, 0])[0], s.get('cold', [0, 0])[1]), flush=True)
     report(os.path.join(HERE, 'obj_nro' + os.environ['RECOMP_NRO_SUFFIX']), _nro_report)
-    return rc
+    return unstable_end(rc, 'nro', jobs)           # (fix/setup-0278, SSBU_BUILD_UNSTABLE)
 
 
 if __name__ == '__main__':

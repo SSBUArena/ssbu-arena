@@ -348,8 +348,74 @@ def recorded_dump():
     return None
 
 
+def sources_check_on():
+    """(fix/setup-0278) SSBU_SOURCES_CHECK=0: as 0.2.77 (a missing file of the sources stops a step with Python's own error)."""
+    return os.environ.get('SSBU_SOURCES_CHECK', '1') not in ('', '0')
+
+
+SOURCES_HINT = ('An antivirus or a cleaning program may have removed it. Press Resume in the SSBU Arena launcher (or Retry): it '
+                'downloads the missing files of SSBU Arena again. If it comes back, allow SSBU Arena\'s folder in the antivirus, or '
+                'download SSBU-Arena.exe again into a new folder.')
+
+
+def missing_sources():
+    """(fix/setup-0278) the files of this copy's release that are not there: <repo>\\build\\update_manifest.json (written by the
+    launcher's first install and scripts/update.py: every file of the release's sources) against the folder. update.py's
+    protected paths are left out. [] for a git checkout, without a manifest, or with SSBU_SOURCES_CHECK=0."""
+    if not sources_check_on() or os.path.exists(os.path.join(REPO, '.git')):
+        return []
+    try:
+        with open(os.path.join(REPO, 'build', 'update_manifest.json'), encoding='utf-8') as f:
+            files = json.load(f).get('files')
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(files, dict):
+        return []
+    protected = ('.git', 'build', 'deps', 'config', 'saves', 'build_location.txt')
+    miss = []
+    for rel in sorted(files):
+        first = rel.split('/')[0].lower()
+        if first in protected or first.startswith('userdata') or '..' in rel.split('/') or ':' in rel:
+            continue
+        if not os.path.isfile(os.path.join(REPO, *rel.split('/'))):
+            miss.append(rel.replace('/', '\\'))
+    return miss
+
+
+def sources_stop(missing):
+    return Stop('a file of SSBU Arena\'s setup is missing: %s%s' % (missing[0], ' (and %d more)' % (len(missing) - 1) if len(missing) > 1 else ''),
+                SOURCES_HINT, action='sources')
+
+
+def repo_file_missing(e):
+    """(fix/setup-0278) a FileNotFoundError on a file of the sources (not of the install location, deps or the game files):
+    its path relative to the repository, else None"""
+    name = getattr(e, 'filename', None)
+    if not sources_check_on() or not isinstance(e, FileNotFoundError) or not isinstance(name, str):
+        return None
+    try:
+        full = os.path.normcase(os.path.abspath(name))
+        repo = os.path.normcase(os.path.abspath(REPO)) + os.sep
+        if not full.startswith(repo):
+            return None
+        for other in (BUILD, DEPS, os.path.join(REPO, 'build')):
+            if full.startswith(os.path.normcase(os.path.abspath(other)) + os.sep):
+                return None
+        return os.path.relpath(os.path.abspath(name), REPO)
+    except (ValueError, OSError):
+        return None
+
+
 def step_precheck(cx):
     import precheck
+    # (fix/setup-0278) a file of the sources missing (runtime\game_data.h: "FileNotFoundError" at this step): said as such
+    miss = missing_sources()
+    if miss:
+        say('   files of SSBU Arena missing: %s' % ', '.join(miss[:20]) + (' ...' if len(miss) > 20 else ''))
+        if cx.a.dry_run:
+            cx.blockers.append(sources_stop(miss).msg)
+            return 'dry', 'would stop: ' + sources_stop(miss).msg
+        raise sources_stop(miss)
     dump = cx.a.dump or (os.path.join(BUILD, 'dump') if dump_ok(os.path.join(BUILD, 'dump')) else None)
     if not dump and precheck.update_disk_rule():
         dump = recorded_dump()              # (0.2.65, SSBU_UPDATE_DISK_CHECK) the game files the install already reads
@@ -1068,6 +1134,20 @@ def explain(text):
 
 
 DAMAGED_MARK = 'damaged object file(s) removed'      # tools/lifter/build.py drop_damaged_objects
+UNSTABLE_MARK = 'UNSTABLE MEMORY OR CPU'             # (fix/setup-0278) tools/lifter/build_opt.py unstable_end
+
+
+def unstable_check_on():
+    """(fix/setup-0278) SSBU_BUILD_UNSTABLE=0: as 0.2.77 (build_opt.py does not look, and the stop is the usual one)"""
+    return os.environ.get('SSBU_BUILD_UNSTABLE', '1') not in ('', '0')
+
+
+def unstable_stop(detail):
+    return Stop('the build stopped: this PC\'s memory or CPU is unstable. The same game code came out different twice in a row '
+                '(%s). A PC like this also crashes or goes out of sync in online matches.' % detail.rstrip('. ')[:300],
+                'Usually an overclock or a memory profile (XMP / EXPO) that is not fully stable, overheating, or a failing memory '
+                'module. Set the BIOS back to its defaults (or turn the memory profile off), check the memory (Windows Memory '
+                'Diagnostic or MemTest86), then press Resume: the build goes on from where it was.')
 
 
 def probe_runtime(dump, runtime, extra):
@@ -1098,10 +1178,45 @@ def llvm19_args():
     """['--llvm19', deps/llvm19] when LLVM 19's opt/llc are there or can be fetched; [] otherwise (optional: the build
     falls back to clang 9 -O1, slower, same result)"""
     try:
-        return ['--llvm19', fetch('llvm19')]
+        d = fetch('llvm19')
+        if llvm19_check_on():
+            # (fix/setup-0278) fetch() looks for opt.exe only: llc.exe missing, or a program that does not run (an antivirus took
+            # or blocked it) stopped the compile 16-19 minutes later with "file not found". Both started once; else the folder
+            # is downloaded again, and if they still do not run the game is compiled with clang 9 -O1 (said)
+            bad = llvm19_problem(d)
+            if bad:
+                say('   LLVM 19 opt/llc in %s cannot be used (%s): downloaded again' % (d, bad))
+                shutil.rmtree(d, ignore_errors=True)
+                d = fetch('llvm19')
+                bad = llvm19_problem(d)
+                if bad:
+                    say('   LLVM 19 opt/llc still cannot be used (%s; an antivirus may be removing or blocking them: allow SSBU Arena\'s '
+                        'folder in it): the game is compiled with clang 9 -O1 (about twice as long, the same game)' % bad)
+                    return []
+        return ['--llvm19', d]
     except (Exception, SystemExit) as e:
         say('   LLVM 19 opt/llc not available (%s): the game is compiled with clang 9 -O1 (about twice as long)' % str(e)[:200])
         return []
+
+
+def llvm19_check_on():
+    """(fix/setup-0278) SSBU_LLVM19_CHECK=0: as 0.2.77 (deps\\llvm19 is taken when its opt.exe is there)"""
+    return os.environ.get('SSBU_LLVM19_CHECK', '1') not in ('', '0')
+
+
+def llvm19_problem(d):
+    """why LLVM 19's opt.exe / llc.exe in d cannot be used (missing, or `--version` does not say LLVM 19), or None"""
+    for exe in ('opt.exe', 'llc.exe'):
+        p = os.path.join(d, exe)
+        if not os.path.isfile(p):
+            return '%s is missing' % exe
+        try:
+            r = subprocess.run([p, '--version'], capture_output=True, text=True, errors='replace', timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            return '%s does not start: %s' % (exe, e)
+        if 'LLVM version 19.' not in (r.stdout or '') + (r.stderr or ''):
+            return '%s does not run (exit code %s)' % (exe, r.returncode)
+    return None
 
 
 def tools_args(dump, runtime=None, extra=(), why=''):
@@ -1369,11 +1484,13 @@ def step_build(cx, P):
             return (s, c[0], c[1], False)
         e = est(s)
         return (s, min(time.time() - P.t0.get(s, time.time()), 0.95 * e), e)      # seconds: never past the estimate
-    seen = {'damaged': False, 'failed': ''}
+    seen = {'damaged': False, 'failed': '', 'unstable': ''}
 
     def watch(line):
         if DAMAGED_MARK in line:
             seen['damaged'] = True
+        if UNSTABLE_MARK in line and unstable_check_on():
+            seen['unstable'] = line.split(UNSTABLE_MARK, 1)[1].lstrip(': ').strip()
         m = re.match(r'\s*FAILED at step (\w+): (.*)', line)
         if m:
             seen['failed'] = 'step %s: %s' % (m.group(1), m.group(2).strip())
@@ -1391,6 +1508,8 @@ def step_build(cx, P):
     if rc:
         if cur['id']:
             P.end(cur['id'], 'fail', 'see build\\logs')
+        if seen['unstable']:                     # (fix/setup-0278) before any other reason: the rest follows from it
+            raise unstable_stop(seen['unstable'])
         text = '\n'.join(tail)
         env = explain(text)
         if env:
@@ -1567,6 +1686,9 @@ def run_step(cx, P, sid, fn):
         raise
     except Exception as e:                       # a bug or a missing module: reported like a stop
         P.end(sid, 'fail', '%s: %s' % (type(e).__name__, e))
+        gone = repo_file_missing(e)              # (fix/setup-0278) a file of the sources: what it is and what to do, not a traceback
+        if gone:
+            raise sources_stop([gone] + [m for m in missing_sources() if os.path.normcase(m) != os.path.normcase(gone)])
         raise Stop('%s failed: %s: %s' % (sid, type(e).__name__, e), 'See build\\logs; start the installer again, or report this message.')
     secs = time.time() - t0
     say('   -> %s: %s' % (state, msg))

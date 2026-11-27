@@ -135,6 +135,43 @@ namespace Arena
         public static bool SourcesThere =>
             File.Exists(Path.Combine(Root, @"scripts\bootstrap.ps1")) && File.Exists(Path.Combine(Root, @"scripts\install.py")) && File.Exists(Path.Combine(Root, @"scripts\find_inputs.py"));
 
+        /// <summary>(fix/setup-0278) the release's files this install lacks: build\update_manifest.json's list (Updater.FirstInstall and
+        /// scripts/update.py write it: every file of the release's sources with its SHA-256) against the files there. Paths with '/'
+        /// as in the manifest; never build\, deps\, config\, saves\, userdata*\ or .git\ (update.py's PROTECTED). Empty when the
+        /// manifest is not there or cannot be read (a git checkout, an install from before the manifest).</summary>
+        public static List<string> MissingTree()
+        {
+            var miss = new List<string>();
+            try
+            {
+                var files = ManifestFiles();
+                if (files == null) return miss;
+                foreach (var rel in files.Keys)
+                {
+                    string first = rel.Split('/')[0].ToLowerInvariant();
+                    if (first == ".git" || first == "build" || first == "deps" || first == "config" || first == "saves" || first.StartsWith("userdata") ||
+                        first == "build_location.txt" || rel.Contains("..") || rel.Contains(":")) continue;
+                    if (!File.Exists(Path.Combine(Root, rel.Replace('/', '\\')))) miss.Add(rel);
+                }
+            }
+            catch { }
+            return miss;
+        }
+
+        /// <summary>build\update_manifest.json's "files" (path -> SHA-256), or null</summary>
+        public static Dictionary<string, object> ManifestFiles() => Manifest()?.TryGetValue("files", out var f) == true ? f as Dictionary<string, object> : null;
+
+        /// <summary>build\update_manifest.json (repo, commit, zip_top, files), or null</summary>
+        public static Dictionary<string, object> Manifest()
+        {
+            try
+            {
+                string m = Path.Combine(Root, @"build\update_manifest.json");
+                return File.Exists(m) ? new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Deserialize<Dictionary<string, object>>(File.ReadAllText(m)) : null;
+            }
+            catch { return null; }
+        }
+
         /// <summary>what a Windows PowerShell exit code says (its console host's own codes), or null</summary>
         public static string PowerShellCode(int code)
         {
