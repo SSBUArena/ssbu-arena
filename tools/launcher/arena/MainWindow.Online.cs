@@ -3,6 +3,9 @@
 // (arena-server tools/net/lobby_status.py); read at start and every 5 minutes. Hidden while the count is older than
 // 15 minutes (the server is not reporting), cannot be read, or is 0 (since 0.2.49). (0.2.51) One row per game and lobby
 // (product, region): the count shown is the one of the lobby PLAY uses (the chosen region, or Auto's pick), with its name.
+// (limits) Only while the window is on screen: the 5-minute read is skipped while it is minimized or hidden (the game
+// running), and done at once when it is shown again and the last read is 5 minutes old. The accounts service's free plan
+// counts every call. SSBU_ARENA_ONLINE_HIDDEN=1: read while hidden too, as before.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -64,12 +67,35 @@ namespace Arena
             ReadOnlineCount();      // (0.2.51) the count is the chosen lobby's
         }
 
+        static readonly TimeSpan OnlineEvery = TimeSpan.FromMinutes(5);
+        DateTime onlineReadAt = DateTime.MinValue;      // the last read asked (UTC)
+
         void StartOnlineCount()
         {
             ReadOnlineCount();
-            onlineTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(5) };
-            onlineTimer.Tick += (s, e) => ReadOnlineCount();
+            onlineTimer = new DispatcherTimer { Interval = OnlineEvery };
+            onlineTimer.Tick += (s, e) => { if (OnlineReadWanted(OnScreen, ReadHidden)) ReadOnlineCount(); };
             onlineTimer.Start();
+            StateChanged += (s, e) => OnlineShownAgain();
+            IsVisibleChanged += (s, e) => OnlineShownAgain();
+        }
+
+        bool OnScreen => IsVisible && WindowState != WindowState.Minimized;
+
+        /// <summary>SSBU_ARENA_ONLINE_HIDDEN=1: the count is read every 5 minutes while the window is hidden too (the old way)</summary>
+        static bool ReadHidden => Environment.GetEnvironmentVariable("SSBU_ARENA_ONLINE_HIDDEN")?.Trim() == "1";
+
+        /// <summary>whether the timer's read is done: the window on screen, or reads while hidden asked for</summary>
+        public static bool OnlineReadWanted(bool onScreen, bool readHidden) => onScreen || readHidden;
+
+        /// <summary>whether the window shown again reads at once: the last read at least OnlineEvery old (or none)</summary>
+        public static bool OnlineReadDue(DateTime lastUtc, DateTime nowUtc) => lastUtc == DateTime.MinValue || nowUtc - lastUtc >= OnlineEvery;
+
+        void OnlineShownAgain()
+        {
+            if (onlineTimer == null || !OnScreen || !OnlineReadDue(onlineReadAt, DateTime.UtcNow)) return;
+            ReadOnlineCount();
+            onlineTimer.Stop(); onlineTimer.Start();      // (the next one 5 minutes from now)
         }
 
         /// <summary>(0.2.51) The count of one lobby. The lobbies write one row each to public.lobby_status (product, region, players,
@@ -102,6 +128,7 @@ namespace Arena
             int at = byHand != null ? Regions.ByHost(byHand) : Regions.Pick;
             if (at < 0) { OnlineCountBox.Visibility = Visibility.Collapsed; return; }
             string id = Regions.Table[at].Id, name = Regions.Table[at].Name;
+            onlineReadAt = DateTime.UtcNow;
             Task.Run(() =>
             {
                 List<Dictionary<string, object>> rows;
