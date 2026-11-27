@@ -68,6 +68,11 @@ namespace Arena
                 (@"logs\arena_menu.log", 32 << 10), ("game.log", 320 << 10),
                 (@"work\ssbu_native_lumdiag.txt", 96 << 10),      // (amd-black) the black-picture diagnosis' lines (runtime/nvn_vk_lumdiag.c), not cut with game.log's middle
             };
+            // (fix/sdk-selftest-0278) the setup's self-test and compile logs, bounded (both are appended to by every run: the end is
+            // the newest run, the head is left out past the bound): two 0.2.77 reports said only "SDK self-test: 2 failure(s)" and
+            // a link failure came without compile.log. SSBU_ARENA_LOGS_SETUP=0: not sent (as 0.2.77).
+            if (Environment.GetEnvironmentVariable("SSBU_ARENA_LOGS_SETUP") != "0")
+                names = names.Concat(new (string rel, int max)[] { (@"logs\check_sdk.log", 40 << 10), (@"logs\compile.log", 48 << 10) }).ToArray();
             var list = new List<Item>();
             void Add(string path, string name, int max)
             {

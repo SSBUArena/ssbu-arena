@@ -1312,6 +1312,28 @@ def step_check(cx):
 SELFTEST_LIMIT = 600                     # seconds per self-test run (a normal one takes about 1 minute)
 
 
+# (fix/sdk-selftest-0278) SSBU_SDK_FAIL_LINES (default 1; 0 = as 0.2.77: the count only): the lines of the SDK self-test that say
+# what failed go into the stop's message, so the installer's own log and the report the launcher sends name the checks (two
+# 0.2.77 reports said only "SDK self-test: 2 failure(s)", and logs\check_sdk.log was not sent). The self-tests write a failure in
+# three ways: "  FAIL <area>: ...", "  <area>: <what>: FAILED" and, for the time zones, "  time zone: <zone>: N differences ..."
+# (counted as failures by nntime_selftest without a FAIL word); also "... without a handler" for SDK functions with no host code.
+SDK_FAIL_RX = (r'^(FAIL\b|.*\bFAILED\b|time zone: .+: \d+ differences in |time zone: no registry data|'
+               r'.*Windows conversion functions not found|sdk\.elf is not loaded|.*\bwithout a handler\b|'
+               r'lifted SDK code needs a host handler)')
+
+
+def _sdk_failed_lines(out, most=4, width=120):
+    import re
+    if os.environ.get('SSBU_SDK_FAIL_LINES', '1').strip() == '0':
+        return ''
+    lines = [l.strip() for l in out.splitlines() if l.strip() and not l.startswith('SDK self-test')]
+    hit = [l for l in lines if re.match(SDK_FAIL_RX, l) and not re.search(r'\b0 without a handler\b', l)]
+    if not hit:
+        return ' (no failure line in the output: see logs\\check_sdk.log)'
+    more = len(hit) - most
+    return ': ' + ' | '.join(l[:width] for l in hit[:most]) + (' | and %d more (logs\\check_sdk.log)' % more if more > 0 else '')
+
+
 def _sdk_result(cx, out):
     line = next((l for l in reversed(out.splitlines()) if l.startswith('SDK self-test:')), '')
     failed = [l.strip() for l in out.splitlines() if l.rstrip().endswith('FAILED')]
@@ -1320,7 +1342,7 @@ def _sdk_result(cx, out):
     # (another window in front, a remote or service session) it fails without anything being wrong with the build
     known += [l for l in failed if l.startswith('swkbd: Win32 dialog')]
     if '0 failure(s)' not in line and not (failed and len(known) == len(failed) and ('%d failure(s)' % len(failed)) in line):
-        raise Fail('SSBU_SDK_SELFTEST: ' + (line or 'no result line'))
+        raise Fail('SSBU_SDK_SELFTEST: ' + (line or 'no result line') + _sdk_failed_lines(out))
     say('  SSBU_SDK_SELFTEST: ' + line.strip())
     if known:
         say('  (accepted, not a fault of the build: %s)' % '; '.join(l.split(':')[0] + ': ' + ('the on-screen keyboard dialog could not take the focus'
