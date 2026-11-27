@@ -509,6 +509,97 @@ def dump_ok(d):
     return all(os.path.isdir(os.path.join(d, s)) for s in ('exefs', 'romfs')) and arc_complete(os.path.join(d, 'romfs', 'data.arc'))
 
 
+# (fix/arc-integrity-0278) SSBU_ARC_FULLHASH (default 1; 0 = as 0.2.77: header and tables only): a plain data.arc of the dump the
+# build uses (the installer's own build\dump or a --dump folder) is read whole once and must have the SHA-256 of its game build
+# (shared_gamedata.ARC_SHA256, the same reference the shared game data is checked against). A data.arc whose header, tables and
+# size are right but whose inside is wrong (a player's 13.0.5 dump, 2026-11-26: 1014 of 13196 zstd frames not decodable, then a
+# read at a garbage offset and a null crash at every start) passed every check of 0.2.76 / 0.2.77. The result is kept in
+# install_state.json ('arc_hash', by path, size and date), so it is read once per install and again only when the file changes.
+# A build without a reference hash (13.0.2) is not checked (said so). The linked archive (data.arcl) is checked by
+# shared_gamedata.make; the light archive (data.arcp) has no whole data.arc to check.
+def arc_fullhash_on():
+    return os.environ.get('SSBU_ARC_FULLHASH', '1').strip() != '0'
+
+
+def dump_game_build(dump):
+    """the game build of a dump's exefs\\main ('13.0.4', ...), None when unknown"""
+    import shared_gamedata as sg
+    try:
+        return sg.GAME_BUILDS.get(sg.nso_text_size(os.path.join(dump, 'exefs', 'main')))
+    except Exception:                            # noqa: BLE001 (an unreadable main: the setup's own checks say why later)
+        return None
+
+
+def arc_stamp(path):
+    st = os.stat(path)
+    return [os.path.normcase(os.path.abspath(path)), st.st_size, st.st_mtime_ns]
+
+
+def arc_sha256(path, size, say_every=0.1):
+    """SHA-256 of a whole file, read in 16 MB pieces; progress lines (and the window's progress events) every ~10 %"""
+    h, done, nxt, t0 = hashlib.sha256(), 0, say_every, time.time()
+    with open(path, 'rb', buffering=0) as f:
+        while True:
+            b = f.read(16 << 20)
+            if not b:
+                break
+            h.update(b)
+            done += len(b)
+            if size and done >= nxt * size:
+                while done >= nxt * size:
+                    nxt += say_every
+                el = time.time() - t0
+                say('   data.arc: %d %% read (%.0f s, %.0f MB/s)' % (100 * done // size, el, done / 1048576.0 / max(el, 0.001)))
+                PROG.emit(ev='progress', id='dump', done=int(done >> 20), total=int(size >> 20))
+    return h.hexdigest(), done, time.time() - t0
+
+
+def check_arc_whole(cx, dump):
+    """(SSBU_ARC_FULLHASH) -> a note for the step's message; raises Stop when data.arc is not its build's own. Cached."""
+    if not arc_fullhash_on() or cx.a.dry_run:
+        return ''
+    arc = os.path.join(dump, 'romfs', 'data.arc')
+    if not os.path.isfile(arc):                  # data.arcl (shared: shared_gamedata.make checks it) or data.arcp (light archive)
+        return ''
+    import shared_gamedata as sg
+    version = dump_game_build(dump)
+    want = sg.ARC_SHA256.get(version or '')
+    if not want:
+        return 'data.arc not checked whole (no reference SHA-256 for game build %s)' % (version or 'unknown')
+    stamp = arc_stamp(arc)
+    rec = cx.st.d.get('arc_hash') or {}
+    if rec.get('stamp') == stamp and rec.get('version') == version and rec.get('sha256'):
+        got, how = rec['sha256'], 'checked before'
+    else:
+        say('   checking data.arc as a whole against game %s (%.1f GB, read once: a minute or two on an SSD, more on a hard disk)'
+            % (version, stamp[1] / 2 ** 30))
+        got, n, secs = arc_sha256(arc, stamp[1])
+        if n != stamp[1]:
+            raise Stop('data.arc (%s) could not be read to its end (%d of %d bytes)' % (arc, n, stamp[1]),
+                       'Check the drive (a failing disk or a cable), then press Install again.')
+        cx.st.d['arc_hash'] = {'stamp': stamp, 'version': version, 'sha256': got, 'secs': round(secs, 1),
+                               'ok': got == want, 'at': time.strftime('%Y-%m-%d %H:%M')}
+        cx.st.save()
+        how = 'read in %.0f s' % secs
+    if got == want:
+        return 'data.arc is game %s\'s own (SHA-256, %s)' % (version, how)
+    own = os.path.normcase(os.path.abspath(dump)) == os.path.normcase(os.path.join(BUILD, 'dump'))
+    if own:                                      # the installer's own copy: made again from the game files at the next Install
+        try:
+            with open(os.path.join(dump, 'made_from.json'), 'w', encoding='utf-8') as f:
+                json.dump({'key': 'damaged data.arc %s' % got}, f)
+        except OSError:
+            pass
+    raise Stop('the game data file %s is damaged: its content is not game %s\'s (SHA-256 %s...), even '
+               'where its size and file tables look right. The game would crash at start or later.' % (arc, version, got[:16]),
+               ('Dump the game again: choose your base game (.xci / .nsp / .nsz) and the update %s file on the setup page and press '
+                'Install; the installer makes its copy again. If it comes out damaged again, the base game file or the update file '
+                'is not whole (dump it again from your console). An emulator\'s installed-content folder (loose .nca files) is not '
+                'a base game file.' % version) if own else
+               ('Dump the game again from your console (the RomFS with the update %s applied), or choose your base game and update '
+                'files instead of the dump folder %s, then press Install again.' % (version, dump)))
+
+
 def has_fonts(folder):
     fonts = os.path.join(folder, 'fonts')
     return os.path.isdir(fonts) and any(n.lower().endswith('.ttf') for n in os.listdir(fonts))
@@ -517,6 +608,31 @@ def has_fonts(folder):
 def under(path, folder):
     p, f = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
     return p == f or p.startswith(f + os.sep)
+
+
+# (fix/arc-integrity-0278) SSBU_BASE_GUESS (default 0; 1 = as 0.2.77): a base game folder that holds no package but loose .nca
+# files (an emulator's nand\...\registered) is named as such in the stop, instead of the plain "not found".
+def base_guess_strict():
+    return os.environ.get('SSBU_BASE_GUESS', '0').strip() != '1'
+
+
+def loose_nca_folder(d, depth=2, budget=4000):
+    """the number of loose .nca files (or x.nca\\00 folders) in d and up to `depth` levels below; 0 if none or not a folder"""
+    n, todo = 0, [(d, 0)]
+    while todo and budget > 0:
+        cur, k = todo.pop()
+        try:
+            names = os.listdir(cur)
+        except OSError:
+            continue
+        budget -= len(names)
+        for x in names:
+            p = os.path.join(cur, x)
+            if x.lower().endswith('.nca'):
+                n += 1
+            elif k < depth and os.path.isdir(p):
+                todo.append((p, k + 1))
+    return n
 
 
 def step_inputs(cx):
@@ -561,6 +677,14 @@ def step_inputs(cx):
                 sub = [x['path'] for x in items if under(x['path'], given)]
                 if sub:
                     return sub[0], 'found inside the folder you gave'
+            loose = loose_nca_folder(given) if kind == 'base' and base_guess_strict() else 0
+            if loose:
+                # (fix/arc-integrity-0278) an emulator's installed content (nand\...\registered: loose .nca files, no package):
+                # say what it is; never take one of its .nca files as the base game (a player's dump from such a folder had a
+                # data.arc damaged inside, 2026-11-26)
+                cx.blockers.append('%s %s not found: that folder holds %d loose .nca files (an emulator\'s installed content), '
+                                   'not a base game package; choose the base game\'s own .xci / .nsp / .nsz file' % (label, given, loose))
+                return None, ''
             cx.blockers.append('%s %s not found' % (label, given))
             return None, ''
         return None, ''
@@ -730,7 +854,8 @@ def step_dump(cx):
             return 'dry', 'would use the dump %s%s' % (cx.dump, '' if fonts else (' and add the system fonts from the firmware' if cx.firmware
                                                                        else ' with the open-source fonts of runtime\\fonts_open'))
         cx.setup_args += ensure_fonts(cx, cx.dump)
-        return 'skip', 'using the dump %s' % cx.dump
+        whole = check_arc_whole(cx, cx.dump)
+        return 'skip', 'using the dump %s%s' % (cx.dump, '; ' + whole if whole else '')
     if not (cx.base and cx.update):
         return 'dry', 'would stop: no base game / update'
     ext = os.path.join(REPO, 'tools', 'extract')
@@ -776,7 +901,8 @@ def step_dump(cx):
         shutil.rmtree(env['SSBU_TMP'], ignore_errors=True)
     cx.dump = out
     cx.setup_args += ensure_fonts(cx, out)
-    return 'done', '%s made' % out
+    whole = check_arc_whole(cx, out)
+    return 'done', '%s made%s' % (out, '; ' + whole if whole else '')
 
 
 # ------------------------------------------------------------------------------------------------------ 6. tools

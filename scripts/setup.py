@@ -463,7 +463,22 @@ def step_deps(cx):
     if not llvm:
         raise Fail('LLVM/clang 9.0.0 not found (--llvm <folder with bin\\clang.exe>)')
     clang = os.path.join(llvm, 'bin', 'clang.exe')
-    ver = subprocess.run([clang, '--version'], capture_output=True, text=True).stdout.splitlines()[0]
+    if os.environ.get('SSBU_CLANG_PROBE', '1').strip() == '0':
+        ver = subprocess.run([clang, '--version'], capture_output=True, text=True).stdout.splitlines()[0]
+    else:
+        # (fix/arc-integrity-0278) SSBU_CLANG_PROBE (default 1; 0 = as 0.2.77): a clang.exe that starts but prints nothing (just
+        # unpacked and held by an antivirus scan or a cloud-synced folder such as OneDrive\Desktop) stopped the tools check with
+        # "IndexError: list index out of range" (a player's 0.2.77, 2026-11-27); now said as such
+        try:
+            r = subprocess.run([clang, '--version'], capture_output=True, text=True, errors='replace')
+            lines, code = (r.stdout or '').splitlines(), r.returncode
+        except OSError as e:
+            lines, code = [], str(e)
+        if not lines:
+            raise Fail('clang 9 (%s) did not run (exit code %s, no output): an antivirus may be checking or blocking it, or the '
+                       'install folder is a cloud-synced one (OneDrive) whose files are not on this PC yet. Allow the SSBU Arena folder '
+                       'in your antivirus (or install outside OneDrive), wait a minute, then press Resume' % (clang, code))
+        ver = lines[0]
     say('  clang: %s   [%s]' % (ver, clang))
     if 'version 9.' not in ver and 'version 8.' not in ver:
         say('  WARNING: the lifted code was only ever compiled with clang 8 and 9; %s is untested' % ver)

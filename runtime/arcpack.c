@@ -49,7 +49,17 @@ static void read_stats_add(uint64_t bytes, LONG64 qpc) {
     if (qpc * 1000 > 16 * f.QuadPart) InterlockedIncrement64(&g_rs_16ms);
     if (n % 500 == 0) read_stats_print();
 }
-/* the original data.arc was opened: remember the handle for SSBU_ARC_LOG (and SSBU_READ_STATS) */
+/* (fix/arc-integrity-0278) SSBU_ARC_EOF_STOP (default 1; 0 = as 0.2.77: the read fails, the game gets an error and goes on): a
+ * read of data.arc (the file, the light archive or the linked one) that goes past the archive's end is never one a whole data.arc
+ * gives the game: its tables named an offset that is not in the file, so data.arc is damaged inside (a player's 13.0.5 dump,
+ * 2026-11-26: "ReadFile of 16 bytes at offset 0x24fb9dea37a4db58" then a null crash at every start, with the header, the tables
+ * and the size right). The first such read stops the game with a clear message (nnfs.c arc_eof_check -> boot.c boot_data_fail). */
+static int g_arc_eof_stop = -1;
+static int arc_eof_stop_on(void) {
+    if (g_arc_eof_stop < 0) { const char *e = getenv("SSBU_ARC_EOF_STOP"); g_arc_eof_stop = !(e && e[0] == '0'); }
+    return g_arc_eof_stop;
+}
+/* the original data.arc was opened: remember the handle for SSBU_ARC_LOG (and SSBU_READ_STATS, SSBU_ARC_EOF_STOP) */
 static void arc_log_flush(void);
 static void arc_opened(HANDLE h, const char *path) {
     static int on = -1;
@@ -58,7 +68,7 @@ static void arc_opened(HANDLE h, const char *path) {
         on = e && e[0];
         if (on) { g_arc_log = fopen(e, "a"); if (!g_arc_log) on = 0; else { atexit(arc_log_flush); printf("arcpack: reads of data.arc are logged to %s\n", e); } }
     }
-    if (!(on || read_stats_on()) || !ends_with_i(path, "\\data.arc")) return;
+    if (!(on || read_stats_on() || arc_eof_stop_on()) || !ends_with_i(path, "\\data.arc")) return;
     AcquireSRWLockExclusive(&g_arcp_lock);
     for (int i = 0; i < 16; i++) if (!g_arc_handles[i]) { g_arc_handles[i] = h; break; }
     ReleaseSRWLockExclusive(&g_arcp_lock);

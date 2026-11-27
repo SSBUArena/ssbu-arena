@@ -287,6 +287,53 @@ class RomImage:
 
 
 # ---------------------------------------------------------------------------------------------------------- checks
+# (fix/arc-integrity-0278) SSBU_SHARED_MAIN_CHECK (default 1; 0 = as 0.2.77: main is copied unchecked): OpenSmash's dump\exefs\main
+# must be the game build's own executable before it is copied and lifted: the SHA-256 of its three segments (text, rodata, data:
+# the NSO header +0xA0, which the setup's convert step checks the unpacked segments against) are the build's. Hashes only
+# (nothing of the game), read from an installer-made 13.0.4 dump and from OpenSmash's own 13.0.5 dump (2026-11-27). A changed
+# main (a patched or modded executable, another dump tool's output) with the build's code size passed the size check of 0.2.77,
+# and the build then stopped at the link 16 minutes later ("undefined symbol: f_7102666d40", a player sharing from a
+# "WindowSmash-main" folder): now "not shared" at once, and the installer's own copy is made from the game files instead.
+MAIN_SEG_SHA256 = {
+    '13.0.4': ('21fe7c35925a32d6c0dd2a6c243f8d78e24b5e54fb28b3097a52e5adc9252c0b',
+               '1ac42ce4072e84588369e79bd42dddbed7246531cf52eb20a735d309b91a55fe',
+               '20de02d970df60974f3c5c5ef6f12f97851f2f2e848e1a1c9e228850b41c7d8b'),
+    '13.0.5': ('1c01b6214895586bc447ef1ed224971694981a7fdf3002845f9e901bec00986d',
+               '0c0839c001779af37d6784f8d5cbdff1bda6cd10b871e15e3ef4190e9d6e968f',
+               '983a1dce7ab5de8996f0325eccfc605cf0e2ba3ae8d4a72d531d379a38d83324'),
+}
+
+
+def main_check_on():
+    return os.environ.get('SSBU_SHARED_MAIN_CHECK', '1').strip() != '0' and strict()
+
+
+def main_not_vanilla(path, version):
+    """'' when exefs\\main is `version`'s own (MAIN_SEG_SHA256; a build without a reference: ''), else why not"""
+    want = MAIN_SEG_SHA256.get(version)
+    if not want or not main_check_on():
+        return ''
+    try:
+        with open(path, 'rb') as f:
+            h = f.read(0x100)
+    except OSError as e:
+        return '%s cannot be read (%s)' % (path, e)
+    got = tuple(h[0xa0 + 0x20 * i:0xc0 + 0x20 * i].hex() for i in range(3))
+    if h[:4] != b'NSO0' or got != want:
+        bad = [n for n, a, b in zip(('code', 'read-only data', 'data'), got, want) if a != b]
+        return ('its game executable %s is not %s\'s own (%s differ%s): a patched or modded executable, or one made by another '
+                'tool; not shared' % (path, version, ', '.join(bad) or 'header', 's' if len(bad) == 1 else ''))
+    return ''
+
+
+def part_unique():
+    """(fix/arc-integrity-0278) SSBU_SHARED_PART_UNIQUE (default 1; 0 = as 0.2.77: <out>.part): make() writes into a folder of its
+    own process (<out>.part_<pid>), so a second make at the same time (the launcher's relink, a second installer window) can no
+    longer empty or move it away during the 1-3 minute read of data.arc (a player's 0.2.77: "dump_shared.part\\shared_from.json"
+    not found after 187 s)"""
+    return os.environ.get('SSBU_SHARED_PART_UNIQUE', '1').strip() != '0'
+
+
 def nso_text_size(path):
     with open(path, 'rb') as f:
         h = f.read(0x20)
@@ -371,6 +418,9 @@ def _check(root):
     version = GAME_BUILDS.get(nso_text_size(os.path.join(exefs, 'main')))
     if not version:
         raise NotUsable('its game build is not one Arena handles (%s)' % ', '.join(sorted(GAME_BUILDS.values())))
+    why = main_not_vanilla(os.path.join(exefs, 'main'), version)
+    if why:
+        raise NotUsable(why)
     img = RomImage(root)
     try:
         files = list(img.walk())
@@ -424,6 +474,17 @@ def make(root, out, full=False, say=print):
         say('   OpenSmash could not confirm %d blocks of its game data: all of data.arc is checked' % info['unverified_blocks'])
         full = True
     part = out + '.part'
+    if part_unique():
+        part = '%s.part_%d' % (out, os.getpid())
+        parent, base = os.path.split(out)
+        for n in os.listdir(parent) if os.path.isdir(parent) else []:      # folders of earlier runs that stopped half-way
+            p = os.path.join(parent, n)
+            if (n == base + '.part' or n.startswith(base + '.part_')) and p != part and os.path.isdir(p):
+                try:
+                    if time.time() - os.path.getmtime(p) > 6 * 3600:
+                        shutil.rmtree(p, ignore_errors=True)
+                except OSError:
+                    pass
     if os.path.isdir(part):
         shutil.rmtree(part)
     os.makedirs(os.path.join(part, 'romfs', '.nrr'))
@@ -439,6 +500,10 @@ def make(root, out, full=False, say=print):
     finally:
         img.close()
     shutil.copytree(os.path.join(info['root'], 'dump', 'exefs'), os.path.join(part, 'exefs'))
+    why = main_not_vanilla(os.path.join(part, 'exefs', 'main'), info['version'])      # the copy as well (main_check_on)
+    if why:
+        shutil.rmtree(part, ignore_errors=True)
+        raise NotUsable('the copy: %s' % why)
     fonts_in, fonts_out = os.path.join(info['root'], 'dump', 'fonts'), os.path.join(part, 'sysdata', 'fonts')
     for n in info['fonts']:
         if n[:-6].lower() + '.ttf' not in ARENA_FONTS:
@@ -481,13 +546,29 @@ def make(root, out, full=False, say=print):
         if want and rec['sha256'] != want:
             shutil.rmtree(part, ignore_errors=True)
             raise NotUsable('its data.arc is not %s\'s (SHA-256 %s)' % (info['version'], rec['sha256']))
+    if part_unique() and not os.path.isfile(os.path.join(part, 'romfs', 'data.arcl')):
+        raise NotUsable('the folder %s was removed while data.arc was read (another program emptied it: an antivirus, a cleaner, '
+                        'or the install folder is synced or cleaned by Windows, as Downloads can be); press Install again' % part)
     with open(os.path.join(part, 'shared_from.json'), 'w', encoding='utf-8') as f:
         json.dump(rec, f, indent=1)
-    if os.path.isdir(out):
-        old = out + '.old_%d' % int(time.time())       # a link made before: kept aside (it has no game data; removed below)
-        os.replace(out, old)
-        shutil.rmtree(old, ignore_errors=True)
-    os.replace(part, out)
+    for k in range(3 if part_unique() else 1):         # (part_unique) a make that finished at the same moment: the last one wins
+        if os.path.isdir(out):
+            old = out + ('.old_%d_%d' % (int(time.time()), os.getpid()) if part_unique() else '.old_%d' % int(time.time()))  # a link made before: kept aside (no game data; removed below)
+            try:
+                os.replace(out, old)
+            except OSError:
+                if k == 2 or not part_unique():
+                    raise
+                time.sleep(1)
+                continue
+            shutil.rmtree(old, ignore_errors=True)
+        try:
+            os.replace(part, out)
+            break
+        except OSError:
+            if k == 2 or not part_unique():
+                raise
+            time.sleep(1)
     return rec
 
 
@@ -506,6 +587,9 @@ def status(dump):
     stamps = rec.get('stamps') or {}
     if strict() and (rec.get('checks') or 1) < CHECKS_VERSION:
         bad.append('the link was made without the content check of this Arena (it is checked and made again)')
+    why = main_not_vanilla(os.path.join(dump, 'exefs', 'main'), rec.get('version')) if rec.get('version') else ''
+    if why:                            # (SSBU_SHARED_MAIN_CHECK) a link made by 0.2.77 or before from a changed main: made again
+        bad.append(why)
     for p, st in stamps.items():
         try:
             if list(arc_file.file_stamp(p)) != list(st):

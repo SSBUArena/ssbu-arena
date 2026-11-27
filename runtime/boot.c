@@ -546,6 +546,8 @@ static void check_romfs(void) {
     }
     romfs_fail(msg);
 }
+/* (fix/arc-integrity-0278) the same stop from a game thread (nnfs.c: SSBU_ARC_EOF_STOP): the message on the console and in a box */
+void boot_data_fail(const char *msg) { fflush(stdout); romfs_fail(msg); }
 
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--write-dump")) { int diag_dump_helper(int, char **); return diag_dump_helper(argc, argv); }   /* hostrt.c: minidump of the crashed game, written from outside */
