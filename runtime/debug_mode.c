@@ -725,6 +725,26 @@ static uint64_t prof_ptr(uint32_t prof) {
     uint64_t p = q ? q + 0xf7d8ull * prof : 0;
     return p && rd8(p) ? p : def;
 }
+/* (0.2.78) SSBU_ARENA_MY_TAG=<entry 1..60> (the launcher's Settings > Controls "My name tag"; unset / empty = off, as 0.2.77): this
+ * game's own player plays with that name tag's controls without picking it on the character select (a name tag picked there wins).
+ *  - a local fight (no Local Wireless room, not the game's Online mode, no online match agreed): player 1's panel state + 0x214 = the
+ *    entry before the record builder, as the research hook SSBU_DEBUG_P1PROFILE did after it (the record's profile -> the controls
+ *    set-up 0x7101780440 copies its + 0x24 .. + 0x4e into the controls object [0x71052c40f0] + 0x18 + 0x50 * player);
+ *  - a rollback match of a room or of the Online mode (g_hs_lwr): the controls exchange sends this game's player's controls read from
+ *    that entry (lwr_own_controls -> rb_net.c rbn_room_layout) and BOTH games write both players' own bytes into the controls object
+ *    (controls_fill_hook): the same bytes on both PCs, so no desync; without the exchange both play the default controls, as before;
+ *  - any other online fight (the classic handshake match: no controls exchange there; a room or Online match played by the game's
+ *    own netcode): nothing is changed, the other PC would not know these controls.
+ * Controls are only the mapping of a pad's buttons to actions; the rollback exchanges pads, so the mapping must be the same on both
+ * games, which the three cases above keep. */
+static int mytag(void) {
+    static int v = -2;
+    if (v == -2) { const char *e = getenv("SSBU_ARENA_MY_TAG"); int n = e && *e ? atoi(e) : -1; v = n >= 1 && n < 0x3d ? n : -1;
+        if (v > 0) { printf("[mytag] my name tag: entry %d (SSBU_ARENA_MY_TAG): player 1's controls when no name tag is picked\n", v); fflush(stdout); } }
+    return v;
+}
+/* no name tag picked for this panel state: + 0x214 outside 1..60 (-1; 0 is the game's own unnamed entry) or an entry not in use */
+static int mytag_none_picked(uint64_t st) { uint32_t p = rd32(st + 0x214); return p == 0 || p >= 0x3d || prof_ptr(p) == GA(0x7105313518ULL); }
 /* (R3 lwr, owner 2026-10-22: each player plays with HIS OWN name-tag controls) the controls a match uses: the set-up
  * 0x7101780440 (after the records, from 0x710155ed20) copies, for each human player i, its profile's + 0x24 .. + 0x4e (record
  * + 0x40 = the profile) into the controls object [0x71052c40f0] + 0x18 + 0x50 * i, and binds the player to its controller slot
@@ -738,9 +758,11 @@ static uint8_t g_lwr_ctl[2][LWR_CTL + 2];      /* + LWR_CTL: the option byte; + 
 static void lwr_own_controls(uint64_t st, uint8_t out[LWR_CTL + 2]) {
     uint32_t prof = rd32(st + 0x214), slot = rd32(st + 0x210);
     uint64_t p = rd8(st + 0x450) && rd32(st + 0x78) == 0 ? prof_ptr(prof) : GA(0x7105313518ULL);
+    int mine = mytag() > 0 && rd32(st + 0x78) == 0 && mytag_none_picked(st) && prof_ptr((uint32_t)mytag()) != GA(0x7105313518ULL);      /* (0.2.78) */
+    if (mine) { p = prof_ptr((uint32_t)mytag()); printf("[mytag] online match: this game's player has no name tag picked (profile %d): its controls from my name tag, entry %d, sent to the other game\n", (int)prof, mytag()); fflush(stdout); }
     for (int k = 0; k < LWR_CTL; k++) out[k] = rd8(p + 0x24 + (uint64_t)k);
     uint8_t opt = 0;
-    if (rd8(st + 0x450) && rd32(st + 0x78) == 0) {
+    if ((rd8(st + 0x450) || mine) && rd32(st + 0x78) == 0) {
         uint64_t ctl = GA(0x7105338830ULL), h = sr64(GA(0x71053388b0ULL));
         if (slot < 10 && h && rd8(h + 8)) ctl = sr64(GA(0x7105338860ULL) + 8ull * slot);
         uint64_t sub = ctl ? sr64(ctl + 0x10) : 0; uint32_t kind = sub ? rd32(sub + 0x9c) : 0xffffffffu;
@@ -1141,6 +1163,16 @@ static void match_player_hook(Ctx *c, void *user) {
         if (g_hs_ok && g_hs_lwr) { wr8(st + 0x450, 1); wr8(st + 0x451, 0); wr32(st + 0x210, (uint32_t)idx); wr32(st + 0x214, 0xffffffffu);
             wr8(st + 0x454, 1); for (int k = 0; k < 11; k++) wr16(st + 0x54 + 2ull * k, g_tc_lay[idx][k]); }
     } else if (g_hs_wanted) hs_apply(st, idx, type_was);       /* R3: the match both online games agreed (rb_net.c handshake) */
+    uint64_t mytag_st = 0; uint32_t mytag_was = 0;          /* (0.2.78) the panel state's own value, given back after the record */
+    if (idx == 0 && mytag() > 0 && !g_tc_native) {         /* (0.2.78) my name tag in a local fight (see mytag) */
+        int nnldn_role(void), rbn_local_fight(void); uint8_t mm = rd8(MELEE_INFO);
+        const char *why = rd32(st + 0x78) != 0 ? "player 1 is not a human player" : !mytag_none_picked(st) ? "a name tag was picked on the character select"
+            : prof_ptr((uint32_t)mytag()) == GA(0x7105313518ULL) ? "that entry is not a name tag in the save" : nnldn_role() ? "a Local Wireless room's fight (the room's own controls)"
+            : mm == 13 || mm == 14 ? "the Online mode's fight" : g_hs_wanted && !rbn_local_fight() ? "an online match (its controls are agreed with the other game)" : NULL;
+        printf("[mytag] player 1's record (melee mode %u, profile %d, name-tag flag %u): %s%s\n", mm, (int)rd32(st + 0x214), rd8(st + 0x450), why ? "not changed: " : "", why ? why : "");
+        if (!why) { mytag_st = st; mytag_was = rd32(st + 0x214); wr32(st + 0x214, (uint32_t)mytag()); printf("[mytag] player 1 plays with my name tag, entry %d\n", mytag()); }
+        fflush(stdout);
+    }
     if (g_tc_native) g_sq_want = 0;                     /* (the game's own squad table: squad_build does not overwrite it) */
     {   /* (Battle Arena, game's squad) the room's Squad Strike (sequence 02020000): every player record of players 1 / 2 (the room's
          * match records and the squad's) gets the player number idx + 1 in panel state + 0xa4 (-> record + 0x258): the game gives each
@@ -1161,6 +1193,7 @@ static void match_player_hook(Ctx *c, void *user) {
         if (idx == 1 && g_sq_st[0] == g_sq_st[1]) { static int said; if (!said++) { printf("[squad] both players' records are built from one panel state object (%llx): each player's own copy is used\n", (unsigned long long)st); fflush(stdout); } }
     }
     g_orig_player_record(c);
+    if (mytag_st) wr32(mytag_st + 0x214, mytag_was);      /* (0.2.78) only this record (record + 0x40) takes my name tag: the state keeps no pick of ours */
     if (g_hs_wanted && g_hs_ok && !g_hs_local && g_hs_onlrb && idx >= 0 && idx < 2) g_onl_conv_ok[idx] = safe_read(rec, g_onl_conv[idx], sizeof g_onl_conv[idx]);      /* (A3) as built for the fight */
     if (g_hs_wanted && g_hs_ok && !g_hs_local && g_hs_onlrb && idx >= 0 && idx < 2 && g_onl_orig_ok[idx]) {
         /* (online-mm A3) the game's own record of this player, built by its own builder from the panel state as the game left it
@@ -2029,7 +2062,7 @@ void debug_mode_init(void) {
         g_p2none = e && atoi(e) > 0; int online_nex_on(void); g_autop2 = a && a[0] ? atoi(a) > 0 : g_hs_wanted ? (online_nex_on() ? 2 : 1) : 0;      /* (0.2.51) 2: only in a classic quick match (the fallback of SSBU_ONLINE_MM) */      /* (online-mm A2) not in the game's own Online select (SSBU_ONLINE_NEX=1): its panels are the game's */
         if (g_p2none || g_autop2) printf("debug match: hook on the select screen's table copy %llx: id %d (auto player 2 %s%s)\n", GA(0x710179e440ULL), hook_install(GA(0x710179e440ULL), panel_copy_hook, NULL, &g_orig_panel_copy),
                                          g_autop2 ? "on" : "off", g_p2none ? "; test: entry 1 copied as none" : ""); }
-    if (getenv("SSBU_DEBUG_MATCH") || g_dm_list || g_hs_wanted) {
+    if (getenv("SSBU_DEBUG_MATCH") || g_dm_list || g_hs_wanted || mytag() > 0) {      /* (0.2.78) my name tag */
         if (getenv("SSBU_DEBUG_MATCH")) parse_match(getenv("SSBU_DEBUG_MATCH"));
         printf("debug match: hook on the player record builder %llx: id %d\n", FN_PLAYER_RECORD, hook_install(FN_PLAYER_RECORD, match_player_hook, NULL, &g_orig_player_record));
         if (g_hs_wanted) printf("debug match: hook on the fight scene's clean-up: id %d\n", hook_install(GA(0x710134c690ULL), scene_clean_hook, NULL, &g_orig_scene_clean));

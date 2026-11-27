@@ -43,6 +43,7 @@ namespace Arena
             InitOpenSmash();
             InitBench();      // (0.2.58) Settings > Benchmark (MainWindow.Bench.cs)
             SpaceOut(this);
+            ControlsInit();      // (0.2.78) Settings > Controls (MainWindow.Controls.cs): before FillSettings, the pad buttons moved into it
             FillSettings();
             loading = false;
             RefreshPlayer();
@@ -373,6 +374,7 @@ namespace Arena
             FillPads();
             RefreshSaves();
             RefreshDlc();
+            ControlsFill();      // (0.2.78) the save's name tags, read again (also when the game ends)
         }
 
         /// <summary>fields -> Core</summary>
@@ -434,11 +436,11 @@ namespace Arena
             {
                 var sp = new StackPanel { Margin = new Thickness(0, 0, 18, 12) };
                 // (0.2.33) the game button and what it does in Smash's default controls
-                string act = PadDiagram.Action.TryGetValue(b.Item1, out var a) && a != "" ? "  ·  " + a : "";
+                string act = !Core.ControlsV2 && PadDiagram.Action.TryGetValue(b.Item1, out var a) && a != "" ? "  ·  " + a : "";      // (0.2.78) in the Controls page the name tag says what it does
                 sp.Children.Add(new TextBlock { Text = b.Item2 + act, FontSize = 15, Foreground = Res("Muted"), Margin = new Thickness(0, 0, 0, 4) });
                 var cb = new ComboBox { Tag = b.Item1, Width = 330, HorizontalAlignment = HorizontalAlignment.Left, ItemsSource = Core.PadSources.Select(x => x.Item2).ToList() };
                 cb.SelectedIndex = Math.Max(0, Core.PadSources.FindIndex(x => x.Item1 == (Core.Buttons.TryGetValue(b.Item1, out var v) ? v : "")));
-                cb.SelectionChanged += (s, e) => Field_Changed(s, e);
+                cb.SelectionChanged += (s, e) => { Field_Changed(s, e); PadAdvRefresh(); };      // (0.2.78) the Controls page's warning
                 btnBoxes.Add(cb);
                 sp.Children.Add(cb);
                 cells.Add(sp);
@@ -452,6 +454,7 @@ namespace Arena
             Core.Buttons = new Dictionary<string, string>(Core.DefaultButtons);
             FillButtons();
             SaveQuiet();
+            PadAdvRefresh();
             Status("Default buttons back", "good");
         }
 
@@ -593,10 +596,11 @@ namespace Arena
         void Section_Checked(object sender, RoutedEventArgs e)
         {
             if (BoxPlayer == null) return;
-            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecBench, BoxBench }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles }, { SecLauncher, BoxLauncher }, { SecHelp, BoxHelp } };
+            var map = new Dictionary<object, UIElement> { { SecPlayer, BoxPlayer }, { SecOnline, BoxOnline }, { SecReplays, BoxReplays }, { SecVideo, BoxVideo }, { SecBench, BoxBench }, { SecAudio, BoxAudio }, { SecPads, BoxPads }, { SecControls, BoxControls }, { SecSaves, BoxSaves }, { SecDlc, BoxDlc }, { SecFiles, BoxFiles }, { SecLauncher, BoxLauncher }, { SecHelp, BoxHelp } };
             foreach (var kv in map) kv.Value.Visibility = kv.Key == sender ? Visibility.Visible : Visibility.Collapsed;
             if (sender == SecPads && PageSettings.Visibility == Visibility.Visible) PadLiveStart(); else PadLiveStop();
             if (sender == SecBench) BenchShow();      // (0.2.58) MainWindow.Bench.cs
+            if (sender == SecControls) ControlsFill();      // (0.2.78) the save as it is now
         }
 
         void OpenSettings(RadioButton section)
@@ -632,7 +636,7 @@ namespace Arena
             else if (parts[0] == "error") ShowLauncherError("Object reference not set to an instance of an object.", LauncherCrash.LogPath, null);      // (0.2.73) the error window as it looks (screenshots: nothing sent)
             else if (parts[0] == "settings")
             {
-                var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "benchmark", SecBench }, { "controllers", SecPads }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles }, { "launcher", SecLauncher }, { "help", SecHelp } };
+                var secs = new Dictionary<string, RadioButton> { { "player", SecPlayer }, { "online", SecOnline }, { "replays", SecReplays }, { "video", SecVideo }, { "benchmark", SecBench }, { "controllers", SecPads }, { "controls", SecControls }, { "saves", SecSaves }, { "dlc", SecDlc }, { "files", SecFiles }, { "launcher", SecLauncher }, { "help", SecHelp } };
                 OpenSettings(parts.Length > 1 && secs.ContainsKey(parts[1]) ? secs[parts[1]] : SecPlayer);
             }
         }

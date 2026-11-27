@@ -114,6 +114,13 @@ namespace Arena
         public static Dictionary<string, string> Buttons = new Dictionary<string, string>(DefaultButtons);
         static readonly string[] PadTypes = { "xbox", "playstation", "switch", "generic" };
         public static string Player1 = "auto", Player2 = "auto";
+        // (0.2.78) Settings > Controls (MainWindow.Controls.cs): the game's own controls of the name tags in the save. SSBU_ARENA_CONTROLS_V2=0:
+        // the page is hidden (the Controllers page keeps the pad buttons, as 0.2.77) and no name tag is given to the game
+        public static bool ControlsV2 => Environment.GetEnvironmentVariable("SSBU_ARENA_CONTROLS_V2") != "0";
+        // (0.2.78) launcher.ini my_name_tag = <entry>:<name hash, hex> ("" = none): the name tag player 1 plays with without picking it
+        // on the character select (the game gets its entry as SSBU_ARENA_MY_TAG, runtime/my_tag.c). The hash (NameTags.cs) ties the
+        // setting to the tag's name: a tag deleted or renamed in the game since is not taken (the ini is ASCII: no name in it)
+        public static string MyNameTag = "";
 
         static string FindRepo()
         {
@@ -200,6 +207,7 @@ namespace Arena
             RecMatchmaking = Get(L, "replay_matchmaking") != "off"; RecLdn = Get(L, "replay_ldn") != "off"; RecArena = Get(L, "replay_arena") != "off";
             RecLocal = Get(L, "replay_local") != "off";
             ShaderStamp = Get(L, "shaders") ?? "";
+            MyNameTag = Regex.IsMatch(Get(L, "my_name_tag") ?? "", @"^\d{1,2}:[0-9a-f]{8}$") ? Get(L, "my_name_tag") : "";      // (0.2.78)
             OpenSmashPath = string.IsNullOrWhiteSpace(Get(L, "opensmash_path")) ? null : Get(L, "opensmash_path").Trim();
             SharedData = (Get(L, "shared_data") ?? "").Trim().ToLowerInvariant();
             if (SharedData != "on" && SharedData != "off") SharedData = "";
@@ -356,6 +364,7 @@ namespace Arena
                 "server = " + Server.Trim(), Regions.IniServer != null ? "online_server = " + Regions.IniServer : "# online_server = host:port   (a server set by hand: wins over the region)", "ping = " + (Ping ? "on" : "off"), OpenSmashPath != null ? "opensmash_path = " + OpenSmashPath : "# opensmash_path = <folder>   (OpenSmash Ultimate's folder or launcher exe, when the OpenSmash tab does not find it)", "shaders = " + ShaderStamp, "input_delay = " + (InputDelay == 0 ? "automatic" : InputDelay.ToString()), delayAutoDone ? "input_delay_auto = done" : "# input_delay_auto = done   (0.2.68: the old default 2 was moved to Auto once)", "crash_reports = " + (CrashReports ? "on" : "off"), "close_to_tray = " + (CloseToTray ? "on" : "off"), "complete_save = " + (CompleteSave ? "on" : "off"), "complete_save_choice = " + (CompleteSaveChosen ? "1" : "0"), "shader_load = " + new[] { "auto", "start", "loading" }[ShaderLoad], "stage_bg = " + new[] { "original", "off", "custom" }[StageBg],
                 "replay_matchmaking = " + (RecMatchmaking ? "on" : "off"), "replay_ldn = " + (RecLdn ? "on" : "off"), "replay_arena = " + (RecArena ? "on" : "off"),
                 "replay_local = " + (RecLocal ? "on" : "off"),
+                MyNameTag != "" ? "my_name_tag = " + MyNameTag : "# my_name_tag = <entry>:<name hash>   (Settings > Controls: the name tag player 1 plays with)",
                 SharedData != "" ? "shared_data = " + SharedData : "# shared_data = on | off   (OpenSmash Ultimate's game files instead of a copy of Arena's own; asked once)",
                 SharedOldCopy != "" ? "shared_old_copy = " + SharedOldCopy : "# shared_old_copy = keep   (Arena's old copy in build\\dump is kept: not asked again)" }, Encoding.ASCII);
             var gfx = GfxValues();
@@ -653,6 +662,29 @@ namespace Arena
             string u = UidFromName(name.Trim());
             return "ARENA#" + (Convert.ToUInt32(u.Substring(0, 8), 16) % 10000).ToString("0000");
         }
+
+        /// <summary>(0.2.78) the save's entry of the player's own name tag (launcher.ini my_name_tag), -1 = none; why: the reason it is
+        /// not used, for the log. The entry must be in use with the same name (hash) as when it was chosen; a tag moved to another
+        /// entry in the game is found by its name too.</summary>
+        public static int MyTagSlot(out string why)
+        {
+            why = null;
+            if (!ControlsV2) { why = MyNameTag != "" ? "SSBU_ARENA_CONTROLS_V2=0" : null; return -1; }
+            if (MyNameTag == "") return -1;
+            try
+            {
+                var parts = MyNameTag.Split(':');
+                int slot = int.Parse(parts[0]); uint hash = Convert.ToUInt32(parts[1], 16);
+                var tags = NameTagFile.Read(Saves).Named();
+                var t = tags.FirstOrDefault(x => x.Slot == slot && NameTagSave.NameHash(x.Name) == hash) ?? tags.FirstOrDefault(x => NameTagSave.NameHash(x.Name) == hash);
+                if (t == null) { why = "that name tag is not in the save any more"; return -1; }
+                return t.Slot;
+            }
+            catch (Exception e) { why = e.Message; return -1; }
+        }
+
+        /// <summary>(0.2.78) the setting's value for a name tag of the save</summary>
+        public static string MyTagValue(NameTag t) => t == null ? "" : t.Slot + ":" + NameTagSave.NameHash(t.Name).ToString("x8");
 
         public static bool GameRunning()
         {
@@ -1020,7 +1052,7 @@ namespace Arena
         internal static void GameEnv(System.Collections.Specialized.StringDictionary env)      // (0.2.58: internal, Bench.cs)
         {
             foreach (var v in new[] { "SSBU_ONLINE", "SSBU_ONLINE_CODE", "SSBU_ONLINE_NAME", "SSBU_ONLINE_DIRECT", "SSBU_NICKNAME", "SSBU_RB_NET", "SSBU_R1_GAMEDLL", "SSBU_NRO_BIN", "SSBU_NET_PING", "SSBU_COMPETITIVE_UI",
-                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_REGION_AUTO", "SSBU_ONLINE_TICKET", "SSBU_ONLINE_TICKET_FILE", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG", "SSBU_MENU", "SSBU_ARENA_MENU_WHY", "SSBU_MASTERY_FILE" })
+                                      "SSBU_PREPARE_ONLY", "SSBU_SHOW", "SSBU_ONLINE_REGION_AUTO", "SSBU_ONLINE_TICKET", "SSBU_ONLINE_TICKET_FILE", "SSBU_RB_NET_DELAY", "SSBU_STAGE_BG", "SSBU_MENU", "SSBU_ARENA_MENU_WHY", "SSBU_MASTERY_FILE", "SSBU_ARENA_MY_TAG" })
                 env.Remove(v);
             env["SSBU_ROMFS"] = RomFS ?? "";
             env["SSBU_LAUNCHER"] = Updater.Current.ToString(3);      // (0.2.50) the game logs whether the launcher started it (runtime/competitive.c)
@@ -1081,6 +1113,9 @@ namespace Arena
             var psi = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe")) { WorkingDirectory = Work, UseShellExecute = false, CreateNoWindow = true };
             var env = psi.EnvironmentVariables;
             GameEnv(env);
+            {   int tag = MyTagSlot(out string why);      // (0.2.78) the player's own name tag (runtime/my_tag.c); "" / unset = off
+                if (tag > 0) env["SSBU_ARENA_MY_TAG"] = tag.ToString();
+                Updater.Log("PLAY: my name tag " + (tag > 0 ? "entry " + tag : "off") + (why != null ? " (" + why + ")" : "")); }
             env["SSBU_SHOW"] = "1";          // the window, whatever the exe is called (display.c shows it by default only for some names)
             string run = Exe;
             // online through the lobby server (runtime/net_relay.c), relay only; rollback (runtime/rb_net.c) in Smash > Versus
