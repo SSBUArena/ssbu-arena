@@ -54,15 +54,20 @@ namespace Arena
                 if (!preview) { p.DeadZone = D(10, Core.DeadZone); p.OuterZone = D(16, Core.OuterZone); p.TriggerThreshold = D(17, Core.TriggerThreshold); }
                 if (int.TryParse(Environment.GetEnvironmentVariable("SSBU_ARENA_PAD_KIND"), out int fk) && fk >= 0 && fk <= 5) p.Kind = fk;      // (screenshots) another kind's drawing
                 p.Map = Core.Buttons;
+                p.Acts = p.Kind != 3 && c3PadActs != null ? c3PadActs : PadDiagram.Action;      // (0.2.78, v3) player 1's controls, as the page above shows them
                 Name = c[2]; Seen = DateTime.Now;
                 p.InvalidateVisual();
             }
         }
 
         // ---------------------------------------------------------------- the test process
+        /// <summary>the page that shows the pads is open: the Controllers tab, or (v3) the Controls tab</summary>
+        bool PadPageShown() => PageSettings.Visibility == Visibility.Visible && (SecPads.IsChecked == true || (Core.ControlsV3 && SecControls.IsChecked == true));
+
         void PadLiveStart()
         {
             RefreshPads();
+            if (PadFakeStart()) { PadLiveNote.Text = "Live (test pads)"; return; }      // (test aid, MainWindow.ControlsV3.cs)
             if (padLive != null || game != null || prep != null || updating != null || !File.Exists(Core.Exe) || Core.GameRunning())
             {
                 if (padLive == null) PadLiveNote.Text = !File.Exists(Core.Exe) ? "The live view needs the game installed." : prep != null || updating != null ? "Live view after the shaders or the update." : "Live view while the game is closed.";
@@ -72,7 +77,7 @@ namespace Arena
                 {
                     padRetry = true;
                     var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
-                    t.Tick += (s, e) => { t.Stop(); padRetry = false; if (PageSettings.Visibility == Visibility.Visible && SecPads.IsChecked == true && padLive == null) PadLiveStart(); };
+                    t.Tick += (s, e) => { t.Stop(); padRetry = false; if (PadPageShown() && padLive == null) PadLiveStart(); };
                     t.Start();
                 }
                 return;
@@ -105,6 +110,7 @@ namespace Arena
         {
             var p = padLive; padLive = null;
             padTick?.Stop();
+            if (padFake != null) { PadFakeStop(); padViews.Clear(); PadLiveList.Children.Clear(); }
             if (p == null) return;
             try { p.StandardInput.Close(); if (!p.WaitForExit(300)) { p.Kill(); p.WaitForExit(1000); } } catch { }      // (gone before a new test starts: Core.GameRunning counts it)
             padViews.Clear(); PadLiveList.Children.Clear();
@@ -112,7 +118,7 @@ namespace Arena
 
         void PadLiveLine(string line)
         {
-            if (padLive == null) return;
+            if (padLive == null && padFake == null) return;
             var c = line.Split('\t');
             if (c.Length < 11) return;
             if (!int.TryParse(c[1], out int player) || !ulong.TryParse(c[3], out ulong _)) return;
@@ -120,6 +126,7 @@ namespace Arena
             if (fresh) padViews[player] = v = new PadView();
             v.Update(c, DateTime.Now < padPreviewUntil);
             if (fresh) RefreshPads();
+            if (Core.ControlsV3) C3OnLine(player, c);      // (v3) press to bind, the rows of what is pressed
         }
 
         // ---------------------------------------------------------------- the cards and the drawn controller
@@ -184,6 +191,7 @@ namespace Arena
             foreach (var d in PadLiveList.Children.OfType<PadDiagram>()) d.Height = PadStage.Height;
             if (RumbleTest != null) RumbleTest.IsEnabled = PadOn(padSel);
             if (padLive != null && DateTime.Now > padNoteUntil) PadLiveNote.Text = padViews.Count == 0 ? "Waiting for a controller..." : "Live: press buttons, move the sticks";
+            if (Core.ControlsV3) C3PadsChanged();      // (v3) a pad came or went
         }
 
         /// <summary>the keyboard's keys (controllers.ini [keyboard], else the game's defaults) by what they do in Smash</summary>

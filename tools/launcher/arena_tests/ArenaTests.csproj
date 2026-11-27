@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- (0.2.78) tests of the launcher's save code (NameTags.cs) without a test framework (nothing to download):
+         dotnet run -c Release -project tools/launcher/arena_tests
+       Exit code 0 = every test passed. Python parity: the same edits made by tools/save/save_tool.py must give the same bytes
+       (python on PATH, or SSBU_PYTHON=<python.exe>). SSBU_SAVE_SAMPLES=<folder>: copies of real saves (kept OUTSIDE the
+       repo; the tests work on copies in a temporary folder and check that the originals did not change). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>ArenaTests</AssemblyName>
+    <RootNamespace>Arena.Tests</RootNamespace>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\arena\NameTags.cs" Link="NameTags.cs" />
+    <Compile Include="..\arena\ControlBindings.cs" Link="ControlBindings.cs" />
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+</Project>

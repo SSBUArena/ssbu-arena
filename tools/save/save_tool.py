@@ -6,6 +6,7 @@ controls of the name tags (control profiles). Study / launcher-side tool; it hol
     python tools/save/save_tool.py profiles  <system_data.bin> [--all]
     python tools/save/save_tool.py set-rule  <system_data.bin> --section smash --slot N --json <file|-> [--out <file>]
     python tools/save/save_tool.py set-profile <system_data.bin> --slot N --json <file|-> [--out <file>]
+    python tools/save/save_tool.py delete-profile <system_data.bin> --slot N [--out <file>]   (as the game leaves a deleted tag)
     python tools/save/save_tool.py roundtrip <system_data.bin>       (decode + encode everything: must be byte-identical)
 
 The format (13.0.2 / 13.0.4 / 13.0.5 alike) is described in save_research/SAVE_FORMAT.txt, which this file follows:
@@ -95,6 +96,7 @@ CONTROLLERS = [   # (name, first byte, buttons); then 4 option bytes each
     ('pro', 0x33, ['L', 'R', 'ZL', 'ZR', 'DPAD_UP', 'DPAD_SIDE', 'DPAD_DOWN', 'A', 'B', 'R_STICK', 'X', 'Y']),
     ('joycon', 0x43, ['JC1', 'JC2', 'JC3', 'JC4', 'JC5', 'JC6', 'JC7', 'JC8']),
 ]
+DEFAULT_CONTROLS = bytes.fromhex('0303040a0b0c000105020201010101040403030a0b0c0001050202010101010d0d04030200020101010101')   # the game's defaults
 OPTIONS = ['opt0', 'opt1', 'opt2', 'opt3']   # opt0 is the byte the fight record takes (record + 0x48); see SAVE_FORMAT.txt
 
 
@@ -369,6 +371,16 @@ class Save:
             struct.pack_into('<I', d, o + 0x54, n)
         return done
 
+    def delete_profile(self, slot):
+        """a name tag removed as the game leaves one it deleted (seen in the samples: the whole entry zero, name hash 0, the
+        default controls, its records gone); the change counter + 1. Entry 0 (the game's own unnamed one) is refused."""
+        if slot < 1:
+            raise SaveError("entry 0 is the game's own unnamed one: not deleted")
+        o = self.profile_offset(slot)
+        self.d[o:o + PROFILE_SIZE] = bytes(PROFILE_SIZE)
+        self.d[o + CTL[0]:o + CTL[1]] = DEFAULT_CONTROLS
+        self.bump_counter()
+
     @staticmethod
     def _int(v, lo, hi, what):
         if isinstance(v, bool) or not isinstance(v, int):
@@ -413,7 +425,7 @@ def read_json(arg):
 def main(argv=None):
     ap = argparse.ArgumentParser(description='SSBU system save: rule sets and name-tag controls')
     sub = ap.add_subparsers(dest='cmd', required=True)
-    for c in ('info', 'rules', 'profiles', 'roundtrip', 'set-rule', 'set-profile'):
+    for c in ('info', 'rules', 'profiles', 'roundtrip', 'set-rule', 'set-profile', 'delete-profile'):
         p = sub.add_parser(c)
         p.add_argument('save')
         if c in ('rules', 'profiles'):
@@ -427,6 +439,9 @@ def main(argv=None):
             p.add_argument('--no-touch', action='store_true', help='leave the change counter and modified number as they are')
         if c == 'set-rule':
             p.add_argument('--section', choices=list(RULE_SECTIONS), required=True)
+        if c == 'delete-profile':
+            p.add_argument('--slot', type=int, required=True)
+            p.add_argument('--out', help='write here instead of in place')
     a = ap.parse_args(argv)
     try:
         s = Save.load(a.save)
@@ -451,6 +466,9 @@ def main(argv=None):
         elif a.cmd == 'set-profile':
             done = s.set_profile(a.slot, read_json(a.json), touch=not a.no_touch)
             print('name tag %d: %s -> %s' % (a.slot, ', '.join(done) or 'nothing', write_file(a.save, bytes(s.d), a.out)))
+        elif a.cmd == 'delete-profile':
+            s.delete_profile(a.slot)
+            print('name tag %d: deleted -> %s' % (a.slot, write_file(a.save, bytes(s.d), a.out)))
     except (SaveError, OSError, ValueError) as e:
         print('save_tool: %s' % e, file=sys.stderr)
         return 2

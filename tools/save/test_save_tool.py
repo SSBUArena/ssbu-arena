@@ -155,6 +155,20 @@ class ProfileTest(unittest.TestCase):
     def test_roundtrip(self):
         self.assertEqual(bytes(self.s.roundtrip().d), bytes(self.s.d))
 
+    def test_delete_as_the_game(self):
+        o = self.s.profile_offset(1)
+        self.s.d[o + 0x100] = 7                                # a record byte: goes with the tag
+        self.s.set_profile(1, {'pro': {'buttons': {'B': 'jump'}}})
+        n = self.s.counter
+        self.s.delete_profile(1)
+        self.assertEqual(self.s.counter, n + 1)
+        e = bytes(self.s.d[o:o + st.PROFILE_SIZE])
+        self.assertEqual(e[0x24:0x4f], st.DEFAULT_CONTROLS)
+        self.assertEqual(e[:0x24] + e[0x4f:], bytes(st.PROFILE_SIZE - 0x2b))
+        self.assertEqual(self.s.profiles(), [])
+        with self.assertRaises(st.SaveError):
+            self.s.delete_profile(0)
+
 
 class CliTest(unittest.TestCase):
     def test_in_place_keeps_a_copy(self):

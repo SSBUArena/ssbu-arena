@@ -893,6 +893,7 @@
               <RadioButton x:Name="SecBench" Style="{StaticResource SideTab}" Content="Benchmark" Checked="Section_Checked"/>
               <RadioButton x:Name="SecAudio" Style="{StaticResource SideTab}" Content="Audio" Checked="Section_Checked"/>
               <RadioButton x:Name="SecPads" Style="{StaticResource SideTab}" Content="Controllers" Checked="Section_Checked"/>
+              <RadioButton x:Name="SecControls" Style="{StaticResource SideTab}" Content="Controls" Checked="Section_Checked"/>
               <RadioButton x:Name="SecSaves" Style="{StaticResource SideTab}" Content="Saves" Checked="Section_Checked"/>
               <RadioButton x:Name="SecDlc" Style="{StaticResource SideTab}" Content="DLC" Checked="Section_Checked"/>
               <RadioButton x:Name="SecFiles" Style="{StaticResource SideTab}" Content="Game files" Checked="Section_Checked"/>
@@ -1251,7 +1252,7 @@
                   <Button Grid.Column="1" Style="{StaticResource Outline}" Height="40" Padding="18,0" VerticalAlignment="Center" Click="FindPads_Click" FontSize="15"
                           ToolTip="Looks again for connected controllers (USB, Bluetooth, GameCube adapter). A controller you connect while this page is open also appears by itself.">Find controllers</Button>
                 </Grid>
-                <UniformGrid Columns="3" Margin="0,12,0,0">
+                <UniformGrid x:Name="PadPlayersBlock" Columns="3" Margin="0,12,0,0">
                   <Border x:Name="P1Card" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1.5" CornerRadius="8" Padding="14,9" Margin="0,0,10,0" Cursor="Hand" MouseLeftButtonDown="PadCard_Click" Tag="1"
                           ToolTip="Player 1's controller. Click the card to see it below.">
                     <StackPanel>
@@ -1288,7 +1289,7 @@
                   </Border>
                 </UniformGrid>
                 <!-- the selected player's controller, big and live; the keyboard's keys when the keyboard is that player's; what to do without one -->
-                <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="16,8,16,6" Margin="0,10,0,0">
+                <Border x:Name="PadStageBlock" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="16,8,16,6" Margin="0,10,0,0">
                   <StackPanel>
                     <DockPanel>
                       <TextBlock DockPanel.Dock="Right" Style="{StaticResource Small}" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{StaticResource Accent}" Cursor="Help" Text="ⓘ What the drawing shows"
@@ -1310,7 +1311,7 @@
                   </StackPanel>
                 </Border>
                 <!-- the settings the drawing shows: dragging a slider moves its ring or mark on the drawing at once -->
-                <UniformGrid Columns="2" Margin="0,14,0,0">
+                <UniformGrid x:Name="PadSettingsBlock" Columns="2" Margin="0,14,0,0">
                   <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="18,14" Margin="0,0,7,0">
                     <StackPanel>
                       <TextBlock Text="STICKS" Style="{StaticResource FieldLabel}" Margin="0,0,0,8" Foreground="{StaticResource Accent}"/>
@@ -1360,19 +1361,143 @@
                     </StackPanel>
                   </Border>
                 </UniformGrid>
-                <DockPanel Margin="0,12,0,0">
+                <DockPanel x:Name="PadSettingsReset" Margin="0,12,0,0">
                   <Button DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="38" Padding="16,0" FontSize="15" Click="PadReset_Click"
                           ToolTip="Dead zone 10 %, outer zone 98 %, triggers 33 %, vibration on at 100 %, no inverted stick. The buttons below have their own reset.">Reset to defaults</Button>
                   <TextBlock Style="{StaticResource Small}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"
                              Text="For every controller, on this PC only. Changes apply in the game within a second, also while it runs."/>
                 </DockPanel>
-                <TextBlock Text="BUTTONS" Style="{StaticResource FieldLabel}" Margin="0,30,0,6"/>
-                <TextBlock Style="{StaticResource Small}" Margin="0,0,0,14" TextWrapping="Wrap"
+                <!-- (0.2.78) the physical button swaps: moved as they are into the Controls page's "Advanced: pad buttons" box (MainWindow.Controls.cs);
+                     here with SSBU_ARENA_CONTROLS_V2=0 -->
+                <StackPanel x:Name="PadButtonsBlock">
+                <TextBlock x:Name="PadButtonsTitle" Text="BUTTONS" Style="{StaticResource FieldLabel}" Margin="0,30,0,6"/>
+                <TextBlock x:Name="PadButtonsHelp" Style="{StaticResource Small}" Margin="0,0,0,14" TextWrapping="Wrap"
                            Text="Which button of your controller presses each button of the game (Xbox, PlayStation and other controllers). Smash's own Options > Controls can still change what each button does."/>
                 <ItemsControl x:Name="BtnMap">
                   <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="2"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                 </ItemsControl>
                 <Button Style="{StaticResource Outline}" Height="42" HorizontalAlignment="Left" Margin="0,16,0,0" Click="BtnReset_Click" FontSize="16">Back to the default buttons</Button>
+                </StackPanel>
+              </StackPanel>
+
+              <!-- (0.2.78) controls: the game's own controls of the name tags in the save (NameTags.cs, MainWindow.Controls.cs), the player's
+                   "My name tag" (SSBU_ARENA_MY_TAG, runtime/my_tag.c) and the old pad button swaps; SSBU_ARENA_CONTROLS_V2=0: hidden -->
+              <StackPanel x:Name="BoxControls" Visibility="Collapsed">
+                <TextBlock Text="CONTROLS" Style="{StaticResource SectionTitle}"/>
+                <TextBlock Style="{StaticResource Small}" FontSize="16" Margin="0,4,0,0" TextWrapping="Wrap" MaxWidth="840" HorizontalAlignment="Left"
+                           Text="What each button does in a fight. These are the game's own controls, kept in your save for each name tag: the same ones you see in the game's Options › Controls."/>
+                <Border x:Name="CtlNotice" Visibility="Collapsed" Background="#1AFFC857" BorderBrush="{StaticResource Warn}" BorderThickness="1" CornerRadius="6" Padding="14,9" Margin="0,14,0,0">
+                  <TextBlock x:Name="CtlNoticeText" FontSize="15" TextWrapping="Wrap" Foreground="{StaticResource Text}"/>
+                </Border>
+                <Grid x:Name="CtlEditor" Margin="0,16,0,0">
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="236"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                  <!-- the save's name tags -->
+                  <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="10,12" VerticalAlignment="Top">
+                    <StackPanel>
+                      <TextBlock Text="NAME TAGS" Style="{StaticResource FieldLabel}" Margin="8,0,0,8" Foreground="{StaticResource Accent}"/>
+                      <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="300">
+                        <StackPanel x:Name="CtlTagList"/>
+                      </ScrollViewer>
+                      <UniformGrid Columns="2" Margin="0,10,0,0">
+                        <Button x:Name="CtlRename" Style="{StaticResource Outline}" Height="36" Padding="8,0" Margin="0,0,4,0" FontSize="14" Click="CtlRename_Click">Rename</Button>
+                        <Button x:Name="CtlDelete" Style="{StaticResource Outline}" Height="36" Padding="8,0" Margin="4,0,0,0" FontSize="14" Click="CtlDelete_Click">Delete</Button>
+                      </UniformGrid>
+                      <Button x:Name="CtlNew" Style="{StaticResource Primary}" Height="40" Margin="0,8,0,0" Click="CtlNew_Click" ToolTip="A new name tag in the save, with the game's default controls.">
+                        <TextBlock Text="New name tag" FontSize="15" FontWeight="SemiBold" Margin="14,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                      </Button>
+                    </StackPanel>
+                  </Border>
+                  <!-- the chosen name tag's controls -->
+                  <Border Grid.Column="2" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="18,12,18,14">
+                    <StackPanel>
+                      <DockPanel>
+                        <Button x:Name="CtlReset" DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="34" Padding="12,0" FontSize="14" VerticalAlignment="Center" Click="CtlReset_Click">Reset to game defaults</Button>
+                        <TextBlock x:Name="CtlTitle" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="No name tag"/>
+                      </DockPanel>
+                      <TextBlock x:Name="CtlSub" Style="{StaticResource Small}" FontSize="14" Margin="0,2,0,10" TextWrapping="Wrap"/>
+                      <Border Background="{StaticResource Field}" CornerRadius="6" Padding="3" HorizontalAlignment="Left">
+                        <StackPanel x:Name="CtlKinds" Orientation="Horizontal"/>
+                      </Border>
+                      <TextBlock x:Name="CtlKindHelp" Style="{StaticResource Small}" FontSize="13" Margin="2,8,0,10" TextWrapping="Wrap"/>
+                      <ItemsControl x:Name="CtlButtons">
+                        <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="3"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                      </ItemsControl>
+                      <TextBlock Style="{StaticResource Small}" FontSize="13" Margin="2,4,0,0" TextWrapping="Wrap"
+                                 Text="Its other settings (such as stick jump and rumble) are kept as they are: change them in the game's Options › Controls."/>
+                    </StackPanel>
+                  </Border>
+                </Grid>
+                <TextBlock x:Name="MyTagTitle" Text="MY NAME TAG" Style="{StaticResource FieldLabel}" Margin="0,26,0,6"/>
+                <ComboBox x:Name="MyTagBox" Width="420" HorizontalAlignment="Left" SelectionChanged="MyTag_Changed"/>
+                <TextBlock x:Name="MyTagHelp" Style="{StaticResource Small}" FontSize="14" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="840" HorizontalAlignment="Left"
+                           Text="Player 1 plays with this name tag's controls in every match, online ones too, without picking it on the character select (a name tag picked there wins). Online, the other player's game plays you with them as well."/>
+                <Border x:Name="PadAdvBox" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="18,14" Margin="0,28,0,0">
+                  <StackPanel>
+                    <TextBlock x:Name="PadAdvTitle" Text="ADVANCED: PAD BUTTONS" Style="{StaticResource FieldLabel}" Margin="0,0,0,6"/>
+                    <TextBlock Style="{StaticResource Small}" FontSize="14" Margin="0,0,0,10" TextWrapping="Wrap"
+                               Text="This box does not change the game's controls: it only swaps which button of a PC controller (Xbox, PlayStation and others, not GameCube adapters) presses each Switch button, for every name tag, before the name tag's controls above apply."/>
+                    <TextBlock x:Name="PadAdvWarn" FontSize="14" Margin="0,0,0,10" TextWrapping="Wrap" Foreground="{StaticResource Warn}" Visibility="Collapsed"
+                               Text="Some buttons are swapped here: on those controllers the buttons are not where the name tag's controls say."/>
+                    <ContentControl x:Name="PadAdvancedHost"/>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+
+              <!-- (0.2.78, Controls v3) one Controls section (MainWindow.ControlsV3.cs, ControlBindings.cs): the controllers found and the
+                   keyboard, then the game's actions: click one, press the button. Advanced: the Controllers tab's settings, players and live
+                   view, the name tags and the pad buttons, moved here at the start. SSBU_ARENA_CONTROLS_V3=0: hidden (the two tabs of v2) -->
+              <StackPanel x:Name="BoxControls3" Visibility="Collapsed" Width="800" HorizontalAlignment="Left">
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <StackPanel>
+                    <TextBlock Text="CONTROLS" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Style="{StaticResource Small}" FontSize="17" Margin="0,4,0,0" Foreground="{StaticResource Text}" Text="Click an action, then press the button you want for it."/>
+                  </StackPanel>
+                  <Button Grid.Column="1" Style="{StaticResource Outline}" Height="38" Padding="16,0" VerticalAlignment="Center" FontSize="15" Click="FindPads_Click"
+                          ToolTip="Looks again for connected controllers (USB, Bluetooth, GameCube adapter). A controller you connect while this page is open also appears by itself.">Find controllers</Button>
+                </Grid>
+                <Border x:Name="C3Notice" Visibility="Collapsed" Background="#1AFFC857" BorderBrush="{StaticResource Warn}" BorderThickness="1" CornerRadius="6" Padding="14,10" Margin="0,16,0,0">
+                  <DockPanel>
+                    <Path Data="{StaticResource IcoLock}" Stroke="{StaticResource Warn}" StrokeThickness="1.8" Stretch="Uniform" Width="18" Height="18" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="C3NoticeText" FontSize="15" TextWrapping="Wrap" Foreground="{StaticResource Text}" VerticalAlignment="Center"/>
+                  </DockPanel>
+                </Border>
+                <UniformGrid x:Name="C3Pads" Margin="0,18,-10,0"/>
+                <Border x:Name="C3Main" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="10" Padding="22,16,22,14" Margin="0,4,0,0">
+                  <StackPanel>
+                    <DockPanel Margin="0,0,0,14">
+                      <Button x:Name="C3Reset" DockPanel.Dock="Right" Style="{StaticResource Outline}" Height="36" Padding="14,0" FontSize="15" VerticalAlignment="Center" Click="C3Reset_Click"
+                              ToolTip="Every action of this controller back to the game's default buttons.">Reset to default</Button>
+                      <Path x:Name="C3Icon" Width="42" Height="30" Fill="{StaticResource Accent}" Stretch="Uniform" Margin="0,0,16,0" VerticalAlignment="Center"/>
+                      <StackPanel VerticalAlignment="Center">
+                        <TextBlock x:Name="C3Title" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock x:Name="C3Sub" Style="{StaticResource Small}" FontSize="14" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                      </StackPanel>
+                    </DockPanel>
+                    <StackPanel x:Name="C3Rows"/>
+                    <TextBlock x:Name="C3Foot" Style="{StaticResource Small}" FontSize="13" Margin="2,8,0,0"/>
+                  </StackPanel>
+                </Border>
+                <Button Style="{StaticResource Link}" HorizontalAlignment="Left" Margin="2,22,0,0" Click="C3Adv_Click">
+                  <StackPanel Orientation="Horizontal">
+                    <Path x:Name="C3AdvChevron" Data="{StaticResource IcoChevron}" Style="{StaticResource Ico}" Width="14" Height="14" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+                      <Path.RenderTransform><RotateTransform x:Name="C3AdvTurn" Angle="-90"/></Path.RenderTransform>
+                    </Path>
+                    <TextBlock Text="Advanced" Margin="8,0,0,0" FontSize="16" VerticalAlignment="Center" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                    <TextBlock Text="sticks, vibration, players, name tags, pad buttons" Margin="12,1,0,0" FontSize="14" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                  </StackPanel>
+                </Button>
+                <StackPanel x:Name="C3Adv" Visibility="Collapsed" Margin="0,10,0,0">
+                  <TextBlock Text="STICKS, TRIGGERS AND VIBRATION" Style="{StaticResource FieldLabel}" Margin="0,8,0,0" Foreground="{StaticResource Accent}"/>
+                  <StackPanel x:Name="C3AdvSticks"/>
+                  <TextBlock Text="PLAYERS" Style="{StaticResource FieldLabel}" Margin="0,30,0,0" Foreground="{StaticResource Accent}"/>
+                  <TextBlock x:Name="C3PlayersHelp" Style="{StaticResource Small}" Margin="0,0,0,0" Text="Which controller plays as player 1 and player 2, and the keyboard's player. Below: the chosen player's controller, live."/>
+                  <StackPanel x:Name="C3AdvPlayers"/>
+                  <TextBlock Text="NAME TAGS" Style="{StaticResource FieldLabel}" Margin="0,30,0,0" Foreground="{StaticResource Accent}"/>
+                  <TextBlock x:Name="C3TagInfo" Style="{StaticResource Small}" Margin="0,0,0,4"/>
+                  <StackPanel x:Name="C3AdvTags"/>
+                  <StackPanel x:Name="C3AdvPadButtons"/>
+                </StackPanel>
               </StackPanel>
 
               <!-- audio -->
