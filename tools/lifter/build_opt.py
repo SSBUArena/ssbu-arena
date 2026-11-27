@@ -244,13 +244,42 @@ def out_of_memory(code, out):
 OOM = 'out of memory'                    # run_limited's output when the memory limit stopped the compiler
 
 
+# (fix/setup-0278) SSBU_BUILD_TOOL_GONE=0 (scripts/setup.py passes it on): as 0.2.77, a compiler that cannot be started raises
+# out of the compile queue (FileNotFoundError after 16-19 minutes of a player's build: opt.exe / llc.exe / clang.exe went
+# missing during the build, most likely taken by an antivirus, and the whole build_opt.py stopped with a traceback). Otherwise
+# that unit fails with a clear line, and when it is LLVM 19's opt.exe or llc.exe the remaining optimised units are compiled with
+# clang 9 -O1 (compile_pipeline's own fallback: slower code, the same results), said once.
+TOOL_GONE_ON = os.environ.get('SSBU_BUILD_TOOL_GONE', '1') not in ('', '0')
+TOOL_GONE_CODE = 9009                    # (cmd.exe's "not recognised" code: a compiler that could not be started)
+_llvm19_gone = [None]                    # the reason LLVM 19 cannot be used any more in this run, or None
+_tool_gone_lock = threading.Lock()
+
+
+def tool_gone(cmd, e):
+    """the output line for a compiler that could not be started; LLVM 19's: the rest of the run goes the clang 9 way"""
+    exe = cmd[0]
+    msg = ('could not start %s (%s): the file is missing or blocked; an antivirus may have removed it (allow SSBU Arena\'s folder '
+           'in it)' % (exe, e))
+    if LLVM19 and os.path.normcase(os.path.dirname(os.path.abspath(exe))) == os.path.normcase(os.path.abspath(LLVM19)):
+        with _tool_gone_lock:
+            if _llvm19_gone[0] is None:
+                _llvm19_gone[0] = msg
+                print('LLVM 19 %s; the remaining optimised units are compiled with clang 9 -O1 (slower, the same game)' % msg, flush=True)
+    return msg
+
+
 def run_limited(cmd, limit, mem=0):
     """Run a compiler with a time limit (and on Linux an address-space limit: mem, else MEM_LIMIT). Returns (exit code,
     output, seconds); the exit code is None when a limit stopped it, the output then OOM for memory and '' for time."""
     t = time.time()
     if MEM_LIMIT:
         cmd = ['prlimit', '--as=%d' % (mem or MEM_LIMIT), '--'] + cmd      # util-linux; inherited by clang's -cc1 child
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=(os.name != 'nt'))
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=(os.name != 'nt'))
+    except OSError as e:
+        if not TOOL_GONE_ON:
+            raise
+        return TOOL_GONE_CODE, tool_gone(cmd, e), time.time() - t
     try:
         out, _ = p.communicate(timeout=limit)
         out = out.decode('latin-1')[-2000:]
@@ -513,6 +542,9 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
     extra = EXTRA if extra is None else extra
     bc, bc2 = obj[:-4] + '.fe.bc', obj[:-4] + '.opt.bc'
     total, note = 0.0, ''
+    if _llvm19_gone[0]:                  # (fix/setup-0278, SSBU_BUILD_TOOL_GONE) opt.exe / llc.exe gone during this run: clang 9 -O1
+        code, out, secs, note2 = compile_file(src, obj, base_flags, time_limit, extra)
+        return code, out, secs, 'LLVM 19 missing, clang 9 -O1' + ('; ' + note2 if note2 else '')
     for inl in ((True, False) if inline else (False,)):
         steps = [[CLANG, '-c'] + PIPE_FE + extra + ([INLINE_FLAG] if inl else []) + base_flags + [src, '-o', bc],
                  [os.path.join(LLVM19, 'opt.exe'), '-passes=' + PIPE_PASSES, bc, '-o', bc2],
@@ -546,6 +578,8 @@ def compile_pipeline(src, obj, base_flags, inline=True, extra=None, time_limit=N
         if code == 0:
             return 0, out, total, note
         note = 'helpers not inlined (the inlined compile failed)' if inl else note
+        if _llvm19_gone[0]:              # (no second try without the helpers: the same tool is missing)
+            break
     code, out, secs, note2 = compile_file(src, obj, base_flags, time_limit, extra)
     return code, out, total + secs, 'reduced pipeline failed, clang 9 -O1' + ('; ' + note2 if note2 else '')
 

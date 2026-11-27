@@ -1038,10 +1038,45 @@ def llvm19_args():
     """['--llvm19', deps/llvm19] when LLVM 19's opt/llc are there or can be fetched; [] otherwise (optional: the build
     falls back to clang 9 -O1, slower, same result)"""
     try:
-        return ['--llvm19', fetch('llvm19')]
+        d = fetch('llvm19')
+        if llvm19_check_on():
+            # (fix/setup-0278) fetch() looks for opt.exe only: llc.exe missing, or a program that does not run (an antivirus took
+            # or blocked it) stopped the compile 16-19 minutes later with "file not found". Both started once; else the folder
+            # is downloaded again, and if they still do not run the game is compiled with clang 9 -O1 (said)
+            bad = llvm19_problem(d)
+            if bad:
+                say('   LLVM 19 opt/llc in %s cannot be used (%s): downloaded again' % (d, bad))
+                shutil.rmtree(d, ignore_errors=True)
+                d = fetch('llvm19')
+                bad = llvm19_problem(d)
+                if bad:
+                    say('   LLVM 19 opt/llc still cannot be used (%s; an antivirus may be removing or blocking them: allow SSBU Arena\'s '
+                        'folder in it): the game is compiled with clang 9 -O1 (about twice as long, the same game)' % bad)
+                    return []
+        return ['--llvm19', d]
     except (Exception, SystemExit) as e:
         say('   LLVM 19 opt/llc not available (%s): the game is compiled with clang 9 -O1 (about twice as long)' % str(e)[:200])
         return []
+
+
+def llvm19_check_on():
+    """(fix/setup-0278) SSBU_LLVM19_CHECK=0: as 0.2.77 (deps\\llvm19 is taken when its opt.exe is there)"""
+    return os.environ.get('SSBU_LLVM19_CHECK', '1') not in ('', '0')
+
+
+def llvm19_problem(d):
+    """why LLVM 19's opt.exe / llc.exe in d cannot be used (missing, or `--version` does not say LLVM 19), or None"""
+    for exe in ('opt.exe', 'llc.exe'):
+        p = os.path.join(d, exe)
+        if not os.path.isfile(p):
+            return '%s is missing' % exe
+        try:
+            r = subprocess.run([p, '--version'], capture_output=True, text=True, errors='replace', timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            return '%s does not start: %s' % (exe, e)
+        if 'LLVM version 19.' not in (r.stdout or '') + (r.stderr or ''):
+            return '%s does not run (exit code %s)' % (exe, r.returncode)
+    return None
 
 
 def tools_args(dump, runtime=None, extra=(), why=''):

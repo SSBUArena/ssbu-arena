@@ -171,6 +171,8 @@ class Ctx:
 
     def env(self, **extra):
         env = {k: v for k, v in os.environ.items() if not k.startswith(('RECOMP_', 'SSBU_'))}
+        # (fix/setup-0278) the switches of tools/lifter/build_opt.py's build checks pass (each =0: as 0.2.77)
+        env.update({k: os.environ[k] for k in ('SSBU_BUILD_TOOL_GONE', 'SSBU_BUILD_UNSTABLE') if k in os.environ})
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUNBUFFERED'] = '1'
         env['RECOMP_BIN'] = self.bin             # where the tools find main.elf and sdk.elf
