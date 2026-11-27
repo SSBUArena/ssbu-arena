@@ -535,7 +535,7 @@ void os_r1_fibers(void (*cb)(uint64_t key, Ctx *c, uint64_t stack, uint64_t stac
  * copied with its guest context (Ctx); a restore puts all three back when the fiber is switched away then too. */
 #define FIB_BLOCK 0x500
 static long long g_fib_limkept;                           /* (rb-8ms 13/11) SSBU_RB_FIBLIMIT: restores that kept the lower StackLimit */
-typedef struct { uint64_t key; uint64_t obj[6]; void *fls; uint8_t flsb[392]; Ctx *c; void *fiber; Ctx regs; const char *imp; uint64_t from, sp; int susp; uint8_t blk[FIB_BLOCK]; uint8_t *stk; size_t n; uint64_t rsp; } Fib;
+typedef struct { uint64_t key; uint64_t obj[6]; void *fls; uint8_t flsb[392]; Ctx *c; void *fiber; Ctx regs; const char *imp; uint64_t from, sp; int susp; uint8_t blk[FIB_BLOCK]; uint8_t *stk; size_t n; uint64_t rsp; DWORD tid; } Fib;      /* tid: (0.2.78, logs only) the thread running it at the save, 0 = none */
 static Fib g_fib[1024]; static int g_fib_running, g_nfib, g_fib_mode, g_fib_same, g_fib_diff, g_fib_new, g_fib_bad;
 void os_r1_fiber_set(uint64_t key, void *fiber, Ctx *fctx, int fresh);
 void os_r1_fiber_get(uint64_t key, uint64_t v[6]); void os_r1_fiber_put(uint64_t key, const uint64_t v[6]);
@@ -667,7 +667,7 @@ static void fib_cb(uint64_t key, Ctx *c, uint64_t stack, uint64_t size, void *fi
     }
     if (g_nfib >= 1024) return;
     Fib *f = &g_fib[g_nfib++];
-    f->key = key; f->c = c; f->fiber = fiber; f->susp = 0; f->stk = NULL; f->n = 0; f->imp = NULL; f->from = 0; f->sp = 0; os_r1_fiber_get(key, f->obj); f->fls = tid ? NULL : os_r1_fiber_fls(key); if (f->fls) memcpy(f->flsb, f->fls, sizeof f->flsb);
+    f->key = key; f->c = c; f->fiber = fiber; f->susp = 0; f->tid = 0; f->stk = NULL; f->n = 0; f->imp = NULL; f->from = 0; f->sp = 0; os_r1_fiber_get(key, f->obj); f->fls = tid ? NULL : os_r1_fiber_fls(key); if (f->fls) memcpy(f->flsb, f->fls, sizeof f->flsb);
     if (!c) return;                                           /* initialised, never run */
     f->regs = *c; f->imp = c->in_import; f->from = c->import_from; f->sp = c->x[31];
     if (!tid && g_fib_live_on && fiber && live_running(fiber)) { tid = GetThreadId(g_live_h[live_running(fiber) - 1] ? g_live_h[live_running(fiber) - 1] : GetCurrentThread()); g_fib_teb_running++; }   /* (hs13) running in truth: its stack is live, not saved */
@@ -681,6 +681,7 @@ static void fib_cb(uint64_t key, Ctx *c, uint64_t stack, uint64_t size, void *fi
         }
     } else if (!tid) g_fib_bad++;
     if (tid) g_fib_running++;
+    f->tid = tid;
 }
 static uint64_t g_rest_lo[1024], g_rest_hi[1024]; static int g_nrest;     /* (hs13) the host stacks the last restore copied back */
 static int rest_stack(uint64_t a) { for (int i = 0; i < g_nrest; i++) if (a >= g_rest_lo[i] && a < g_rest_hi[i]) return 1; return 0; }
@@ -708,6 +709,30 @@ static int g_fib_pre;                                     /* 1: g_cur / the live
  * at the next tick; after 3 refusals in a row it is loaded anyway, as before). */
 static int g_fibrun = -1; static long long g_fibrun_new, g_fibrun_never, g_fibrun_regs;
 static int fibrun_on(void) { if (g_fibrun < 0) { const char *e = getenv("SSBU_RB_FIBRUN"); g_fibrun = !(e && e[0] == '0'); } return g_fibrun; }
+/* (0.2.78) which thread owns a fiber that cannot be put back (field crash of 0.2.77: render dispatch reads null+0x10 ~20 s after
+ * "1 fibers cannot be put back whole, refused 3 times in a row: loaded anyway"; the fiber had been running at the save in
+ * mutex::unlock and was not running any more). Logs only: the first 20 such fibers, with the thread that ran them at the save and
+ * where they are now. g_fibrun_quiet: the checks of older ring states (r1_ring.c fibrun_refuse) neither log nor count. */
+static int g_fibrun_quiet; static long long g_fibrun_who;
+static const char *fib_tname(DWORD tid) {
+    if (!tid) return "no thread";
+    if (tid == GetCurrentThreadId()) return "main (this thread)";
+    Ctx *tc; const char *nm; HANDLE h;
+    for (int i = 0; guest_thread_info(i, &tc, &nm, &h); i++) if (h && guest_thread_tid(i, h) == tid) return nm ? nm : "?";
+    return "?";
+}
+static void fibrun_who(const Fib *f, int j, const char *why) {
+    if (g_fibrun_quiet || g_fibrun_who >= 20) return;
+    g_fibrun_who++;
+    Ctx *cc = j < g_ncur ? g_cur[j].c : NULL; DWORD tn = j < g_ncur ? g_cur[j].tid : 0; char now[256];
+    if (j >= g_ncur) snprintf(now, sizeof now, "not in the fiber list (ended)");
+    else if (tn) snprintf(now, sizeof now, "running on %s [tid %lu] at %s @%llx sp %llx", fib_tname(tn), (unsigned long)tn, cc && cc->in_import ? cc->in_import : "guest code", cc ? (unsigned long long)cc->import_from : 0ull, cc ? (unsigned long long)cc->x[31] : 0ull);
+    else if (!cc) snprintf(now, sizeof now, "not started");
+    else snprintf(now, sizeof now, "%s at %s @%llx sp %llx", cc->in_import ? "switched away" : "finished", cc->in_import ? cc->in_import : "-", (unsigned long long)cc->import_from, (unsigned long long)cc->x[31]);
+    LOG("r1: FIBRUN: fiber %llx (entry %llx, arg %llx) cannot be put back whole (%s): at the save %s on %s [tid %lu] at %s @%llx sp %llx; now %s\n",
+        (unsigned long long)f->key, (unsigned long long)f->obj[2], (unsigned long long)f->obj[3], why, f->susp ? "switched away" : "running", fib_tname(f->tid), (unsigned long)f->tid,
+        f->imp ? f->imp : "guest code", (unsigned long long)f->from, (unsigned long long)f->sp, now);
+}
 static int fibers_precheck(const Fib *fs, int n) {
     g_ncur = 0; int mode_was = g_fib_mode; g_fib_mode = 1; os_r1_fibers(fib_cb); g_fib_mode = mode_was;
     if (g_fib_live_on < 0) { const char *e = getenv("SSBU_R1_LIVESTK"); g_fib_live_on = !(e && e[0] == '0'); }
@@ -719,19 +744,19 @@ static int fibers_precheck(const Fib *fs, int n) {
         int j; for (j = 0; j < g_ncur; j++) if (g_cur[j].key == f->key) break;
         void *cf = j < g_ncur ? g_cur[j].fiber : NULL; Ctx *cc = j < g_ncur ? g_cur[j].c : NULL;
         int running_now = j < g_ncur && g_cur[j].tid != 0;
-        if (f->susp && !running_now) { if (g_fib_live_on && live_on_stack(f->blk)) bad++; continue; }
+        if (f->susp && !running_now) { if (g_fib_live_on && live_on_stack(f->blk)) { bad++; fibrun_who(f, j, "its saved host stack is in use now"); } continue; }
         if (!f->susp && cf == f->fiber && cc == f->c && cc->in_import == f->imp && cc->import_from == f->from && cc->x[31] == f->sp) {
-            if (fr && running_now && g_cur[j].tid != GetCurrentThreadId() && memcmp(&cc->x[19], &f->regs.x[19], 12 * sizeof cc->x[0])) { bad++; if (g_fibrun_regs++ < 10) LOG("r1: FIBRUN: fiber %llx (fn %llx) at the same wait as at the save but with other registers (it ran since): the load is refused\n", (unsigned long long)f->key, (unsigned long long)cc->fn); }      /* (FIBRUN) ran since: another job at the same wait */
+            if (fr && running_now && g_cur[j].tid != GetCurrentThreadId() && memcmp(&cc->x[19], &f->regs.x[19], 12 * sizeof cc->x[0])) { bad++; if (!g_fibrun_quiet && g_fibrun_regs++ < 10) LOG("r1: FIBRUN: fiber %llx (fn %llx, on %s [tid %lu]) at the same wait as at the save but with other registers (it ran since): the load is refused\n", (unsigned long long)f->key, (unsigned long long)cc->fn, fib_tname(g_cur[j].tid), (unsigned long)g_cur[j].tid); }      /* (FIBRUN) ran since: another job at the same wait */
             continue;
         }
-        bad++;
+        bad++; fibrun_who(f, j, f->susp ? "switched away then, running now" : "running then, not at the same place now");
     }
     if (fr) for (int j = 0; j < g_ncur; j++) {                /* (FIBRUN) running now, not running then */
         if (!g_cur[j].tid || g_cur[j].tid == GetCurrentThreadId()) continue;      /* (main's own fiber: its context comes back whole with the load) */
         int i; for (i = 0; i < n; i++) if (fs[i].key == g_cur[j].key) break;
-        if (i == n || !fs[i].c) { bad++; long long k = i == n ? g_fibrun_new++ : g_fibrun_never++;
-            if (k < 10) LOG("r1: FIBRUN: fiber %llx (fn %llx, at %s @%llx) runs now and was %s at the save: the load is refused\n", (unsigned long long)g_cur[j].key, g_cur[j].c ? (unsigned long long)g_cur[j].c->fn : 0ull,
-                g_cur[j].c && g_cur[j].c->in_import ? g_cur[j].c->in_import : "guest code", g_cur[j].c ? (unsigned long long)g_cur[j].c->import_from : 0ull, i == n ? "not in the list (made since)" : "never run"); }
+        if (i == n || !fs[i].c) { bad++; if (g_fibrun_quiet) continue; long long k = i == n ? g_fibrun_new++ : g_fibrun_never++;
+            if (k < 10) LOG("r1: FIBRUN: fiber %llx (fn %llx, on %s [tid %lu] at %s @%llx) runs now and was %s at the save: the load is refused\n", (unsigned long long)g_cur[j].key, g_cur[j].c ? (unsigned long long)g_cur[j].c->fn : 0ull,
+                fib_tname(g_cur[j].tid), (unsigned long)g_cur[j].tid, g_cur[j].c && g_cur[j].c->in_import ? g_cur[j].c->in_import : "guest code", g_cur[j].c ? (unsigned long long)g_cur[j].c->import_from : 0ull, i == n ? "not in the list (made since)" : "never run"); }
     }
     return bad;
 }
