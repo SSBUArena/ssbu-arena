@@ -852,6 +852,12 @@ namespace Arena
             Updater.CleanUp();
             try { System.IO.File.Delete(System.IO.Path.Combine(Core.Repo ?? System.IO.Path.GetDirectoryName(Updater.ExePath), Core.Repo != null ? @"build\launcher_update.log" : "launcher_update.log")); } catch { }
             Updater.Log("launcher " + Updater.Current + ", repo " + (Core.Repo ?? "(not installed)") + ", build " + Core.Build + (Updater.DevCopy ? ", git checkout" : ""));
+            // (fix/setup-0278, SSBU_ARENA_CFG_GUARD) the settings folder could not be made (a file named "config" there): said, no crash
+            if (Core.CfgProblem != null)
+            {
+                Updater.Log("settings folder: " + Core.CfgProblem + (Updater.Installed ? "" : " (not installed yet: not needed here)"));
+                if (Updater.Installed) Show("Settings folder", Core.CfgProblem, null, ("OK", null, true));
+            }
             if (Updater.Off)
             {
                 Updater.Log("SSBU_ARENA_UPDATE=off");
@@ -871,6 +877,9 @@ namespace Arena
                 {
                     if (release == null) Show("SSBU Arena", "The first install downloads SSBU Arena from GitHub: " + (Updater.LastCheckError ?? "no release found.") + " Check the internet connection and start the launcher again.", null, ("OK", null, true));
                     else if (Environment.GetCommandLineArgs().Contains("--install")) StartSetup(true);      // (fix/install-launcher-errors) moved to a folder of its own: the install goes on
+                    // (fix/setup-0278, SSBU_ARENA_SHELL_FOLDER) right in Downloads / Desktop / Documents...: the offer of a folder of its own first,
+                    // not "is installed in this folder: Downloads"
+                    else if (ShellFolderProblem() != null) OfferOwnFolder(ShellFolderProblem());
                     else Show("Install SSBU Arena", "SSBU Arena " + release.Version + " is installed in this folder:\n" + System.IO.Path.GetDirectoryName(Updater.ExePath) +
                               "\n\nThe setup then asks for your own game files (about 25 GB of space).", null, ("Install", () => StartSetup(true), true), ("Not now", null, false));
                     return;
@@ -888,6 +897,13 @@ namespace Arena
                     UpdateGame();
                 }
             }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        /// <summary>(fix/setup-0278) the exe's folder is one of the user's own folders (InstallFolder.ShellFolder) and so refused: why, else null</summary>
+        static string ShellFolderProblem()
+        {
+            string d = System.IO.Path.GetDirectoryName(Updater.ExePath);
+            return InstallFolder.ShellFolder(d) != null ? InstallFolder.Problem(d) : null;
         }
 
         void UpdateLauncher()
