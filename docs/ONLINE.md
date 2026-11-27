@@ -103,6 +103,8 @@ environment variables or keys in `config\graphics.ini`; environment variables ar
 | `SSBU_RB_NET=net` | Rollback in 2-player rooms (needs the rollback build: `ssbu_game_r1.dll`, `nro_bin_eh_o2r1`) |
 | `SSBU_ONLINE_PORT` | Local UDP port |
 | `SSBU_ONLINE_LOG=0..3` | Log level (default 1) |
+| `SSBU_RANKED_RULE_FORCE=0` | Ranked matches force only part of the rule, as 0.2.77. Default 1: the whole official ranked rule (`runtime/ranked_rule.h`) on every ranked match, whatever the saves hold |
+| `SSBU_RANKED_RULE_HASH=0` | Ranked matches send no hash of the rule played with their result. Default 1 (the server compares it with the official one) |
 
 The runtime still knows the other ways to connect it inherited from OpenSmash-Ultimate (`online_mode = lan`, `host`,
 `join` with a room code). They connect the two games **directly**, which shows each player's internet address to the

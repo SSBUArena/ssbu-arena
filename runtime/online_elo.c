@@ -55,8 +55,14 @@ void menu_popup(const char *title, const char *text);  /* menu.cpp */
 int rbn_online_rb(void); uint32_t rbn_match_id(void); int rbn_local_player(void);
 void rbn_result_info(uint32_t *fin_f, uint32_t *fin_ck, uint32_t *agree_f, uint32_t *agree_ck, int *desyncs, uint64_t chara[2], uint64_t *stage);
 int online_rb_on(void);                                /* nnonline.c */
-/* net_relay.c (net_off.c: nothing): the RESULT body after the cookie (61 bytes), sent every second until a final VERDICT (30 s) */
-void net_ranked_result(const uint8_t body[61], uint64_t game_id);
+/* net_relay.c (net_off.c: nothing): the RESULT body after the cookie (61 bytes, (0.2.78) + the "RH" block), sent every second until a
+ * final VERDICT (30 s) */
+void net_ranked_result(const uint8_t *body, int n, uint64_t game_id);
+/* (0.2.78, ranked_rule.c) the hash of the rule this match was played with (taken at its start). SSBU_RANKED_RULE_HASH (default 1; 0 = the
+ * RESULT as 0.2.77, 61 bytes): RESULT gets the block "RH" 1, hash u32, flags u8 (1 the ranked rule was forced, 2 the classic
+ * matchmaking) after its 61 bytes; an older lobby reads the 61 bytes and ignores the rest (rb_ranked.c: n >= 12 + 61). */
+int ranked_rule_last(uint32_t *hash, uint8_t *flags);
+static int oe_rule_hash_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RANKED_RULE_HASH"); v = !(e && e[0] == '0'); } return v; }
 
 #define OE_TAG 0x4E58000000000000ull                   /* "NX": the lobby's game id of a game's own Online match (rb_ranked.c RK_NATIVE_TAG) */
 #define OE_TIME_FRAMES (420 * 60)                     /* the fixed rules' time limit (SSBU_ONLINE_RULES: 7 minutes) */
@@ -90,7 +96,7 @@ static uint64_t g_oe_chara[2];                         /* the two players' ui_ch
 static volatile LONG64 g_oe_last_chara;                /* (0.2.58) this game's fighter in the last fight it reported (the verdict's fighter) */
 static int oe_tie_on(void) { static int v = -1; if (v < 0) v = env_on("SSBU_ONLINE_TIE_RESULT", 1); return v; }
 static volatile LONG g_oe_tie_pend;                    /* 1 = a tie is waiting for its timer */
-typedef struct { uint32_t fin_f, fin_ck, ag_f, ag_ck; int desyncs; uint64_t chara[2], stage; } OeInfo;      /* rb_net.c's part of a RESULT */
+typedef struct { uint32_t fin_f, fin_ck, ag_f, ag_ck; int desyncs; uint64_t chara[2], stage; int rh_have; uint32_t rh; uint8_t rh_flags; } OeInfo;      /* rb_net.c's part of a RESULT; (0.2.78) the rule hash */
 static struct { uint32_t mid; int side, s0, s1; long long frames; OeInfo inf; } g_oe_tie;
 static HANDLE g_oe_tie_timer;
 void online_elo_sample(long long real_frames) {        /* rb_rollback.c, once per tick of a rollback match (main thread) */
@@ -107,12 +113,13 @@ static OeInfo oe_info_now(void) {                     /* (while the session stil
     OeInfo f; memset(&f, 0, sizeof f);
     rbn_result_info(&f.fin_f, &f.fin_ck, &f.ag_f, &f.ag_ck, &f.desyncs, f.chara, &f.stage);
     for (int i = 0; i < 2; i++) if (g_oe_chara[i]) f.chara[i] = g_oe_chara[i];      /* (what this game's match block holds: both players) */
+    if (oe_rule_hash_on()) f.rh_have = ranked_rule_last(&f.rh, &f.rh_flags);      /* (0.2.78) */
     return f;
 }
 static void oe_send(uint32_t mid, int side, int winner, int end, int s0, int s1, long long real_frames, const OeInfo *inf) {
     uint32_t fin_f = inf->fin_f, fin_ck = inf->fin_ck, ag_f = inf->ag_f, ag_ck = inf->ag_ck; int desyncs = inf->desyncs;
     uint64_t chara[2] = {inf->chara[0], inf->chara[1]}, stage = inf->stage;
-    uint8_t b[61], *q = b; uint64_t gid = OE_TAG | mid;
+    uint8_t b[61 + 8], *q = b; uint64_t gid = OE_TAG | mid;
     *q++ = 1;
     for (int k = 7; k >= 0; k--) *q++ = (uint8_t)(gid >> (8 * k));
     *q++ = (uint8_t)side; *q++ = (uint8_t)winner; *q++ = (uint8_t)end;
@@ -124,12 +131,18 @@ static void oe_send(uint32_t mid, int side, int winner, int end, int s0, int s1,
     uint64_t w64[3] = {chara[0], chara[1], stage};
     for (int i = 0; i < 3; i++) for (int k = 7; k >= 0; k--) *q++ = (uint8_t)(w64[i] >> (8 * k));
     *q++ = 1;                                          /* (flags: checksums on) */
+    if (inf->rh_have) {                                /* (0.2.78) "RH" 1, the rule hash u32, its flags */
+        *q++ = 'R'; *q++ = 'H'; *q++ = 1;
+        for (int k = 3; k >= 0; k--) *q++ = (uint8_t)(inf->rh >> (8 * k));
+        *q++ = inf->rh_flags;
+    }
     InterlockedExchange(&g_oe_last_winner, winner == 0xFF ? -1 : winner); InterlockedExchange(&g_oe_last_side, side); InterlockedExchange(&g_oe_last_mid, (LONG)mid);
     InterlockedExchange64(&g_oe_last_chara, (LONG64)chara[side]);      /* (0.2.58) the fighter this game played: its rating moves (ranked per fighter) */
-    printf("[elo] match %08x over after %lld frames: stocks %d / %d -> winner %s (end %d), this game is player %d; final frame %u, checksums agreed up to %u, desyncs %d: RESULT to the lobby\n",
-           mid, real_frames, s0, s1, winner == 0 ? "player 1" : winner == 1 ? "player 2" : "none", end, side + 1, fin_f, ag_f, desyncs);
+    char rh[40] = ""; if (inf->rh_have) snprintf(rh, sizeof rh, ", rule hash %08x", inf->rh);
+    printf("[elo] match %08x over after %lld frames: stocks %d / %d -> winner %s (end %d), this game is player %d; final frame %u, checksums agreed up to %u, desyncs %d%s: RESULT to the lobby\n",
+           mid, real_frames, s0, s1, winner == 0 ? "player 1" : winner == 1 ? "player 2" : "none", end, side + 1, fin_f, ag_f, desyncs, rh);
     fflush(stdout);
-    net_ranked_result(b, gid);
+    net_ranked_result(b, (int)(q - b), gid);
 }
 /* (25/11) SSBU_ONLINE_TIE_RESULT (default 1; 0 = as 0.2.73): a tie at the time limit waited for "the sudden death that follows" and sent
  * nothing, but the game's own Online mode plays no sudden death here (field log: "waiting for the sudden death", then the next match):

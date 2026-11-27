@@ -25,6 +25,12 @@
 static int g_comp_nopause = -1;
 static int comp_nopause(void) { if (g_comp_nopause < 0) { const char *e = getenv("SSBU_COMP_PAUSE"); g_comp_nopause = !(e && e[0] == '1'); } return g_comp_nopause; }
 
+/* (0.2.78, ranked_rule.c SSBU_RANKED_RULE_FORCE) the one official ranked rule on the three rule copies while a ranked match flow is on */
+int ranked_rule_force_on(void), ranked_rule_active(void);
+void ranked_rule_begin(const char *why, int classic, int kind, int time_s), ranked_rule_keep(void), ranked_rule_end(const char *why), ranked_rule_tick(void);
+static volatile LONG g_comp_keeper;          /* (0.2.78) 1 = comp_keep runs (it keeps the ranked rule and ends it at the main menu) */
+static int comp_rr_on(void) { return ranked_rule_force_on() && g_comp_keeper; }
+
 typedef void (*HookFn)(Ctx *c, void *user);
 int hook_install(uint64_t addr, HookFn repl, void *user, ImportFn *orig);      /* fighter_sdk\hook_host.c */
 
@@ -230,11 +236,13 @@ static void comp_quick_rules(void) {          /* (comp_keep, every 2 ms while th
  * 7 min / 3): written with the fixed rules at the match's set-up, the player's own values put back at the main menu. */
 static uint8_t g_onl_rule_saved[8]; static volatile LONG g_onl_rule_have;
 void comp_online_rule_copy(void) {
+    if (comp_rr_on()) { ranked_rule_begin("the Online match's set-up", 0, -1, -1); return; }      /* (0.2.78) the whole block, saved and put back by ranked_rule.c */
     volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[1]);
     if (!InterlockedExchange(&g_onl_rule_have, 1)) for (int k = 0; k < 8; k++) g_onl_rule_saved[k] = r[0x50 + k];
     r[RULE_KIND] = 1; *(volatile uint16_t *)(r + RULE_TIME) = 420; r[RULE_STOCK] = 3;
 }
 static void comp_online_rule_back(void) {
+    if (ranked_rule_active()) ranked_rule_end("the main menu");      /* (0.2.78) */
     if (!InterlockedExchange(&g_onl_rule_have, 0)) return;
     volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[1]);
     for (int k = 0; k < 8; k++) r[0x50 + k] = g_onl_rule_saved[k];
@@ -242,6 +250,7 @@ static void comp_online_rule_back(void) {
 }
 static void comp_quick_end(const char *why) {
     if (!InterlockedExchange(&g_quick, 0)) return;
+    if (ranked_rule_active()) ranked_rule_end(why);      /* (0.2.78) the whole block back (before the 8 bytes below: the same player's values) */
     if (g_quick_have) for (int k = 0; k < 2; k++) {             /* (twice: comp_keep may have been inside comp_quick_rules) */
         if (k) Sleep(5);
         for (int i = 0; i < 3; i++) memcpy((void *)(uintptr_t)(GA(k_rules[i]) + 0x50), g_quick_saved[i], 8);
@@ -272,6 +281,7 @@ static int comp_quick_begin(void) {           /* 1 = the quick match starts (the
     g_quick_saved_4b = *(volatile uint8_t *)(uintptr_t)(GA(k_rules[1]) + 0x4b);
     g_quick_have = 1;
     comp_rule_dump("the player's own");
+    if (comp_rr_on()) ranked_rule_begin("Online Ranked (classic matchmaking)", 1, g_quick_kind, g_quick_time);      /* (0.2.78) the whole settings block */
     {   void rbn_ba_set_mode(int m); rbn_ba_set_mode(0); }      /* (Battle Arena) a quick match is never a squad match */
     InterlockedExchange(&g_quick, 1);
     InterlockedExchange(&g_quick_skip_rules, 1);       /* (comp_rule_state) */
@@ -313,6 +323,7 @@ static void comp_scene(Ctx *c, void *user) {
         if ((s >> 24) == 0x01 && g_quick) comp_quick_end("back at the main menu");
         if ((s >> 24) == 0x01) comp_online_rule_back();      /* (0.2.52) */
         if ((s >> 24) == 0x01) g_native_asked = 0;
+        if (s == SEQ_ONLINE_ANYONE && comp_quick_native() && comp_native_usable() && comp_rr_on()) ranked_rule_begin("Online Ranked (the game's own Online mode)", 0, -1, -1);      /* (0.2.78) */
         if (s == SEQ_ONLINE_ANYONE && comp_quick_native() && comp_native_usable()) { static int said; if (!said++) { printf("competitive UI: Online Ranked -> the game's own Online mode (SSBU_QUICK_NATIVE=1, probe)\n"); fflush(stdout);
                 /* (online-mm 15/11, PROBE) SSBU_QUICK_NATIVE_WATCH=1: a hardware write watch on the current sequence (debug_mode.c debug_watch:
                  * every thread, the guest functions of each write): who sends the Online mode back to the main menu */
@@ -339,6 +350,7 @@ static void comp_scene(Ctx *c, void *user) {
 static void comp_battle(Ctx *c, void *user) {
     (void)user;
     int changed = 0;
+    ranked_rule_keep();                       /* (0.2.78) a ranked match: the official rule once more, right before the battle is built */
     comp_stage();
     for (int i = 0; i < 3; i++) {
         volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[i]);
@@ -386,8 +398,10 @@ static DWORD WINAPI comp_keep(LPVOID arg) {
     {   const char *e = getenv("SSBU_TEST_RULE_TIME"); if (e && *e) test_time = atoi(e);
         e = getenv("SSBU_TEST_RULE_KIND"); if (e && *e) test_kind = atoi(e);
         if (test_time >= 0) { printf("competitive: TEST rules on every rule copy: rule kind %d, time %d s (SSBU_TEST_RULE_TIME)\n", test_kind, test_time); fflush(stdout); } }
+    InterlockedExchange(&g_comp_keeper, 1);
     for (;;) {
         comp_clear();
+        ranked_rule_tick();                   /* (0.2.78) SSBU_RANKED_RULE_FORCE: kept while a ranked match flow is on, ended at the main menu */
         if (test_time >= 0 && !g_quick) for (int i = 0; i < 3; i++) {
             volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)GA(k_rules[i]);
             if (r[RULE_KIND] != (uint8_t)test_kind) r[RULE_KIND] = (uint8_t)test_kind;
