@@ -1463,6 +1463,51 @@ static void rgc_after_tt(void) {                           /* after the copies a
     g_rgc_dropped += dropped; g_rgc_kept += kept; if (dropped || kept) g_rgc_loads_changed++;
 }
 static long long g_rg_fibrefused, g_rg_fibforced; static int g_rg_fibstreak;      /* (rb-8ms 13/11, D2) SSBU_RB_FIBREFUSE */
+/* (0.2.78, field crash of 0.2.77: render dispatch reads null+0x10 in f_7103816730 ~20 s after "N fibers cannot be put back whole, refused 3
+ * times in a row: loaded anyway"; the fiber had been RUNNING at that save, in mutex::unlock, and
+ * was not any more: such a fiber never comes back to that place, so refusing the same state again cannot help, and loading it
+ * anyway leaves its job half done in the loaded memory.)
+ * SSBU_RB_FIBRUN_FORCE (default 0; =1: as 0.2.77, loaded anyway after 3 refusals in a row; with SSBU_RB_FIBRUN=0 also as 0.2.77):
+ * a load refused for its fibers looks, while the threads are still held, for an OLDER state in the ring whose fibers can all be put
+ * back now (the same check). If there is one, the pending wrong guess is moved back to the frame after it (rb_rollback.c): the next
+ * tick loads that state and runs a few frames more again. Both games stay in sync: those frames' pads are all known and were the
+ * same (the wrong guess was later), so running them again gives the same frames, as in any rollback. Otherwise the state is refused
+ * again at the next ticks, up to SSBU_RB_FIBRUN_TRIES refusals in a row (default 10); then (no state can be put back whole, no older
+ * one either) it is loaded anyway as before (logged, counted): the only other way out the code has is not rolling back at all
+ * ("NOT rolled back (desync)"), which would leave the two games apart for the rest of the match.
+ * SSBU_RB_TEST_FIBREFUSE=<n>[,<mode>] (TEST ONLY): every n-th load that gets to the fiber check is refused as if one of its fibers could
+ * not be put back, and so is every later load of that same state until a load goes through; mode 1 (default): only that state (an
+ * older one can be taken), mode 2: every state (the refusals go on to the limit). */
+static long long g_rg_fib_alt = -1;                    /* older state found for the load refused now (rb_rollback.c moves the wrong guess back to it) */
+static long long g_fibrun_alt, g_fibrun_final, g_fibrun_logn;
+static int fibrun_new(void) { static int f = -1; if (f < 0) { const char *e = getenv("SSBU_RB_FIBRUN_FORCE"); f = !(e && e[0] == '1'); } return f && fibrun_on(); }
+static int fibrun_tries(void) { static int t = -1; if (t < 0) { const char *e = getenv("SSBU_RB_FIBRUN_TRIES"); t = e ? atoi(e) : 10; if (t < 1) t = 1; } return t; }
+static int g_frt_n = -1, g_frt_mode; static long long g_frt_cnt, g_frt_f = -1, g_frt_eps;
+static int fibrt_bad(long long frame, int older) {      /* (TEST ONLY) SSBU_RB_TEST_FIBREFUSE */
+    if (g_frt_n < 0) { const char *e = getenv("SSBU_RB_TEST_FIBREFUSE"); g_frt_n = 0; g_frt_mode = 1; if (e && *e) sscanf(e, "%d,%d", &g_frt_n, &g_frt_mode); if (g_frt_n < 0) g_frt_n = 0; }
+    if (!g_frt_n) return 0;
+    if (!older && g_frt_f < 0 && ++g_frt_cnt % g_frt_n == 0) { g_frt_f = frame; g_frt_eps++;
+        LOG("r1: FIBRUN TEST: the load of frame %lld is refused as if a fiber could not be put back (case %lld, mode %d)\n", frame, g_frt_eps, g_frt_mode); }
+    if (g_frt_f < 0) return 0;
+    return g_frt_mode == 2 || frame == g_frt_f;
+}
+/* (0.2.78) a load of slot si refused for bad fibers (threads still held): 0 = load it anyway (refused too many times), else bad */
+static int fibrun_refuse(int si, long long frame, int k, int bad) {
+    int lim = fibrun_tries();
+    g_fibrun_quiet = 1;                                   /* the newest older state whose fibers can all be put back now */
+    for (int s = si - 1; s >= 0; s--) { RgSlot *o = rg_slot(s); if (fibers_precheck(o->fib, o->nfib) + fibrt_bad(o->frame, 1) == 0) { g_rg_fib_alt = o->frame; break; } }
+    g_fibrun_quiet = 0;
+    if (g_rg_fib_alt < 0 && g_rg_fibstreak >= lim) {      /* (bounded: each older state taken is older than the one before, the ring is finite) */
+        g_fibrun_final++; LOG("r1: FIBRUN: RING load of frame %lld (k %d): %d fibers still cannot be put back whole after %d refusals in a row, and no older state can: loaded anyway (%lld so far)\n", frame, k, bad, g_rg_fibstreak, g_fibrun_final);
+        return 0;
+    }
+    if (g_rg_fib_alt >= 0) g_fibrun_alt++;
+    if (g_fibrun_logn++ < 20) {
+        if (g_rg_fib_alt >= 0) LOG("r1: FIBRUN: RING load of frame %lld (k %d): %d fibers cannot be put back whole (refusal %d in a row); the older state of frame %lld can: the rollback goes back to it at the next tick\n", frame, k, bad, g_rg_fibstreak + 1, g_rg_fib_alt);
+        else LOG("r1: FIBRUN: RING load of frame %lld (k %d): %d fibers cannot be put back whole (refusal %d in a row, at most %d), no older state in the ring can: tried again next tick\n", frame, k, bad, g_rg_fibstreak + 1, lim);
+    }
+    return bad;
+}
 static long long g_rg_refused;                        /* (R3 pub1) loads refused: a thread still running after the hold */
 static long long g_rg_rezero;                         /* (Arena) pages decommitted at the loaded frame, committed since: zeroed by the load */
 static long long g_rg_ldpg, g_rg_recommit, g_rg_rewake, g_rg_cvwake;           /* (R3 net3) pages to load, all loads (the written ones: g_cp_wrote); pages committed again by a load */
@@ -1746,6 +1791,7 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
     int si = -1;
     for (int i = 0; i < g_rg_count; i++) if (rg_slot(i)->frame == frame) si = i;
     if (si < 0) return 0;
+    g_rg_fib_alt = -1;                                    /* (0.2.78) set only by a refusal for the fibers (fibrun_refuse) */
     double t0 = now_ms(); g_rgp_seg = 5;
     if (g_tr_n) rg_trap_disarm();                         /* (round 16, diagnosis) SSBU_RB_LDTRAP */
     /* (rb-8ms 13/11) SSBU_RB_LOADSYNC (=1 on; default 0 until the cheaper fix, see ROLLBACK_STATO 5.2): THE ROLLBACK FRAME GLITCHES (black stripes across the screen on Town and City,
@@ -1793,9 +1839,10 @@ static int r1_ring_load_i(long long frame, Ctx *c) {
         int forced = tn > 0 && ++tc % tn == 0, fibbad = 0;
         {   static int fr = -1; if (fr < 0) { const char *e = getenv("SSBU_RB_FIBREFUSE"); fr = !(e && e[0] == '0'); }      /* (rb-8ms 13/11, D2) r1_state.c fibers_precheck */
             /* at most 3 refusals in a row: then loaded as before (a fiber that can never be put back must not keep the wrong guess forever) */
-            if (fr && !g_th_running && !forced && rgs_wanted()) { fibbad = fibers_precheck(g->fib, g->nfib);
-                if (fibbad && g_rg_fibstreak >= 3) { g_rg_fibforced++; LOG("r1: RING load of frame %lld (k %d): %d fibers cannot be put back whole, refused 3 times in a row: loaded anyway (%lld so far)\n", frame, k, fibbad, g_rg_fibforced); fibbad = 0; }
-                if (fibbad) { g_fib_pre = 0; g_rg_fibrefused++; g_rg_fibstreak++; } else g_rg_fibstreak = 0; } }
+            if (fr && !g_th_running && !forced && rgs_wanted()) { fibbad = fibers_precheck(g->fib, g->nfib) + fibrt_bad(frame, 0);
+                if (fibbad && !fibrun_new()) { if (g_rg_fibstreak >= 3) { g_rg_fibforced++; LOG("r1: RING load of frame %lld (k %d): %d fibers cannot be put back whole, refused 3 times in a row: loaded anyway (%lld so far)\n", frame, k, fibbad, g_rg_fibforced); fibbad = 0; } }
+                else if (fibbad) fibbad = fibrun_refuse(si, frame, k, fibbad);      /* (0.2.78) SSBU_RB_FIBRUN_FORCE */
+                if (fibbad) { g_fib_pre = 0; g_rg_fibrefused++; g_rg_fibstreak++; } else { g_rg_fibstreak = 0; g_frt_f = -1; } } }
         if ((runfix && g_th_running) || forced || fibbad) {
             unpark();
             Ctx *tc2; const char *nm2; HANDLE h2;                  /* the threads made after that frame (stop_born_threads) go on too */

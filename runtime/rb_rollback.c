@@ -198,7 +198,10 @@ static int rbg_rollback(Ctx *c, long long i, int m) {
     int lr = r1_ring_load(best, c);
     rbg_fd_note("after the load", i);
     if (lr <= 0) snd_let_go();
-    if (lr < 0) { g_rbg_refused_tick = 1; g_rbg_pend = m; rbn_put_mismatch(m); return 0; }      /* (R3 pub1) refused (a thread running): the wrong guess stays pending */
+    if (lr < 0) {                                       /* (R3 pub1) refused (a thread running): the wrong guess stays pending */
+        if (g_rg_fib_alt >= 0 && g_rg_fib_alt + 1 < m) m = (int)(g_rg_fib_alt + 1);      /* (0.2.78, SSBU_RB_FIBRUN_FORCE) refused for its fibers: an older state can be put back whole: the next tick goes back to it */
+        g_rg_fib_alt = -1;
+        g_rbg_refused_tick = 1; g_rbg_pend = m; rbn_put_mismatch(m); return 0; }
     if (!lr) { g_rbg_miss++; return 0; }
     g_rbg_pend = 0;
     if (g_rbg_defcap >= 0) { g_rbg_defcap = -1; g_rbg_dc_drop++; }      /* (rb-8ms, RECAP=7) a deferred capture not made: dropped */
@@ -1106,6 +1109,8 @@ static void rbg_report(void) {
         g_rg_poolfix ? "on" : "OFF", g_rg_short_n, g_rg_freed_slots, g_rg_skip_full);
     LOG("r1: RB NET report: task-worker watchdog releases %lld (since the process start), rollbacks with the workers not held %lld (watchdog paused at H2: %s)\n", g_ra_wd_fired, g_rbg_rb_unheld, g_rbg_wdfix ? "yes" : "NO");
     LOG("r1: RB NET report: loads that took the sound thread at another wait after 5 ms %lld; threads not at their wait after 500 ms %d (last load); loads refused, a thread still running (pub1) or a fiber not restorable %lld (fibers, SSBU_RB_FIBREFUSE: %lld; loaded anyway after 3 refusals: %lld); of them SSBU_RB_FIBRUN: running now but not then %lld + never run then %lld, ran since and back at the same wait %lld\n", g_th_audio_other, g_th_mismatch, g_rg_refused, g_rg_fibrefused, g_rg_fibforced, g_fibrun_new, g_fibrun_never, g_fibrun_regs);
+    LOG("r1: RB NET report: fibers not restorable (0.2.78, SSBU_RB_FIBRUN_FORCE %s): older state found to go back to %lld, loaded anyway after %d refusals in a row %lld; test refusals (SSBU_RB_TEST_FIBREFUSE) %lld\n",
+        fibrun_new() ? "0: older state / more refusals" : "1 or FIBRUN off: as 0.2.77", g_fibrun_alt, fibrun_tries(), g_fibrun_final, g_frt_eps);
     LOG("r1: RB NET report: fiber host stacks in use at a load (not copied back) %lld, seen %lld; fibers found running by their thread (TEB) at a capture %lld; catch table at loads: entries dropped %lld, live entries put back %lld, loads changed %lld (hs13)\n", g_fib_live_skip, g_fib_live_seen, g_fib_teb_running, g_rgc_dropped, g_rgc_kept, g_rgc_loads_changed);
     { void nnunwind_catch_stats(long long *, long long *, long long *, long long *, long long *); long long l, d, cr, fu, mp; nnunwind_catch_stats(&l, &d, &cr, &fu, &mp);
       LOG("r1: RB NET report: catch table (hs15): %lld live records, %lld removed slots, %lld puts found no free slot in their window, %lld table full, longest probe %lld; dead records dropped at loads %lld (host fiber stacks known %zu)\n", l, d, cr, fu, mp, g_rgc_dead, g_nbf); }
