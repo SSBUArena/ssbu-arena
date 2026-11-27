@@ -980,6 +980,32 @@ static uint64_t read_at_x(HANDLE h, int64_t offset, void *buf, uint64_t size) {
     return total;
 }
 static volatile LONG g_read_log;
+/* (fix/arc-integrity-0278) SSBU_ARC_EOF_STOP (arcpack.c): a failed read of data.arc that asked for bytes past the archive's end
+ * (exact: [off, off + size) past it; count: off past it) stops the game here with a clear message, before the game goes on with
+ * an error and crashes later ("reading address 0xc" at start). Only after a read came back short: the good path pays nothing. */
+static void arc_eof_check(HANDLE h, int64_t off, uint64_t size, uint64_t got, int exact, uint64_t from) {
+    int64_t arc_size = -1;
+    const char *what = "data.arc";
+    if (!arc_eof_stop_on()) return;
+    if (arcp_size(h, &arc_size)) what = "data.arc (light archive data.arcp)";
+    else if (arcl_size(h, &arc_size)) what = "data.arc (linked to OpenSmash Ultimate's game data, data.arcl)";
+    else if (arc_is_orig(h)) { LARGE_INTEGER sz; if (GetFileSizeEx(h, &sz)) arc_size = sz.QuadPart; }
+    if (arc_size < 0) return;                                  /* not data.arc: a save, a loose file */
+    uint64_t end = (uint64_t)off + size;
+    if (!(off < 0 || (uint64_t)off > (uint64_t)arc_size || (exact && (end > (uint64_t)arc_size || end < (uint64_t)off)))) return;
+    char msg[1400];
+    printf("romfs: data.arc read past its end: %llu bytes at offset %#llx, the archive has %lld bytes (got %llu, called from %llx): "
+           "data.arc is damaged (SSBU_ARC_EOF_STOP=0 lets the game go on)\n", (unsigned long long)size, (unsigned long long)off,
+           (long long)arc_size, (unsigned long long)got, (unsigned long long)from);
+    snprintf(msg, sizeof msg, "The game data file %s is damaged: the game asked for %llu bytes at byte %llu of it, but it has only %lld "
+             "bytes. Its own file list points outside the file, so the game cannot go on (it would crash).\n\n"
+             "Dump the game again: in the SSBU Arena launcher choose Settings > Game files, give your base game (.xci / .nsp / .nsz) "
+             "and its update, and press Install (an emulator's installed-content folder with loose .nca files is not a base game "
+             "file). If you copied data.arc yourself, copy it again from a good dump. (SSBU_ARC_EOF_STOP=0 skips this stop.)",
+             what, (unsigned long long)size, (unsigned long long)off, (long long)arc_size);
+    void boot_data_fail(const char *);
+    boot_data_fail(msg);
+}
 static void fs_ReadFile(Ctx *c) {                     /* (handle, offset, buffer, size) */
     int slot = fsa_file_slot(A0);
     if (slot) {
@@ -1003,6 +1029,7 @@ static void fs_ReadFile(Ctx *c) {                     /* (handle, offset, buffer
         if (!off && InterlockedIncrement(&n_short) <= 20)
             printf("nn::fs: ReadFile of %llu bytes at offset %#llx gave %llu bytes (last Windows error %lu, called from %llx): the game gets an error\n",
                    (unsigned long long)A3, (unsigned long long)A1, (unsigned long long)got, err, (unsigned long long)c->x[30] - 4);
+        arc_eof_check((HANDLE)A0, (int64_t)A1, A3, got, 1, c->x[30] - 4);
     }
     RET(got == A3 ? 0 : RESULT_OUT_OF_RANGE);            /* this overload must read exactly `size` bytes */
 }
@@ -1018,6 +1045,7 @@ static void fs_ReadFileCount(Ctx *c) {                /* (size_t *outRead, handl
     uint64_t got = read_at((HANDLE)A1, (int64_t)A2, (void *)(uintptr_t)A3, A4);
     if (got) sysave_language((HANDLE)A1, (int64_t)A2, (void *)(uintptr_t)A3, got);
     wr64(A0, got);
+    if (got != A4) arc_eof_check((HANDLE)A1, (int64_t)A2, A4, got, 0, c->x[30] - 4);
     if (got != A4 && getenv("SSBU_FSLOG")) printf("fslog: ReadFile(count) SHORT handle %llx offset %llx size %llx got %llx from=%llx\n", (unsigned long long)A1, (unsigned long long)A2, (unsigned long long)A4, (unsigned long long)got, (unsigned long long)c->x[30] - 4);   /* D2 debug */
     RET(0);
 }
