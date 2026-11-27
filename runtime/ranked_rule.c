@@ -48,6 +48,9 @@ static volatile LONG g_rr_writes;           /* copies written again by the keepe
 static SRWLOCK g_rr_lock = SRWLOCK_INIT;
 
 int ranked_rule_active(void) { return g_rr_active != 0; }
+/* (TEST ONLY) SSBU_RANKED_RULE_TEST=1: every fight is taken as a ranked one (the image kept from the start, never ended; the hash taken at
+ * every rollback match's start), so a plain test pair (direct host / join, no lobby) checks the forcing and the hash on both games */
+static int rr_test(void) { static int v = -1; if (v < 0) { const char *e = getenv("SSBU_RANKED_RULE_TEST"); v = e && e[0] == '1'; } return v; }
 static void rr_write_all(void) {
     for (int i = 0; i < 3; i++) {
         volatile uint8_t *r = (volatile uint8_t *)(uintptr_t)(rr_copy(i) + RR_OFF);
@@ -101,6 +104,7 @@ void ranked_rule_end(const char *why) {
 }
 /* competitive.c comp_keep, every 2 ms: the flow ends at the main menu (the native Online mode has no other end the runtime sees) */
 void ranked_rule_tick(void) {
+    if (rr_test()) { if (!g_rr_active) ranked_rule_begin("TEST (SSBU_RANKED_RULE_TEST): every fight", 0, -1, -1); else ranked_rule_keep(); return; }
     if (!g_rr_active) return;
     if ((*(volatile uint32_t *)(uintptr_t)RR_SEQ >> 24) == 0x01) { ranked_rule_end("back at the main menu"); return; }
     ranked_rule_keep();
@@ -111,7 +115,7 @@ static volatile LONG g_rr_hash_have; static volatile LONG g_rr_hash; static vola
 void ranked_rule_match_start(void) {
     int comp_quickplay(void), rbn_online_rb(void);
     InterlockedExchange(&g_rr_hash_have, 0);
-    if (!comp_quickplay() && !rbn_online_rb()) return;          /* (rooms and local fights: not ranked) */
+    if (!comp_quickplay() && !rbn_online_rb() && !rr_test()) return;          /* (rooms and local fights: not ranked) */
     RrPlayed p; memset(&p, 0, sizeof p);
     for (int i = 0; i < 3; i++) memcpy(p.copy[i], (const void *)(uintptr_t)(rr_copy(i) + RR_OFF), RR_LEN);
     p.mb_kind = *(volatile uint8_t *)(uintptr_t)(RR_MB + 5);
