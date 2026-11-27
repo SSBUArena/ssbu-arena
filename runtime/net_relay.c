@@ -1180,9 +1180,10 @@ static SRWLOCK g_rk_lock = SRWLOCK_INIT;
 static uint8_t g_rk_body[192]; static int g_rk_len = 61; static uint64_t g_rk_gid, g_rk_t0, g_rk_tx; static volatile LONG g_rk_on;      /* (0.2.58) up to 192 bytes: a room's RESULT (room_mastery.c) */
 static uint64_t g_rk_shown_gid; static int g_rk_shown_key = -1;
 void online_elo_verdict(uint64_t gid, int v, int winner, int reason, const char *text, const uint8_t *el, int el_n);      /* online_elo.c */
-void net_ranked_result(const uint8_t body[61], uint64_t gid) {
+void net_ranked_result(const uint8_t *body, int n, uint64_t gid) {      /* (0.2.78) n: 61, or more with online_elo.c's "RH" block */
+    if (n < 61 || n > (int)sizeof g_rk_body) return;
     AcquireSRWLockExclusive(&g_rk_lock);
-    memcpy(g_rk_body, body, 61); g_rk_len = 61; g_rk_gid = gid; g_rk_t0 = 0; g_rk_tx = 0;
+    memcpy(g_rk_body, body, (size_t)n); g_rk_len = n; g_rk_gid = gid; g_rk_t0 = 0; g_rk_tx = 0;
     ReleaseSRWLockExclusive(&g_rk_lock);
     InterlockedExchange(&g_rk_on, 1);
 }
