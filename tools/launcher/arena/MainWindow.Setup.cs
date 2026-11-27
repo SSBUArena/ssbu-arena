@@ -77,6 +77,22 @@ namespace Arena
                         SetupBusyDetail.Text = "A private Python and its packages, inside this folder only (nothing is installed on Windows).";
                     });
                 }
+                // (fix/setup-0278, SSBU_ARENA_TREE_REPAIR) any other file of the release missing (runtime\game_data.h stopped a precheck):
+                // put back from the install's own release, checked against its manifest, before the tools and the setup run
+                if (!download && TreeRepair)
+                {
+                    var miss = Installer.MissingTree();
+                    if (miss.Count > 0)
+                    {
+                        treeRepairs++;
+                        Dispatcher.Invoke(() => { SetupBusyTitle.Text = "REPAIRING SSBU ARENA"; SetupBusyDetail.Text = miss.Count + " of SSBU Arena's files are missing (" + string.Join(", ", miss.Take(3).Select(f => f.Replace('/', '\\'))) + (miss.Count > 3 ? ", ..." : "") + "): downloading them again..."; });
+                        Updater.RepairSources(rel, miss, s => Dispatcher.BeginInvoke(new Action(() => SetupBusyDetail.Text = s)), Installer.Root);
+                        var still = Installer.MissingTree();
+                        if (still.Count > 0)
+                            throw new FileNotFoundException(still.Count + " of SSBU Arena's files are still missing after they were downloaded again (" + string.Join(", ", still.Take(3).Select(f => f.Replace('/', '\\'))) +
+                                                            (still.Count > 3 ? ", ..." : "") + "): an antivirus may be removing them. Allow SSBU Arena's folder (" + Installer.Root + ") in it, then press Retry.");
+                    }
+                }
                 string py = Installer.PrepareTools(say);
                 // (fix/install-launcher-errors) an install whose game was never built still has the sources it was first unpacked with
                 // (0.2.49's install.py did not know --shared-data): brought to the release before the scan
@@ -124,6 +140,13 @@ namespace Arena
         /// Retry repeated "bootstrap.ps1 is missing" for ever (0.2.75). A developer's git checkout is never changed.</summary>
         static bool SourcesRepair => Environment.GetEnvironmentVariable("SSBU_ARENA_SOURCES_REPAIR") != "0";
         static bool NeedSources => !Installer.SourcesThere && (!Updater.Installed || SourcesRepair && !Updater.DevCopy);
+        /// <summary>(fix/setup-0278) SSBU_ARENA_TREE_REPAIR=0 (or SSBU_ARENA_SOURCES_REPAIR=0): as 0.2.77, only the three setup files above
+        /// are noticed. Otherwise every file of the release's sources (Installer.MissingTree, build\update_manifest.json) is checked
+        /// at stage 1 and before install.py starts (Install, Resume): missing ones are downloaded again from the install's own
+        /// release (Updater.RepairSources) instead of a precheck stopped on runtime\game_data.h at every Resume. An installed copy
+        /// only, never a git checkout; at most twice per launcher start, then install.py says what is missing.</summary>
+        static bool TreeRepair => SourcesRepair && Environment.GetEnvironmentVariable("SSBU_ARENA_TREE_REPAIR") != "0" && Updater.Installed && !Updater.DevCopy;
+        static int treeRepairs;
         static string MissingSources() =>
             string.Join(", ", new[] { @"scripts\bootstrap.ps1", @"scripts\install.py", @"scripts\find_inputs.py" }.Where(f => !File.Exists(Path.Combine(Installer.Root, f))));
 
@@ -412,6 +435,17 @@ namespace Arena
                 Updater.Log("setup: " + (!Installer.SourcesThere ? "SSBU Arena's files" : "the setup's Python") + " missing at INSTALL: stage 1 again");
                 StartSetup(NeedSources);
                 return;
+            }
+            // (fix/setup-0278, SSBU_ARENA_TREE_REPAIR) another file of the release missing: stage 1 again, which downloads it
+            if (TreeRepair && treeRepairs < 2)
+            {
+                var miss = Installer.MissingTree();
+                if (miss.Count > 0)
+                {
+                    Updater.Log("setup: " + miss.Count + " of SSBU Arena's files missing at INSTALL (" + string.Join(", ", miss.Take(6)) + (miss.Count > 6 ? ", ..." : "") + "): stage 1 again");
+                    StartSetup(NeedSources);
+                    return;
+                }
             }
             SetupStageOn(3);
             LauncherCrash.Where = "setup stage 3: install.py";

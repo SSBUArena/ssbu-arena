@@ -348,8 +348,74 @@ def recorded_dump():
     return None
 
 
+def sources_check_on():
+    """(fix/setup-0278) SSBU_SOURCES_CHECK=0: as 0.2.77 (a missing file of the sources stops a step with Python's own error)."""
+    return os.environ.get('SSBU_SOURCES_CHECK', '1') not in ('', '0')
+
+
+SOURCES_HINT = ('An antivirus or a cleaning program may have removed it. Press Resume in the SSBU Arena launcher (or Retry): it '
+                'downloads the missing files of SSBU Arena again. If it comes back, allow SSBU Arena\'s folder in the antivirus, or '
+                'download SSBU-Arena.exe again into a new folder.')
+
+
+def missing_sources():
+    """(fix/setup-0278) the files of this copy's release that are not there: <repo>\\build\\update_manifest.json (written by the
+    launcher's first install and scripts/update.py: every file of the release's sources) against the folder. update.py's
+    protected paths are left out. [] for a git checkout, without a manifest, or with SSBU_SOURCES_CHECK=0."""
+    if not sources_check_on() or os.path.exists(os.path.join(REPO, '.git')):
+        return []
+    try:
+        with open(os.path.join(REPO, 'build', 'update_manifest.json'), encoding='utf-8') as f:
+            files = json.load(f).get('files')
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(files, dict):
+        return []
+    protected = ('.git', 'build', 'deps', 'config', 'saves', 'build_location.txt')
+    miss = []
+    for rel in sorted(files):
+        first = rel.split('/')[0].lower()
+        if first in protected or first.startswith('userdata') or '..' in rel.split('/') or ':' in rel:
+            continue
+        if not os.path.isfile(os.path.join(REPO, *rel.split('/'))):
+            miss.append(rel.replace('/', '\\'))
+    return miss
+
+
+def sources_stop(missing):
+    return Stop('a file of SSBU Arena\'s setup is missing: %s%s' % (missing[0], ' (and %d more)' % (len(missing) - 1) if len(missing) > 1 else ''),
+                SOURCES_HINT, action='sources')
+
+
+def repo_file_missing(e):
+    """(fix/setup-0278) a FileNotFoundError on a file of the sources (not of the install location, deps or the game files):
+    its path relative to the repository, else None"""
+    name = getattr(e, 'filename', None)
+    if not sources_check_on() or not isinstance(e, FileNotFoundError) or not isinstance(name, str):
+        return None
+    try:
+        full = os.path.normcase(os.path.abspath(name))
+        repo = os.path.normcase(os.path.abspath(REPO)) + os.sep
+        if not full.startswith(repo):
+            return None
+        for other in (BUILD, DEPS, os.path.join(REPO, 'build')):
+            if full.startswith(os.path.normcase(os.path.abspath(other)) + os.sep):
+                return None
+        return os.path.relpath(os.path.abspath(name), REPO)
+    except (ValueError, OSError):
+        return None
+
+
 def step_precheck(cx):
     import precheck
+    # (fix/setup-0278) a file of the sources missing (runtime\game_data.h: "FileNotFoundError" at this step): said as such
+    miss = missing_sources()
+    if miss:
+        say('   files of SSBU Arena missing: %s' % ', '.join(miss[:20]) + (' ...' if len(miss) > 20 else ''))
+        if cx.a.dry_run:
+            cx.blockers.append(sources_stop(miss).msg)
+            return 'dry', 'would stop: ' + sources_stop(miss).msg
+        raise sources_stop(miss)
     dump = cx.a.dump or (os.path.join(BUILD, 'dump') if dump_ok(os.path.join(BUILD, 'dump')) else None)
     if not dump and precheck.update_disk_rule():
         dump = recorded_dump()              # (0.2.65, SSBU_UPDATE_DISK_CHECK) the game files the install already reads
@@ -1441,6 +1507,9 @@ def run_step(cx, P, sid, fn):
         raise
     except Exception as e:                       # a bug or a missing module: reported like a stop
         P.end(sid, 'fail', '%s: %s' % (type(e).__name__, e))
+        gone = repo_file_missing(e)              # (fix/setup-0278) a file of the sources: what it is and what to do, not a traceback
+        if gone:
+            raise sources_stop([gone] + [m for m in missing_sources() if os.path.normcase(m) != os.path.normcase(gone)])
         raise Stop('%s failed: %s: %s' % (sid, type(e).__name__, e), 'See build\\logs; start the installer again, or report this message.')
     secs = time.time() - t0
     say('   -> %s: %s' % (state, msg))
