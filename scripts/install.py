@@ -1008,6 +1008,20 @@ def explain(text):
 
 
 DAMAGED_MARK = 'damaged object file(s) removed'      # tools/lifter/build.py drop_damaged_objects
+UNSTABLE_MARK = 'UNSTABLE MEMORY OR CPU'             # (fix/setup-0278) tools/lifter/build_opt.py unstable_end
+
+
+def unstable_check_on():
+    """(fix/setup-0278) SSBU_BUILD_UNSTABLE=0: as 0.2.77 (build_opt.py does not look, and the stop is the usual one)"""
+    return os.environ.get('SSBU_BUILD_UNSTABLE', '1') not in ('', '0')
+
+
+def unstable_stop(detail):
+    return Stop('the build stopped: this PC\'s memory or CPU is unstable. The same game code came out different twice in a row '
+                '(%s). A PC like this also crashes or goes out of sync in online matches.' % detail.rstrip('. ')[:300],
+                'Usually an overclock or a memory profile (XMP / EXPO) that is not fully stable, overheating, or a failing memory '
+                'module. Set the BIOS back to its defaults (or turn the memory profile off), check the memory (Windows Memory '
+                'Diagnostic or MemTest86), then press Resume: the build goes on from where it was.')
 
 
 def probe_runtime(dump, runtime, extra):
@@ -1344,11 +1358,13 @@ def step_build(cx, P):
             return (s, c[0], c[1], False)
         e = est(s)
         return (s, min(time.time() - P.t0.get(s, time.time()), 0.95 * e), e)      # seconds: never past the estimate
-    seen = {'damaged': False, 'failed': ''}
+    seen = {'damaged': False, 'failed': '', 'unstable': ''}
 
     def watch(line):
         if DAMAGED_MARK in line:
             seen['damaged'] = True
+        if UNSTABLE_MARK in line and unstable_check_on():
+            seen['unstable'] = line.split(UNSTABLE_MARK, 1)[1].lstrip(': ').strip()
         m = re.match(r'\s*FAILED at step (\w+): (.*)', line)
         if m:
             seen['failed'] = 'step %s: %s' % (m.group(1), m.group(2).strip())
@@ -1366,6 +1382,8 @@ def step_build(cx, P):
     if rc:
         if cur['id']:
             P.end(cur['id'], 'fail', 'see build\\logs')
+        if seen['unstable']:                     # (fix/setup-0278) before any other reason: the rest follows from it
+            raise unstable_stop(seen['unstable'])
         text = '\n'.join(tail)
         env = explain(text)
         if env:
